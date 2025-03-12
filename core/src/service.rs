@@ -74,40 +74,6 @@ impl CoreApiServer for CoreService {
         }))
     }
 
-    async fn register_recipient(&self, user_addr: String) -> RpcResult<()> {
-        repo::register_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to register user {}", err);
-                rpc::internal_error()
-            })?;
-        Ok(())
-    }
-
-    async fn get_recipient(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
-        let Some(user) = repo::get_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to get user {}", err);
-                rpc::internal_error()
-            })?
-        else {
-            return Ok(None);
-        };
-
-        let transactions = user.transactions.unwrap();
-        let not_usable_deposit = transactions
-            .iter()
-            .filter_map(|tx| if !tx.finalized { Some(tx.amount) } else { None })
-            .sum::<f64>();
-
-        Ok(Some(UserInfo {
-            deposit: user.deposit,
-            available_deposit: user.deposit - not_usable_deposit,
-            transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
-        }))
-    }
-
     async fn issue_payment_cert(
         &self,
         user_addr: String,

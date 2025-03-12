@@ -3,9 +3,6 @@ use alloy::sol;
 sol! {
     #[derive(Debug)]
     event UserRegistered(address _from, uint _collateral);
-
-    #[derive(Debug)]
-    event RecipientRegistered(address _from, uint _collateral);
     
     #[derive(Debug)]
     event UserAddDeposit(address _from, uint _collateral);

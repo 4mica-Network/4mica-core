@@ -23,19 +23,6 @@ model User {
   transactions UserTransaction[]
 }
 
-model Recipient {
-  address String @id
-  balance Float  @default(0)
-
-  // For optimistic locking
-  version Int @default(1)
-
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  transactions RecipientTransaction[]
-}
-
 model UserTransaction {
   tx_id        String @id
   user_address String

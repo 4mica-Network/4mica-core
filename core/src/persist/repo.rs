@@ -63,32 +63,6 @@ pub async fn add_user_deposit(
     Ok(())
 }
 
-pub async fn register_recipient(ctx: &PersistCtx, recipient_addr: String) -> anyhow::Result<()> {
-    let _ = ctx
-        .client
-        .recipient()
-        .upsert(
-            recipient::address::equals(recipient_addr.clone()),
-            recipient::create(recipient_addr, vec![]),
-            vec![],
-        )
-        .exec()
-        .await?;
-    Ok(())
-}
-
-pub async fn get_recipient(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<Option<user::Data>> {
-    let user = ctx
-        .client
-        .user()
-        .find_unique(user::address::equals(user_addr))
-        .with(user::transactions::fetch(vec![]))
-        .exec()
-        .await?;
-    Ok(user)
-}
-
-
 #[derive(Debug, Error)]
 pub enum SubmitPaymentTxnError {
     #[error("Internal query error occurred: {0:?}")]
