@@ -1,0 +1,16 @@
+version: '3.9'
+
+services:
+  pg:
+    image: postgres:17-alpine
+    container_name: pg
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: qwerty123456
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  pg-data:

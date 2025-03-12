@@ -1,0 +1,27 @@
+{
+  "name": "tpin-core",
+  "version": "1.0.0",
+  "description": "",
+  "main": "hardhat.config.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mahzoun/TPIN-Core.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mahzoun/TPIN-Core/issues"
+  },
+  "homepage": "https://github.com/mahzoun/TPIN-Core#readme",
+  "devDependencies": {
+    "hardhat": "^2.22.19"
+  },
+  "dependencies": {
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "dotenv": "^16.4.7",
+    "ethers": "^5.8.0"
+  }
+}

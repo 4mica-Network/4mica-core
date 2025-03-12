@@ -9,6 +9,16 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+Cargo.lock
+package-lock.json
+node_modules/
+yarn.lock
+npm-debug.log*
+pnpm-lock.yaml
+*.env
+out/
+cache/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
