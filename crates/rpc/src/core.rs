@@ -16,16 +16,9 @@ pub trait CoreApi {
 
     #[method(name = "registerUser")]
     async fn register_user(&self, user_addr: String) -> RpcResult<()>;
-
-    #[method(name = "registerRecipient")]
-    async fn register_recipient(&self, user_addr: String) -> RpcResult<()>;
     
     #[method(name = "getUser")]
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>>;
-
-    #[method(name = "getRecipient")]
-    async fn get_recipient(&self, user_addr: String) -> RpcResult<Option<UserInfo>>;
-    
 
     #[method(name = "issuePaymentCert")]
     async fn issue_payment_cert(
