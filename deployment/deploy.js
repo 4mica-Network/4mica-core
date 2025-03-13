@@ -1,7 +1,7 @@
 async function main() {
-    const AuthorityContract = await ethers.getContractFactory("AuthorityContract");
-    const authoritycontract = await AuthorityContract.deploy();
-    console.log("Contract Deployed to Address:", authoritycontract.address);
+    const HelloWorld = await ethers.getContractFactory("AuthorityContract");
+    const hello_world = await AuthorityContract.deploy();
+    console.log("Contract Deployed to Address:", hello_world.address);
   }
   main()
     .then(() => process.exit(0))
