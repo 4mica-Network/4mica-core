@@ -24,10 +24,12 @@ model User {
 }
 
 model UserTransaction {
-  tx_id        String @id
+  tx_id        String  @id
   user_address String
   amount       Float
-  
+  cert         String?
+
+  verified  Boolean @default(false)
   finalized Boolean @default(false)
   failed    Boolean @default(false)
 

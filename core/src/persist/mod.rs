@@ -23,10 +23,13 @@ impl PersistCtx {
 impl Into<UserTransactionInfo> for prisma::user_transaction::Data {
     fn into(self) -> UserTransactionInfo {
         UserTransactionInfo {
+            user_addr: self.user_address,
             tx_hash: self.tx_id,
             amount: self.amount,
+            verified: self.verified,
             finalized: self.finalized,
             failed: self.failed,
+            cert: self.cert,
             created_at: self.created_at.timestamp_millis(),
         }
     }

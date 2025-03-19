@@ -5,7 +5,9 @@ use crate::persist::PersistCtx;
 use async_trait::async_trait;
 use crypto::bls::BLSCert;
 use log::{error, info};
-use rpc::common::{PaymentGuaranteeClaims, UserInfo};
+use rpc::common::{
+    PaymentGuaranteeClaims, TransactionVerificationResult, UserInfo, UserTransactionInfo,
+};
 use rpc::core::{CoreApiServer, CorePublicParameters};
 use rpc::RpcResult;
 
@@ -83,11 +85,26 @@ impl CoreApiServer for CoreService {
         // TODO: Make sure the user_pk is the source of this transaction.
         // TODO: Listen to blockchain events and update the status of transactions.
 
+        let claims = PaymentGuaranteeClaims {
+            user_addr: user_addr.clone(),
+            tx_hash: transaction_id.clone(),
+            amount,
+        };
+        let cert = BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
+            error!("Failed to issue the payment guarantee cert: {err}");
+            rpc::internal_error()
+        })?;
+        let cert_str = serde_json::to_string(&cert).map_err(|err| {
+            error!("Failed to serialize the payment guarantee cert: {err}");
+            rpc::internal_error()
+        })?;
+
         let submit_tx_result = repo::submit_payment_transaction(
             &self.persist_ctx,
             user_addr.clone(),
             transaction_id.clone(),
             amount,
+            cert_str,
         )
         .await;
 
@@ -107,16 +124,34 @@ impl CoreApiServer for CoreService {
             return Err(err);
         }
 
-        let claims = PaymentGuaranteeClaims {
-            user_addr,
-            tx_hash: transaction_id,
-            amount,
-        };
-        let cert = BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
-            error!("Failed to issue the payment guarantee cert: {err}");
-            rpc::internal_error()
-        })?;
-
         Ok(cert)
+    }
+
+    async fn get_transactions_by_hash(
+        &self,
+        hashes: Vec<String>,
+    ) -> RpcResult<Vec<UserTransactionInfo>> {
+        let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
+            .await
+            .map_err(|err| {
+                error!("Failed to get user {}", err);
+                rpc::internal_error()
+            })?;
+
+        Ok(transactions.into_iter().map(|tx| tx.into()).collect())
+    }
+
+    async fn verify_transaction(
+        &self,
+        tx_hash: String,
+    ) -> RpcResult<TransactionVerificationResult> {
+        let verified = repo::verify_transaction(&self.persist_ctx, tx_hash)
+            .await
+            .map_err(|err| {
+                error!("Failed to verify transaction {}", err);
+                rpc::internal_error()
+            })?;
+
+        Ok(verified)
     }
 }
