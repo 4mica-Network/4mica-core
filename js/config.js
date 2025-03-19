@@ -7,15 +7,15 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Connect to Ganache
-const web3 = new Web3("http://127.0.0.1:7545");
+// Connect to server
+const web3 = new Web3("https://hardhat.cookingwithbello.com");
 
 // Replace with your deployed contract address
-const CONTRACT_ADDRESS = "0x9fF34A506B69d2C9af5B0e18b6cBCf5aB6400cEc";
+const CONTRACT_ADDRESS = "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE";
 
 // Replace with your contract ABI
 const CONTRACT_ABI = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "../build/contracts/AuthorityContract.json"), "utf-8")
+  fs.readFileSync(path.join(__dirname, "../contracts/AuthorityContract.json"), "utf-8")
 ).abi;
 
 const contract = new web3.eth.Contract(CONTRACT_ABI, CONTRACT_ADDRESS);

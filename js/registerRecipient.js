@@ -3,7 +3,7 @@ const { web3, contract } = require("./config");
 async function registerRecipient() {
   const accounts = await web3.eth.getAccounts();
   const owner = accounts[0]; // Owner (deployer)
-  const recipientAddresses = [accounts[2], accounts[3]]; // Registering two recipients
+  const recipientAddresses = ["0xa0Ee7A142d267C1f36714E4a8F75612F20a79720"]; // Registering two recipients
   console.log(`Registering recipients: ${recipientAddresses}`);
   try {
     const tx = await contract.methods

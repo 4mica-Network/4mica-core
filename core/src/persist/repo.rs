@@ -1,6 +1,7 @@
 use crate::persist::prisma::{user, user_transaction};
 use crate::persist::PersistCtx;
 use prisma_client_rust::QueryError;
+use rpc::common::TransactionVerificationResult;
 use thiserror::Error;
 
 pub async fn register_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<()> {
@@ -63,6 +64,19 @@ pub async fn add_user_deposit(
     Ok(())
 }
 
+pub async fn get_transactions_by_hash(
+    ctx: &PersistCtx,
+    hashes: Vec<String>,
+) -> anyhow::Result<Vec<user_transaction::Data>> {
+    let transactions = ctx
+        .client
+        .user_transaction()
+        .find_many(vec![user_transaction::tx_id::in_vec(hashes)])
+        .exec()
+        .await?;
+    Ok(transactions)
+}
+
 #[derive(Debug, Error)]
 pub enum SubmitPaymentTxnError {
     #[error("Internal query error occurred: {0:?}")]
@@ -83,6 +97,7 @@ pub async fn submit_payment_transaction(
     user_addr: String,
     transaction_id: String,
     amount: f64,
+    cert: String,
 ) -> Result<(), SubmitPaymentTxnError> {
     ctx.client
         ._transaction()
@@ -116,7 +131,7 @@ pub async fn submit_payment_transaction(
                         transaction_id,
                         amount,
                         user::address::equals(user_addr.clone()),
-                        vec![],
+                        vec![user_transaction::cert::set(Some(cert))],
                     ),
                     vec![],
                 )
@@ -150,7 +165,7 @@ pub async fn fail_transaction(
     ctx: &PersistCtx,
     user_addr: String,
     transaction_id: String,
-) -> Result<(), anyhow::Error> {
+) -> anyhow::Result<()> {
     ctx.client
         ._transaction()
         .run::<QueryError, _, _, _>(|client| async move {
@@ -180,4 +195,43 @@ pub async fn fail_transaction(
         .await?;
 
     Ok(())
+}
+
+pub async fn verify_transaction(
+    ctx: &PersistCtx,
+    transaction_id: String,
+) -> anyhow::Result<TransactionVerificationResult> {
+    let result = ctx
+        .client
+        ._transaction()
+        .run::<QueryError, _, _, _>(|client| async move {
+            let tx = client
+                .user_transaction()
+                .find_unique(user_transaction::tx_id::equals(transaction_id.clone()))
+                .exec()
+                .await?;
+
+            let Some(tx) = tx else {
+                return Ok(TransactionVerificationResult::NotFound);
+            };
+
+            if tx.verified {
+                return Ok(TransactionVerificationResult::AlreadyVerified);
+            }
+
+            // Mark the transaction as verified
+            client
+                .user_transaction()
+                .update(
+                    user_transaction::tx_id::equals(transaction_id),
+                    vec![user_transaction::verified::set(true)],
+                )
+                .exec()
+                .await?;
+
+            Ok(TransactionVerificationResult::Verified)
+        })
+        .await?;
+
+    Ok(result)
 }

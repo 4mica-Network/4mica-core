@@ -25,10 +25,13 @@ impl TryFrom<Vec<u8>> for PaymentGuaranteeClaims {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTransactionInfo {
+    pub user_addr: String,
     pub tx_hash: String,
     pub amount: f64,
+    pub verified: bool,
     pub finalized: bool,
     pub failed: bool,
+    pub cert: Option<String>,
     pub created_at: i64,
 }
 
@@ -37,4 +40,19 @@ pub struct UserInfo {
     pub deposit: f64,
     pub available_deposit: f64,
     pub transactions: Vec<UserTransactionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", content = "claims")]
+pub enum PaymentVerificationResult {
+    Verified(PaymentGuaranteeClaims),
+    AlreadyVerified(PaymentGuaranteeClaims),
+    InvalidCertificate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TransactionVerificationResult {
+    Verified,
+    AlreadyVerified,
+    NotFound,
 }
