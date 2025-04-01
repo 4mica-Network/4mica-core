@@ -15,11 +15,16 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Envconfig)]
 pub struct EthereumConfig {
-    #[envconfig(from = "ETHEREUM_RPC_URL")]
-    pub rpc_url: String,
-
+    #[envconfig(from = "ETHEREUM_WS_RPC_URL")]
+    pub ws_rpc_url: String,
+    #[envconfig(from = "ETHEREUM_HTTP_RPC_URL")]
+    pub http_rpc_url: String,
     #[envconfig(from = "ETHEREUM_CONTRACT_ADDRESS")]
     pub contract_address: String,
+    #[envconfig(from = "NUMBER_OF_BLOCKS_TO_CONFIRM", default = "20")]
+    pub number_of_blocks_to_confirm: u64,
+    #[envconfig(from = "NUMBER_OF_PENDING_BLOCKS", default = "5")]
+    pub number_of_pending_blocks: u64,
 }
 
 #[derive(Debug, Clone, Envconfig)]

@@ -77,6 +77,38 @@ pub async fn get_transactions_by_hash(
     Ok(transactions)
 }
 
+pub async fn get_unfinalized_transactions(
+    ctx: &PersistCtx,
+) -> anyhow::Result<Vec<user_transaction::Data>> {
+    let transactions = ctx
+        .client
+        .user_transaction()
+        .find_many(vec![user_transaction::finalized::equals(false)])
+        .exec()
+        .await?;
+    Ok(transactions)
+}
+
+pub async fn confirm_transactions(
+    ctx: &PersistCtx,
+    transaction_hashes: Vec<String>,
+) -> anyhow::Result<i64> {
+    let where_conditions = transaction_hashes
+        .iter()
+        .map(|transaction_hash| user_transaction::tx_id::equals(transaction_hash.clone()))
+        .collect::<Vec<_>>();
+    let num_updated_transactions = ctx
+        .client
+        .user_transaction()
+        .update_many(
+            where_conditions,
+            vec![user_transaction::finalized::set(true)],
+        )
+        .exec()
+        .await?;
+    Ok(num_updated_transactions)
+}
+
 #[derive(Debug, Error)]
 pub enum SubmitPaymentTxnError {
     #[error("Internal query error occurred: {0:?}")]
