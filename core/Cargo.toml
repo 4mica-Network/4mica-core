@@ -25,6 +25,9 @@ alloy = { workspace = true, features = ["provider-ws"] }
 hyper = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
+ethers = "2.0.0"
+ethers-providers = { version = "2.0", features = ["ws"] }
+
 
 [dev-dependencies]
 uuid = { workspace = true }

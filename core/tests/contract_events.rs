@@ -22,8 +22,11 @@ async fn register_user_event() -> anyhow::Result<()> {
     info!("Wallet default signer address: {user_addr}");
 
     let eth_config = EthereumConfig {
-        rpc_url: format!("ws://localhost:{anvil_port}"),
+        ws_rpc_url: format!("ws://localhost:{anvil_port}"),
+        http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        number_of_blocks_to_confirm: 10u64,
+        number_of_pending_blocks: 5u64,
     };
 
     let persist_ctx = PersistCtx::new().await?;
@@ -72,8 +75,11 @@ async fn user_add_deposit_event() -> anyhow::Result<()> {
     info!("Wallet default signer address: {user_addr}");
 
     let eth_config = EthereumConfig {
-        rpc_url: format!("ws://localhost:{anvil_port}"),
+        ws_rpc_url: format!("ws://localhost:{anvil_port}"),
+        http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        number_of_blocks_to_confirm: 10u64,
+        number_of_pending_blocks: 5u64,
     };
 
     let persist_ctx = PersistCtx::new().await?;
@@ -128,8 +134,11 @@ async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
     info!("Wallet default signer address: {user_addr}");
 
     let eth_config = EthereumConfig {
-        rpc_url: format!("ws://localhost:{anvil_port}"),
+        ws_rpc_url: format!("ws://localhost:{anvil_port}"),
+        http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        number_of_blocks_to_confirm: 10u64,
+        number_of_pending_blocks: 5u64,
     };
 
     let persist_ctx = PersistCtx::new().await?;

@@ -1,5 +1,4 @@
 mod contract;
-
 use crate::config::EthereumConfig;
 use crate::ethereum::contract::{RecipientRefunded, UserAddDeposit, UserRegistered};
 use crate::persist::{repo, PersistCtx};
@@ -9,8 +8,11 @@ use alloy::primitives::Address;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
+use ethers::prelude::*;
 use futures_util::StreamExt;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
+use std::sync::Arc;
+use tokio;
 use tokio::task::JoinHandle;
 
 pub struct EthereumListener {
@@ -18,6 +20,15 @@ pub struct EthereumListener {
     persist_ctx: PersistCtx,
 }
 
+/// EthereumListener is responsible for listening to Ethereum blockchain events and processing them.
+///
+/// # Notes
+/// - This is a slow asynchronous operation that fetches transactions from both the blockchain and the database.
+/// - It can become a bottleneck for performance in high-throughput scenarios.
+///
+/// # TODO
+/// - Optimize the implementation to improve performance.
+/// - Consider batching or parallelizing operations where possible.
 impl EthereumListener {
     pub fn new(config: EthereumConfig, persist_ctx: PersistCtx) -> Self {
         Self {
@@ -27,7 +38,7 @@ impl EthereumListener {
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
-        let ws = WsConnect::new(&self.config.rpc_url);
+        let ws = WsConnect::new(&self.config.ws_rpc_url);
         let provider = ProviderBuilder::new().on_ws(ws).await?;
 
         let contract_address: Address = self.config.contract_address.parse()?;
@@ -132,6 +143,55 @@ impl EthereumListener {
 
             warn!("Exited from the Ethereum listener loop!");
             Ok(())
+        });
+
+        let persist_ctx = self.persist_ctx.clone();
+        let number_of_blocks_to_confirm = self.config.number_of_blocks_to_confirm;
+        let number_of_pending_blocks = self.config.number_of_pending_blocks;
+
+        let eth_provider = Arc::new(ethers::providers::Provider::<Http>::try_from(
+            &self.config.http_rpc_url,
+        )?);
+
+        let _: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+            //TODO: Improve performance by not fetching same blocks multiple times.
+            loop {
+                let mut latest_block = eth_provider.get_block_number().await?;
+                latest_block = U64::from(
+                    latest_block
+                        .as_u64()
+                        .saturating_sub(number_of_pending_blocks),
+                );
+                let start_block = latest_block
+                    .as_u64()
+                    .saturating_sub(number_of_blocks_to_confirm);
+                debug!("Fetching blocks from {} to {}", start_block, latest_block);
+
+                for block_number in start_block..=latest_block.as_u64() {
+                    if let Some(block) = eth_provider.get_block_with_txs(block_number).await? {
+                        debug!(
+                            "Block #{} - {} transactions",
+                            block_number,
+                            block.transactions.len()
+                        );
+                        let block_transaction_hashes: Vec<_> = block
+                            .transactions
+                            .iter()
+                            .map(|tx| tx.hash)
+                            .map(|hash| format!("{:?}", hash))
+                            .collect();
+                        debug!("Confirming transactions: {:?}", block_transaction_hashes);
+                        repo::confirm_transactions(&persist_ctx, block_transaction_hashes)
+                            .await
+                            .map_err(|err| {
+                                warn!("Failed to confirm the transactions: {}", err);
+                                err
+                            })
+                            .ok();
+                    }
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
+            }
         });
 
         Ok(())

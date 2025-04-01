@@ -51,7 +51,7 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
     let cert = core_client
         .issue_payment_cert(user_addr.clone(), tx_id.clone(), deposit_amount / 2f64)
         .await?;
-    
+
     info!("Cert Issued: {:?}", cert);
 
     let public_params = core_client.get_public_params().await?;
