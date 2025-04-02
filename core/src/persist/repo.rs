@@ -89,24 +89,20 @@ pub async fn get_unfinalized_transactions(
     Ok(transactions)
 }
 
-pub async fn confirm_transactions(
+pub async fn confirm_transaction(
     ctx: &PersistCtx,
-    transaction_hashes: Vec<String>,
-) -> anyhow::Result<i64> {
-    let where_conditions = transaction_hashes
-        .iter()
-        .map(|transaction_hash| user_transaction::tx_id::equals(transaction_hash.clone()))
-        .collect::<Vec<_>>();
-    let num_updated_transactions = ctx
+    transaction_hash: String,
+) -> anyhow::Result<()> {
+    let _updated_transactions = ctx
         .client
         .user_transaction()
-        .update_many(
-            where_conditions,
+        .update(
+            user_transaction::tx_id::equals(transaction_hash),
             vec![user_transaction::finalized::set(true)],
         )
         .exec()
         .await?;
-    Ok(num_updated_transactions)
+    Ok(())
 }
 
 #[derive(Debug, Error)]
