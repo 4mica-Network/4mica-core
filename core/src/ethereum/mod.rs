@@ -167,7 +167,7 @@ impl EthereumListener {
                     .saturating_sub(number_of_blocks_to_confirm);
                 debug!("Fetching blocks from {} to {}", start_block, latest_block);
 
-                for block_number in 0..=latest_block.as_u64() {
+                for block_number in start_block..=latest_block.as_u64() {
                     if let Some(block) = eth_provider.get_block_with_txs(block_number).await? {
                         debug!( 
                             "Block #{} - {} transactions",
