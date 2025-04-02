@@ -167,30 +167,34 @@ impl EthereumListener {
                     .saturating_sub(number_of_blocks_to_confirm);
                 debug!("Fetching blocks from {} to {}", start_block, latest_block);
 
-                for block_number in start_block..=latest_block.as_u64() {
+                for block_number in 0..=latest_block.as_u64() {
                     if let Some(block) = eth_provider.get_block_with_txs(block_number).await? {
-                        debug!(
+                        debug!( 
                             "Block #{} - {} transactions",
                             block_number,
                             block.transactions.len()
                         );
+                        
                         let block_transaction_hashes: Vec<_> = block
                             .transactions
                             .iter()
                             .map(|tx| tx.hash)
                             .map(|hash| format!("{:?}", hash))
                             .collect();
-                        debug!("Confirming transactions: {:?}", block_transaction_hashes);
-                        repo::confirm_transactions(&persist_ctx, block_transaction_hashes)
+                        for tx_hash in &block_transaction_hashes {
+                            info!("Confirming transaction: {}", tx_hash);
+                            repo::confirm_transaction(&persist_ctx, tx_hash.to_string())
                             .await
                             .map_err(|err| {
-                                warn!("Failed to confirm the transactions: {}", err);
+                                debug!("Failed to confirm the transactions: {}", err);
                                 err
                             })
                             .ok();
+                        }
                     }
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
+                // TODO, read interval from config, or decide to do it more dynamically
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
             }
         });
 
