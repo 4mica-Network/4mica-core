@@ -79,6 +79,7 @@ impl CoreApiServer for CoreService {
     async fn issue_payment_cert(
         &self,
         user_addr: String,
+        recipient_addr: String,
         transaction_id: String,
         amount: f64,
     ) -> RpcResult<BLSCert> {
@@ -87,6 +88,7 @@ impl CoreApiServer for CoreService {
 
         let claims = PaymentGuaranteeClaims {
             user_addr: user_addr.clone(),
+            recipient_addr: recipient_addr.clone(),
             tx_hash: transaction_id.clone(),
             amount,
         };
@@ -102,6 +104,7 @@ impl CoreApiServer for CoreService {
         let submit_tx_result = repo::submit_payment_transaction(
             &self.persist_ctx,
             user_addr.clone(),
+            recipient_addr.clone(),
             transaction_id.clone(),
             amount,
             cert_str,

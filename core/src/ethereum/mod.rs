@@ -169,12 +169,12 @@ impl EthereumListener {
 
                 for block_number in start_block..=latest_block.as_u64() {
                     if let Some(block) = eth_provider.get_block_with_txs(block_number).await? {
-                        debug!( 
+                        debug!(
                             "Block #{} - {} transactions",
                             block_number,
                             block.transactions.len()
                         );
-                        
+
                         let block_transaction_hashes: Vec<_> = block
                             .transactions
                             .iter()
@@ -184,12 +184,12 @@ impl EthereumListener {
                         for tx_hash in &block_transaction_hashes {
                             info!("Confirming transaction: {}", tx_hash);
                             repo::confirm_transaction(&persist_ctx, tx_hash.to_string())
-                            .await
-                            .map_err(|err| {
-                                debug!("Failed to confirm the transactions: {}", err);
-                                err
-                            })
-                            .ok();
+                                .await
+                                .map_err(|err| {
+                                    debug!("Failed to confirm the transactions: {}", err);
+                                    err
+                                })
+                                .ok();
                         }
                     }
                 }
