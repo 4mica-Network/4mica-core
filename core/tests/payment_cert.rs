@@ -27,7 +27,7 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
         let core_service::config::ServerConfig { host, port, .. } = &config.server_config;
         format!("{}:{}", host, port)
     };
-    info!("Core address: {}", core_addr);
+    
     let user_addr = Uuid::new_v4().to_string();
     let recipient_addr = Uuid::new_v4().to_string();
     let deposit_amount = 1f64;
