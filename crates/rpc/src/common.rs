@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentGuaranteeClaims {
     pub user_addr: String,
+    pub recipient_addr: String,
     pub tx_hash: String,
     pub amount: f64,
 }
@@ -26,6 +27,7 @@ impl TryFrom<Vec<u8>> for PaymentGuaranteeClaims {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTransactionInfo {
     pub user_addr: String,
+    pub recipient_addr: String,
     pub tx_hash: String,
     pub amount: f64,
     pub verified: bool,

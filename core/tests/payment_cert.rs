@@ -27,8 +27,9 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
         let core_service::config::ServerConfig { host, port, .. } = &config.server_config;
         format!("{}:{}", host, port)
     };
-
+    info!("Core address: {}", core_addr);
     let user_addr = Uuid::new_v4().to_string();
+    let recipient_addr = Uuid::new_v4().to_string();
     let deposit_amount = 1f64;
 
     let core_client = RpcProxy::new(&core_addr).await?;
@@ -49,7 +50,12 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
 
     let tx_id = Uuid::new_v4().to_string();
     let cert = core_client
-        .issue_payment_cert(user_addr.clone(), tx_id.clone(), deposit_amount / 2f64)
+        .issue_payment_cert(
+            user_addr.clone(),
+            recipient_addr.clone(),
+            tx_id.clone(),
+            deposit_amount / 2f64,
+        )
         .await?;
 
     info!("Cert Issued: {:?}", cert);
@@ -94,7 +100,7 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
     };
 
     let user_addr = Uuid::new_v4().to_string();
-
+    let recipient_addr = Uuid::new_v4().to_string();
     let core_client = RpcProxy::new(&core_addr).await?;
     core_client.register_user(user_addr.clone()).await?;
 
@@ -113,12 +119,12 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
 
     let tx_id = Uuid::new_v4().to_string();
     core_client
-        .issue_payment_cert(user_addr.clone(), tx_id, 0.7f64)
+        .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id, 0.7f64)
         .await?;
 
     let tx_id = Uuid::new_v4().to_string();
     let cert_result = core_client
-        .issue_payment_cert(user_addr.clone(), tx_id, 0.7f64)
+        .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id, 0.7f64)
         .await
         .map_err(|err| {
             info!("Issue payment cert error: {}", err);
@@ -138,7 +144,7 @@ async fn issue_payment_cert_multiple_certs() -> anyhow::Result<()> {
     };
 
     let user_addr = Uuid::new_v4().to_string();
-
+    let recipient_addr = Uuid::new_v4().to_string();
     let core_client = RpcProxy::new(&core_addr).await?;
     core_client.register_user(user_addr.clone()).await?;
 
@@ -157,11 +163,16 @@ async fn issue_payment_cert_multiple_certs() -> anyhow::Result<()> {
 
     let tx_id = Uuid::new_v4().to_string();
     core_client
-        .issue_payment_cert(user_addr.clone(), tx_id.clone(), 0.7f64)
+        .issue_payment_cert(
+            user_addr.clone(),
+            recipient_addr.clone(),
+            tx_id.clone(),
+            0.7f64,
+        )
         .await?;
 
     core_client
-        .issue_payment_cert(user_addr.clone(), tx_id, 0.7f64)
+        .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id, 0.7f64)
         .await?;
 
     Ok(())
@@ -176,6 +187,7 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
     };
 
     let user_addr = Uuid::new_v4().to_string();
+    let recipient_addr = Uuid::new_v4().to_string();
     let deposit_amount = 1f64;
 
     let core_client = RpcProxy::new(&core_addr).await?;
@@ -195,22 +207,24 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
         .await?;
 
     let user_addr_clone = user_addr.clone();
+    let recipient_addr_clone = recipient_addr.clone();
     let core_client_clone = core_client.clone();
     let tx1_handle: JoinHandle<anyhow::Result<BLSCert>> = tokio::spawn(async move {
         let tx_id = Uuid::new_v4().to_string();
         let cert = core_client_clone
-            .issue_payment_cert(user_addr_clone, tx_id, 0.7f64)
+            .issue_payment_cert(user_addr_clone, recipient_addr_clone, tx_id, 0.7f64)
             .await?;
 
         Ok(cert)
     });
 
     let user_addr_clone = user_addr.clone();
+    let recipient_addr_clone = recipient_addr.clone();
     let core_client_clone = core_client.clone();
     let tx2_handle: JoinHandle<anyhow::Result<BLSCert>> = tokio::spawn(async move {
         let tx_id = Uuid::new_v4().to_string();
         let cert = core_client_clone
-            .issue_payment_cert(user_addr_clone, tx_id, 0.7f64)
+            .issue_payment_cert(user_addr_clone, recipient_addr_clone, tx_id, 0.7f64)
             .await?;
 
         Ok(cert)
