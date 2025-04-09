@@ -84,8 +84,8 @@ impl CoreApiServer for CoreService {
         amount: f64,
     ) -> RpcResult<BLSCert> {
         // TODO: Make sure the user_pk is the source of this transaction.
-        // TODO: Listen to blockchain events and update the status of transactions.
-
+        // TODO: Fetch transaction hash from the Ethereum listener and verify that 1. it exists in mempool, 2. info are correct. 
+        info!("Issuing payment guarantee cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
         let claims = PaymentGuaranteeClaims {
             user_addr: user_addr.clone(),
             recipient_addr: recipient_addr.clone(),
