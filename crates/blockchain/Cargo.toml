@@ -1,0 +1,12 @@
+[package]
+name = "blockchain"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+ethers = "2.0.14"
+futures-util.workspace = true
+tokio.workspace = true
+rpc.workspace = true
+log.workspace = true
