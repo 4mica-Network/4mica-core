@@ -13,7 +13,7 @@ generator client {
 model User {
   address String @id
   deposit Float  @default(0)
-
+  revenue Float  @default(0)
   // For optimistic locking
   version Int @default(1)
 
@@ -26,6 +26,7 @@ model User {
 model UserTransaction {
   tx_id        String  @id
   user_address String
+  recipient_address String
   amount       Float
   cert         String?
 

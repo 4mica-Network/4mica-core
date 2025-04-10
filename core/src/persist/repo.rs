@@ -89,10 +89,7 @@ pub async fn get_unfinalized_transactions(
     Ok(transactions)
 }
 
-pub async fn confirm_transaction(
-    ctx: &PersistCtx,
-    transaction_hash: String,
-) -> anyhow::Result<()> {
+pub async fn confirm_transaction(ctx: &PersistCtx, transaction_hash: String) -> anyhow::Result<()> {
     let _updated_transactions = ctx
         .client
         .user_transaction()
@@ -123,6 +120,7 @@ pub enum SubmitPaymentTxnError {
 pub async fn submit_payment_transaction(
     ctx: &PersistCtx,
     user_addr: String,
+    recipient_address: String,
     transaction_id: String,
     amount: f64,
     cert: String,
@@ -157,6 +155,7 @@ pub async fn submit_payment_transaction(
                     user_transaction::tx_id::equals(transaction_id.clone()),
                     user_transaction::create(
                         transaction_id,
+                        recipient_address,
                         amount,
                         user::address::equals(user_addr.clone()),
                         vec![user_transaction::cert::set(Some(cert))],

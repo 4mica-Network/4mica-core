@@ -7,7 +7,6 @@ use rpc::core::CoreApiClient;
 use rpc::proxy::RpcProxy;
 use test_log::test;
 use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv()
@@ -28,7 +27,8 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
         format!("{}:{}", host, port)
     };
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
+    let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let deposit_amount = 1f64;
 
     let core_client = RpcProxy::new(&core_addr).await?;
@@ -47,9 +47,14 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
         .exec()
         .await?;
 
-    let tx_id = Uuid::new_v4().to_string();
+    let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     let cert = core_client
-        .issue_payment_cert(user_addr.clone(), tx_id.clone(), deposit_amount / 2f64)
+        .issue_payment_cert(
+            user_addr.clone(),
+            recipient_addr.clone(),
+            tx_id.clone(),
+            deposit_amount / 2f64,
+        )
         .await?;
 
     info!("Cert Issued: {:?}", cert);
@@ -93,9 +98,9 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
         format!("{}:{}", host, port)
     };
 
-    let user_addr = Uuid::new_v4().to_string();
-
     let core_client = RpcProxy::new(&core_addr).await?;
+    let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
+    let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     core_client.register_user(user_addr.clone()).await?;
 
     let persist_ctx = PersistCtx::new().await?;
@@ -111,14 +116,14 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
         .exec()
         .await?;
 
-    let tx_id = Uuid::new_v4().to_string();
+    let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     core_client
-        .issue_payment_cert(user_addr.clone(), tx_id, 0.7f64)
+        .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id, 0.7f64)
         .await?;
 
-    let tx_id = Uuid::new_v4().to_string();
+    let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     let cert_result = core_client
-        .issue_payment_cert(user_addr.clone(), tx_id, 0.7f64)
+        .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id, 0.7f64)
         .await
         .map_err(|err| {
             info!("Issue payment cert error: {}", err);
@@ -137,8 +142,8 @@ async fn issue_payment_cert_multiple_certs() -> anyhow::Result<()> {
         format!("{}:{}", host, port)
     };
 
-    let user_addr = Uuid::new_v4().to_string();
-
+    let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
+    let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let core_client = RpcProxy::new(&core_addr).await?;
     core_client.register_user(user_addr.clone()).await?;
 
@@ -155,13 +160,18 @@ async fn issue_payment_cert_multiple_certs() -> anyhow::Result<()> {
         .exec()
         .await?;
 
-    let tx_id = Uuid::new_v4().to_string();
+    let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     core_client
-        .issue_payment_cert(user_addr.clone(), tx_id.clone(), 0.7f64)
+        .issue_payment_cert(
+            user_addr.clone(),
+            recipient_addr.clone(),
+            tx_id.clone(),
+            0.7f64,
+        )
         .await?;
 
     core_client
-        .issue_payment_cert(user_addr.clone(), tx_id, 0.7f64)
+        .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id, 0.7f64)
         .await?;
 
     Ok(())
@@ -175,7 +185,8 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
         format!("{}:{}", host, port)
     };
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
+    let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let deposit_amount = 1f64;
 
     let core_client = RpcProxy::new(&core_addr).await?;
@@ -195,22 +206,24 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
         .await?;
 
     let user_addr_clone = user_addr.clone();
+    let recipient_addr_clone = recipient_addr.clone();
     let core_client_clone = core_client.clone();
     let tx1_handle: JoinHandle<anyhow::Result<BLSCert>> = tokio::spawn(async move {
-        let tx_id = Uuid::new_v4().to_string();
+        let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
         let cert = core_client_clone
-            .issue_payment_cert(user_addr_clone, tx_id, 0.7f64)
+            .issue_payment_cert(user_addr_clone, recipient_addr_clone, tx_id, 0.7f64)
             .await?;
 
         Ok(cert)
     });
 
     let user_addr_clone = user_addr.clone();
+    let recipient_addr_clone = recipient_addr.clone();
     let core_client_clone = core_client.clone();
     let tx2_handle: JoinHandle<anyhow::Result<BLSCert>> = tokio::spawn(async move {
-        let tx_id = Uuid::new_v4().to_string();
+        let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
         let cert = core_client_clone
-            .issue_payment_cert(user_addr_clone, tx_id, 0.7f64)
+            .issue_payment_cert(user_addr_clone, recipient_addr_clone, tx_id, 0.7f64)
             .await?;
 
         Ok(cert)

@@ -33,7 +33,7 @@ impl BLSCert {
 
         Ok(pub_key.verify(sig, &self.claims_bytes()?))
     }
-    
+
     pub fn claims_bytes(&self) -> anyhow::Result<Vec<u8>> {
         let claims = hex::decode(&self.claims)?;
         Ok(claims)

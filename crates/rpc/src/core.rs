@@ -24,6 +24,7 @@ pub trait CoreApi {
     async fn issue_payment_cert(
         &self,
         user_addr: String,
+        recipient_addr: String,
         transaction_id: String,
         amount: f64,
     ) -> RpcResult<BLSCert>;
