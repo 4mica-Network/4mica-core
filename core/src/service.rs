@@ -2,14 +2,19 @@ use crate::config::AppConfig;
 use crate::ethereum::EthereumListener;
 use crate::persist::repo::{self, SubmitPaymentTxnError};
 use crate::persist::PersistCtx;
+
 use async_trait::async_trait;
+use blockchain::txtools;
 use crypto::bls::BLSCert;
+use ethers::providers::{Provider, Ws};
+use ethers::types::H256;
 use log::{error, info};
 use rpc::common::{
     PaymentGuaranteeClaims, TransactionVerificationResult, UserInfo, UserTransactionInfo,
 };
 use rpc::core::{CoreApiServer, CorePublicParameters};
 use rpc::RpcResult;
+use std::sync::Arc;
 
 pub struct CoreService {
     config: AppConfig,
@@ -79,17 +84,39 @@ impl CoreApiServer for CoreService {
     async fn issue_payment_cert(
         &self,
         user_addr: String,
+        recipient_addr: String,
         transaction_id: String,
         amount: f64,
     ) -> RpcResult<BLSCert> {
-        // TODO: Make sure the user_pk is the source of this transaction.
-        // TODO: Listen to blockchain events and update the status of transactions.
+        info!("Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
+        let provider = Arc::new(
+            Provider::<Ws>::connect(&self.config.ethereum_config.ws_rpc_url)
+                .await
+                .map_err(|err| {
+                    error!("Failed to connect to Ethereum provider: {err}");
+                    rpc::internal_error()
+                })?,
+        );
+        let tx_hash: H256 = transaction_id.parse().map_err(|err| {
+            error!("Invalid transaction hash: {err}");
+            rpc::invalid_params_error("Invalid transaction hash")
+        })?;
+
+        let tx = txtools::fetch_transaction(&provider, tx_hash).await?;
+
+        let user_address = txtools::parse_eth_address(&user_addr, "user")?;
+        let recipient_address = txtools::parse_eth_address(&recipient_addr, "recipient")?;
+        let expected_amount = txtools::convert_amount_to_u256(amount)?;
+
+        txtools::validate_transaction(&tx, user_address, recipient_address, expected_amount)?;
 
         let claims = PaymentGuaranteeClaims {
             user_addr: user_addr.clone(),
+            recipient_addr: recipient_addr.clone(),
             tx_hash: transaction_id.clone(),
             amount,
         };
+
         let cert = BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
             error!("Failed to issue the payment guarantee cert: {err}");
             rpc::internal_error()
@@ -102,6 +129,7 @@ impl CoreApiServer for CoreService {
         let submit_tx_result = repo::submit_payment_transaction(
             &self.persist_ctx,
             user_addr.clone(),
+            recipient_addr.clone(),
             transaction_id.clone(),
             amount,
             cert_str,

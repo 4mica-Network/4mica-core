@@ -24,6 +24,7 @@ impl Into<UserTransactionInfo> for prisma::user_transaction::Data {
     fn into(self) -> UserTransactionInfo {
         UserTransactionInfo {
             user_addr: self.user_address,
+            recipient_addr: self.recipient_address,
             tx_hash: self.tx_id,
             amount: self.amount,
             verified: self.verified,

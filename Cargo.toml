@@ -5,6 +5,7 @@ members = [
     "crates/crypto",
     "crates/prisma-cli",
     "crates/rpc",
+    "crates/blockchain",
     "recipient",
 ]
 
@@ -15,6 +16,7 @@ edition = "2021"
 rpc = { path = "crates/rpc" }
 prisma-cli = { path = "crates/prisma-cli" }
 crypto = { path = "crates/crypto" }
+blockchain = { path = "crates/blockchain" }
 
 anyhow = "1.0.95"
 async-trait = "0.1.86"

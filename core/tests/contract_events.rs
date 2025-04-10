@@ -12,7 +12,7 @@ mod common;
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn register_user_event() -> anyhow::Result<()> {
-    let anvil_port = 4000u16;
+    let anvil_port = 40001u16;
 
     let provider = ProviderBuilder::new()
         .on_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
