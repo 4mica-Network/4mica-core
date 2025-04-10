@@ -5,8 +5,8 @@ edition.workspace = true
 
 [dependencies]
 crypto = { workspace = true }
-
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 jsonrpsee = { workspace = true, features = ["macros", "server", "client"] }
+ethers = { version = "2.0.14" }
