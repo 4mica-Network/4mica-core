@@ -1,7 +1,7 @@
 use ethers::prelude::*;
 use ethers::providers::{Provider, Ws};
 use ethers::types::{Address, Transaction, H256, U256};
-use log::{error};
+use log::error;
 use rpc::RpcResult;
 
 // --- function to fetch a transaction ---
