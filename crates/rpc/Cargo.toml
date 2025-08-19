@@ -8,5 +8,10 @@ crypto = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-jsonrpsee = { workspace = true, features = ["macros", "server", "client"] }
+jsonrpsee = { workspace = true, features = [
+    "macros",
+    "server",
+    "ws-client",
+    "http-client",
+] }
 ethers = { version = "2.0.14" }
