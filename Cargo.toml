@@ -12,10 +12,6 @@ members = [
 [workspace.package]
 edition = "2021"
 
-[patch.crates-io]
-wasm-bindgen = { git = "https://github.com/rustwasm/wasm-bindgen", tag = "0.2.88" }
-
-
 [workspace.dependencies]
 rpc = { path = "crates/rpc" }
 prisma-cli = { path = "crates/prisma-cli" }
