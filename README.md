@@ -46,3 +46,9 @@
 ---
 
 For more details, refer to the [documentation](https://github.com/4mica-Network/4mica-core).
+
+#### FAQ
+
+> "failed to bind port 0.0.0.0:6379/tcp: Error starting userland proxy: listen tcp4 0.0.0.0:6379: bind: address already in use"
+
+This error suggests Redis is already running (in another container). If possible, close the other instance (`docker container stop <container-name>` or `sudo systemctl stop redis`) or map redis to a different port in the [`docker-compose.yml`](docker-compose.yml) file.
