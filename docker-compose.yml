@@ -7,6 +7,7 @@ services:
     restart: always
     environment:
       POSTGRES_PASSWORD: qwerty123456
+      POSTGRES_DB: core
     volumes:
       - pg-data:/var/lib/postgresql/data
     ports:
