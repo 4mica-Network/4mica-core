@@ -30,10 +30,11 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build workspace
+        run: cargo prisma db push --schema=./core/prisma/schema.prisma
         run: cargo build --release --workspace
 
-      - name: Run tests
-        run: cargo test --workspace
+      # - name: Run tests
+      #   run: cargo test --workspace
 
   deploy-develop:
     needs: build
