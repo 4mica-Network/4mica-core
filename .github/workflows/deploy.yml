@@ -48,7 +48,7 @@ jobs:
 
       - name: Deploy to staging server
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_IP }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
           cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           cd /home/deploy/4mica-core
           git fetch origin develop
@@ -69,7 +69,7 @@ jobs:
 
       - name: Deploy to production server
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_IP }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }} << 'EOF'
           cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           cd /home/deploy/4mica-core
           git fetch origin main
