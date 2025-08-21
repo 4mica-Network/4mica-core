@@ -27,3 +27,6 @@ cache/
 #.idea/
 cache/
 bin/
+
+#Prisma
+core/src/persist/prisma.rs
