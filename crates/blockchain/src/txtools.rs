@@ -27,14 +27,14 @@ pub fn validate_transaction(
     recipient_address: Address,
     expected_amount: U256,
 ) -> RpcResult<()> {
-    if tx.from != user_address {
+    if tx.inner.signer() != user_address {
         return Err(rpc::invalid_params_error(
             "User address does not match transaction sender",
         ));
     }
 
     // TODO: which transaction types do we support?
-    let (to, value) = match &tx.inner {
+    let (to, value) = match tx.inner.inner() {
         TxEnvelope::Eip7702(tx) => (tx.tx().to, tx.tx().value),
         _ => return Err(rpc::invalid_params_error("Invalid transaction type")),
     };
