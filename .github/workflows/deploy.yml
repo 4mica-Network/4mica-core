@@ -29,30 +29,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Start Docker Compose
-        run: docker compose -f ./docker-compose.yml up -d
-
-      - name: Check Prisma schema directory
-        run: |
-          if [ ! -f ./core/prisma/schema.prisma ]; then
-            echo "Prisma schema file not found!"
-            exit 1
-          fi
-
-      - name: Run Prisma Migrate
-        run: cargo prisma migrate deploy --schema=./core/prisma/schema.prisma
-        env:
-          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
-
-      - name: Check Prisma Module
-        run: |
-          if [ ! -f ./core/src/persist/prisma.rs ]; then
-            echo "Prisma module file not found!"
-            exit 1
-          fi
-
-      - name: Build workspace
-        run: cargo build --release --workspace
+      # TODO: this two should be uncommented while the postgre is removed. Now it requires a full setup for build that is not efficient.
+      # - name: Build workspace
+      #   run: cargo build --release --workspace
 
       # - name: Run tests
       #   run: cargo test --workspace
