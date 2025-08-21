@@ -20,18 +20,18 @@ impl PersistCtx {
     }
 }
 
-impl Into<UserTransactionInfo> for prisma::user_transaction::Data {
-    fn into(self) -> UserTransactionInfo {
+impl From<prisma::user_transaction::Data> for UserTransactionInfo {
+    fn from(val: prisma::user_transaction::Data) -> Self {
         UserTransactionInfo {
-            user_addr: self.user_address,
-            recipient_addr: self.recipient_address,
-            tx_hash: self.tx_id,
-            amount: self.amount,
-            verified: self.verified,
-            finalized: self.finalized,
-            failed: self.failed,
-            cert: self.cert,
-            created_at: self.created_at.timestamp_millis(),
+            user_addr: val.user_address,
+            recipient_addr: val.recipient_address,
+            tx_hash: val.tx_id,
+            amount: val.amount,
+            verified: val.verified,
+            finalized: val.finalized,
+            failed: val.failed,
+            cert: val.cert,
+            created_at: val.created_at.timestamp_millis(),
         }
     }
 }
