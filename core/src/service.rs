@@ -4,7 +4,11 @@ use crate::persist::repo::{self, SubmitPaymentTxnError};
 use crate::persist::PersistCtx;
 
 use alloy::primitives::B256;
-use alloy::providers::{ProviderBuilder, WsConnect};
+use alloy::providers::fillers::{
+    BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+};
+use alloy::providers::{Identity, ProviderBuilder, RootProvider, WsConnect};
+use alloy::rpc::types::Transaction;
 use async_trait::async_trait;
 use blockchain::txtools;
 use crypto::bls::BLSCert;
@@ -14,6 +18,14 @@ use rpc::common::{
 };
 use rpc::core::{CoreApiServer, CorePublicParameters};
 use rpc::RpcResult;
+
+type EthereumProvider = FillProvider<
+    JoinFill<
+        Identity,
+        JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+    >,
+    RootProvider,
+>;
 
 pub struct CoreService {
     config: AppConfig,
@@ -37,6 +49,35 @@ impl CoreService {
             public_params: CorePublicParameters { public_key },
             persist_ctx,
         })
+    }
+
+    /// Get the details for the websocket connection
+    pub fn ws_connection_details(&self) -> WsConnect {
+        WsConnect::new(&self.config.ethereum_config.ws_rpc_url)
+    }
+
+    /// Obtain an [`EthereumProvider`], given the connection details in `self.config`.
+    pub async fn get_ethereum_provider(&self) -> RpcResult<EthereumProvider> {
+        ProviderBuilder::new()
+            .connect_ws(self.ws_connection_details())
+            .await
+            .map_err(|err| {
+                error!("Failed to connect to Ethereum provider: {err}");
+                rpc::internal_error()
+            })
+    }
+
+    /// Validate that a given [`Transaction`] has a given `sender`, `recipient` and `amount`.
+    pub fn validate_transaction(
+        tx: &Transaction,
+        sender_address: &str,
+        recipient_address: &str,
+        amount: f64,
+    ) -> RpcResult<()> {
+        let user = txtools::parse_eth_address(sender_address, "user")?;
+        let recipient = txtools::parse_eth_address(recipient_address, "recipient")?;
+        let expected = txtools::convert_amount_to_u256(amount)?;
+        txtools::validate_transaction(tx, user, recipient, expected)
     }
 }
 
@@ -89,33 +130,18 @@ impl CoreApiServer for CoreService {
     ) -> RpcResult<BLSCert> {
         info!("Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
 
-        let ws_connect = WsConnect::new(&self.config.ethereum_config.ws_rpc_url);
-        let provider = ProviderBuilder::new()
-            .connect_ws(ws_connect)
-            .await
-            .map_err(|err| {
-                error!("Failed to connect to Ethereum provider: {err}");
-                rpc::internal_error()
-            })?;
+        let provider = self.get_ethereum_provider().await?;
 
-        // TODO: move the string -> bytes conversion elsewhere
-        let tx = transaction_id
+        let tx_hash = transaction_id
             .as_bytes()
             .try_into()
             .map_err(|err| {
                 error!("Invalid transaction hash: {err}");
                 rpc::invalid_params_error("Invalid transaction hash")
             })
-            .map(B256::new)
-            .map(|tx_hash| txtools::fetch_transaction(&provider, tx_hash))?
-            .await?;
-
-        // TODO: move these conversions elsewhere
-        let user_address = txtools::parse_eth_address(&user_addr, "user")?;
-        let recipient_address = txtools::parse_eth_address(&recipient_addr, "recipient")?;
-        let expected_amount = txtools::convert_amount_to_u256(amount)?;
-
-        txtools::validate_transaction(&tx, user_address, recipient_address, expected_amount)?;
+            .map(B256::new)?;
+        let tx = txtools::fetch_transaction(&provider, tx_hash).await?;
+        Self::validate_transaction(&tx, &user_addr, &recipient_addr, amount)?;
 
         let claims = PaymentGuaranteeClaims {
             user_addr: user_addr.clone(),
@@ -123,17 +149,16 @@ impl CoreApiServer for CoreService {
             tx_hash: transaction_id.clone(),
             amount,
         };
-
         let cert = BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
             error!("Failed to issue the payment guarantee cert: {err}");
             rpc::internal_error()
         })?;
+
         let cert_str = serde_json::to_string(&cert).map_err(|err| {
             error!("Failed to serialize the payment guarantee cert: {err}");
             rpc::internal_error()
         })?;
-
-        let submit_tx_result = repo::submit_payment_transaction(
+        repo::submit_payment_transaction(
             &self.persist_ctx,
             user_addr.clone(),
             recipient_addr.clone(),
@@ -141,10 +166,9 @@ impl CoreApiServer for CoreService {
             amount,
             cert_str,
         )
-        .await;
-
-        if let Err(err) = submit_tx_result {
-            let err = match err {
+        .await
+        .map_err(|err| {
+            match err {
                 SubmitPaymentTxnError::QueryError(query_error) => {
                     error!("{query_error}");
                     rpc::internal_error()
@@ -155,9 +179,8 @@ impl CoreApiServer for CoreService {
                 | SubmitPaymentTxnError::ConflictingTransactions => {
                     rpc::invalid_params_error(&format!("{err}"))
                 }
-            };
-            return Err(err);
-        }
+            }
+        })?;
 
         Ok(cert)
     }
