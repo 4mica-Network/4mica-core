@@ -29,6 +29,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Start Docker Compose
+        run: docker compose -f ./docker-compose.yml up -d
+
       - name: Run Prisma Migrate
         run: cargo prisma migrate deploy --schema=./core/prisma/schema.prisma
         env:
