@@ -3,18 +3,17 @@ use crate::ethereum::EthereumListener;
 use crate::persist::repo::{self, SubmitPaymentTxnError};
 use crate::persist::PersistCtx;
 
+use alloy::primitives::B256;
+use alloy::providers::{ProviderBuilder, WsConnect};
 use async_trait::async_trait;
 use blockchain::txtools;
 use crypto::bls::BLSCert;
-use ethers::providers::{Provider, Ws};
-use ethers::types::H256;
 use log::{error, info};
 use rpc::common::{
     PaymentGuaranteeClaims, TransactionVerificationResult, UserInfo, UserTransactionInfo,
 };
 use rpc::core::{CoreApiServer, CorePublicParameters};
 use rpc::RpcResult;
-use std::sync::Arc;
 
 pub struct CoreService {
     config: AppConfig,
@@ -51,7 +50,7 @@ impl CoreApiServer for CoreService {
         repo::register_user(&self.persist_ctx, user_addr)
             .await
             .map_err(|err| {
-                error!("Failed to register user {}", err);
+                error!("Failed to register user {err}");
                 rpc::internal_error()
             })?;
         Ok(())
@@ -61,7 +60,7 @@ impl CoreApiServer for CoreService {
         let Some(user) = repo::get_user(&self.persist_ctx, user_addr)
             .await
             .map_err(|err| {
-                error!("Failed to get user {}", err);
+                error!("Failed to get user {err}");
                 rpc::internal_error()
             })?
         else {
@@ -89,21 +88,29 @@ impl CoreApiServer for CoreService {
         amount: f64,
     ) -> RpcResult<BLSCert> {
         info!("Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
-        let provider = Arc::new(
-            Provider::<Ws>::connect(&self.config.ethereum_config.ws_rpc_url)
-                .await
-                .map_err(|err| {
-                    error!("Failed to connect to Ethereum provider: {err}");
-                    rpc::internal_error()
-                })?,
-        );
-        let tx_hash: H256 = transaction_id.parse().map_err(|err| {
-            error!("Invalid transaction hash: {err}");
-            rpc::invalid_params_error("Invalid transaction hash")
-        })?;
 
-        let tx = txtools::fetch_transaction(&provider, tx_hash).await?;
+        let ws_connect = WsConnect::new(&self.config.ethereum_config.ws_rpc_url);
+        let provider = ProviderBuilder::new()
+            .on_ws(ws_connect)
+            .await
+            .map_err(|err| {
+                error!("Failed to connect to Ethereum provider: {err}");
+                rpc::internal_error()
+            })?;
 
+        // TODO: move the string -> bytes conversion elsewhere
+        let tx = transaction_id
+            .as_bytes()
+            .try_into()
+            .map_err(|err| {
+                error!("Invalid transaction hash: {err}");
+                rpc::invalid_params_error("Invalid transaction hash")
+            })
+            .map(B256::new)
+            .map(|tx_hash| txtools::fetch_transaction(&provider, tx_hash))?
+            .await?;
+
+        // TODO: move these conversions elsewhere
         let user_address = txtools::parse_eth_address(&user_addr, "user")?;
         let recipient_address = txtools::parse_eth_address(&recipient_addr, "recipient")?;
         let expected_amount = txtools::convert_amount_to_u256(amount)?;
@@ -162,7 +169,7 @@ impl CoreApiServer for CoreService {
         let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
             .await
             .map_err(|err| {
-                error!("Failed to get user {}", err);
+                error!("Failed to get user {err}");
                 rpc::internal_error()
             })?;
 
@@ -176,7 +183,7 @@ impl CoreApiServer for CoreService {
         let verified = repo::verify_transaction(&self.persist_ctx, tx_hash)
             .await
             .map_err(|err| {
-                error!("Failed to verify transaction {}", err);
+                error!("Failed to verify transaction {err}");
                 rpc::internal_error()
             })?;
 
