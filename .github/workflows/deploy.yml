@@ -29,6 +29,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Run Prisma Migrate
+        run: cargo prisma migrate deploy --schema=./core/prisma/schema.prisma
+
       - name: Build workspace
         run: cargo build --release --workspace
 
@@ -52,7 +55,6 @@ jobs:
           cd /home/deploy/4mica-core
           git fetch origin develop
           git reset --hard origin/develop
-          cargo prisma db push --skip-generate --schema=./core/prisma/schema.prisma
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
