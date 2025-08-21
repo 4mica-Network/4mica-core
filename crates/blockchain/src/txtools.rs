@@ -1,5 +1,4 @@
 use alloy::consensus::TxEnvelope;
-use alloy::primitives::private::serde::ser::Error;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Transaction;
@@ -36,19 +35,8 @@ pub fn validate_transaction(
 
     // TODO: which transaction types do we support?
     let (to, value) = match &tx.inner {
-        TxEnvelope::Legacy(tx) => {
-            return Err(Error::custom("unsupported transaction type: Legacy"));
-        }
-        TxEnvelope::Eip2930(tx) => {
-            return Err(Error::custom("unsupported transaction type: EIP2930"));
-        }
-        TxEnvelope::Eip1559(tx) => {
-            return Err(Error::custom("unsupported transaction type: EIP1559"));
-        }
-        TxEnvelope::Eip4844(tx) => {
-            return Err(Error::custom("unsupported transaction type: EIP4844"));
-        }
         TxEnvelope::Eip7702(tx) => (tx.tx().to, tx.tx().value),
+        _ => return Err(rpc::invalid_params_error("Invalid transaction type")),
     };
 
     if to != recipient_address {
