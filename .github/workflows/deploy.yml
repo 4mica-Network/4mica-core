@@ -31,6 +31,8 @@ jobs:
 
       - name: Run Prisma Migrate
         run: cargo prisma migrate deploy --schema=./core/prisma/schema.prisma
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
 
       - name: Build workspace
         run: cargo build --release --workspace
