@@ -30,9 +30,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build workspace
-        run: |
-          cargo prisma db push --schema=./core/prisma/schema.prisma
-          cargo build --release --workspace
+        run: cargo build --release --workspace
 
       # - name: Run tests
       #   run: cargo test --workspace
@@ -54,6 +52,7 @@ jobs:
           cd /home/deploy/4mica-core
           git fetch origin develop
           git reset --hard origin/develop
+          cargo prisma db push --skip-generate --schema=./core/prisma/schema.prisma
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
