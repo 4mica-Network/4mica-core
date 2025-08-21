@@ -55,21 +55,20 @@ impl EthereumListener {
 
             // Subscribe to logs.
             let sub = provider.subscribe_logs(&filter).await.map_err(|err| {
-                error!("Failed to subscribe to logs: {}", err);
+                error!("Failed to subscribe to logs: {err}");
                 err
             })?;
             let mut stream = sub.into_stream();
 
             info!(
-                "[EthereumListener] Subscribed to contract \"{}\" events",
-                contract_address
+                "[EthereumListener] Subscribed to contract \"{contract_address}\" events"
             );
 
             while let Some(log) = stream.next().await {
                 match log.topic0() {
                     Some(&UserRegistered::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<UserRegistered>().map_err(|err| {
-                            error!("[EthereumListener] Error when decoding log: {}", err);
+                            error!("[EthereumListener] Error when decoding log: {err}");
                         }) else {
                             continue;
                         };
@@ -84,14 +83,14 @@ impl EthereumListener {
                         )
                         .await
                         .map_err(|err| {
-                            error!("Failed to register user: {}", err);
+                            error!("Failed to register user: {err}");
                             err
                         })
                         .ok();
                     }
                     Some(&UserAddDeposit::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<UserAddDeposit>().map_err(|err| {
-                            error!("[EthereumListener] Error when decoding log: {}", err);
+                            error!("[EthereumListener] Error when decoding log: {err}");
                         }) else {
                             continue;
                         };
@@ -102,14 +101,14 @@ impl EthereumListener {
                         repo::add_user_deposit(&persist_ctx, _from.to_string(), _collateral.into())
                             .await
                             .map_err(|err| {
-                                error!("Failed to add user deposit: {}", err);
+                                error!("Failed to add user deposit: {err}");
                                 err
                             })
                             .ok();
                     }
                     Some(&RecipientRefunded::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<RecipientRefunded>().map_err(|err| {
-                            error!("[EthereumListener] Error when decoding log: {}", err);
+                            error!("[EthereumListener] Error when decoding log: {err}");
                         }) else {
                             continue;
                         };
@@ -128,13 +127,13 @@ impl EthereumListener {
                         )
                         .await
                         .map_err(|err| {
-                            error!("Failed to fail the transaction: {}", err);
+                            error!("Failed to fail the transaction: {err}");
                             err
                         })
                         .ok();
                     }
                     log => {
-                        info!("[EthereumListener] Received unknown log: {:?}", log);
+                        info!("[EthereumListener] Received unknown log: {log:?}");
                     }
                 }
             }
