@@ -32,8 +32,15 @@ jobs:
       - name: Start Docker Compose
         run: docker compose -f ./docker-compose.yml up -d
 
+      - name: Check Prisma schema directory
+        run: |
+          if [ ! -f 4mica-core/core/prisma/schema.prisma ]; then
+            echo "Prisma schema file not found!"
+            exit 1
+          fi
+
       - name: Run Prisma Migrate
-        run: cargo prisma migrate deploy --schema=./core/prisma/schema.prisma
+        run: cargo prisma migrate deploy --schema=4mica-core/core/prisma/schema.prisma
         env:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
 
