@@ -40,9 +40,16 @@ jobs:
           fi
 
       - name: Run Prisma Migrate
-        run: cargo prisma migrate deploy --schema=4mica-core/core/prisma/schema.prisma
+        run: cargo prisma migrate deploy --schema=./core/prisma/schema.prisma
         env:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+
+      - name: Check Prisma Module
+        run: |
+          if [ ! -f ./core/src/persist/prisma.rs ]; then
+            echo "Prisma module file not found!"
+            exit 1
+          fi
 
       - name: Build workspace
         run: cargo build --release --workspace
