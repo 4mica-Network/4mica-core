@@ -37,7 +37,7 @@ impl EthereumListener {
 
     pub async fn run(&self) -> anyhow::Result<()> {
         let ws = WsConnect::new(&self.config.ws_rpc_url);
-        let provider = ProviderBuilder::new().on_ws(ws).await?;
+        let provider = ProviderBuilder::new().connect_ws(ws).await?;
 
         let contract_address: Address = self.config.contract_address.parse()?;
         let filter = Filter::new()
@@ -60,9 +60,7 @@ impl EthereumListener {
             })?;
             let mut stream = sub.into_stream();
 
-            info!(
-                "[EthereumListener] Subscribed to contract \"{contract_address}\" events"
-            );
+            info!("[EthereumListener] Subscribed to contract \"{contract_address}\" events");
 
             while let Some(log) = stream.next().await {
                 match log.topic0() {

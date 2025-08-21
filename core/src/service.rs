@@ -91,7 +91,7 @@ impl CoreApiServer for CoreService {
 
         let ws_connect = WsConnect::new(&self.config.ethereum_config.ws_rpc_url);
         let provider = ProviderBuilder::new()
-            .on_ws(ws_connect)
+            .connect_ws(ws_connect)
             .await
             .map_err(|err| {
                 error!("Failed to connect to Ethereum provider: {err}");
