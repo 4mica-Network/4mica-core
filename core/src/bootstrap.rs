@@ -12,7 +12,7 @@ use tower_http::cors::{Any, CorsLayer};
 fn load_config() -> AppConfig {
     dotenv::dotenv()
         .map_err(|err| {
-            eprintln!(".env file error: {}", err);
+            eprintln!(".env file error: {err}");
             err
         })
         .ok();
@@ -40,7 +40,7 @@ pub async fn bootstrap() -> anyhow::Result<()> {
 
     let server = Server::builder()
         .set_http_middleware(middleware)
-        .build(format!("{}:{}", host, port))
+        .build(format!("{host}:{port}"))
         .await?;
 
     let service = CoreService::new(app_config).await?;

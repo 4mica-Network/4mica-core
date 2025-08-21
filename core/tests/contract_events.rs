@@ -15,7 +15,7 @@ async fn register_user_event() -> anyhow::Result<()> {
     let anvil_port = 40001u16;
 
     let provider = ProviderBuilder::new()
-        .on_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
     let contract = AuthorityContract::deploy(&provider).await?;
 
     let user_addr = provider.default_signer_address().to_string();
@@ -68,7 +68,7 @@ async fn user_add_deposit_event() -> anyhow::Result<()> {
     let anvil_port = 4000u16;
 
     let provider = ProviderBuilder::new()
-        .on_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
     let contract = AuthorityContract::deploy(&provider).await?;
 
     let user_addr = provider.default_signer_address().to_string();
@@ -127,7 +127,7 @@ async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
     let anvil_port = 4000u16;
 
     let provider = ProviderBuilder::new()
-        .on_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
     let contract = AuthorityContract::deploy(&provider).await?;
 
     let user_addr = provider.default_signer_address().to_string();
