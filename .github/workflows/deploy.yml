@@ -34,7 +34,7 @@ jobs:
 
       - name: Check Prisma schema directory
         run: |
-          if [ ! -f 4mica-core/core/prisma/schema.prisma ]; then
+          if [ ! -f ./core/prisma/schema.prisma ]; then
             echo "Prisma schema file not found!"
             exit 1
           fi
