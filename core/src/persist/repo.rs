@@ -44,9 +44,6 @@ impl EthereumConnector {
 }
 
 impl CoreDatabaseConnector for EthereumConnector {
-    /// Get the total deposit posted by the user associated with `user_address`.
-    ///
-    /// Note: the returned value is the total deposit, i.e., the sum of locked and available.
     async fn get_user_deposit_total(&self, user_address: Address) -> anyhow::Result<f64> {
         let user_address = DynSolValue::from(user_address);
         let user = self
@@ -70,7 +67,6 @@ impl CoreDatabaseConnector for EthereumConnector {
             .map_err(anyhow::Error::new)
     }
 
-    /// Get the [`UserTransactionInfo`] of all [`Transaction`] associated with `user_address`.
     async fn get_user_transactions_info(&self, user_address: Address) -> anyhow::Result<Vec<UserTransactionInfo>> {
         let user_address = DynSolValue::from(user_address);
         let transaction_hashes = self.get_core_contract()?
@@ -85,7 +81,6 @@ impl CoreDatabaseConnector for EthereumConnector {
         self.get_transactions_info(transaction_hashes).await
     }
 
-    /// Obtain the [`UserTransactionInfo`] for the transaction with hash `tx_hash`.
     async fn get_transaction_info(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo> {
         let raw_tx = fetch_transaction(&self.0, tx_hash).await?;
 
@@ -93,7 +88,6 @@ impl CoreDatabaseConnector for EthereumConnector {
         Ok(())
     }
 
-    /// Obtain the [`UserTransactionInfo`] to all transactions indicated by `tx_hashes`.
     async fn get_transactions_info(&self, tx_hashes: Vec<TxHash>) -> anyhow::Result<Vec<UserTransactionInfo>> {
         let transactions = tx_hashes.iter().map(async |tx_hash| self.get_transaction_info(tx_hash).await);
         join_all(transactions)
