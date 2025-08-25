@@ -10,6 +10,7 @@ use alloy::providers::fillers::{
 use alloy::providers::{Identity, ProviderBuilder, RootProvider, WsConnect};
 use alloy::rpc::types::Transaction;
 use async_trait::async_trait;
+use futures_util::TryFutureExt;
 use blockchain::txtools;
 use crypto::bls::BLSCert;
 use log::{error, info};
@@ -93,7 +94,7 @@ impl CoreApiServer for CoreService {
     }
 
     async fn register_user(&self, user_addr: String) -> RpcResult<()> {
-        // TODO: activate this when implementing REDIS
+        // TODO(#10): implement when using REDIS as database
         Ok(())
     }
 
@@ -101,20 +102,18 @@ impl CoreApiServer for CoreService {
         let connector = self.get_db_connector().await?;
 
         let total_deposit = connector.get_user_deposit_total(user_addr)
-            .await
-            // TODO: fix
-            .map_err(|err| RpcResult::from(err))?;
-
+            .map_err(|_| rpc::execution_failed("user not found"))
+            .await?;
+        
         let user_transactions = connector
             .get_user_transaction_details(user_addr)
-            .await
-            // TODO: fix
-            .map_err(|err| RpcResult::from(err))?;
+            .map_err(|err| rpc::internal_error())
+            .await?;
 
         let locked_deposit = user_transactions
             .iter()
-            .filter(|tx| !tx.settled)
-            .map(|unsettled_tx| unsettled_tx.value)
+            .filter(|tx| !tx.finalized || tx.failed)
+            .map(|unsettled_tx| unsettled_tx.amount)
             .sum();
 
         Ok(Some(UserInfo {

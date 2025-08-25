@@ -13,7 +13,7 @@ use prisma_client_rust::QueryError;
 use rpc::common::{TransactionVerificationResult, UserTransactionInfo};
 use thiserror::Error;
 use blockchain::txtools::fetch_transaction;
-use crate::persist::connector::CoreDatabaseConnector;
+pub(crate) use crate::persist::connector::CoreDatabaseConnector;
 
 // TODO: this is a duplicate from elsewhere
 type EthereumProvider = FillProvider<
