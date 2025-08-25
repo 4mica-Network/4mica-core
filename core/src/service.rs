@@ -3,7 +3,7 @@ use crate::ethereum::EthereumListener;
 use crate::persist::repo::{self, CoreDatabaseConnector, EthereumConnector, SubmitPaymentTxnError};
 use crate::persist::PersistCtx;
 
-use alloy::primitives::B256;
+use alloy::primitives::{Address, B256};
 use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
 };
@@ -27,6 +27,32 @@ type EthereumProvider = FillProvider<
     >,
     RootProvider,
 >;
+
+/// Convert a `&str` into an [`Address`].
+pub fn string_to_address(val: &str) -> RpcResult<Address> {
+    val
+        .as_bytes()
+        .try_into()
+        .map_err(|err| {
+            error!("Invalid transaction hash: {err}");
+            rpc::invalid_params_error("Invalid transaction hash")
+        })
+        .map(Address::new)
+}
+
+/// Convert a `&str` into a [`B256`].
+///
+/// Primarily useful in converting transaction hashes.
+pub fn string_to_b256(val: &str) -> RpcResult<B256> {
+    val
+        .as_bytes()
+        .try_into()
+        .map_err(|err| {
+            error!("Invalid transaction hash: {err}");
+            rpc::invalid_params_error("Invalid transaction hash")
+        })
+        .map(B256::new)
+}
 
 pub struct CoreService {
     config: AppConfig,
@@ -100,13 +126,14 @@ impl CoreApiServer for CoreService {
 
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
         let connector = self.get_db_connector().await?;
+        let user_address = string_to_address(&user_addr)?;
 
-        let total_deposit = connector.get_user_deposit_total(user_addr)
+        let total_deposit = connector.get_user_deposit_total(user_address)
             .map_err(|_| rpc::execution_failed("user not found"))
             .await?;
 
         let user_transactions = connector
-            .get_user_transactions_info(user_addr)
+            .get_user_transactions_info(user_address)
             .map_err(|err| rpc::internal_error())
             .await?;
 
@@ -134,14 +161,7 @@ impl CoreApiServer for CoreService {
 
         let provider = self.get_ethereum_provider().await?;
 
-        let tx_hash = transaction_id
-            .as_bytes()
-            .try_into()
-            .map_err(|err| {
-                error!("Invalid transaction hash: {err}");
-                rpc::invalid_params_error("Invalid transaction hash")
-            })
-            .map(B256::new)?;
+        let tx_hash = string_to_b256(&transaction_id)?;
         let tx = txtools::fetch_transaction(&provider, tx_hash).await?;
         Self::validate_transaction(&tx, &user_addr, &recipient_addr, amount)?;
 
@@ -191,15 +211,8 @@ impl CoreApiServer for CoreService {
         &self,
         hashes: Vec<String>,
     ) -> RpcResult<Vec<UserTransactionInfo>> {
-        self.get_db_connector()
-        let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
-            .await
-            .map_err(|err| {
-                error!("Failed to get user {err}");
-                rpc::internal_error()
-            })?;
-
-        Ok(transactions.into_iter().map(|tx| tx.into()).collect())
+        let hashes = hashes.into_iter().map(|hash| B256::from(hash)).collect();
+        self.get_db_connector().await?.get_transactions_info(hashes).await
     }
 
     async fn verify_transaction(
