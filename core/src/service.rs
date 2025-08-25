@@ -66,10 +66,6 @@ impl CoreService {
 
         let persist_ctx = PersistCtx::new().await?;
 
-        EthereumListener::new(config.ethereum_config.clone(), persist_ctx.clone())
-            .run()
-            .await?;
-
         Ok(Self {
             config,
             public_params: CorePublicParameters { public_key },
@@ -98,17 +94,32 @@ impl CoreService {
         Ok(EthereumConnector(self.get_ethereum_provider().await?))
     }
 
-    /// Validate that a given [`Transaction`] has a given `sender`, `recipient` and `amount`.
+    /// Validate that a given [`UserTransactionInfo`] has a given `sender`, `recipient` and `amount`.
     pub fn validate_transaction(
-        tx: &Transaction,
+        tx: &UserTransactionInfo,
         sender_address: &str,
         recipient_address: &str,
         amount: f64,
     ) -> RpcResult<()> {
-        let user = txtools::parse_eth_address(sender_address, "user")?;
-        let recipient = txtools::parse_eth_address(recipient_address, "recipient")?;
-        let expected = txtools::convert_amount_to_u256(amount)?;
-        txtools::validate_transaction(tx, user, recipient, expected)
+        if tx.user_addr != sender_address {
+            return Err(rpc::invalid_params_error(
+                "User address does not match transaction sender",
+            ));
+        }
+
+        if tx.recipient_addr != recipient_address {
+            return Err(rpc::invalid_params_error(
+                "Recipient address does not match transaction recipient",
+            ));
+        }
+
+        if tx.amount != amount {
+            return Err(rpc::invalid_params_error(
+                "Transaction amount does not match",
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -156,11 +167,21 @@ impl CoreApiServer for CoreService {
     ) -> RpcResult<BLSCert> {
         info!("Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
 
-        let provider = self.get_ethereum_provider().await?;
+        let connector = self.get_db_connector().await?;
 
         let tx_hash = string_to_b256(&transaction_id)?;
-        let tx = txtools::fetch_transaction(&provider, tx_hash).await?;
+        let tx = connector.get_transaction_info(tx_hash)
+            .map_err(|_| rpc::invalid_params_error("Invalid transaction hash"))
+            .await?;
         Self::validate_transaction(&tx, &user_addr, &recipient_addr, amount)?;
+
+        let user_info = self
+            .get_user(user_addr)
+            .await?
+            .ok_or(|_| Err(rpc::internal_error()))?;
+        if user_info.available_deposit < amount {
+            return Err(rpc::invalid_params_error("Not enough deposit available!"));
+        }
 
         let claims = PaymentGuaranteeClaims {
             user_addr: user_addr.clone(),
@@ -171,34 +192,6 @@ impl CoreApiServer for CoreService {
         let cert = BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
             error!("Failed to issue the payment guarantee cert: {err}");
             rpc::internal_error()
-        })?;
-
-        let cert_str = serde_json::to_string(&cert).map_err(|err| {
-            error!("Failed to serialize the payment guarantee cert: {err}");
-            rpc::internal_error()
-        })?;
-        repo::submit_payment_transaction(
-            &self.persist_ctx,
-            user_addr.clone(),
-            recipient_addr.clone(),
-            transaction_id.clone(),
-            amount,
-            cert_str,
-        )
-        .await
-        .map_err(|err| {
-            match err {
-                SubmitPaymentTxnError::QueryError(query_error) => {
-                    error!("{query_error}");
-                    rpc::internal_error()
-                }
-                SubmitPaymentTxnError::UserNotRegistered
-                | SubmitPaymentTxnError::NotEnoughDeposit
-                // We should retry it ourselves if there was a conflict!
-                | SubmitPaymentTxnError::ConflictingTransactions => {
-                    rpc::invalid_params_error(&format!("{err}"))
-                }
-            }
         })?;
 
         Ok(cert)
