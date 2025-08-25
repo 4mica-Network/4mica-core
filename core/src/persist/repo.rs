@@ -68,6 +68,11 @@ impl CoreDatabaseConnector for EthereumConnector {
             .map_err(anyhow::Error::new)
     }
 
+    async fn get_user_deposit_locked(&self, user_address: Address) -> anyhow::Result<f64> {
+        let user_txs = self.get_user_transactions_info(user_address).await?;
+        Ok(user_txs.iter().filter(|tx| !tx.finalized).map(|open_tx| open_tx.amount).sum())
+    }
+
     async fn get_user_transactions_info(&self, user_address: Address) -> anyhow::Result<Vec<UserTransactionInfo>> {
         let user_address = DynSolValue::from(user_address);
         let transaction_hashes = self.get_core_contract()?

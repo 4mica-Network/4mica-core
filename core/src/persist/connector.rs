@@ -8,6 +8,9 @@ pub(crate) trait CoreDatabaseConnector {
     /// Note: the returned value is the total deposit, i.e., the sum of locked and available.
     async fn get_user_deposit_total(&self, user_address: Address) -> anyhow::Result<f64>;
 
+    /// Get the deposit posted by the user that is locked.
+    async fn get_user_deposit_locked(&self, user_address: Address) -> anyhow::Result<f64>;
+
     /// Get the [`UserTransactionInfo`] of all [`Transaction`] associated with `user_address`.
     async fn get_user_transactions_info(&self, user_address: Address) -> anyhow::Result<Vec<UserTransactionInfo>>;
 
