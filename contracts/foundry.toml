@@ -4,3 +4,18 @@ out = "out"
 libs = ["lib"]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+# Enables or disables the optimizer
+optimizer = true
+# The number of optimizer runs
+optimizer_runs = 200
+# Whether or not to use the Yul intermediate representation compilation pipeline
+via_ir = true
+# Override the Solidity version (this overrides `auto_detect_solc`)
+solc_version = '0.8.29'
+
+remappings = [
+    "@openzeppelin/=lib/eigenlayer-middleware/lib/openzeppelin-contracts/",
+    "@openzeppelin-upgrades/=lib/eigenlayer-middleware/lib/openzeppelin-contracts-upgradeable/",
+    "forge-std/=lib/eigenlayer-middleware/lib/forge-std/src/",
+]
