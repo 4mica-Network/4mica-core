@@ -131,16 +131,14 @@ impl CoreApiServer for CoreService {
             .map_err(|_| rpc::execution_failed("user not found"))
             .await?;
 
+        let locked_deposit = connector.get_user_deposit_locked(user_address)
+            .map_err(|_| rpc::execution_failed("user not found"))
+            .await?;
+
         let user_transactions = connector
             .get_user_transactions_info(user_address)
             .map_err(|err| rpc::internal_error())
             .await?;
-
-        let locked_deposit = user_transactions
-            .iter()
-            .filter(|tx| !tx.finalized || tx.failed)
-            .map(|unsettled_tx| unsettled_tx.amount)
-            .sum();
 
         Ok(Some(UserInfo {
             deposit: total_deposit,
