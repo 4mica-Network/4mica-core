@@ -2,11 +2,14 @@
 pragma solidity ^0.8.29;
 
 contract Core4Mica {
+    // TODO user -> collateral {locked, available}
     address public owner;
     uint256 public minDepositAmount = 1 ether;
 
     struct User {
         uint256 collateralAmount;
+        uint256 lockedCollateral;
+        uint256 availableCollateral;
     }
 
     struct Transaction {
@@ -14,40 +17,16 @@ contract Core4Mica {
         uint256 amount;
     }
 
-    struct Aggregator {
-        string grpcEndpoint;
-    }
-
-    struct Operator {
-        bytes blsPublicKey;
-        string grpcEndpoint;
-    }
-
-    Operator[] public operators;
     mapping(address => User) public users;
-    mapping(address => bool) public recipients;
     mapping(address => Transaction) public transactions;
-    mapping(address => Aggregator) public aggregators;
 
     // Events
-    event AggregatorAdded(address indexed aggregatorAddress);
-    event AggregatorRemoved(address indexed aggregatorAddress);
-    event OperatorRemoved(address indexed operatorAddress);
-    event OperatorAdded(address indexed operatorAddress, bytes blsPublicKey);
     event UserRegistered(address indexed user, uint256 collateral);
     event UserAddedDeposit(address indexed user, uint256 amount);
     event RecipientRegistered(address indexed recipient);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Access Denied");
-        _;
-    }
-
-    modifier onlyAggregator() {
-        require(
-            bytes(aggregators[msg.sender].grpcEndpoint).length > 0,
-            "Not aggregator"
-        );
         _;
     }
 
@@ -92,45 +71,5 @@ contract Core4Mica {
     function setMinDepositAmount(uint256 _minDepositAmount) external onlyOwner {
         require(_minDepositAmount > 0, "Must be > 0");
         minDepositAmount = _minDepositAmount;
-    }
-
-    function addOperator(
-        bytes calldata blsPublicKey,
-        string calldata grpcEndpoint
-    ) external onlyOwner {
-        require(blsPublicKey.length > 0, "Invalid BLS public key");
-        require(bytes(grpcEndpoint).length > 0, "Invalid gRPC endpoint");
-        operators.push(
-            Operator({blsPublicKey: blsPublicKey, grpcEndpoint: grpcEndpoint})
-        );
-        emit OperatorAdded(msg.sender, blsPublicKey);
-    }
-
-    function removeOperator(address operatorAddress) external onlyOwner {
-        require(operators.length > 0, "No operators to remove");
-        for (uint256 i = 0; i < operators.length; ++i) {
-            if (address(operators[i]) == operatorAddress) {
-                operators[i] = operators[operators.length - 1];
-                operators.pop();
-                emit OperatorRemoved(operatorAddress);
-                return;
-            }
-        }
-        revert("Operator not found");
-    }
-
-    function addAggregator(string calldata grpcEndpoint) external onlyOwner {
-        require(bytes(grpcEndpoint).length > 0, "Invalid gRPC endpoint");
-        aggregators[msg.sender] = Aggregator({grpcEndpoint: grpcEndpoint});
-        emit AggregatorRegistered(msg.sender);
-    }
-
-    function removeAggregator(address aggregatorAddress) external onlyOwner {
-        require(
-            bytes(aggregators[aggregatorAddress].grpcEndpoint).length > 0,
-            "Aggregator not found"
-        );
-        delete aggregators[aggregatorAddress];
-        emit AggregatorRemoved(aggregatorAddress);
     }
 }
