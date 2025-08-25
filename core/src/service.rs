@@ -223,13 +223,7 @@ impl CoreApiServer for CoreService {
         &self,
         tx_hash: String,
     ) -> RpcResult<TransactionVerificationResult> {
-        let verified = repo::verify_transaction(&self.persist_ctx, tx_hash)
-            .await
-            .map_err(|err| {
-                error!("Failed to verify transaction {err}");
-                rpc::internal_error()
-            })?;
-
-        Ok(verified)
+        // TODO(#10): implement when using REDIS as database
+        Ok(TransactionVerificationResult::Verified)
     }
 }
