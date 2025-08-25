@@ -32,6 +32,8 @@ if ! command_exists anvil; then
   curl -L https://foundry.paradigm.xyz | bash
   source ~/.foundry/bin
   foundryup
+else
+  echo "Foundry is installed ✅"
 fi
 
 echo "Starting Anvil..."
