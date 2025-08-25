@@ -9,7 +9,7 @@ use futures_util::future::join_all;
 use crate::persist::prisma::{user, user_transaction};
 use crate::persist::PersistCtx;
 use prisma_client_rust::QueryError;
-use rpc::common::{TransactionVerificationResult, UserTransactionInfo};
+use rpc::common::UserTransactionInfo;
 use thiserror::Error;
 use blockchain::txtools::fetch_transaction;
 pub(crate) use crate::persist::connector::CoreDatabaseConnector;
@@ -103,103 +103,6 @@ impl CoreDatabaseConnector for EthereumConnector {
     }
 }
 
-pub async fn register_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<()> {
-    let _ = ctx
-        .client
-        .user()
-        .upsert(
-            user::address::equals(user_addr.clone()),
-            user::create(user_addr, vec![]),
-            vec![],
-        )
-        .exec()
-        .await?;
-    Ok(())
-}
-
-pub async fn get_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<Option<user::Data>> {
-    let user = ctx
-        .client
-        .user()
-        .find_unique(user::address::equals(user_addr))
-        .with(user::transactions::fetch(vec![]))
-        .exec()
-        .await?;
-    Ok(user)
-}
-
-pub async fn register_user_with_deposit(
-    ctx: &PersistCtx,
-    user_addr: String,
-    deposit: f64,
-) -> anyhow::Result<()> {
-    let _ = ctx
-        .client
-        .user()
-        .upsert(
-            user::address::equals(user_addr.clone()),
-            user::create(user_addr, vec![user::deposit::set(deposit)]),
-            vec![user::deposit::set(deposit), user::version::increment(1)],
-        )
-        .exec()
-        .await?;
-    Ok(())
-}
-
-pub async fn add_user_deposit(
-    ctx: &PersistCtx,
-    user_addr: String,
-    deposit: f64,
-) -> anyhow::Result<()> {
-    let _ = ctx
-        .client
-        .user()
-        .update(
-            user::address::equals(user_addr),
-            vec![user::deposit::increment(deposit)],
-        )
-        .exec()
-        .await?;
-    Ok(())
-}
-
-pub async fn get_transactions_by_hash(
-    ctx: &PersistCtx,
-    hashes: Vec<String>,
-) -> anyhow::Result<Vec<user_transaction::Data>> {
-    let transactions = ctx
-        .client
-        .user_transaction()
-        .find_many(vec![user_transaction::tx_id::in_vec(hashes)])
-        .exec()
-        .await?;
-    Ok(transactions)
-}
-
-pub async fn get_unfinalized_transactions(
-    ctx: &PersistCtx,
-) -> anyhow::Result<Vec<user_transaction::Data>> {
-    let transactions = ctx
-        .client
-        .user_transaction()
-        .find_many(vec![user_transaction::finalized::equals(false)])
-        .exec()
-        .await?;
-    Ok(transactions)
-}
-
-pub async fn confirm_transaction(ctx: &PersistCtx, transaction_hash: String) -> anyhow::Result<()> {
-    let _updated_transactions = ctx
-        .client
-        .user_transaction()
-        .update(
-            user_transaction::tx_id::equals(transaction_hash),
-            vec![user_transaction::finalized::set(true)],
-        )
-        .exec()
-        .await?;
-    Ok(())
-}
 
 #[derive(Debug, Error)]
 pub enum SubmitPaymentTxnError {
@@ -279,42 +182,6 @@ pub async fn submit_payment_transaction(
             if updated_user.version != user.version + 1 {
                 return Err(SubmitPaymentTxnError::ConflictingTransactions);
             }
-
-            Ok(())
-        })
-        .await?;
-
-    Ok(())
-}
-
-pub async fn fail_transaction(
-    ctx: &PersistCtx,
-    user_addr: String,
-    transaction_id: String,
-) -> anyhow::Result<()> {
-    ctx.client
-        ._transaction()
-        .run::<QueryError, _, _, _>(|client| async move {
-            let updated_tx = client
-                .user_transaction()
-                .update(
-                    user_transaction::tx_id::equals(transaction_id),
-                    vec![
-                        user_transaction::finalized::set(true),
-                        user_transaction::failed::set(true),
-                    ],
-                )
-                .exec()
-                .await?;
-
-            client
-                .user()
-                .update(
-                    user::address::equals(user_addr),
-                    vec![user::deposit::decrement(updated_tx.amount)],
-                )
-                .exec()
-                .await?;
 
             Ok(())
         })

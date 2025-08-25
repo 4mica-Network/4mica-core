@@ -1,5 +1,5 @@
 use core_service::config::AppConfig;
-use core_service::persist::{prisma, PersistCtx};
+use core_service::persist::PersistCtx;
 use crypto::bls::BLSCert;
 use log::info;
 use rpc::common::PaymentGuaranteeClaims;

@@ -1,5 +1,4 @@
 use crate::config::AppConfig;
-use crate::ethereum::EthereumListener;
 use crate::persist::repo::{self, CoreDatabaseConnector, EthereumConnector, SubmitPaymentTxnError};
 use crate::persist::PersistCtx;
 
