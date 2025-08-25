@@ -1,8 +1,114 @@
+use alloy::contract::{ContractInstance, Interface};
+use alloy::dyn_abi::DynSolValue;
+use alloy::json_abi::JsonAbi;
+use alloy::primitives::{address, Address, TxHash, B256};
+use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller};
+use alloy::providers::{Identity, RootProvider};
+use futures_util::future::join_all;
 use crate::persist::prisma::{user, user_transaction};
 use crate::persist::PersistCtx;
 use prisma_client_rust::QueryError;
-use rpc::common::TransactionVerificationResult;
+use rpc::common::{TransactionVerificationResult, UserTransactionInfo};
 use thiserror::Error;
+use blockchain::txtools::fetch_transaction;
+
+pub(crate) trait CoreDatabaseConnector {
+    async fn get_user_deposit_total(&self, user_address: String) -> anyhow::Result<f64>;
+
+    async fn get_user_transaction_details(&self, user_address: String) -> anyhow::Result<Vec<UserTransactionInfo>>;
+
+    async fn get_transaction_details(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo>;
+}
+
+// TODO: this is a duplicate from elsewhere
+type EthereumProvider = FillProvider<
+    JoinFill<
+        Identity,
+        JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+    >,
+    RootProvider,
+>;
+
+pub(crate) struct EthereumConnector(pub(crate) EthereumProvider);
+
+// TODO: load core contract address from .env
+const CORE_CONTRACT_ADDRESS_4MICA: Address = address!("1234123412341234123412341234123412341234");
+
+impl EthereumConnector {
+    fn get_core_contract_abi(&self) -> anyhow::Result<JsonAbi> {
+        // Get the contract ABI.
+        let path = std::env::current_dir()?.join("examples/contracts/examples/artifacts/Counter.json");
+
+        // Read the artifact which contains `abi`, `bytecode`, `deployedBytecode` and `metadata`.
+        let artifact = std::fs::read(path).expect("Failed to read artifact");
+        let json: serde_json::Value = serde_json::from_slice(&artifact)?;
+
+        // Get `abi` from the artifact.
+        let abi_value = json.get("abi").expect("Failed to get ABI from artifact");
+        serde_json::from_str(&abi_value.to_string()).map_err(anyhow::Error::new)
+    }
+
+    /// Obtain the 4MICA Core Contract.
+    // TODO: use something akin to https://alloy.rs/examples/contracts/interact_with_abi ?
+    fn get_core_contract(&self) -> anyhow::Result<ContractInstance<EthereumProvider>> {
+        let abi = self.get_core_contract_abi()?;
+        Ok(ContractInstance::new(CORE_CONTRACT_ADDRESS_4MICA, self.0.clone(), Interface::new(abi)))
+    }
+}
+
+impl CoreDatabaseConnector for EthereumConnector {
+    /// Get the total deposit posted by the user associated with `user_address`.
+    ///
+    /// Note: the returned value is the total deposit, i.e., the sum of locked and available.
+    async fn get_user_deposit_total(&self, user_address: String) -> anyhow::Result<f64> {
+        // TODO: function name
+        let user_address = DynSolValue::from(user_address);
+        let collateral = self
+            .get_core_contract()?
+            // TODO: fix function name
+            .function("collateral", &[user_address])?
+            .call()
+            .await?
+            .first()
+            .ok_or(anyhow::Error::msg("user not registered"))?
+            // TODO: proper conversion
+            .as_int()
+            .ok_or(anyhow::Error::msg("internal error: failed to convert collateral to f64"))?
+            .0;
+        Ok(collateral)
+    }
+
+    /// Get the [`TransactionDetails`] of all [`Transaction`] associated with `user_address`.
+    async fn get_user_transaction_details(&self, user_address: String) -> anyhow::Result<Vec<UserTransactionInfo>> {
+        let user_address = DynSolValue::from(user_address);
+        let transaction_hashes = self.get_core_contract()?
+            // TODO: fix function name
+            .function("transactions", &[user_address])?
+            .call()
+            .await?;
+
+        let transaction_details =transaction_hashes.iter()
+            .map(|tx_hash| B256::from(tx_hash.as_uint().expect("valid transaction").0))
+            .map(async |tx_hash| {
+                self.get_transaction_details(tx_hash)
+                    .await
+                    .map_err(|_| anyhow::Error::msg(format!("invalid transaction: {tx_hash}")))
+            });
+
+        join_all(transaction_details)
+            .await
+            .into_iter()
+            .collect()
+    }
+
+    /// Obtain the [`TransactionDetails`] for the transaction with hash `tx_hash`.
+    async fn get_transaction_details(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo> {
+        let raw_tx = fetch_transaction(&self.0, tx_hash).await?;
+
+        // TODO: convert into UserTransactionInfo
+        Ok(())
+    }
+}
 
 pub async fn register_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<()> {
     let _ = ctx

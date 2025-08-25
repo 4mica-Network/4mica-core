@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::ethereum::EthereumListener;
-use crate::persist::repo::{self, SubmitPaymentTxnError};
+use crate::persist::repo::{self, CoreDatabaseConnector, EthereumConnector, SubmitPaymentTxnError};
 use crate::persist::PersistCtx;
 
 use alloy::primitives::B256;
@@ -67,6 +67,11 @@ impl CoreService {
             })
     }
 
+    /// Obtain a connection to the database
+    pub async fn get_db_connector(&self) -> RpcResult<impl CoreDatabaseConnector> {
+        Ok(EthereumConnector(self.get_ethereum_provider().await?))
+    }
+
     /// Validate that a given [`Transaction`] has a given `sender`, `recipient` and `amount`.
     pub fn validate_transaction(
         tx: &Transaction,
@@ -88,36 +93,34 @@ impl CoreApiServer for CoreService {
     }
 
     async fn register_user(&self, user_addr: String) -> RpcResult<()> {
-        repo::register_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to register user {err}");
-                rpc::internal_error()
-            })?;
+        // TODO: activate this when implementing REDIS
         Ok(())
     }
 
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
-        let Some(user) = repo::get_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to get user {err}");
-                rpc::internal_error()
-            })?
-        else {
-            return Ok(None);
-        };
+        let connector = self.get_db_connector().await?;
 
-        let transactions = user.transactions.unwrap();
-        let not_usable_deposit = transactions
+        let total_deposit = connector.get_user_deposit_total(user_addr)
+            .await
+            // TODO: fix
+            .map_err(|err| RpcResult::from(err))?;
+
+        let user_transactions = connector
+            .get_user_transaction_details(user_addr)
+            .await
+            // TODO: fix
+            .map_err(|err| RpcResult::from(err))?;
+
+        let locked_deposit = user_transactions
             .iter()
-            .filter_map(|tx| if !tx.finalized { Some(tx.amount) } else { None })
-            .sum::<f64>();
+            .filter(|tx| !tx.settled)
+            .map(|unsettled_tx| unsettled_tx.value)
+            .sum();
 
         Ok(Some(UserInfo {
-            deposit: user.deposit,
-            available_deposit: user.deposit - not_usable_deposit,
-            transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
+            deposit: total_deposit,
+            available_deposit: total_deposit - locked_deposit,
+            transactions: user_transactions,
         }))
     }
 
