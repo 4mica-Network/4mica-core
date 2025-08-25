@@ -11,6 +11,13 @@ pub(crate) trait CoreDatabaseConnector {
     /// Get the deposit posted by the user that is locked.
     async fn get_user_deposit_locked(&self, user_address: Address) -> anyhow::Result<f64>;
 
+    /// Get the deposit posted by the user that is available.
+    async fn get_user_deposit_available(&self, user_address: Address) -> anyhow::Result<f64> {
+        let total = self.get_user_deposit_total(user_address).await;
+        let locked = self.get_user_deposit_locked(user_address).await;
+        total.and_then(|total| locked.map(|locked| total - locked))
+    }
+    
     /// Get the [`UserTransactionInfo`] of all [`Transaction`] associated with `user_address`.
     async fn get_user_transactions_info(&self, user_address: Address) -> anyhow::Result<Vec<UserTransactionInfo>>;
 
