@@ -1,3 +1,4 @@
+use alloy::consensus::{Transaction, TxEnvelope};
 use alloy::contract::ContractInstance;
 use alloy::dyn_abi::DynSolValue;
 use alloy::primitives::{address, Address, TxHash, B256};
@@ -84,8 +85,27 @@ impl CoreDatabaseConnector for EthereumConnector {
     async fn get_transaction_info(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo> {
         let raw_tx = fetch_transaction(&self.0, tx_hash).await?;
 
-        // TODO: convert into UserTransactionInfo
-        Ok(())
+        let inner = raw_tx.inner;
+        let signer = inner.signer();
+        let (to, value) = match inner.inner() {
+            TxEnvelope::Eip1559(tx) => Ok((tx.to(), tx.value())),
+            _ => Err(anyhow::Error::msg("invalid transaction: invalid type"))
+        }?;
+
+        let to = to.ok_or(anyhow::Error::msg("invalid transaction: invalid to-address"))?;
+        // TODO: fix conversion
+        let value = f64::from(value);
+
+        Ok(UserTransactionInfo {
+            user_addr: signer.to_string(),
+            recipient_addr: to.to_string(),
+            tx_hash: tx_hash.to_string(),
+            amount: value,
+            finalized: false, // ???
+            failed: false, // ???
+            cert: None,
+            created_at: 0,
+        })
     }
 
     async fn get_transactions_info(&self, tx_hashes: Vec<TxHash>) -> anyhow::Result<Vec<UserTransactionInfo>> {
