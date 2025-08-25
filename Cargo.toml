@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 rpc = { path = "crates/rpc" }
