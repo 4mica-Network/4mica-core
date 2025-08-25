@@ -2,6 +2,7 @@ use crate::persist::prisma::PrismaClient;
 use rpc::common::UserTransactionInfo;
 use std::sync::Arc;
 
+pub mod connector;
 #[allow(warnings, unused)]
 pub mod prisma;
 pub mod repo;

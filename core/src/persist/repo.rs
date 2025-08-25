@@ -11,14 +11,7 @@ use prisma_client_rust::QueryError;
 use rpc::common::{TransactionVerificationResult, UserTransactionInfo};
 use thiserror::Error;
 use blockchain::txtools::fetch_transaction;
-
-pub(crate) trait CoreDatabaseConnector {
-    async fn get_user_deposit_total(&self, user_address: String) -> anyhow::Result<f64>;
-
-    async fn get_user_transaction_details(&self, user_address: String) -> anyhow::Result<Vec<UserTransactionInfo>>;
-
-    async fn get_transaction_details(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo>;
-}
+use crate::persist::connector::CoreDatabaseConnector;
 
 // TODO: this is a duplicate from elsewhere
 type EthereumProvider = FillProvider<
