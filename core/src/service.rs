@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::persist::repo::{self, CoreDatabaseConnector, EthereumConnector, SubmitPaymentTxnError};
+use crate::persist::repo::{CoreDatabaseConnector, EthereumConnector};
 use crate::persist::PersistCtx;
 
 use alloy::primitives::{Address, B256};
@@ -7,10 +7,8 @@ use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
 };
 use alloy::providers::{Identity, ProviderBuilder, RootProvider, WsConnect};
-use alloy::rpc::types::Transaction;
 use async_trait::async_trait;
 use futures_util::TryFutureExt;
-use blockchain::txtools;
 use crypto::bls::BLSCert;
 use log::{error, info};
 use rpc::common::{
@@ -32,10 +30,7 @@ pub fn string_to_address(val: &str) -> RpcResult<Address> {
     val
         .as_bytes()
         .try_into()
-        .map_err(|err| {
-            error!("Invalid transaction hash: {err}");
-            rpc::invalid_params_error("Invalid transaction hash")
-        })
+        .map_err(|_| rpc::invalid_params_error("Invalid address string"))
         .map(Address::new)
 }
 
@@ -46,10 +41,7 @@ pub fn string_to_b256(val: &str) -> RpcResult<B256> {
     val
         .as_bytes()
         .try_into()
-        .map_err(|err| {
-            error!("Invalid transaction hash: {err}");
-            rpc::invalid_params_error("Invalid transaction hash")
-        })
+        .map_err(|_| rpc::invalid_params_error("Invalid B256 string"))
         .map(B256::new)
 }
 
