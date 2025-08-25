@@ -211,8 +211,12 @@ impl CoreApiServer for CoreService {
         &self,
         hashes: Vec<String>,
     ) -> RpcResult<Vec<UserTransactionInfo>> {
-        let hashes = hashes.into_iter().map(|hash| B256::from(hash)).collect();
-        self.get_db_connector().await?.get_transactions_info(hashes).await
+        let hashes = hashes.into_iter().map(|hash| string_to_b256(&hash)).collect()?;
+        self.get_db_connector()
+            .await?
+            .get_transactions_info(hashes)
+            .await
+            .map_err(|err| rpc::invalid_params_error("Invalid transactions"))
     }
 
     async fn verify_transaction(
