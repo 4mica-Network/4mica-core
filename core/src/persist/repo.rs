@@ -4,6 +4,7 @@ use alloy::json_abi::JsonAbi;
 use alloy::primitives::{address, Address, TxHash, B256};
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller};
 use alloy::providers::{Identity, RootProvider};
+use alloy::sol;
 use futures_util::future::join_all;
 use crate::persist::prisma::{user, user_transaction};
 use crate::persist::PersistCtx;
@@ -27,25 +28,18 @@ pub(crate) struct EthereumConnector(pub(crate) EthereumProvider);
 // TODO: load core contract address from .env
 const CORE_CONTRACT_ADDRESS_4MICA: Address = address!("1234123412341234123412341234123412341234");
 
+// TODO: fix ABI path
+sol!(
+    #[allow(missing_docs)]
+    #[sol(rpc)]
+    Core4MicaContract,
+    "../contracts/src/core/AuthorityContract.json"
+);
+
 impl EthereumConnector {
-    fn get_core_contract_abi(&self) -> anyhow::Result<JsonAbi> {
-        // Get the contract ABI.
-        let path = std::env::current_dir()?.join("examples/contracts/examples/artifacts/Counter.json");
-
-        // Read the artifact which contains `abi`, `bytecode`, `deployedBytecode` and `metadata`.
-        let artifact = std::fs::read(path).expect("Failed to read artifact");
-        let json: serde_json::Value = serde_json::from_slice(&artifact)?;
-
-        // Get `abi` from the artifact.
-        let abi_value = json.get("abi").expect("Failed to get ABI from artifact");
-        serde_json::from_str(&abi_value.to_string()).map_err(anyhow::Error::new)
-    }
-
     /// Obtain the 4MICA Core Contract.
-    // TODO: use something akin to https://alloy.rs/examples/contracts/interact_with_abi ?
     fn get_core_contract(&self) -> anyhow::Result<ContractInstance<EthereumProvider>> {
-        let abi = self.get_core_contract_abi()?;
-        Ok(ContractInstance::new(CORE_CONTRACT_ADDRESS_4MICA, self.0.clone(), Interface::new(abi)))
+        Core4MicaContract::new(CORE_CONTRACT_ADDRESS_4MICA, self.0.clone())
     }
 }
 
