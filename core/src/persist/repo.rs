@@ -30,7 +30,7 @@ sol!(
     #[allow(missing_docs)]
     #[sol(rpc)]
     Core4MicaContract,
-    "../contracts/src/core/AuthorityContract.json"
+    "../contracts/src/core/AuthorityContract.sol"
 );
 
 impl EthereumConnector {
@@ -110,7 +110,9 @@ impl CoreDatabaseConnector for EthereumConnector {
     }
 
     async fn get_transactions_info(&self, tx_hashes: Vec<TxHash>) -> anyhow::Result<Vec<UserTransactionInfo>> {
-        let transactions = tx_hashes.iter().map(async |tx_hash| self.get_transaction_info(tx_hash).await);
+        let transactions = tx_hashes
+            .into_iter()
+            .map(async |tx_hash| self.get_transaction_info(tx_hash).await);
         join_all(transactions)
             .await
             .into_iter()
