@@ -1,0 +1,98 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ["develop", "main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # TODO: this two should be uncommented while the postgre is removed. Now it requires a full setup for build that is not efficient.
+      # - name: Build workspace
+      #   run: cargo build --release --workspace
+
+      # - name: Run tests
+      #   run: cargo test --workspace
+  # clippy:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@master
+  #       with:
+  #         toolchain: stable
+  #         components: clippy
+  #     - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # rustfmt:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@master
+  #       with:
+  #         toolchain: stable
+  #         components: rustfmt
+  #     - run: cargo fmt --all -- --check
+
+  deploy-develop:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+
+      - name: Deploy to staging server
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
+          cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core
+          git fetch origin develop
+          git reset --hard origin/develop
+          cargo build --release --workspace
+          systemctl --user restart 4mica
+          EOF
+
+  deploy-main:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
+
+      - name: Deploy to production server
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }} << 'EOF'
+          cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core
+          git fetch origin main
+          git reset --hard origin/main
+          cargo build --release --workspace
+          systemctl --user restart 4mica
+          EOF

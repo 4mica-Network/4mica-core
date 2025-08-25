@@ -1,16 +1,17 @@
-use ethers::prelude::*;
-use ethers::providers::{Provider, Ws};
-use ethers::types::{Address, Transaction, H256, U256};
-use log::{error};
+use alloy::consensus::TxEnvelope;
+use alloy::primitives::{Address, B256, U256};
+use alloy::providers::Provider;
+use alloy::rpc::types::Transaction;
+use log::error;
 use rpc::RpcResult;
 
 // --- function to fetch a transaction ---
-pub async fn fetch_transaction(provider: &Provider<Ws>, tx_hash: H256) -> RpcResult<Transaction> {
+pub async fn fetch_transaction<P: Provider>(provider: &P, tx_hash: B256) -> RpcResult<Transaction> {
     provider
-        .get_transaction(tx_hash)
+        .get_transaction_by_hash(tx_hash)
         .await
         .map_err(|err| {
-            error!("Failed to get transaction from Ethereum provider: {err}");
+            error!("Failed to get transaction from provider: {err}");
             rpc::internal_error()
         })?
         .ok_or_else(|| {
@@ -26,19 +27,25 @@ pub fn validate_transaction(
     recipient_address: Address,
     expected_amount: U256,
 ) -> RpcResult<()> {
-    if tx.from != user_address {
+    if tx.inner.signer() != user_address {
         return Err(rpc::invalid_params_error(
             "User address does not match transaction sender",
         ));
     }
 
-    if tx.to != Some(recipient_address) {
+    // TODO: which transaction types do we support?
+    let (to, value) = match tx.inner.inner() {
+        TxEnvelope::Eip7702(tx) => (tx.tx().to, tx.tx().value),
+        _ => return Err(rpc::invalid_params_error("Invalid transaction type")),
+    };
+
+    if to != recipient_address {
         return Err(rpc::invalid_params_error(
             "Recipient address does not match transaction recipient",
         ));
     }
 
-    if tx.value != expected_amount {
+    if value != expected_amount {
         return Err(rpc::invalid_params_error(
             "Transaction amount does not match",
         ));

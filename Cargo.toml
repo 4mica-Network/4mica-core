@@ -10,11 +10,7 @@ members = [
 ]
 
 [workspace.package]
-edition = "2021"
-
-[patch.crates-io]
-wasm-bindgen = { git = "https://github.com/rustwasm/wasm-bindgen", tag = "0.2.88" }
-
+edition = "2024"
 
 [workspace.dependencies]
 rpc = { path = "crates/rpc" }
@@ -41,7 +37,7 @@ bls-signatures = "0.15.0"
 hex = "0.4.3"
 test-log = "0.2.17"
 uuid = "1.14.0"
-alloy = "0.11.1"
+alloy = "1.0.25"
 hyper = "1.6.0"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
