@@ -2,6 +2,7 @@ use alloy::contract::{ContractInstance, Interface};
 use alloy::dyn_abi::DynSolValue;
 use alloy::json_abi::JsonAbi;
 use alloy::primitives::{address, Address, TxHash, B256};
+use alloy::primitives::utils::format_units;
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller};
 use alloy::providers::{Identity, RootProvider};
 use alloy::sol;
@@ -48,21 +49,26 @@ impl CoreDatabaseConnector for EthereumConnector {
     ///
     /// Note: the returned value is the total deposit, i.e., the sum of locked and available.
     async fn get_user_deposit_total(&self, user_address: String) -> anyhow::Result<f64> {
-        // TODO: function name
         let user_address = DynSolValue::from(user_address);
-        let collateral = self
+        let user = self
             .get_core_contract()?
-            // TODO: fix function name
-            .function("collateral", &[user_address])?
+            .function("users", &[user_address])?
             .call()
             .await?
             .first()
             .ok_or(anyhow::Error::msg("user not registered"))?
-            // TODO: proper conversion
-            .as_int()
+            .as_custom_struct()
+            .ok_or(anyhow::Error::msg("internal error: failed to convert collateral to f64"))?;
+
+        // TODO: quit hardcoding field indices
+        let collateral = user.2[1]
+            .as_uint()
             .ok_or(anyhow::Error::msg("internal error: failed to convert collateral to f64"))?
             .0;
-        Ok(collateral)
+
+        format_units(collateral, "eth")?
+            .parse::<f64>()
+            .map_err(anyhow::Error::new)
     }
 
     /// Get the [`TransactionDetails`] of all [`Transaction`] associated with `user_address`.
