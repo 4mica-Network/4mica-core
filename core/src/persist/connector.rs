@@ -5,7 +5,9 @@ use rpc::common::UserTransactionInfo;
 pub(crate) trait CoreDatabaseConnector {
     async fn get_user_deposit_total(&self, user_address: String) -> anyhow::Result<f64>;
 
-    async fn get_user_transaction_details(&self, user_address: String) -> anyhow::Result<Vec<UserTransactionInfo>>;
+    async fn get_user_transactions_info(&self, user_address: String) -> anyhow::Result<Vec<UserTransactionInfo>>;
 
-    async fn get_transaction_details(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo>;
+    async fn get_transaction_info(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo>;
+
+    async fn get_transactions_info(&self, tx_hash: Vec<TxHash>) -> anyhow::Result<Vec<UserTransactionInfo>>;
 }

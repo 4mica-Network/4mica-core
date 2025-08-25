@@ -104,9 +104,9 @@ impl CoreApiServer for CoreService {
         let total_deposit = connector.get_user_deposit_total(user_addr)
             .map_err(|_| rpc::execution_failed("user not found"))
             .await?;
-        
+
         let user_transactions = connector
-            .get_user_transaction_details(user_addr)
+            .get_user_transactions_info(user_addr)
             .map_err(|err| rpc::internal_error())
             .await?;
 
@@ -191,6 +191,7 @@ impl CoreApiServer for CoreService {
         &self,
         hashes: Vec<String>,
     ) -> RpcResult<Vec<UserTransactionInfo>> {
+        self.get_db_connector()
         let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
             .await
             .map_err(|err| {

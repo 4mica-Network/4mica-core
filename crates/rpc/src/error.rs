@@ -1,4 +1,6 @@
-use jsonrpsee::types::error::{CALL_EXECUTION_FAILED_CODE, INTERNAL_ERROR_CODE, INTERNAL_ERROR_MSG, INVALID_PARAMS_CODE};
+use jsonrpsee::types::error::{
+    CALL_EXECUTION_FAILED_CODE, INTERNAL_ERROR_CODE, INTERNAL_ERROR_MSG, INVALID_PARAMS_CODE,
+};
 use jsonrpsee::types::ErrorObjectOwned;
 
 pub fn internal_error() -> ErrorObjectOwned {

@@ -1,10 +1,9 @@
-use alloy::contract::{ContractInstance, Interface};
+use alloy::contract::ContractInstance;
 use alloy::dyn_abi::DynSolValue;
-use alloy::json_abi::JsonAbi;
 use alloy::primitives::{address, Address, TxHash, B256};
 use alloy::primitives::utils::format_units;
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller};
-use alloy::providers::{Identity, RootProvider};
+use alloy::providers::{Identity, Provider, RootProvider};
 use alloy::sol;
 use futures_util::future::join_all;
 use crate::persist::prisma::{user, user_transaction};
@@ -71,35 +70,36 @@ impl CoreDatabaseConnector for EthereumConnector {
             .map_err(anyhow::Error::new)
     }
 
-    /// Get the [`TransactionDetails`] of all [`Transaction`] associated with `user_address`.
-    async fn get_user_transaction_details(&self, user_address: String) -> anyhow::Result<Vec<UserTransactionInfo>> {
+    /// Get the [`UserTransactionInfo`] of all [`Transaction`] associated with `user_address`.
+    async fn get_user_transactions_info(&self, user_address: String) -> anyhow::Result<Vec<UserTransactionInfo>> {
         let user_address = DynSolValue::from(user_address);
         let transaction_hashes = self.get_core_contract()?
             // TODO: fix function name
             .function("transactions", &[user_address])?
             .call()
-            .await?;
-
-        let transaction_details =transaction_hashes.iter()
+            .await?
+            .iter()
             .map(|tx_hash| B256::from(tx_hash.as_uint().expect("valid transaction").0))
-            .map(async |tx_hash| {
-                self.get_transaction_details(tx_hash)
-                    .await
-                    .map_err(|_| anyhow::Error::msg(format!("invalid transaction: {tx_hash}")))
-            });
+            .collect();
 
-        join_all(transaction_details)
-            .await
-            .into_iter()
-            .collect()
+        self.get_transactions_info(transaction_hashes).await
     }
 
-    /// Obtain the [`TransactionDetails`] for the transaction with hash `tx_hash`.
-    async fn get_transaction_details(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo> {
+    /// Obtain the [`UserTransactionInfo`] for the transaction with hash `tx_hash`.
+    async fn get_transaction_info(&self, tx_hash: TxHash) -> anyhow::Result<UserTransactionInfo> {
         let raw_tx = fetch_transaction(&self.0, tx_hash).await?;
 
         // TODO: convert into UserTransactionInfo
         Ok(())
+    }
+
+    /// Obtain the [`UserTransactionInfo`] to all transactions indicated by `tx_hashes`.
+    async fn get_transactions_info(&self, tx_hashes: Vec<TxHash>) -> anyhow::Result<Vec<UserTransactionInfo>> {
+        let transactions = tx_hashes.iter().map(async |tx_hash| self.get_transaction_info(tx_hash).await);
+        join_all(transactions)
+            .await
+            .into_iter()
+            .collect()
     }
 }
 
