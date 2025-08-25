@@ -30,7 +30,6 @@ pub struct UserTransactionInfo {
     pub recipient_addr: String,
     pub tx_hash: String,
     pub amount: f64,
-    pub verified: bool,
     pub finalized: bool,
     pub failed: bool,
     pub cert: Option<String>,
