@@ -130,6 +130,15 @@ This ensures the deployer account can interact with restricted functions.
 
 ---
 
+## 📦 Current Deployment
+
+- **AccessManager**  
+    Deployed at: `0x31676919335252527965da74b8dFFF589e23Ec81`
+
+- **Core4Mica**  
+    Deployed at: `0xFE4eae5d84412B70b1f04b3F78351a654D28Da25`
+
+
 ## 📂 Project Structure
 
 ```
