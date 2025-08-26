@@ -7,6 +7,7 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 
 contract Core4MicaScript is Script {
     AccessManager manager;
+
     // Roles
     uint64 public constant CALLER_ROLE = 1;
     uint64 public constant CALLER_ADMIN_ROLE = 2;
@@ -22,7 +23,7 @@ contract Core4MicaScript is Script {
 
     uint64 public constant DEFAULT_ADMIN_ROLE = 0;
 
-    // Execution delays
+    // Execution delays (real values; for local/test we’ll pass 0 in grantRole)
     uint32 public constant CALLER_ROLE_EXECUTION_DELAY = 5 hours;
     uint32 public constant CALLER_ADMIN_ROLE_EXECUTION_DELAY = 8 hours;
 
@@ -36,17 +37,92 @@ contract Core4MicaScript is Script {
     uint32 public constant OPERATOR_ADMIN_ROLE_EXECUTION_DELAY = 10 hours;
 
     function run() external {
-        // Load deployer private key from environment
-        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
-        manager = new AccessManager(deployer);
+
         vm.startBroadcast(deployerPrivateKey);
 
-        // Deploy Core4Mica with deployer as manager
+        // 1. Deploy AccessManager and Core4Mica
+        manager = new AccessManager(deployer);
         Core4Mica core4Mica = new Core4Mica(address(manager));
+
+        // 2. Map Core4Mica functions to roles
+        // User-facing functions → USER_ROLE
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.registerUser.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.addDeposit.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.withdrawCollateral.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.requestDeregistration.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.cancelDeregistration.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.finalizeDeregistration.selector),
+            USER_ROLE
+        );
+
+        // Operator functions → OPERATOR_ROLE
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.lockCollateral.selector),
+            OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.unlockCollateral.selector),
+            OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.makeWhole.selector),
+            OPERATOR_ROLE
+        );
+
+        // Admin-only config functions → USER_ADMIN_ROLE
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.setMinDepositAmount.selector),
+            USER_ADMIN_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.setGracePeriod.selector),
+            USER_ADMIN_ROLE
+        );
+
+        // 3. Grant roles (immediate in local/test: 0 delay)
+        manager.grantRole(USER_ROLE, deployer, 0); // deployer can act as USER
+        manager.grantRole(OPERATOR_ROLE, deployer, 0); // deployer can act as OPERATOR
 
         vm.stopBroadcast();
 
+        console.log("AccessManager deployed at:", address(manager));
         console.log("Core4Mica deployed at:", address(core4Mica));
+    }
+
+    // helper to wrap selector into array
+    function _asSingletonArray(
+        bytes4 selector
+    ) internal pure returns (bytes4[] memory arr) {
+        arr = new bytes4[](1);
+        arr[0] = selector;
     }
 }
