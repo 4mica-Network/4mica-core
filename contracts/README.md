@@ -90,6 +90,24 @@ forge script script/Core4Mica.s.sol:Core4MicaScript \
 ```yaml
 Core4Mica deployed at: 0x1234abcd...
 ```
+---
+
+### 📜 Getting the ABI
+
+To generate the ABI for your contracts, run:
+
+```bash
+forge build
+```
+
+This will compile your contracts and output the ABI files in the `out/` directory.  
+For example, the ABI for `Core4Mica.sol` will be located at:
+
+```
+out/Core4Mica.sol/Core4Mica.json
+```
+
+The ABI is inside the `"abi"` field of this JSON file.
 
 ---
 
