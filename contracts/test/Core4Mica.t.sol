@@ -3,21 +3,72 @@ pragma solidity ^0.8.29;
 
 import "forge-std/Test.sol";
 import "../src/Core4Mica.sol";
+import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 
 contract Core4MicaTest is Test {
     Core4Mica core4Mica;
-    address manager;
+    AccessManager manager;
     address user1 = address(0x111);
     address user2 = address(0x222);
-
     uint256 minDeposit = 1e15; // 0.001 ETH
 
-    function setUp() public {
-        manager = address(this); // test contract acts as manager
-        core4Mica = new Core4Mica(manager);
+    uint64 public constant USER_ROLE = 3;
+    uint64 public constant OPERATOR_ROLE = 9;
 
-        // Set smaller deposit for testing
+    function setUp() public {
+        manager = new AccessManager(address(this));
+        core4Mica = new Core4Mica(address(manager));
         core4Mica.setMinDepositAmount(minDeposit);
+        // Assign all necessary function roles to USER_ROLE (no delay)
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.registerUser.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.addDeposit.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.withdrawCollateral.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.requestDeregistration.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.finalizeDeregistration.selector),
+            USER_ROLE
+        );
+
+        // grant user1 the USER_ROLE immediately (0 delay)
+        manager.grantRole(USER_ROLE, user1, 0);
+
+        // grant test contract (us) the OPERATOR_ROLE so we can lockCollateral/makeWhole
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.lockCollateral.selector),
+            OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.makeWhole.selector),
+            OPERATOR_ROLE
+        );
+        manager.grantRole(OPERATOR_ROLE, address(this), 0);
+    }
+
+    // helper
+    function _asSingletonArray(
+        bytes4 selector
+    ) internal pure returns (bytes4[] memory arr) {
+        arr = new bytes4[](1);
+        arr[0] = selector;
     }
 
     // === Registration ===
@@ -31,17 +82,20 @@ contract Core4MicaTest is Test {
         assertEq(available, minDeposit);
     }
 
-    function testFailRegisterInsufficientFunds() public {
+    function test_RevertRegisterInsufficientFunds() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: 1}(); // should revert
+        vm.expectRevert(); // expect revert
+        core4Mica.registerUser{value: 1}();
     }
 
-    function testFailDoubleRegister() public {
+    function test_RevertDoubleRegister() public {
         vm.deal(user1, 1 ether);
         vm.startPrank(user1);
         core4Mica.registerUser{value: minDeposit}();
-        core4Mica.registerUser{value: minDeposit}(); // should revert
+
+        vm.expectRevert(); // expect revert
+        core4Mica.registerUser{value: minDeposit}();
     }
 
     // === Deposits / Withdrawals ===
@@ -61,13 +115,14 @@ contract Core4MicaTest is Test {
         assertEq(available, minDeposit);
     }
 
-    function testFailWithdrawTooMuch() public {
+    function test_RevertWithdrawTooMuch() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
         core4Mica.registerUser{value: minDeposit}();
 
         vm.prank(user1);
-        core4Mica.withdrawCollateral(minDeposit * 2); // should revert
+        vm.expectRevert(); // expect revert
+        core4Mica.withdrawCollateral(minDeposit * 2);
     }
 
     // === Locking Collateral ===
@@ -104,7 +159,7 @@ contract Core4MicaTest is Test {
         assertEq(collateral, 0);
     }
 
-    function testFailFinalizeBeforeGrace() public {
+    function test_RevertFinalizeBeforeGrace() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
         core4Mica.registerUser{value: minDeposit}();
@@ -113,7 +168,8 @@ contract Core4MicaTest is Test {
         core4Mica.requestDeregistration();
 
         vm.prank(user1);
-        core4Mica.finalizeDeregistration(); // should revert
+        vm.expectRevert(); // expect revert
+        core4Mica.finalizeDeregistration();
     }
 
     // === MakeWhole ===
