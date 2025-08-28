@@ -65,7 +65,7 @@ ETHEREUM_HTTP_RPC_URL="http://127.0.0.1:8545"
 ETHEREUM_WS_RPC_URL="ws://127.0.0.1:8545"
 
 # ========== 5. Export Environment Variables ==========
-cat > core/.env <<EOF
+cat > .env <<EOF
 DATABASE_URL="postgres://postgres:qwerty123456@localhost:5432/core"
 BLS_PRIVATE_KEY="9f3eff11070f29192c5f2dde4d047f99fc7861fd82593d22859d5ca03d9e476b"
 ETHEREUM_HTTP_RPC_URL="$ETHEREUM_HTTP_RPC_URL"
@@ -73,8 +73,8 @@ ETHEREUM_WS_RPC_URL="$ETHEREUM_WS_RPC_URL"
 ETHEREUM_CONTRACT_ADDRESS="0x5FbDB2315678afecb367f032d93F642f64180aa3"
 EOF
 
-echo "Environment variables written to core/.env:"
-cat core/.env
+echo "Environment variables written to .env:"
+cat .env
 
 # ========== 6. Generate Prisma file ===
 cargo prisma generate --schema=./core/prisma/schema.prisma
