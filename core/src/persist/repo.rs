@@ -79,7 +79,7 @@ impl CoreDatabaseConnector for EthereumConnector {
     async fn get_user_transactions_info(&self, user_address: Address) -> anyhow::Result<Vec<UserTransactionInfo>> {
         let user_address = DynSolValue::from(user_address);
         let transaction_hashes = self.get_core_contract()?
-            // TODO: fix function name
+            // TODO: where are we expected to get this from?
             .function("transactions", &[user_address])?
             .call()
             .await?
