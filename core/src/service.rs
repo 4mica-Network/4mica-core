@@ -170,7 +170,7 @@ impl CoreApiServer for CoreService {
         let user_info = self
             .get_user(user_addr)
             .await?
-            .ok_or(|_| Err(rpc::internal_error()))?;
+            .ok_or(rpc::internal_error())?;
         if user_info.available_deposit < amount {
             return Err(rpc::invalid_params_error("Not enough deposit available!"));
         }
