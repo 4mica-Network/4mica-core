@@ -53,12 +53,19 @@ impl CoreDatabaseConnector for EthereumConnector {
             .as_custom_struct()
             .ok_or(anyhow::Error::msg("internal error: failed to convert collateral to f64"))?;
 
-        // TODO: quit hardcoding field indices
-        let collateral = user.2[1]
+        // TODO: check if user is actually registered
+
+        let collateral_idx = user.1
+            .iter()
+            .position(|&elt| elt == "collateralAmount")
+            .ok_or(anyhow::Error::msg("internal error: failed to find collateralAmount"))?;
+        let collateral = user.2.get(collateral_idx)
+            .ok_or(anyhow::Error::msg("internal error: failed to index collateralAmount"))?
             .as_uint()
-            .ok_or(anyhow::Error::msg("internal error: failed to convert collateral to f64"))?
+            .ok_or(anyhow::Error::msg("internal error: failed to convert collateral to uint"))?
             .0;
 
+        // TODO: is "eth" the correct unit here, or should it be "wei"?
         format_units(collateral, "eth")?
             .parse::<f64>()
             .map_err(anyhow::Error::new)
