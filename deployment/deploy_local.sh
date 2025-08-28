@@ -76,7 +76,11 @@ EOF
 echo "Environment variables written to core/.env:"
 cat core/.env
 
-# ========== 6. Build Project ==========
+# ========== 6. Generate Prisma file ===
+cargo prisma generate --schema=./core/prisma/schema.prisma
+echo "Built prisma file ✅"
+
+# ========== 7. Build Project ==========
 echo "Building local binary..."
 cargo build
 
