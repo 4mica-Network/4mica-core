@@ -15,5 +15,5 @@ via_ir = true
 solc_version = '0.8.29'
 
 [rpc_endpoints]
-holesky_test = "${HOLESKY_RPC}"
-# If you encounter issues, try using holesky_test = env("HOLESKY_RPC")
+endpoint_url = "${ENDPOINT_URL}"
+# If you encounter issues, try using endpoint_url = env("ENDPOINT_URL")
