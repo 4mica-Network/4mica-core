@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ========== Helper Functions ==========
 command_exists() {
-  command -v "$1" >/dev/null 2>&1
+  command -v $1 >/dev/null 2>&1
 }
 
 # ========== 1. Check Rust ==========
