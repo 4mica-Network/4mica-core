@@ -1,0 +1,271 @@
+openapi: 3.1.0
+info:
+  title: 4mica CoreApi JSON-RPC
+  version: "0.0.1"
+  description: JSON-RPC API for Core module
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://develop.4mica.xyz
+    description: Staging server
+  - url: https://api.4mica.xyz
+    description: Production server
+
+security: [] # Explicitly state no authentication required
+
+paths:
+  /core/getPublicParams:
+    post:
+      summary: Get core public parameters
+      operationId: getPublicParams
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Core public parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CorePublicParameters"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /core/registerUser:
+    post:
+      summary: Register a user
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_addr:
+                  type: string
+                  pattern: "^0x[a-fA-F0-9]{40}$"
+                  example: "0x1234567890abcdef1234567890abcdef12345678"
+              required:
+                - user_addr
+      responses:
+        "200":
+          description: Registration success
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "OK"
+        "400":
+          description: Invalid user address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /core/getUser:
+    post:
+      summary: Get user information
+      operationId: getUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_addr:
+                  type: string
+                  pattern: "^0x[a-fA-F0-9]{40}$"
+                  example: "0x1234567890abcdef1234567890abcdef12345678"
+              required:
+                - user_addr
+      responses:
+        "200":
+          description: UserInfo or null if not found
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/UserInfo"
+                  - type: "null"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /core/issuePaymentCert:
+    post:
+      summary: Issue payment certificate
+      operationId: issuePaymentCert
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_addr:
+                  type: string
+                recipient_addr:
+                  type: string
+                transaction_id:
+                  type: string
+                amount:
+                  type: number
+              required:
+                - user_addr
+                - recipient_addr
+                - transaction_id
+                - amount
+      responses:
+        "200":
+          description: BLS certificate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BLSCert"
+        "400":
+          description: Invalid transaction details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /core/getTransactionsByHash:
+    post:
+      summary: Get transactions by their hashes
+      operationId: getTransactionsByHash
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hashes:
+                  type: array
+                  items:
+                    type: string
+              required:
+                - hashes
+      responses:
+        "200":
+          description: List of user transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserTransactionInfo"
+        "400":
+          description: Invalid or missing hashes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /core/verifyTransaction:
+    post:
+      summary: Verify a transaction
+      operationId: verifyTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tx_hash:
+                  type: string
+              required:
+                - tx_hash
+      responses:
+        "200":
+          description: Transaction verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionVerificationResult"
+        "400":
+          description: Invalid transaction hash
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    CorePublicParameters:
+      type: object
+      properties:
+        public_key:
+          type: array
+          items:
+            type: integer
+            format: byte
+
+    UserInfo:
+      type: object
+      properties:
+        deposit:
+          type: number
+        available_deposit:
+          type: number
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserTransactionInfo"
+
+    UserTransactionInfo:
+      type: object
+      properties:
+        user_addr:
+          type: string
+        recipient_addr:
+          type: string
+        tx_hash:
+          type: string
+        amount:
+          type: number
+        verified:
+          type: boolean
+        finalized:
+          type: boolean
+        failed:
+          type: boolean
+        cert:
+          type:
+            - string
+            - "null"
+        created_at:
+          type: integer
+
+    TransactionVerificationResult:
+      type: string
+      enum:
+        - Verified
+        - AlreadyVerified
+        - NotFound
+
+    BLSCert:
+      type: string
+      description: Base64-encoded BLS certificate
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Invalid input"
