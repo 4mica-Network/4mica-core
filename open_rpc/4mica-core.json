@@ -1,0 +1,158 @@
+{
+  "openrpc": "1.2.6",
+  "info": {
+    "title": "Core API",
+    "version": "0.0.1"
+  },
+  "methods": [
+    {
+      "name": "core_getPublicParams",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": { "$ref": "#/components/schemas/CorePublicParameters" }
+      }
+    },
+    {
+      "name": "core_registerUser",
+      "params": [
+        { "name": "user_addr", "schema": { "type": "string" } }
+      ],
+      "result": {
+        "name": "result",
+        "schema": { "type": "null" }
+      }
+    },
+    {
+      "name": "core_getUser",
+      "params": [
+        { "name": "user_addr", "schema": { "type": "string" } }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "oneOf": [
+            { "$ref": "#/components/schemas/UserInfo" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "core_issuePaymentCert",
+      "params": [
+        { "name": "user_addr", "schema": { "type": "string" } },
+        { "name": "recipient_addr", "schema": { "type": "string" } },
+        { "name": "transaction_id", "schema": { "type": "string" } },
+        { "name": "amount", "schema": { "type": "number" } }
+      ],
+      "result": {
+        "name": "result",
+        "schema": { "$ref": "#/components/schemas/BLSCert" }
+      }
+    },
+    {
+      "name": "core_getTransactionsByHash",
+      "params": [
+        { "name": "hashes", "schema": { "type": "array", "items": { "type": "string" } } }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/UserTransactionInfo" }
+        }
+      }
+    },
+    {
+      "name": "core_verifyTransaction",
+      "params": [
+        { "name": "tx_hash", "schema": { "type": "string" } }
+      ],
+      "result": {
+        "name": "result",
+        "schema": { "$ref": "#/components/schemas/TransactionVerificationResult" }
+      }
+    }
+  ],
+  "components": {
+    "schemas": {
+      "CorePublicParameters": {
+        "type": "object",
+        "properties": {
+          "public_key": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
+        },
+        "required": ["public_key"]
+      },
+      "BLSCert": {
+        "description": "BLS signature certificate",
+        "type": "string"
+      },
+      "PaymentGuaranteeClaims": {
+        "type": "object",
+        "properties": {
+          "user_addr": { "type": "string" },
+          "recipient_addr": { "type": "string" },
+          "tx_hash": { "type": "string" },
+          "amount": { "type": "number" }
+        },
+        "required": ["user_addr", "recipient_addr", "tx_hash", "amount"]
+      },
+      "UserTransactionInfo": {
+        "type": "object",
+        "properties": {
+          "user_addr": { "type": "string" },
+          "recipient_addr": { "type": "string" },
+          "tx_hash": { "type": "string" },
+          "amount": { "type": "number" },
+          "verified": { "type": "boolean" },
+          "finalized": { "type": "boolean" },
+          "failed": { "type": "boolean" },
+          "cert": { "type": ["string", "null"] },
+          "created_at": { "type": "integer" }
+        },
+        "required": ["user_addr", "recipient_addr", "tx_hash", "amount", "verified", "finalized", "failed", "created_at"]
+      },
+      "UserInfo": {
+        "type": "object",
+        "properties": {
+          "deposit": { "type": "number" },
+          "available_deposit": { "type": "number" },
+          "transactions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/UserTransactionInfo" }
+          }
+        },
+        "required": ["deposit", "available_deposit", "transactions"]
+      },
+      "PaymentVerificationResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "result": { "const": "Verified" },
+              "claims": { "$ref": "#/components/schemas/PaymentGuaranteeClaims" }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "result": { "const": "AlreadyVerified" },
+              "claims": { "$ref": "#/components/schemas/PaymentGuaranteeClaims" }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "result": { "const": "InvalidCertificate" }
+            }
+          }
+        ]
+      },
+      "TransactionVerificationResult": {
+        "type": "string",
+        "enum": ["Verified", "AlreadyVerified", "NotFound"]
+      }
+    }
+  }
+}
