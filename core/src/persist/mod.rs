@@ -2,6 +2,7 @@ use crate::persist::prisma::PrismaClient;
 use rpc::common::UserTransactionInfo;
 use std::sync::Arc;
 
+pub mod connector;
 #[allow(warnings, unused)]
 pub mod prisma;
 pub mod repo;
@@ -27,7 +28,6 @@ impl From<prisma::user_transaction::Data> for UserTransactionInfo {
             recipient_addr: val.recipient_address,
             tx_hash: val.tx_id,
             amount: val.amount,
-            verified: val.verified,
             finalized: val.finalized,
             failed: val.failed,
             cert: val.cert,
