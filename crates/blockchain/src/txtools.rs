@@ -1,12 +1,11 @@
-use alloy::consensus::TxEnvelope;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Transaction;
 use log::error;
-use rpc::common::UserTransactionInfo;
 use rpc::RpcResult;
 
-// --- function to fetch a transaction ---
+/// Fetch a transaction from the blockchain/mempool
+// TODO: does it indeed fetch from both the blockchain AND the mempool?
 pub async fn fetch_transaction<P: Provider>(provider: &P, tx_hash: B256) -> RpcResult<Transaction> {
     provider
         .get_transaction_by_hash(tx_hash)
