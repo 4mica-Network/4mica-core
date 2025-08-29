@@ -156,7 +156,7 @@ contract Core4MicaTest is Test {
         core4Mica.registerUser{value: minDeposit}();
 
         vm.prank(user1);
-        vm.expectRevert(); // expect revert
+        vm.expectRevert()
         core4Mica.withdrawCollateral(minDeposit * 2);
     }
 
