@@ -70,6 +70,35 @@ contract Core4MicaTest is Test {
         arr = new bytes4[](1);
         arr[0] = selector;
     }
+    // === Admin Config ===
+    function test_SetMinCollateralAmount() public {
+        // happy path
+        uint256 newMin = 5e15;
+        vm.expectEmit(false, false, false, true);
+        emit Core4Mica.MinDepositUpdated(newMin);
+        core4Mica.setMinCollateralAmount(newMin);
+
+        assertEq(core4Mica.minCollateralAmount(), newMin);
+    }
+
+    function test_RevertSetMinCollateralAmountZero() public {
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setMinCollateralAmount(0);
+    }
+
+    function test_SetGracePeriod() public {
+        uint256 newGrace = 2 days;
+        vm.expectEmit(false, false, false, true);
+        emit Core4Mica.GracePeriodUpdated(newGrace);
+        core4Mica.setGracePeriod(newGrace);
+
+        assertEq(core4Mica.gracePeriod(), newGrace);
+    }
+
+    function test_RevertSetGracePeriodZero() public {
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setGracePeriod(0);
+    }
 
     // === Registration ===
     function test_RegisterUser() public {
