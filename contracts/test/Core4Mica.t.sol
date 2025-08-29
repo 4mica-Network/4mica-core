@@ -332,6 +332,7 @@ contract Core4MicaTest is Test {
 
         assertEq(locked, 0);
         assertEq(collateral, minDeposit * 2);
+        assertEq(available, minDeposit * 2);
     }
 
     // === MakeWhole: Failure cases ===
