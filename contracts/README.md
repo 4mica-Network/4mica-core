@@ -131,6 +131,8 @@ This ensures the deployer account can interact with restricted functions.
 ---
 
 ## 📦 Current Deployment
+> **Latest contracts deployed at:**  
+> [https://holesky.4mica.xyz](https://holesky.4mica.xyz)
 
 - **AccessManager**  
     Deployed at: `0x31676919335252527965da74b8dFFF589e23Ec81`
