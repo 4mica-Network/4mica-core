@@ -19,16 +19,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error TransferFailed();
     error GracePeriodNotElapsed();
     error NoDeregistrationRequested();
+    error DoubleSpendDetected();
 
     // ========= Storage =========
-    uint256 public minDepositAmount = 1 gwei;
+    uint256 public minCollateralAmount = 1 gwei;
     uint256 public gracePeriod = 1 days;
 
     struct User {
-        uint256 collateralAmount; // total deposited (available + locked)
+        uint256 totalCollateral; // total deposited (available)
         uint256 lockedCollateral; // portion locked by operators
-        uint256 availableCollateral; // collateralAmount - lockedCollateral
-        bool registered;
     }
 
     mapping(address => User) public users;
@@ -36,7 +35,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Events =========
     event UserRegistered(address indexed user, uint256 initialCollateral);
-    event DepositAdded(address indexed user, uint256 amount);
+    event CollateralDeposited(address indexed user, uint256 amount);
     event CollateralLocked(address indexed user, uint256 amount);
     event CollateralUnlocked(address indexed user, uint256 amount);
     event RecipientMadeWhole(
@@ -57,12 +56,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Admin / Manager configuration =========
 
     /// @notice Set the minimum deposit amount required for register/addDeposit.
-    function setMinDepositAmount(
-        uint256 _minDepositAmount
+    function setMinCollateralAmount(
+        uint256 _minCollateralAmount
     ) external restricted {
-        if (_minDepositAmount == 0) revert AmountZero();
-        minDepositAmount = _minDepositAmount;
-        emit MinDepositUpdated(_minDepositAmount);
+        if (_minCollateralAmount == 0) revert AmountZero();
+        minCollateralAmount = _minCollateralAmount;
+        emit MinDepositUpdated(_minCollateralAmount);
     }
 
     /// @notice Set the deregistration grace period.
@@ -73,27 +72,24 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= User flows =========
-
-    /// @notice Register a new user by depositing ETH >= minDepositAmount.
+    //TODO: do we need to keep track of registered users?
+    /// @notice Register a new user by depositing ETH >= minCollateralAmount.
     function registerUser() external payable nonReentrant {
-        if (msg.value < minDepositAmount) revert InsufficientFunds();
-        if (users[msg.sender].collateralAmount != 0) revert AlreadyRegistered();
+        if (msg.value < minCollateralAmount) revert InsufficientFunds();
+        if (users[msg.sender].totalCollateral != 0) revert AlreadyRegistered();
         users[msg.sender] = User({
-            collateralAmount: msg.value,
-            lockedCollateral: 0,
-            availableCollateral: msg.value,
-            registered: true
+            totalCollateral: msg.value,
+            lockedCollateral: 0
         });
         emit UserRegistered(msg.sender, msg.value);
     }
 
     /// @notice Add more collateral to an existing account.
     function addDeposit() external payable nonReentrant {
+        if (msg.value == 0) revert AmountZero();
         User storage user = users[msg.sender];
-        if (!user.registered) revert NotRegistered();
-        user.collateralAmount += msg.value;
-        user.availableCollateral += msg.value;
-        emit DepositAdded(msg.sender, msg.value);
+        user.totalCollateral += msg.value;
+        emit CollateralDeposited(msg.sender, msg.value);
     }
 
     /// @notice Withdraw from available collateral.
@@ -103,12 +99,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     ) external nonReentrant restricted {
         if (amount == 0) revert AmountZero();
         User storage user = users[msg.sender];
-        if (user.collateralAmount == 0) revert NotRegistered();
-        if (user.availableCollateral < amount) revert InsufficientAvailable();
+        if (user.totalCollateral == 0) revert NotRegistered();
+        if (user.totalCollateral - user.lockedCollateral < amount)
+            revert InsufficientAvailable();
 
         // Effects
-        user.collateralAmount -= amount;
-        user.availableCollateral -= amount;
+        user.totalCollateral -= amount;
 
         // Interaction
         (bool ok, ) = payable(msg.sender).call{value: amount}("");
@@ -120,7 +116,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     /// @notice Request deregistration; must finalize after `gracePeriod` if no collateral is locked.
     function requestDeregistration() external restricted {
         User storage user = users[msg.sender];
-        if (user.collateralAmount == 0) revert NotRegistered();
+        if (user.totalCollateral == 0) revert NotRegistered();
         deregistrationRequestedAt[msg.sender] = block.timestamp;
         emit DeregistrationRequested(msg.sender, block.timestamp);
     }
@@ -142,7 +138,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
         User storage user = users[msg.sender];
         if (user.lockedCollateral != 0) revert LockedCollateralNonZero();
-        uint256 amount = user.collateralAmount;
+        uint256 amount = user.totalCollateral;
         if (amount == 0) revert NotRegistered();
 
         // Effects
@@ -166,10 +162,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     ) external restricted {
         if (amount == 0) revert AmountZero();
         User storage user = users[userAddr];
-        if (user.collateralAmount == 0) revert NotRegistered();
-        if (user.availableCollateral < amount) revert InsufficientAvailable();
-
-        user.availableCollateral -= amount;
+        if (user.totalCollateral == 0) revert NotRegistered();
+        if (user.totalCollateral - user.lockedCollateral < amount)
+            revert InsufficientAvailable();
         user.lockedCollateral += amount;
 
         emit CollateralLocked(userAddr, amount);
@@ -183,39 +178,33 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     ) external restricted {
         if (amount == 0) revert AmountZero();
         User storage user = users[userAddr];
-        if (user.collateralAmount == 0) revert NotRegistered();
+        if (user.totalCollateral == 0) revert NotRegistered();
         if (user.lockedCollateral < amount) revert InsufficientCollateral();
-
         user.lockedCollateral -= amount;
-        user.availableCollateral += amount;
-
         emit CollateralUnlocked(userAddr, amount);
     }
 
     /// @notice Pay a recipient from a user's locked collateral and reduce user's total collateral accordingly.
     /// @dev Manager-only. Performs ETH transfer. Uses CEI + nonReentrant.
     function makeWhole(
-        address userAddr,
+        address client,
         address recipient,
         uint256 amount
     ) external restricted nonReentrant {
         if (amount == 0) revert AmountZero();
         if (recipient == address(0)) revert TransferFailed();
 
-        User storage user = users[userAddr];
-        if (user.collateralAmount == 0) revert NotRegistered();
-        if (user.lockedCollateral < amount) revert InsufficientCollateral();
+        User storage user = users[client];
+        if (user.totalCollateral == 0) revert DoubleSpendDetected();
+        if (user.lockedCollateral < amount) revert DoubleSpendDetected();
 
         // Effects: locked decreases; total collateral decreases (funds leave the system)
         user.lockedCollateral -= amount;
-        user.collateralAmount -= amount;
-        // availableCollateral unchanged (already not available)
-
-        // Interaction
+        user.totalCollateral -= amount;
         (bool ok, ) = payable(recipient).call{value: amount}("");
         if (!ok) revert TransferFailed();
 
-        emit RecipientMadeWhole(userAddr, recipient, amount);
+        emit RecipientMadeWhole(client, recipient, amount);
     }
 
     // ========= Views / Helpers =========
@@ -234,14 +223,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         )
     {
         User memory u = users[userAddr];
-        collateral = u.collateralAmount;
+        collateral = u.totalCollateral;
         locked = u.lockedCollateral;
-        available = u.availableCollateral;
-        deregRequestedAt = deregregistrationTimestamp(userAddr);
+        available = u.totalCollateral - u.lockedCollateral;
+        deregRequestedAt = deregistrationTimestamp(userAddr);
     }
 
     /// @notice Returns 0 if not requested.
-    function deregregistrationTimestamp(
+    function deregistrationTimestamp(
         address userAddr
     ) public view returns (uint256) {
         return deregistrationRequestedAt[userAddr];
