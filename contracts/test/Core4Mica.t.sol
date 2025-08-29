@@ -42,10 +42,14 @@ contract Core4MicaTest is Test {
         );
         manager.setTargetFunctionRole(
             address(core4Mica),
+            _asSingletonArray(Core4Mica.cancelDeregistration.selector),
+            USER_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
             _asSingletonArray(Core4Mica.finalizeDeregistration.selector),
             USER_ROLE
         );
-
         // grant user1 the USER_ROLE immediately (0 delay)
         manager.grantRole(USER_ROLE, user1, 0);
 
@@ -293,6 +297,21 @@ contract Core4MicaTest is Test {
         core4Mica.finalizeDeregistration();
     }
 
+    // === Deregistration: Failure cases ===
+    function test_RevertRequestDeregistration_NotRegistered() public {
+        // user1 never registered
+        vm.prank(user1);
+        vm.expectRevert(Core4Mica.NotRegistered.selector);
+        core4Mica.requestDeregistration();
+    }
+
+    function test_RevertCancelDeregistration_NoRequest() public {
+        vm.startPrank(user1);
+        vm.expectRevert(Core4Mica.NoDeregistrationRequested.selector);
+        core4Mica.cancelDeregistration();
+        vm.stopPrank();
+    }
+
     // === MakeWhole ===
     function test_MakeWholePayout() public {
         vm.deal(user1, 3 ether);
@@ -300,7 +319,6 @@ contract Core4MicaTest is Test {
 
         vm.prank(user1);
         core4Mica.registerUser{value: minDeposit * 3}();
-
         core4Mica.lockCollateral(user1, minDeposit);
 
         uint256 beforeBal = user2.balance;
@@ -315,5 +333,44 @@ contract Core4MicaTest is Test {
 
         assertEq(locked, 0);
         assertEq(collateral, minDeposit * 2);
+    }
+
+    // === MakeWhole: Failure cases ===
+
+    function test_RevertMakeWhole_AmountZero() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit}();
+
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.makeWhole(user1, user2, 0);
+    }
+
+    function test_RevertMakeWhole_InvalidRecipient() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.lockCollateral(user1, minDeposit);
+
+        vm.expectRevert(Core4Mica.TransferFailed.selector);
+        core4Mica.makeWhole(user1, address(0), minDeposit);
+    }
+
+    function test_RevertMakeWhole_UserNotRegistered() public {
+        // user1 never registered
+        vm.expectRevert(Core4Mica.NotRegistered.selector);
+        core4Mica.makeWhole(user1, user2, minDeposit);
+    }
+
+    function test_RevertMakeWhole_DoubleSpendDetected() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit}();
+
+        // lock less than we will try to pay out
+        core4Mica.lockCollateral(user1, minDeposit);
+
+        vm.expectRevert(Core4Mica.DoubleSpendDetected.selector);
+        core4Mica.makeWhole(user1, user2, minDeposit * 2);
     }
 }
