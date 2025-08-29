@@ -185,7 +185,7 @@ contract Core4MicaTest is Test {
         core4Mica.registerUser{value: minDeposit}();
 
         vm.prank(user1);
-        vm.expectRevert();
+        vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
         core4Mica.withdrawCollateral(minDeposit * 2);
     }
 
@@ -202,6 +202,31 @@ contract Core4MicaTest is Test {
 
         assertEq(locked, minDeposit);
         assertEq(available, minDeposit * 2);
+    }
+
+    function test_RevertLockCollateral_NotRegistered() public {
+        // user1 has no registration
+        vm.expectRevert(Core4Mica.NotRegistered.selector);
+        core4Mica.lockCollateral(user1, minDeposit);
+    }
+
+    function test_RevertLockCollateral_AmountZero() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit}();
+
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.lockCollateral(user1, 0);
+    }
+
+    function test_RevertLockCollateral_InsufficientAvailable() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit}();
+
+        // Try to lock more than user1's collateral
+        vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
+        core4Mica.lockCollateral(user1, minDeposit * 2);
     }
 
     // === Deregistration ===
