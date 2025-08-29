@@ -154,7 +154,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Operator / Manager flows =========
 
-    /// @notice Lock a user's available collateral (e.g., after generating a certificate).
+    /// @notice Lock (part of) a user's available collateral (e.g., after generating a certificate).
     /// @dev Manager/Operator-only. Does not transfer ETH; only internal accounting.
     function lockCollateral(
         address userAddr,
