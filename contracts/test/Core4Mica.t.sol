@@ -328,8 +328,7 @@ contract Core4MicaTest is Test {
         uint256 afterBal = user2.balance;
         assertEq(afterBal - beforeBal, minDeposit);
 
-        (, uint256 locked, , ) = core4Mica.getUser(user1);
-        (uint256 collateral, , , ) = core4Mica.getUser(user1);
+        (uint256 collateral, uint256 locked, uint256 available, ) = core4Mica.getUser(user1);
 
         assertEq(locked, 0);
         assertEq(collateral, minDeposit * 2);
