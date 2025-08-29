@@ -120,7 +120,7 @@ contract Core4MicaTest is Test {
     function test_RevertRegisterInsufficientFunds() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        vm.expectRevert(); // expect revert
+        vm.expectRevert(Core4Mica.InsufficientFunds.selector);
         core4Mica.registerUser{value: 1}();
     }
 
@@ -129,7 +129,7 @@ contract Core4MicaTest is Test {
         vm.startPrank(user1);
         core4Mica.registerUser{value: minDeposit}();
 
-        vm.expectRevert(); // expect revert
+        vm.expectRevert(Core4Mica.AlreadyRegistered.selector);
         core4Mica.registerUser{value: minDeposit}();
     }
 
@@ -156,7 +156,7 @@ contract Core4MicaTest is Test {
         core4Mica.registerUser{value: minDeposit}();
 
         vm.prank(user1);
-        vm.expectRevert()
+        vm.expectRevert();
         core4Mica.withdrawCollateral(minDeposit * 2);
     }
 
@@ -203,7 +203,7 @@ contract Core4MicaTest is Test {
         core4Mica.requestDeregistration();
 
         vm.prank(user1);
-        vm.expectRevert(); // expect revert
+        vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
         core4Mica.finalizeDeregistration();
     }
 
