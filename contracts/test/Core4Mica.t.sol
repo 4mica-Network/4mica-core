@@ -18,7 +18,7 @@ contract Core4MicaTest is Test {
     function setUp() public {
         manager = new AccessManager(address(this));
         core4Mica = new Core4Mica(address(manager));
-        core4Mica.setMinDepositAmount(minDeposit);
+        core4Mica.setMinCollateralAmount(minDeposit);
         // Assign all necessary function roles to USER_ROLE (no delay)
         manager.setTargetFunctionRole(
             address(core4Mica),
