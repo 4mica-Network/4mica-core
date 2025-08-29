@@ -78,7 +78,7 @@ contract Core4MicaScript is Script {
 
         // Admin-only config functions → USER_ADMIN_ROLE
         bytes4[] memory adminSelectors = new bytes4[](2);
-        adminSelectors[0] = Core4Mica.setMinDepositAmount.selector;
+        adminSelectors[0] = Core4Mica.setMinCollateralAmount.selector;
         adminSelectors[1] = Core4Mica.setGracePeriod.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(
