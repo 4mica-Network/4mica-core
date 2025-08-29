@@ -72,14 +72,49 @@ contract Core4MicaTest is Test {
     }
 
     // === Registration ===
-    function testRegisterUser() public {
+    function test_RegisterUser() public {
+        // Give user1 some ETH
         vm.deal(user1, 1 ether);
-        vm.prank(user1);
+
+        // Simulate user1 calling the function
+        vm.startPrank(user1);
+
+        // Expect the UserRegistered event with exact parameters
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.UserRegistered(user1, minDeposit);
+
+        // Call registerUser with the minimum deposit
         core4Mica.registerUser{value: minDeposit}();
 
-        (uint256 collateral, , uint256 available, ) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit);
-        assertEq(available, minDeposit);
+        // Verify user data after registration
+        (
+            uint256 totalCollateral,
+            uint256 lockedCollateral,
+            uint256 availableCollateral,
+            uint256 deregTimestamp
+        ) = core4Mica.getUser(user1);
+
+        assertEq(totalCollateral, minDeposit, "Total collateral mismatch");
+        assertEq(lockedCollateral, 0, "Locked collateral should be 0");
+        assertEq(
+            availableCollateral,
+            minDeposit,
+            "Available collateral mismatch"
+        );
+        assertEq(deregTimestamp, 0, "Deregistration timestamp should be 0");
+
+        // Check contract balance increased correctly
+        assertEq(
+            address(core4Mica).balance,
+            minDeposit,
+            "Contract balance mismatch"
+        );
+
+        // Check that a second registration reverts
+        vm.expectRevert(Core4Mica.AlreadyRegistered.selector);
+        core4Mica.registerUser{value: minDeposit}();
+
+        vm.stopPrank();
     }
 
     function test_RevertRegisterInsufficientFunds() public {
@@ -99,7 +134,7 @@ contract Core4MicaTest is Test {
     }
 
     // === Deposits / Withdrawals ===
-    function testAddDepositAndWithdraw() public {
+    function test_AddDepositAndWithdraw() public {
         vm.deal(user1, 2 ether);
         vm.startPrank(user1);
         core4Mica.registerUser{value: minDeposit}();
@@ -126,7 +161,7 @@ contract Core4MicaTest is Test {
     }
 
     // === Locking Collateral ===
-    function testManagerCanLockCollateral() public {
+    function test_ManagerCanLockCollateral() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.registerUser{value: minDeposit * 3}();
@@ -141,7 +176,7 @@ contract Core4MicaTest is Test {
     }
 
     // === Deregistration ===
-    function testRequestAndFinalizeDeregistration() public {
+    function test_RequestAndFinalizeDeregistration() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
         core4Mica.registerUser{value: minDeposit}();
@@ -173,7 +208,7 @@ contract Core4MicaTest is Test {
     }
 
     // === MakeWhole ===
-    function testMakeWholePayout() public {
+    function test_MakeWholePayout() public {
         vm.deal(user1, 3 ether);
         vm.deal(user2, 0);
 
