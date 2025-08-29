@@ -189,6 +189,38 @@ contract Core4MicaTest is Test {
         core4Mica.withdrawCollateral(minDeposit * 2);
     }
 
+    // === Withdraw Collateral: Failure cases ===
+    function test_RevertWithdrawCollateral_AmountZero() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit}();
+
+        vm.prank(user1);
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.withdrawCollateral(0);
+    }
+
+    function test_RevertWithdrawCollateral_NotRegistered() public {
+        // user1 never registered
+        vm.prank(user1);
+        vm.expectRevert(Core4Mica.NotRegistered.selector);
+        core4Mica.withdrawCollateral(minDeposit);
+    }
+
+    function test_RevertWithdrawCollateral_InsufficientAvailable() public {
+        vm.deal(user1, 2 ether);
+        vm.startPrank(user1);
+        core4Mica.registerUser{value: minDeposit * 2}();
+        vm.stopPrank();
+
+        // lock part of the collateral so available < total
+        core4Mica.lockCollateral(user1, minDeposit * 2);
+
+        vm.prank(user1);
+        vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
+        core4Mica.withdrawCollateral(minDeposit);
+    }
+
     // === Locking Collateral ===
     function test_ManagerCanLockCollateral() public {
         vm.deal(user1, 3 ether);
