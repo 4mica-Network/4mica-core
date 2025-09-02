@@ -24,17 +24,17 @@ contract Core4MicaScript is Script {
     uint64 public constant DEFAULT_ADMIN_ROLE = 0;
 
     // Execution delays (real values; for local/test we’ll pass 0 in grantRole)
-    uint32 public constant CALLER_ROLE_EXECUTION_DELAY = 5 hours;
-    uint32 public constant CALLER_ADMIN_ROLE_EXECUTION_DELAY = 8 hours;
+    uint32 public constant CALLER_ROLE_EXECUTION_DELAY = 0 hours;
+    uint32 public constant CALLER_ADMIN_ROLE_EXECUTION_DELAY = 0 hours;
 
-    uint32 public constant USER_ROLE_EXECUTION_DELAY = 2 hours;
-    uint32 public constant USER_ADMIN_ROLE_EXECUTION_DELAY = 6 hours;
+    uint32 public constant USER_ROLE_EXECUTION_DELAY = 0 hours;
+    uint32 public constant USER_ADMIN_ROLE_EXECUTION_DELAY = 0 hours;
 
-    uint32 public constant AGGREGATOR_ROLE_EXECUTION_DELAY = 4 hours;
-    uint32 public constant AGGREGATOR_ADMIN_ROLE_EXECUTION_DELAY = 12 hours;
+    uint32 public constant AGGREGATOR_ROLE_EXECUTION_DELAY = 0 hours;
+    uint32 public constant AGGREGATOR_ADMIN_ROLE_EXECUTION_DELAY = 0 hours;
 
-    uint32 public constant OPERATOR_ROLE_EXECUTION_DELAY = 3 hours;
-    uint32 public constant OPERATOR_ADMIN_ROLE_EXECUTION_DELAY = 10 hours;
+    uint32 public constant OPERATOR_ROLE_EXECUTION_DELAY = 0 hours;
+    uint32 public constant OPERATOR_ADMIN_ROLE_EXECUTION_DELAY = 0 hours;
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
