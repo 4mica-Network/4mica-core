@@ -20,6 +20,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error NoDeregistrationRequested();
     error DoubleSpendDetected();
     error DirectTransferNotAllowed();
+    error DeregistrationPending();
 
     // ========= Storage =========
     uint256 public minCollateralAmount = 1 gwei;
@@ -183,6 +184,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         address userAddr,
         uint256 amount
     ) external restricted nonZero(amount) isRegistered(userAddr) {
+        if (deregistrationRequestedAt[userAddr] != 0) {
+            revert DeregistrationPending();
+        }
         User storage user = users[userAddr];
         if (user.totalCollateral - user.lockedCollateral < amount)
             revert InsufficientAvailable();

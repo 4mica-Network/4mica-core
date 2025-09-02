@@ -328,7 +328,8 @@ contract Core4MicaTest is Test {
         uint256 afterBal = user2.balance;
         assertEq(afterBal - beforeBal, minDeposit);
 
-        (uint256 collateral, uint256 locked, uint256 available, ) = core4Mica.getUser(user1);
+        (uint256 collateral, uint256 locked, uint256 available, ) = core4Mica
+            .getUser(user1);
 
         assertEq(locked, 0);
         assertEq(collateral, minDeposit * 2);
@@ -372,5 +373,165 @@ contract Core4MicaTest is Test {
 
         vm.expectRevert(Core4Mica.DoubleSpendDetected.selector);
         core4Mica.makeWhole(user1, user2, minDeposit * 2);
+    }
+
+    // === Locking Collateral while deregistration is pending ===
+
+    function test_RevertLockCollateral_WhenDeregistrationRequested_Immediately()
+        public
+    {
+        vm.deal(user1, 3 ether);
+
+        // user registers and deposits
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit * 3}();
+
+        // user requests deregistration
+        vm.prank(user1);
+        core4Mica.requestDeregistration();
+
+        // operator tries to lock -> should revert
+        vm.expectRevert(Core4Mica.DeregistrationPending.selector);
+        core4Mica.lockCollateral(user1, minDeposit);
+    }
+
+    function test_RevertLockCollateral_WhenDeregistrationRequested_AfterGraceElapsed()
+        public
+    {
+        vm.deal(user1, 3 ether);
+
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit * 3}();
+
+        vm.prank(user1);
+        core4Mica.requestDeregistration();
+
+        // Even after grace period elapses (but before finalize), lock should still revert
+        vm.warp(block.timestamp + core4Mica.gracePeriod());
+
+        vm.expectRevert(Core4Mica.DeregistrationPending.selector);
+        core4Mica.lockCollateral(user1, minDeposit);
+    }
+
+    function test_LockCollateral_AfterCancelDeregistration() public {
+        vm.deal(user1, 3 ether);
+
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit * 3}();
+
+        vm.prank(user1);
+        core4Mica.requestDeregistration();
+
+        // user cancels; lock should now succeed
+        vm.prank(user1);
+        core4Mica.cancelDeregistration();
+
+        core4Mica.lockCollateral(user1, minDeposit);
+
+        (, uint256 lockedAfter, uint256 availableAfter, ) = core4Mica.getUser(
+            user1
+        );
+        assertEq(
+            lockedAfter,
+            minDeposit,
+            "Locked should reflect post-cancel lock"
+        );
+        assertEq(
+            availableAfter,
+            minDeposit * 2,
+            "Available should decrease after lock"
+        );
+    }
+
+    function test_RevertLockCollateral_AfterFinalizeDeregistration_NotRegistered()
+        public
+    {
+        vm.deal(user1, 3 ether);
+
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit * 3}();
+
+        vm.prank(user1);
+        core4Mica.requestDeregistration();
+
+        // Let grace pass and finalize (must have zero locked to finalize)
+        vm.warp(block.timestamp + core4Mica.gracePeriod());
+        vm.prank(user1);
+        core4Mica.finalizeDeregistration();
+
+        // After finalize, user is no longer registered; locking should revert with NotRegistered
+        vm.expectRevert(Core4Mica.NotRegistered.selector);
+        core4Mica.lockCollateral(user1, minDeposit);
+    }
+
+    function test_RequestThenLockBeforeRequestAllowed_ButAfterRequestReverts()
+        public
+    {
+        vm.deal(user1, 5 ether);
+
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit * 5}();
+
+        // Operator can lock before any deregistration request
+        core4Mica.lockCollateral(user1, minDeposit);
+
+        // User requests deregistration
+        vm.prank(user1);
+        core4Mica.requestDeregistration();
+
+        // Further locks must be blocked
+        vm.expectRevert(Core4Mica.DeregistrationPending.selector);
+        core4Mica.lockCollateral(user1, minDeposit);
+
+        // Sanity: existing lock remains, balances unchanged by failed lock
+        (uint256 total, uint256 locked, uint256 available, ) = core4Mica
+            .getUser(user1);
+        assertEq(total, minDeposit * 5, "Total collateral should be unchanged");
+        assertEq(locked, minDeposit, "Locked should be unchanged");
+        assertEq(
+            available,
+            (minDeposit * 5) - minDeposit,
+            "Available should be unchanged"
+        );
+    }
+
+    function test_RequestDeregistration_DoesNotBlockWithdrawOrMakeWholeFromExistingLock()
+        public
+    {
+        // Behavior expectation:
+        // - Requesting deregistration blocks *new* locks.
+        // - It should NOT interfere with paying out (makeWhole) against already-locked collateral.
+
+        vm.deal(user1, 4 ether);
+        vm.deal(user2, 0);
+
+        // Register and pre-lock some collateral
+        vm.prank(user1);
+        core4Mica.registerUser{value: minDeposit * 4}();
+        core4Mica.lockCollateral(user1, minDeposit * 2);
+
+        // User requests deregistration (blocks further locks but does not unblock/affect existing locks)
+        vm.prank(user1);
+        core4Mica.requestDeregistration();
+
+        // New lock attempts must revert
+        vm.expectRevert(Core4Mica.DeregistrationPending.selector);
+        core4Mica.lockCollateral(user1, minDeposit);
+
+        // But operator can still makeWhole using the already-locked amount
+        uint256 before = user2.balance;
+        core4Mica.makeWhole(user1, user2, minDeposit * 2);
+        uint256 after_ = user2.balance;
+        assertEq(
+            after_ - before,
+            minDeposit * 2,
+            "Recipient didn't receive payout"
+        );
+
+        (uint256 total, uint256 locked, uint256 available, ) = core4Mica
+            .getUser(user1);
+        assertEq(locked, 0, "Locked should be reduced by payout");
+        assertEq(total, minDeposit * 2, "Total should be reduced by payout");
+        assertEq(available, minDeposit * 2, "Available tracks total - locked");
     }
 }
