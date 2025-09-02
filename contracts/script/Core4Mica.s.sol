@@ -48,65 +48,45 @@ contract Core4MicaScript is Script {
 
         // 2. Map Core4Mica functions to roles
         // User-facing functions → USER_ROLE
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.registerUser.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.addDeposit.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.withdrawCollateral.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.requestDeregistration.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.cancelDeregistration.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.finalizeDeregistration.selector),
-            USER_ROLE
-        );
+        bytes4[] memory userSelectors = new bytes4[](6);
+        userSelectors[0] = Core4Mica.registerUser.selector;
+        userSelectors[1] = Core4Mica.addDeposit.selector;
+        userSelectors[2] = Core4Mica.withdrawCollateral.selector;
+        userSelectors[3] = Core4Mica.requestDeregistration.selector;
+        userSelectors[4] = Core4Mica.cancelDeregistration.selector;
+        userSelectors[5] = Core4Mica.finalizeDeregistration.selector;
+        for (uint256 i = 0; i < userSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(userSelectors[i]),
+                USER_ROLE
+            );
+        }
 
         // Operator functions → OPERATOR_ROLE
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.lockCollateral.selector),
-            OPERATOR_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.unlockCollateral.selector),
-            OPERATOR_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.makeWhole.selector),
-            OPERATOR_ROLE
-        );
+        bytes4[] memory operatorSelectors = new bytes4[](3);
+        operatorSelectors[0] = Core4Mica.lockCollateral.selector;
+        operatorSelectors[1] = Core4Mica.unlockCollateral.selector;
+        operatorSelectors[2] = Core4Mica.makeWhole.selector;
+        for (uint256 i = 0; i < operatorSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(operatorSelectors[i]),
+                OPERATOR_ROLE
+            );
+        }
 
         // Admin-only config functions → USER_ADMIN_ROLE
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.setMinDepositAmount.selector),
-            USER_ADMIN_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.setGracePeriod.selector),
-            USER_ADMIN_ROLE
-        );
+        bytes4[] memory adminSelectors = new bytes4[](2);
+        adminSelectors[0] = Core4Mica.setMinDepositAmount.selector;
+        adminSelectors[1] = Core4Mica.setGracePeriod.selector;
+        for (uint256 i = 0; i < adminSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(adminSelectors[i]),
+                USER_ADMIN_ROLE
+            );
+        }
 
         // 3. Grant roles (immediate in local/test: 0 delay)
         manager.grantRole(USER_ROLE, deployer, 0); // deployer can act as USER
