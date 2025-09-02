@@ -76,6 +76,15 @@ EOF
 echo "Environment variables written to core/.env:"
 cat core/.env
 
+echo "If you want to deploy contracts with Forge, run the following command:"
+echo ""
+echo "RPC_URL=\"$ETHEREUM_HTTP_RPC_URL\" forge script contracts/script/Core4Mica.s.sol:Core4MicaScript \\"
+echo "  --rpc-url \"\$RPC_URL\" \\"
+echo "  --broadcast \\"
+echo "  --via-ir \\"
+echo "  -vvvv"
+echo ""
+
 # ========== 6. Build Project ==========
 echo "Building local binary..."
 cargo build
