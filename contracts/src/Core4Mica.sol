@@ -23,7 +23,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error DeregistrationPending();
 
     // ========= Storage =========
-    uint256 public minCollateralAmount = 1 gwei;
     uint256 public gracePeriod = 1 days;
 
     struct User {
@@ -48,7 +47,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event DeregistrationRequested(address indexed user, uint256 when);
     event DeregistrationCanceled(address indexed user);
     event UserDeregistered(address indexed user, uint256 refundedAmount);
-    event MinCollateralUpdated(uint256 newMinDeposit);
     event GracePeriodUpdated(uint256 newGracePeriod);
 
     // ========= Constructor =========
@@ -70,20 +68,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         _;
     }
 
-    modifier minCollateral(uint256 amount) {
-        if (amount < minCollateralAmount) revert InsufficientFunds();
-        _;
-    }
-
     // ========= Admin / Manager configuration =========
-    function setMinCollateralAmount(
-        uint256 _minCollateralAmount
-    ) external restricted {
-        if (_minCollateralAmount == 0) revert AmountZero();
-        minCollateralAmount = _minCollateralAmount;
-        emit MinCollateralUpdated(_minCollateralAmount);
-    }
-
     function setGracePeriod(uint256 _gracePeriod) external restricted {
         if (_gracePeriod == 0) revert AmountZero();
         gracePeriod = _gracePeriod;
@@ -96,7 +81,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         payable
         nonReentrant
         nonZero(msg.value)
-        minCollateral(msg.value)
     {
         User storage user = users[msg.sender];
         uint256 prev_collateral = user.totalCollateral;

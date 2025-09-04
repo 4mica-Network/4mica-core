@@ -18,7 +18,6 @@ contract Core4MicaTest is Test {
     function setUp() public {
         manager = new AccessManager(address(this));
         core4Mica = new Core4Mica(address(manager));
-        core4Mica.setMinCollateralAmount(minDeposit);
         // Assign all necessary function roles to USER_ROLE (no delay)
         manager.setTargetFunctionRole(
             address(core4Mica),
@@ -70,21 +69,6 @@ contract Core4MicaTest is Test {
         arr[0] = selector;
     }
     // === Admin Config ===
-    function test_SetMinCollateralAmount() public {
-        // happy path
-        uint256 newMin = 5e15;
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.MinCollateralUpdated(newMin);
-        core4Mica.setMinCollateralAmount(newMin);
-
-        assertEq(core4Mica.minCollateralAmount(), newMin);
-    }
-
-    function test_RevertSetMinCollateralAmountZero() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setMinCollateralAmount(0);
-    }
-
     function test_SetGracePeriod() public {
         uint256 newGrace = 2 days;
         vm.expectEmit(false, false, false, true);
@@ -146,13 +130,6 @@ contract Core4MicaTest is Test {
         core4Mica.addDeposit{value: minDeposit}();
 
         vm.stopPrank();
-    }
-
-    function test_RevertRegisterInsufficientFunds() public {
-        vm.deal(user1, 1 ether);
-        vm.prank(user1);
-        vm.expectRevert(Core4Mica.InsufficientFunds.selector);
-        core4Mica.addDeposit{value: 1}();
     }
 
     // === Deposits / Withdrawals ===
