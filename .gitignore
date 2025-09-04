@@ -27,7 +27,7 @@ cache/
 #.idea/
 cache/
 bin/
-.DS_Store
+**/.DS_Store
 
 #Prisma
 core/src/persist/prisma.rs
