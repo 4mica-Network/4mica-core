@@ -74,7 +74,7 @@ contract Core4MicaTest is Test {
         // happy path
         uint256 newMin = 5e15;
         vm.expectEmit(false, false, false, true);
-        emit Core4Mica.MinDepositUpdated(newMin);
+        emit Core4Mica.MinCollateralUpdated(newMin);
         core4Mica.setMinCollateralAmount(newMin);
 
         assertEq(core4Mica.minCollateralAmount(), newMin);
