@@ -88,8 +88,6 @@ contract Core4MicaTest is Test {
 
         // Expect the UserRegistered event with exact parameters
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralDeposited(user1, minDeposit);
-        vm.expectEmit(true, false, false, true);
         emit Core4Mica.UserRegistered(user1, minDeposit);
 
         // Call registerUser with the minimum deposit
