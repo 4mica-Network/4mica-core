@@ -152,32 +152,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Operator / Manager flows =========
-    function lockCollateral(
-        address userAddr,
-        uint256 amount
-    ) external restricted nonZero(amount) isRegistered(userAddr) {
-        if (deregistrationRequestedAt[userAddr] != 0) {
-            revert DeregistrationPending();
-        }
-        User storage user = users[userAddr];
-        if (user.totalCollateral - user.lockedCollateral < amount)
-            revert InsufficientAvailable();
-        user.lockedCollateral += amount;
-
-        emit CollateralLocked(userAddr, amount);
-    }
-
-    function unlockCollateral(
-        address userAddr,
-        uint256 amount
-    ) external restricted nonZero(amount) isRegistered(userAddr) {
-        User storage user = users[userAddr];
-        if (user.lockedCollateral < amount) revert InsufficientCollateral();
-        user.lockedCollateral -= amount;
-
-        emit CollateralUnlocked(userAddr, amount);
-    }
-
     function makeWhole(
         address client,
         address recipient,
@@ -191,9 +165,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         isRegistered(client)
     {
         User storage user = users[client];
-        if (user.lockedCollateral < amount) revert DoubleSpendDetected();
-
-        user.lockedCollateral -= amount;
         user.totalCollateral -= amount;
 
         (bool ok, ) = payable(recipient).call{value: amount}("");
