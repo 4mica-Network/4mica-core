@@ -3,6 +3,7 @@ pragma solidity ^0.8.29;
 
 import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title Core4Mica
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
@@ -13,14 +14,19 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error InsufficientAvailable();
     error TransferFailed();
     error GracePeriodNotElapsed();
-    error NoDeregistrationRequested();
+    error NoWithdrawalRequested();
     error DirectTransferNotAllowed();
 
     // ========= Storage =========
     uint256 public gracePeriod = 1 days;
 
+    struct WithdrawalRequest {
+        uint256 timestamp;
+        uint256 amount;
+    }
+
     mapping(address => uint256) public collateral;
-    mapping(address => uint256) public deregistrationRequestedAt;
+    mapping(address => WithdrawalRequest) public withdrawalRequests;
 
     // ========= Events =========
     event UserRegistered(address indexed user, uint256 initialCollateral);
@@ -31,9 +37,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         uint256 amount
     );
     event CollateralWithdrawn(address indexed user, uint256 amount);
-    event DeregistrationRequested(address indexed user, uint256 when);
-    event DeregistrationCanceled(address indexed user);
-    event UserDeregistered(address indexed user, uint256 refundedAmount);
+    event WithdrawalRequested(address indexed user, uint256 when);
+    event WithdrawalCanceled(address indexed user);
     event GracePeriodUpdated(uint256 newGracePeriod);
 
     // ========= Constructor =========
@@ -79,61 +84,53 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         }
     }
 
-    function withdrawCollateral(
+    function requestWithdrawal(
         uint256 amount
     )
         external
-        nonReentrant
         restricted
-        nonZero(amount)
         isRegistered(msg.sender)
+        nonZero(amount)
     {
-        if (collateral[msg.sender] < amount)
+        if (amount > collateral[msg.sender])
             revert InsufficientAvailable();
 
-        collateral[msg.sender] -= amount;
-
-        (bool ok, ) = payable(msg.sender).call{value: amount}("");
-        if (!ok) revert TransferFailed();
-
-        emit CollateralWithdrawn(msg.sender, amount);
+        withdrawalRequests[msg.sender] = WithdrawalRequest(block.timestamp, amount);
+        emit WithdrawalRequested(msg.sender, block.timestamp);
     }
 
-    function requestDeregistration()
-        external
-        restricted
-        isRegistered(msg.sender)
-    {
-        deregistrationRequestedAt[msg.sender] = block.timestamp;
-        emit DeregistrationRequested(msg.sender, block.timestamp);
+    function cancelWithdrawal() external restricted {
+        if (withdrawalRequests[msg.sender].timestamp == 0)
+            revert NoWithdrawalRequested();
+        delete withdrawalRequests[msg.sender];
+        emit WithdrawalCanceled(msg.sender);
     }
 
-    function cancelDeregistration() external restricted {
-        if (deregistrationRequestedAt[msg.sender] == 0)
-            revert NoDeregistrationRequested();
-        delete deregistrationRequestedAt[msg.sender];
-        emit DeregistrationCanceled(msg.sender);
-    }
-
-    function finalizeDeregistration()
+    function finalizeWithdrawal()
         external
         nonReentrant
         restricted
-        isRegistered(msg.sender)
     {
-        uint256 requestedAt = deregistrationRequestedAt[msg.sender];
-        if (requestedAt == 0) revert NoDeregistrationRequested();
-        if (block.timestamp < requestedAt + gracePeriod)
+        WithdrawalRequest memory request = withdrawalRequests[msg.sender];
+        if (request.timestamp == 0) revert NoWithdrawalRequested();
+        if (block.timestamp < request.timestamp + gracePeriod)
             revert GracePeriodNotElapsed();
 
-        uint256 amount = collateral[msg.sender];
-        delete collateral[msg.sender];
-        delete deregistrationRequestedAt[msg.sender];
+        /// The user's collateral may have been reduced since the withdrawal was requested.
+        /// As such, take the minimum of the two, making sure we never overdraw the account.
+        uint256 withdrawal_amount = Math.min(collateral[msg.sender], request.amount);
 
-        (bool ok, ) = payable(msg.sender).call{value: amount}("");
+        if (withdrawal_amount == collateral[msg.sender]) {
+            delete collateral[msg.sender];
+        } else {
+            collateral[msg.sender] -= withdrawal_amount;
+        }
+        delete withdrawalRequests[msg.sender];
+
+        (bool ok, ) = payable(msg.sender).call{value: withdrawal_amount}("");
         if (!ok) revert TransferFailed();
 
-        emit UserDeregistered(msg.sender, amount);
+        emit CollateralWithdrawn(msg.sender, withdrawal_amount);
     }
 
     // ========= Operator / Manager flows =========
@@ -165,17 +162,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         view
         returns (
             uint256 _collateral,
-            uint256 deregRequestedAt
+            uint256 withdrawal_request_timestamp,
+            uint256 withdrawal_request_amount
         )
     {
         _collateral = collateral[userAddr];
-        deregRequestedAt = deregistrationTimestamp(userAddr);
-    }
-
-    function deregistrationTimestamp(
-        address userAddr
-    ) public view returns (uint256) {
-        return deregistrationRequestedAt[userAddr];
+        WithdrawalRequest memory wr = withdrawalRequests[userAddr];
+        withdrawal_request_timestamp = wr.timestamp;
+        withdrawal_request_amount = wr.amount;
     }
 
     // ========= Fallbacks =========

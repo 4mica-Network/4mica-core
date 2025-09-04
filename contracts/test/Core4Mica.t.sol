@@ -26,22 +26,17 @@ contract Core4MicaTest is Test {
         );
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.withdrawCollateral.selector),
+            _asSingletonArray(Core4Mica.requestWithdrawal.selector),
             USER_ROLE
         );
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.requestDeregistration.selector),
+            _asSingletonArray(Core4Mica.cancelWithdrawal.selector),
             USER_ROLE
         );
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.cancelDeregistration.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.finalizeDeregistration.selector),
+            _asSingletonArray(Core4Mica.finalizeWithdrawal.selector),
             USER_ROLE
         );
         // grant user1 the USER_ROLE immediately (0 delay)
@@ -57,13 +52,16 @@ contract Core4MicaTest is Test {
     }
 
     // helper
+
     function _asSingletonArray(
         bytes4 selector
     ) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
     }
+
     // === Admin Config ===
+
     function test_SetGracePeriod() public {
         uint256 newGrace = 2 days;
         vm.expectEmit(false, false, false, true);
@@ -73,145 +71,226 @@ contract Core4MicaTest is Test {
         assertEq(core4Mica.gracePeriod(), newGrace);
     }
 
-    function test_RevertSetGracePeriodZero() public {
+    function test_SetGracePeriod_Revert_Zero() public {
         vm.expectRevert(Core4Mica.AmountZero.selector);
         core4Mica.setGracePeriod(0);
     }
 
-    // === Registration ===
-    function test_AddDeposit() public {
-        // Give user1 some ETH
-        vm.deal(user1, 1 ether);
+    // === Deposit ===
 
-        // Simulate user1 calling the function
+    function test_AddDeposit() public {
+        vm.deal(user1, 1 ether);
         vm.startPrank(user1);
 
-        // Expect the UserRegistered event with exact parameters
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.UserRegistered(user1, minDeposit);
 
-        // Call registerUser with the minimum deposit
         core4Mica.addDeposit{value: minDeposit}();
 
-        // Verify user data after deposit
         (
             uint256 totalCollateral,
-            uint256 deregTimestamp
+            uint256 withdrawTimestamp,
+            uint256 withdrawAmount
         ) = core4Mica.getUser(user1);
-
         assertEq(totalCollateral, minDeposit, "Total collateral mismatch");
-        assertEq(deregTimestamp, 0, "Deregistration timestamp should be 0");
+        assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
+        assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
 
-        // Check contract balance increased correctly
         assertEq(
             address(core4Mica).balance,
             minDeposit,
             "Contract balance mismatch"
         );
 
-        // Check that a second deposit succeeds
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.CollateralDeposited(user1, minDeposit);
         core4Mica.addDeposit{value: minDeposit}();
-
-        vm.stopPrank();
     }
 
-    // === Deposits / Withdrawals ===
-    function test_AddDepositAndWithdraw() public {
+    // === Request Withdrawal ===
+
+    function test_RequestWithdrawal() public {
         vm.deal(user1, 2 ether);
+
         vm.startPrank(user1);
         core4Mica.addDeposit{value: minDeposit * 2}();
 
-        (uint256 collateral, ) = core4Mica.getUser(user1);
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.WithdrawalRequested(user1, block.timestamp);
+
+        core4Mica.requestWithdrawal(minDeposit);
+
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
-
-        core4Mica.withdrawCollateral(minDeposit);
-        (collateral, ) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit);
+        assertEq(withdrawalTimestamp, block.timestamp);
+        assertEq(withdrawalAmount, minDeposit);
     }
 
-    function test_RevertWithdrawTooMuch() public {
+    // === Request Withdrawal: Failure cases ===
+
+    function test_RequestWithdrawal_Revert_AmountZero() public {
         vm.deal(user1, 1 ether);
-        vm.prank(user1);
+
+        vm.startPrank(user1);
         core4Mica.addDeposit{value: minDeposit}();
 
-        vm.prank(user1);
-        vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
-        core4Mica.withdrawCollateral(minDeposit * 2);
-    }
-
-    // === Withdraw Collateral: Failure cases ===
-    function test_RevertWithdrawCollateral_AmountZero() public {
-        vm.deal(user1, 1 ether);
-        vm.prank(user1);
-        core4Mica.addDeposit{value: minDeposit}();
-
-        vm.prank(user1);
         vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.withdrawCollateral(0);
+        core4Mica.requestWithdrawal(0);
     }
 
-    function test_RevertWithdrawCollateral_NotRegistered() public {
+    function test_RequestWithdrawal_Revert_TooMuch() public {
+        vm.deal(user1, 1 ether);
+
+        vm.startPrank(user1);
+        core4Mica.addDeposit{value: minDeposit}();
+
+        vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
+        core4Mica.requestWithdrawal(minDeposit * 2);
+    }
+
+    function test_RequestWithdrawal_Revert_NotRegistered() public {
         // user1 never registered
         vm.prank(user1);
         vm.expectRevert(Core4Mica.NotRegistered.selector);
-        core4Mica.withdrawCollateral(minDeposit);
+        core4Mica.requestWithdrawal(minDeposit);
     }
 
-    // === Locking Collateral ===
-    // === Deregistration ===
-    function test_RequestAndFinalizeDeregistration() public {
-        vm.deal(user1, 1 ether);
-        vm.prank(user1);
-        core4Mica.addDeposit{value: minDeposit}();
+    // === Cancel Withdrawal ===
 
-        vm.prank(user1);
-        core4Mica.requestDeregistration();
+    function test_CancelWithdrawal() public {
+        vm.deal(user1, 2 ether);
+
+        vm.startPrank(user1);
+        core4Mica.addDeposit{value: minDeposit * 2}();
+        core4Mica.requestWithdrawal(minDeposit);
+
+        vm.expectEmit(false, false, false, true);
+        emit Core4Mica.WithdrawalCanceled(user1);
+
+        core4Mica.cancelWithdrawal();
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, minDeposit * 2);
+        assertEq(withdrawalTimestamp, 0);
+        assertEq(withdrawalAmount, 0);
+    }
+
+    // === Cancel Withdrawal: Failure cases ===
+
+    function test_CancelWithdrawal_Revert_NoWithdrawalRequested() public {
+        vm.deal(user1, 2 ether);
+
+        vm.startPrank(user1);
+        core4Mica.addDeposit{value: minDeposit * 2}();
+
+        vm.expectRevert(Core4Mica.NoWithdrawalRequested.selector);
+        core4Mica.cancelWithdrawal();
+    }
+
+    // === Finalize Withdrawal ===
+
+    function test_FinalizeWithdrawal_FullAmount() public {
+        vm.deal(user1, 2 ether);
+
+        vm.startPrank(user1);
+        core4Mica.addDeposit{value: minDeposit * 2}();
+        core4Mica.requestWithdrawal(minDeposit);
 
         // fast forward > grace period
         vm.warp(block.timestamp + core4Mica.gracePeriod());
 
-        vm.prank(user1);
-        core4Mica.finalizeDeregistration();
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.CollateralWithdrawn(user1, minDeposit);
 
-        (uint256 collateral, ) = core4Mica.getUser(user1);
-        assertEq(collateral, 0);
+        assertEq(user1.balance, 1.998 ether);
+        core4Mica.finalizeWithdrawal();
+        assertEq(user1.balance, 1.999 ether);
+
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, minDeposit);
+        assertEq(withdrawalTimestamp, 0);
+        assertEq(withdrawalAmount, 0);
     }
 
-    function test_RevertFinalizeBeforeGrace() public {
-        vm.deal(user1, 1 ether);
-        vm.prank(user1);
-        core4Mica.addDeposit{value: minDeposit}();
+    function test_FinalizeWithdrawal_NotFullAmount() public {
+        vm.deal(user1, 0.005 ether);
+        vm.deal(user2, 0 ether);
 
-        vm.prank(user1);
-        core4Mica.requestDeregistration();
-
-        vm.prank(user1);
-        vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
-        core4Mica.finalizeDeregistration();
-    }
-
-    // === Deregistration: Failure cases ===
-    function test_RevertRequestDeregistration_NotRegistered() public {
-        // user1 never registered
-        vm.prank(user1);
-        vm.expectRevert(Core4Mica.NotRegistered.selector);
-        core4Mica.requestDeregistration();
-    }
-
-    function test_RevertCancelDeregistration_NoRequest() public {
         vm.startPrank(user1);
-        vm.expectRevert(Core4Mica.NoDeregistrationRequested.selector);
-        core4Mica.cancelDeregistration();
+        core4Mica.addDeposit{value: minDeposit * 5}();
+        core4Mica.requestWithdrawal(minDeposit * 4);
         vm.stopPrank();
+
+        core4Mica.makeWhole(user1, user2, minDeposit * 3);
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, minDeposit * 2);
+        assertEq(withdrawalTimestamp, block.timestamp);
+        assertEq(withdrawalAmount, minDeposit * 4);
+
+        // fast forward > grace period
+        vm.warp(block.timestamp + core4Mica.gracePeriod());
+
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.CollateralWithdrawn(user1, minDeposit * 2);
+
+        assertEq(user1.balance, 0 ether);
+        vm.prank(user1);
+        core4Mica.finalizeWithdrawal();
+        assertEq(user1.balance, 0.002 ether);
+
+        (collateral, withdrawalTimestamp, withdrawalAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, 0);
+        assertEq(withdrawalTimestamp, 0);
+        assertEq(withdrawalAmount, 0);
+    }
+
+    function test_FinalizeWithdrawal_CollateralGone() public {
+        vm.deal(user1, 0.004 ether);
+        vm.startPrank(user1);
+        core4Mica.addDeposit{value: minDeposit * 4}();
+        core4Mica.requestWithdrawal(minDeposit * 2);
+        vm.stopPrank();
+
+        core4Mica.makeWhole(user1, user2, minDeposit * 4);
+
+        // fast forward > grace period
+        vm.warp(block.timestamp + core4Mica.gracePeriod());
+
+        assertEq(user1.balance, 0 ether);
+        vm.prank(user1);
+        core4Mica.finalizeWithdrawal();
+        assertEq(user1.balance, 0 ether);
+
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, 0);
+        assertEq(withdrawalTimestamp, 0);
+        assertEq(withdrawalAmount, 0);
+    }
+
+    // === Finalize Withdrawal: Failure cases ===
+
+    function test_FinalizeWithdrawal_Revert_NoWithdrawalRequested() public {
+        vm.deal(user1, 2 ether);
+        vm.startPrank(user1);
+        core4Mica.addDeposit{value: minDeposit * 4}();
+
+        vm.expectRevert(Core4Mica.NoWithdrawalRequested.selector);
+        core4Mica.finalizeWithdrawal();
+    }
+
+    function test_FinalizeWithdrawal_Revert_GracePeriodNotElapsed() public {
+        vm.deal(user1, 2 ether);
+        vm.startPrank(user1);
+        core4Mica.addDeposit{value: minDeposit * 4}();
+        core4Mica.requestWithdrawal(minDeposit * 2);
+
+        vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
+        core4Mica.finalizeWithdrawal();
     }
 
     // === MakeWhole ===
     function test_MakeWholePayout() public {
         vm.deal(user1, 3 ether);
         vm.deal(user2, 0);
-
         vm.prank(user1);
         core4Mica.addDeposit{value: minDeposit * 3}();
 
@@ -222,7 +301,7 @@ contract Core4MicaTest is Test {
         uint256 afterBal = user2.balance;
         assertEq(afterBal - beforeBal, minDeposit);
 
-        (uint256 collateral, ) = core4Mica.getUser(user1);
+        (uint256 collateral,, ) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
     }
 
