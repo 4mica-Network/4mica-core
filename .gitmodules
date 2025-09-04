@@ -1,6 +1,3 @@
-[submodule "contracts/lib/eigenlayer-middleware"]
-	path = contracts/lib/eigenlayer-middleware
-	url = https://github.com/4mica-Network/eigenlayer-middleware
 [submodule "contracts/contracts/lib/forge-std"]
 	path = contracts/contracts/lib/forge-std
 	url = https://github.com/foundry-rs/forge-std
