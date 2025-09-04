@@ -63,17 +63,11 @@ contract Core4MicaScript is Script {
         }
 
         // Operator functions → OPERATOR_ROLE
-        bytes4[] memory operatorSelectors = new bytes4[](3);
-        operatorSelectors[0] = Core4Mica.lockCollateral.selector;
-        operatorSelectors[1] = Core4Mica.unlockCollateral.selector;
-        operatorSelectors[2] = Core4Mica.makeWhole.selector;
-        for (uint256 i = 0; i < operatorSelectors.length; i++) {
-            manager.setTargetFunctionRole(
-                address(core4Mica),
-                _asSingletonArray(operatorSelectors[i]),
-                OPERATOR_ROLE
-            );
-        }
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.makeWhole.selector),
+            OPERATOR_ROLE
+        );
 
         // Admin-only config functions → USER_ADMIN_ROLE
         manager.setTargetFunctionRole(
