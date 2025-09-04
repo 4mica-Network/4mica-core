@@ -11,21 +11,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error NotRegistered();
     error AmountZero();
     error InsufficientAvailable();
-    error InsufficientCollateral();
-    error LockedCollateralNonZero();
     error TransferFailed();
     error GracePeriodNotElapsed();
     error NoDeregistrationRequested();
-    error DoubleSpendDetected();
     error DirectTransferNotAllowed();
-    error DeregistrationPending();
 
     // ========= Storage =========
     uint256 public gracePeriod = 1 days;
 
     struct User {
         uint256 totalCollateral;
-        uint256 lockedCollateral;
     }
 
     mapping(address => User) public users;
@@ -34,8 +29,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Events =========
     event UserRegistered(address indexed user, uint256 initialCollateral);
     event CollateralDeposited(address indexed user, uint256 amount);
-    event CollateralLocked(address indexed user, uint256 amount);
-    event CollateralUnlocked(address indexed user, uint256 amount);
     event RecipientMadeWhole(
         address indexed user,
         address indexed recipient,
@@ -100,7 +93,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         isRegistered(msg.sender)
     {
         User storage user = users[msg.sender];
-        if (user.totalCollateral - user.lockedCollateral < amount)
+        if (user.totalCollateral < amount)
             revert InsufficientAvailable();
 
         user.totalCollateral -= amount;
@@ -138,10 +131,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         if (block.timestamp < requestedAt + gracePeriod)
             revert GracePeriodNotElapsed();
 
-        User storage user = users[msg.sender];
-        if (user.lockedCollateral != 0) revert LockedCollateralNonZero();
-
-        uint256 amount = user.totalCollateral;
+        uint256 amount = users[msg.sender].totalCollateral;
         delete users[msg.sender];
         delete deregistrationRequestedAt[msg.sender];
 
@@ -181,15 +171,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         view
         returns (
             uint256 collateral,
-            uint256 locked,
-            uint256 available,
             uint256 deregRequestedAt
         )
     {
         User memory u = users[userAddr];
         collateral = u.totalCollateral;
-        locked = u.lockedCollateral;
-        available = u.totalCollateral - u.lockedCollateral;
         deregRequestedAt = deregistrationTimestamp(userAddr);
     }
 

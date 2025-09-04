@@ -98,18 +98,10 @@ contract Core4MicaTest is Test {
         // Verify user data after deposit
         (
             uint256 totalCollateral,
-            uint256 lockedCollateral,
-            uint256 availableCollateral,
             uint256 deregTimestamp
         ) = core4Mica.getUser(user1);
 
         assertEq(totalCollateral, minDeposit, "Total collateral mismatch");
-        assertEq(lockedCollateral, 0, "Locked collateral should be 0");
-        assertEq(
-            availableCollateral,
-            minDeposit,
-            "Available collateral mismatch"
-        );
         assertEq(deregTimestamp, 0, "Deregistration timestamp should be 0");
 
         // Check contract balance increased correctly
@@ -133,14 +125,12 @@ contract Core4MicaTest is Test {
         vm.startPrank(user1);
         core4Mica.addDeposit{value: minDeposit * 2}();
 
-        (uint256 collateral, , uint256 available, ) = core4Mica.getUser(user1);
+        (uint256 collateral, ) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
-        assertEq(available, minDeposit * 2);
 
         core4Mica.withdrawCollateral(minDeposit);
-        (collateral, , available, ) = core4Mica.getUser(user1);
+        (collateral, ) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit);
-        assertEq(available, minDeposit);
     }
 
     function test_RevertWithdrawTooMuch() public {
@@ -187,7 +177,7 @@ contract Core4MicaTest is Test {
         vm.prank(user1);
         core4Mica.finalizeDeregistration();
 
-        (uint256 collateral, , , ) = core4Mica.getUser(user1);
+        (uint256 collateral, ) = core4Mica.getUser(user1);
         assertEq(collateral, 0);
     }
 
@@ -234,12 +224,8 @@ contract Core4MicaTest is Test {
         uint256 afterBal = user2.balance;
         assertEq(afterBal - beforeBal, minDeposit);
 
-        (uint256 collateral, uint256 locked, uint256 available, ) = core4Mica
-            .getUser(user1);
-
-        assertEq(locked, 0);
+        (uint256 collateral, ) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
-        assertEq(available, minDeposit * 2);
     }
 
     // === MakeWhole: Failure cases ===
