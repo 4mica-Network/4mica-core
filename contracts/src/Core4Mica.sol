@@ -91,31 +91,21 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= User flows =========
-    function registerUser()
-        external
-        payable
-        nonReentrant
-        minCollateral(msg.value)
-    {
-        if (users[msg.sender].totalCollateral != 0) revert AlreadyRegistered();
-        users[msg.sender] = User({
-            totalCollateral: msg.value,
-            lockedCollateral: 0
-        });
-        emit UserRegistered(msg.sender, msg.value);
-    }
-
     function addDeposit()
         external
         payable
         nonReentrant
-        isRegistered(msg.sender)
         nonZero(msg.value)
         minCollateral(msg.value)
     {
         User storage user = users[msg.sender];
+        uint256 prev_collateral = user.totalCollateral;
         user.totalCollateral += msg.value;
+
         emit CollateralDeposited(msg.sender, msg.value);
+        if (prev_collateral == 0 && user.totalCollateral > 0) {
+            emit UserRegistered(msg.sender, msg.value);
+        }
     }
 
     function withdrawCollateral(
