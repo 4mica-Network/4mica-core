@@ -48,7 +48,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event DeregistrationRequested(address indexed user, uint256 when);
     event DeregistrationCanceled(address indexed user);
     event UserDeregistered(address indexed user, uint256 refundedAmount);
-    event MinDepositUpdated(uint256 newMinDeposit);
+    event MinCollateralUpdated(uint256 newMinDeposit);
     event GracePeriodUpdated(uint256 newGracePeriod);
 
     // ========= Constructor =========
@@ -81,7 +81,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     ) external restricted {
         if (_minCollateralAmount == 0) revert AmountZero();
         minCollateralAmount = _minCollateralAmount;
-        emit MinDepositUpdated(_minCollateralAmount);
+        emit MinCollateralUpdated(_minCollateralAmount);
     }
 
     function setGracePeriod(uint256 _gracePeriod) external restricted {
