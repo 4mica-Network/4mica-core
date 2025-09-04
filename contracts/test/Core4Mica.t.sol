@@ -22,11 +22,6 @@ contract Core4MicaTest is Test {
         // Assign all necessary function roles to USER_ROLE (no delay)
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.registerUser.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
             _asSingletonArray(Core4Mica.addDeposit.selector),
             USER_ROLE
         );
@@ -105,7 +100,7 @@ contract Core4MicaTest is Test {
     }
 
     // === Registration ===
-    function test_RegisterUser() public {
+    function test_AddDeposit() public {
         // Give user1 some ETH
         vm.deal(user1, 1 ether);
 
@@ -114,12 +109,14 @@ contract Core4MicaTest is Test {
 
         // Expect the UserRegistered event with exact parameters
         vm.expectEmit(true, false, false, true);
+        emit Core4Mica.CollateralDeposited(user1, minDeposit);
+        vm.expectEmit(true, false, false, true);
         emit Core4Mica.UserRegistered(user1, minDeposit);
 
         // Call registerUser with the minimum deposit
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
-        // Verify user data after registration
+        // Verify user data after deposit
         (
             uint256 totalCollateral,
             uint256 lockedCollateral,
@@ -143,9 +140,10 @@ contract Core4MicaTest is Test {
             "Contract balance mismatch"
         );
 
-        // Check that a second registration reverts
-        vm.expectRevert(Core4Mica.AlreadyRegistered.selector);
-        core4Mica.registerUser{value: minDeposit}();
+        // Check that a second deposit succeeds
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.CollateralDeposited(user1, minDeposit);
+        core4Mica.addDeposit{value: minDeposit}();
 
         vm.stopPrank();
     }
@@ -154,24 +152,14 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
         vm.expectRevert(Core4Mica.InsufficientFunds.selector);
-        core4Mica.registerUser{value: 1}();
-    }
-
-    function test_RevertDoubleRegister() public {
-        vm.deal(user1, 1 ether);
-        vm.startPrank(user1);
-        core4Mica.registerUser{value: minDeposit}();
-
-        vm.expectRevert(Core4Mica.AlreadyRegistered.selector);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: 1}();
     }
 
     // === Deposits / Withdrawals ===
     function test_AddDepositAndWithdraw() public {
         vm.deal(user1, 2 ether);
         vm.startPrank(user1);
-        core4Mica.registerUser{value: minDeposit}();
-        core4Mica.addDeposit{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit * 2}();
 
         (uint256 collateral, , uint256 available, ) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
@@ -186,7 +174,7 @@ contract Core4MicaTest is Test {
     function test_RevertWithdrawTooMuch() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         vm.prank(user1);
         vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
@@ -197,7 +185,7 @@ contract Core4MicaTest is Test {
     function test_RevertWithdrawCollateral_AmountZero() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         vm.prank(user1);
         vm.expectRevert(Core4Mica.AmountZero.selector);
@@ -214,7 +202,7 @@ contract Core4MicaTest is Test {
     function test_RevertWithdrawCollateral_InsufficientAvailable() public {
         vm.deal(user1, 2 ether);
         vm.startPrank(user1);
-        core4Mica.registerUser{value: minDeposit * 2}();
+        core4Mica.addDeposit{value: minDeposit * 2}();
         vm.stopPrank();
 
         // lock part of the collateral so available < total
@@ -229,7 +217,7 @@ contract Core4MicaTest is Test {
     function test_ManagerCanLockCollateral() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 3}();
+        core4Mica.addDeposit{value: minDeposit * 3}();
 
         core4Mica.lockCollateral(user1, minDeposit);
 
@@ -249,7 +237,7 @@ contract Core4MicaTest is Test {
     function test_RevertLockCollateral_AmountZero() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         vm.expectRevert(Core4Mica.AmountZero.selector);
         core4Mica.lockCollateral(user1, 0);
@@ -258,7 +246,7 @@ contract Core4MicaTest is Test {
     function test_RevertLockCollateral_InsufficientAvailable() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         // Try to lock more than user1's collateral
         vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
@@ -269,7 +257,7 @@ contract Core4MicaTest is Test {
     function test_RequestAndFinalizeDeregistration() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         vm.prank(user1);
         core4Mica.requestDeregistration();
@@ -287,7 +275,7 @@ contract Core4MicaTest is Test {
     function test_RevertFinalizeBeforeGrace() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         vm.prank(user1);
         core4Mica.requestDeregistration();
@@ -318,7 +306,7 @@ contract Core4MicaTest is Test {
         vm.deal(user2, 0);
 
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 3}();
+        core4Mica.addDeposit{value: minDeposit * 3}();
         core4Mica.lockCollateral(user1, minDeposit);
 
         uint256 beforeBal = user2.balance;
@@ -341,7 +329,7 @@ contract Core4MicaTest is Test {
     function test_RevertMakeWhole_AmountZero() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         vm.expectRevert(Core4Mica.AmountZero.selector);
         core4Mica.makeWhole(user1, user2, 0);
@@ -350,7 +338,7 @@ contract Core4MicaTest is Test {
     function test_RevertMakeWhole_InvalidRecipient() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
         core4Mica.lockCollateral(user1, minDeposit);
 
         vm.expectRevert(Core4Mica.TransferFailed.selector);
@@ -366,7 +354,7 @@ contract Core4MicaTest is Test {
     function test_RevertMakeWhole_DoubleSpendDetected() public {
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit}();
+        core4Mica.addDeposit{value: minDeposit}();
 
         // lock less than we will try to pay out
         core4Mica.lockCollateral(user1, minDeposit);
@@ -384,7 +372,7 @@ contract Core4MicaTest is Test {
 
         // user registers and deposits
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 3}();
+        core4Mica.addDeposit{value: minDeposit * 3}();
 
         // user requests deregistration
         vm.prank(user1);
@@ -401,7 +389,7 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 3 ether);
 
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 3}();
+        core4Mica.addDeposit{value: minDeposit * 3}();
 
         vm.prank(user1);
         core4Mica.requestDeregistration();
@@ -417,7 +405,7 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 3 ether);
 
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 3}();
+        core4Mica.addDeposit{value: minDeposit * 3}();
 
         vm.prank(user1);
         core4Mica.requestDeregistration();
@@ -449,7 +437,7 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 3 ether);
 
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 3}();
+        core4Mica.addDeposit{value: minDeposit * 3}();
 
         vm.prank(user1);
         core4Mica.requestDeregistration();
@@ -470,7 +458,7 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 5 ether);
 
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 5}();
+        core4Mica.addDeposit{value: minDeposit * 5}();
 
         // Operator can lock before any deregistration request
         core4Mica.lockCollateral(user1, minDeposit);
@@ -507,7 +495,7 @@ contract Core4MicaTest is Test {
 
         // Register and pre-lock some collateral
         vm.prank(user1);
-        core4Mica.registerUser{value: minDeposit * 4}();
+        core4Mica.addDeposit{value: minDeposit * 4}();
         core4Mica.lockCollateral(user1, minDeposit * 2);
 
         // User requests deregistration (blocks further locks but does not unblock/affect existing locks)
