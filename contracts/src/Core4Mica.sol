@@ -8,10 +8,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
 contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Errors =========
-    error AlreadyRegistered();
     error NotRegistered();
     error AmountZero();
-    error InsufficientFunds();
     error InsufficientAvailable();
     error InsufficientCollateral();
     error LockedCollateralNonZero();
