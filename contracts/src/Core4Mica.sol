@@ -19,11 +19,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Storage =========
     uint256 public gracePeriod = 1 days;
 
-    struct User {
-        uint256 totalCollateral;
-    }
-
-    mapping(address => User) public users;
+    mapping(address => uint256) public collateral;
     mapping(address => uint256) public deregistrationRequestedAt;
 
     // ========= Events =========
@@ -45,7 +41,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Modifiers =========
     modifier isRegistered(address userAddr) {
-        if (users[userAddr].totalCollateral == 0) revert NotRegistered();
+        if (collateral[userAddr] == 0) revert NotRegistered();
         _;
     }
 
@@ -73,12 +69,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         nonReentrant
         nonZero(msg.value)
     {
-        User storage user = users[msg.sender];
-        uint256 prev_collateral = user.totalCollateral;
-        user.totalCollateral += msg.value;
+        uint256 prev_collateral = collateral[msg.sender];
+        collateral[msg.sender] += msg.value;
 
         emit CollateralDeposited(msg.sender, msg.value);
-        if (prev_collateral == 0 && user.totalCollateral > 0) {
+        if (prev_collateral == 0 && msg.value > 0) {
             emit UserRegistered(msg.sender, msg.value);
         }
     }
@@ -92,11 +87,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         nonZero(amount)
         isRegistered(msg.sender)
     {
-        User storage user = users[msg.sender];
-        if (user.totalCollateral < amount)
+        if (collateral[msg.sender] < amount)
             revert InsufficientAvailable();
 
-        user.totalCollateral -= amount;
+        collateral[msg.sender] -= amount;
 
         (bool ok, ) = payable(msg.sender).call{value: amount}("");
         if (!ok) revert TransferFailed();
@@ -131,8 +125,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         if (block.timestamp < requestedAt + gracePeriod)
             revert GracePeriodNotElapsed();
 
-        uint256 amount = users[msg.sender].totalCollateral;
-        delete users[msg.sender];
+        uint256 amount = collateral[msg.sender];
+        delete collateral[msg.sender];
         delete deregistrationRequestedAt[msg.sender];
 
         (bool ok, ) = payable(msg.sender).call{value: amount}("");
@@ -154,8 +148,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         nonReentrant
         isRegistered(client)
     {
-        User storage user = users[client];
-        user.totalCollateral -= amount;
+        collateral[client] -= amount;
 
         (bool ok, ) = payable(recipient).call{value: amount}("");
         if (!ok) revert TransferFailed();
@@ -170,12 +163,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         external
         view
         returns (
-            uint256 collateral,
+            uint256 _collateral,
             uint256 deregRequestedAt
         )
     {
-        User memory u = users[userAddr];
-        collateral = u.totalCollateral;
+        _collateral = collateral[userAddr];
         deregRequestedAt = deregistrationTimestamp(userAddr);
     }
 
