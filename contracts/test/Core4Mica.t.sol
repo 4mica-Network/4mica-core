@@ -65,10 +65,10 @@ contract Core4MicaTest is Test {
     function test_SetGracePeriod() public {
         uint256 newGrace = 2 days;
         vm.expectEmit(false, false, false, true);
-        emit Core4Mica.GracePeriodUpdated(newGrace);
+        emit Core4Mica.WithdrawalGracePeriodUpdated(newGrace);
         core4Mica.setGracePeriod(newGrace);
 
-        assertEq(core4Mica.gracePeriod(), newGrace);
+        assertEq(core4Mica.withdrawalGracePeriod(), newGrace);
     }
 
     function test_SetGracePeriod_Revert_Zero() public {
@@ -196,7 +196,7 @@ contract Core4MicaTest is Test {
         core4Mica.requestWithdrawal(minDeposit);
 
         // fast forward > grace period
-        vm.warp(block.timestamp + core4Mica.gracePeriod());
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.CollateralWithdrawn(user1, minDeposit);
@@ -227,7 +227,7 @@ contract Core4MicaTest is Test {
         assertEq(withdrawalAmount, minDeposit * 4);
 
         // fast forward > grace period
-        vm.warp(block.timestamp + core4Mica.gracePeriod());
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.CollateralWithdrawn(user1, minDeposit * 2);
@@ -253,7 +253,7 @@ contract Core4MicaTest is Test {
         core4Mica.makeWhole(user1, user2, minDeposit * 4);
 
         // fast forward > grace period
-        vm.warp(block.timestamp + core4Mica.gracePeriod());
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
 
         assertEq(user1.balance, 0 ether);
         vm.prank(user1);
