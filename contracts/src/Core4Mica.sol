@@ -231,9 +231,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         )
     {
         _collateral = collateral[userAddr];
-        WithdrawalRequest memory wr = withdrawalRequests[userAddr];
-        withdrawal_request_timestamp = wr.timestamp;
-        withdrawal_request_amount = wr.amount;
+        withdrawal_request_timestamp = withdrawalRequests[userAddr].timestamp;
+        withdrawal_request_amount = withdrawalRequests[userAddr].amount;
     }
 
     function getPaymentStatus(
