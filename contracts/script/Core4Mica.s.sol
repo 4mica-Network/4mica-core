@@ -64,7 +64,7 @@ contract Core4MicaScript is Script {
         // Operator functions → OPERATOR_ROLE
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.makeWhole.selector),
+            _asSingletonArray(Core4Mica.remunerate.selector),
             OPERATOR_ROLE
         );
 
