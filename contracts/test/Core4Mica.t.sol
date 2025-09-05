@@ -316,24 +316,27 @@ contract Core4MicaTest is Test {
     // === Record payment ===
 
     function test_RecordPayment() public {
-        uint256 paid = core4Mica.getPaymentStatus(0x1234);
+        (uint256 paid, bool remunerated) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 0);
+        assertFalse(remunerated);
 
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.RecordedPayment(0x1234, 1 ether);
 
         core4Mica.recordPayment(0x1234, 1 ether);
 
-        paid = core4Mica.getPaymentStatus(0x1234);
+        (paid, remunerated) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 1 ether);
+        assertFalse(remunerated);
 
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.RecordedPayment(0x1234, 2 ether);
 
         core4Mica.recordPayment(0x1234, 2 ether);
 
-        paid = core4Mica.getPaymentStatus(0x1234);
+        (paid, remunerated) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 3 ether);
+        assertFalse(remunerated);
     }
 
     // === Record payment: failure cases ===
