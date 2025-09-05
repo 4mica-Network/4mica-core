@@ -33,9 +33,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         uint256 amount;
     }
 
+    struct PaymentStatus {
+        uint256 paid;
+        bool remunerated;
+    }
+
     mapping(address => uint256) public collateral;
     mapping(address => WithdrawalRequest) public withdrawalRequests;
-    mapping(uint256 => uint256) public payments;
+    mapping(uint256 => PaymentStatus) public payments;
 
     // ========= Events =========
     event UserRegistered(address indexed user, uint256 initialCollateral);
@@ -148,7 +153,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         nonZero(amount)
         nonReentrant
     {
-        payments[tab_id] += amount;
+        payments[tab_id].paid += amount;
         emit RecordedPayment(tab_id, amount);
     }
 
@@ -177,11 +182,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert TabExpired();
 
         // 3. Tab must not previously be remunerated
-        if (payments[tab_id] == type(uint256).max)
+        if (payments[tab_id].remunerated)
             revert TabPreviouslyRemunerated();
 
         // 4. Tab must not be paid
-        if (payments[tab_id] >= amount)
+        if (payments[tab_id].paid >= amount)
             revert TabAlreadyPaid();
 
         // 5. Verify signature
@@ -194,7 +199,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert DoubleSpendingDetected();
 
         collateral[client] -= amount;
-        payments[tab_id] = type(uint256).max;
+        payments[tab_id].remunerated = true;
 
         (bool ok, ) = payable(recipient).call{value: amount}("");
         if (!ok) revert TransferFailed();
@@ -225,9 +230,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     )
         external
         view
-        returns (uint256 value)
+        returns (
+            uint256 paid,
+            bool remunerated
+        )
     {
-        value = payments[tab_id];
+        paid = payments[tab_id].paid;
+        remunerated = payments[tab_id].remunerated;
     }
 
     // ========= Fallbacks =========
