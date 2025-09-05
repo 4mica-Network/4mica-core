@@ -45,7 +45,7 @@ contract Core4MicaTest is Test {
         // grant test contract (us) the OPERATOR_ROLE so we can lockCollateral/makeWhole
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.makeWhole.selector),
+            _asSingletonArray(Core4Mica.remunerate.selector),
             OPERATOR_ROLE
         );
         manager.setTargetFunctionRole(
@@ -220,19 +220,26 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 0.005 ether);
         vm.deal(user2, 0 ether);
 
-        vm.startPrank(user1);
+        vm.prank(user1);
         core4Mica.addDeposit{value: minDeposit * 5}();
-        core4Mica.requestWithdrawal(minDeposit * 4);
-        vm.stopPrank();
 
-        core4Mica.makeWhole(user1, user2, minDeposit * 3);
+        uint256 promise_ts = block.timestamp;
+
+        vm.prank(user1);
+        core4Mica.requestWithdrawal(minDeposit * 4);
+
+        vm.warp(promise_ts + core4Mica.remunerationGracePeriod() + 5);
+        core4Mica.remunerate(
+            user1, user2, minDeposit * 3,
+            0x1234, 17, promise_ts, 0x0
+        );
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
         assertEq(withdrawalTimestamp, block.timestamp);
         assertEq(withdrawalAmount, minDeposit * 4);
 
         // fast forward > grace period
-        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+        vm.warp(promise_ts + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.CollateralWithdrawn(user1, minDeposit * 2);
@@ -250,16 +257,30 @@ contract Core4MicaTest is Test {
 
     function test_FinalizeWithdrawal_CollateralGone() public {
         vm.deal(user1, 0.004 ether);
-        vm.startPrank(user1);
+        vm.prank(user1);
         core4Mica.addDeposit{value: minDeposit * 4}();
-        core4Mica.requestWithdrawal(minDeposit * 2);
-        vm.stopPrank();
 
-        core4Mica.makeWhole(user1, user2, minDeposit * 4);
+        // user promised something to recipient
+        uint256 promise_ts = block.timestamp;
+
+        // user requests withdrawal
+        vm.prank(user1);
+        core4Mica.requestWithdrawal(minDeposit * 2);
+
+        // fast forward > remuneration period
+        vm.warp(promise_ts + core4Mica.remunerationGracePeriod() + 5);
+
+        // user did not pay their promise, so
+        // recipient comes to collect remuneration
+        core4Mica.remunerate(
+            user1, user2, minDeposit * 4,
+            0x1234, 17, promise_ts, 0x0
+        );
 
         // fast forward > grace period
-        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+        vm.warp(promise_ts + core4Mica.withdrawalGracePeriod());
 
+        // user gets nothing because their balance was used during remuneration
         assertEq(user1.balance, 0 ether);
         vm.prank(user1);
         core4Mica.finalizeWithdrawal();
@@ -322,47 +343,177 @@ contract Core4MicaTest is Test {
         core4Mica.recordPayment(0x1234, 0);
     }
 
-    // === MakeWhole ===
-    function test_MakeWholePayout() public {
+    // === Remuneration ===
+
+    function test_Remunerate() public {
         vm.deal(user1, 3 ether);
         vm.deal(user2, 0);
         vm.prank(user1);
-        core4Mica.addDeposit{value: minDeposit * 3}();
+        core4Mica.addDeposit{value: 1 ether}();
 
-        uint256 beforeBal = user2.balance;
+        uint256 tab_id = 0x1234;
+        uint256 tab_timestamp = block.timestamp;
+        vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        core4Mica.makeWhole(user1, user2, minDeposit);
+        vm.expectEmit(true, true, false, true);
+        emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
 
-        uint256 afterBal = user2.balance;
-        assertEq(afterBal - beforeBal, minDeposit);
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, 0x1234,
+            17, tab_timestamp, 0x0
+        );
 
+        assertEq(user2.balance, 0.5 ether);
         (uint256 collateral,, ) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 2);
+        assertEq(collateral, 0.5 ether);
+    }
+
+    function test_Remunerate_PartiallyPaidTab() public {
+        vm.deal(user1, 3 ether);
+        vm.deal(user2, 0);
+        vm.prank(user1);
+        core4Mica.addDeposit{value: 1 ether}();
+
+        uint256 tab_id = 0x1234;
+
+        // core contract is informed that user1 paid user2 half of the tab
+        core4Mica.recordPayment(tab_id, 0.25 ether);
+
+        uint256 tab_timestamp = block.timestamp;
+        vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
+
+        vm.expectEmit(true, true, false, true);
+        emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
+
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, tab_id,
+            17, tab_timestamp, 0x0
+        );
+
+        // check: user2 is still remunerated for the full amount
+        assertEq(user2.balance, 0.5 ether);
+        (uint256 collateral,, ) = core4Mica.getUser(user1);
+        assertEq(collateral, 0.5 ether);
     }
 
     // === MakeWhole: Failure cases ===
 
-    function test_RevertMakeWhole_AmountZero() public {
-        vm.deal(user1, 1 ether);
-        vm.prank(user1);
-        core4Mica.addDeposit{value: minDeposit}();
-
+    function test_RevertMakeWhole_Revert_AmountZero() public {
         vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.makeWhole(user1, user2, 0);
+        core4Mica.remunerate(
+            user1, user2, 0, 0x1234,
+            17, 0, 0
+        );
     }
 
-    function test_RevertMakeWhole_InvalidRecipient() public {
-        vm.deal(user1, 1 ether);
-        vm.prank(user1);
-        core4Mica.addDeposit{value: minDeposit}();
-
+    function test_RevertMakeWhole_Revert_InvalidRecipient() public {
         vm.expectRevert(Core4Mica.TransferFailed.selector);
-        core4Mica.makeWhole(user1, address(0), minDeposit);
+        core4Mica.remunerate(
+            user1, address(0), 0.5 ether, 0x1234,
+            17, 0, 0
+        );
     }
 
-    function test_RevertMakeWhole_UserNotRegistered() public {
-        // user1 never registered
+    function test_RevertMakeWhole_Revert_ClientNotRegistered() public {
         vm.expectRevert(Core4Mica.NotRegistered.selector);
-        core4Mica.makeWhole(user1, user2, minDeposit);
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, 0x1234,
+            17, 0, 0
+        );
+    }
+
+    function test_RevertMakeWhole_Revert_NotYetOverdue() public {
+        vm.deal(user1, 3 ether);
+        vm.prank(user1);
+        core4Mica.addDeposit{value: 1 ether}();
+
+        vm.expectRevert(Core4Mica.TabNotYetOverdue.selector);
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, 0x1234,
+            17, 0, 0
+        );
+    }
+
+    function test_RevertMakeWhole_Revert_TabExpired() public {
+        vm.deal(user1, 3 ether);
+        vm.prank(user1);
+        core4Mica.addDeposit{value: 1 ether}();
+
+        vm.warp(core4Mica.tabExpirationTime() + 5);
+
+        vm.expectRevert(Core4Mica.TabExpired.selector);
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, 0x1234,
+            17, 0, 0
+        );
+    }
+
+    function test_RevertMakeWhole_Revert_PreviouslyRemunerated() public {
+        vm.deal(user1, 3 ether);
+        vm.prank(user1);
+        core4Mica.addDeposit{value: 1 ether}();
+
+        vm.warp(core4Mica.remunerationGracePeriod() + 5);
+
+        uint256 tab_id = 0x1234;
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, tab_id,
+            17, 0, 0
+        );
+
+        vm.expectRevert(Core4Mica.TabPreviouslyRemunerated.selector);
+
+        // second remuneration attempt on the same tab
+        core4Mica.remunerate(
+            user1, user2, 0.75 ether, tab_id,
+            37, 0, 0
+        );
+    }
+
+    function test_RevertMakeWhole_Revert_TabAlreadyPaid() public {
+        vm.deal(user1, 3 ether);
+        vm.prank(user1);
+        core4Mica.addDeposit{value: 1 ether}();
+
+        vm.warp(core4Mica.remunerationGracePeriod() + 5);
+
+        uint256 tab_id = 0x1234;
+        core4Mica.recordPayment(tab_id, 0.6 ether);
+
+        vm.expectRevert(Core4Mica.TabAlreadyPaid.selector);
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, tab_id,
+            17, 0, 0
+        );
+    }
+
+    function test_RevertMakeWhole_Revert_InvalidSignature() public {
+        vm.deal(user1, 3 ether);
+        vm.prank(user1);
+        core4Mica.addDeposit{value: 1 ether}();
+
+        vm.warp(core4Mica.remunerationGracePeriod() + 5);
+
+        vm.expectRevert(Core4Mica.InvalidSignature.selector);
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, 0x1234,
+            17, 0, 1
+        );
+    }
+
+    function test_RevertMakeWhole_Revert_DoubleSpending() public {
+        vm.deal(user1, 3 ether);
+
+        // user1 deposits fewer than the later remuneration claim
+        vm.prank(user1);
+        core4Mica.addDeposit{value: 0.25 ether}();
+
+        vm.warp(core4Mica.remunerationGracePeriod() + 5);
+
+        vm.expectRevert(Core4Mica.DoubleSpendingDetected.selector);
+        core4Mica.remunerate(
+            user1, user2, 0.5 ether, 0x1234,
+            17, 0, 0
+        );
     }
 }

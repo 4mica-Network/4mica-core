@@ -16,9 +16,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error GracePeriodNotElapsed();
     error NoWithdrawalRequested();
     error DirectTransferNotAllowed();
+    error DoubleSpendingDetected();
+    error TabNotYetOverdue();
+    error TabExpired();
+    error TabPreviouslyRemunerated();
+    error TabAlreadyPaid();
+    error InvalidSignature();
 
     // ========= Storage =========
+    uint256 public remunerationGracePeriod = 14 days;
     uint256 public withdrawalGracePeriod = 21 days;
+    uint256 public tabExpirationTime = 20.5 days;
 
     struct WithdrawalRequest {
         uint256 timestamp;
@@ -32,7 +40,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Events =========
     event UserRegistered(address indexed user, uint256 initialCollateral);
     event CollateralDeposited(address indexed user, uint256 amount);
-    event RecipientMadeWhole(
+    event RecipientRemunerated(
         address indexed user,
         address indexed recipient,
         uint256 amount
@@ -148,10 +156,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit RecordedPayment(tab_id, amount);
     }
 
-    function makeWhole(
+    function remunerate(
         address client,
         address recipient,
-        uint256 amount
+        uint256 amount,
+        uint256 tab_id,
+        uint256 req_id,
+        uint256 tab_timestamp,
+        uint256 signature
     )
         external
         restricted
@@ -165,7 +177,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         (bool ok, ) = payable(recipient).call{value: amount}("");
         if (!ok) revert TransferFailed();
 
-        emit RecipientMadeWhole(client, recipient, amount);
+        emit RecipientRemunerated(client, recipient, amount);
     }
 
     // ========= Views / Helpers =========
