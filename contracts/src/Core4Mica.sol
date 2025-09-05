@@ -27,6 +27,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     mapping(address => uint256) public collateral;
     mapping(address => WithdrawalRequest) public withdrawalRequests;
+    mapping(uint256 => uint256) public payments;
 
     // ========= Events =========
     event UserRegistered(address indexed user, uint256 initialCollateral);
@@ -40,6 +41,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event WithdrawalRequested(address indexed user, uint256 when);
     event WithdrawalCanceled(address indexed user);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
+    event RecordedPayment(uint256 indexed tab_id, uint256 amount);
 
     // ========= Constructor =========
     constructor(address manager) AccessManaged(manager) {}
@@ -134,6 +136,18 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Operator / Manager flows =========
+    function recordPayment(
+        uint256 tab_id,
+        uint256 amount
+    )
+        external
+        nonZero(amount)
+        nonReentrant
+    {
+        payments[tab_id] += amount;
+        emit RecordedPayment(tab_id, amount);
+    }
+
     function makeWhole(
         address client,
         address recipient,
@@ -170,6 +184,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         WithdrawalRequest memory wr = withdrawalRequests[userAddr];
         withdrawal_request_timestamp = wr.timestamp;
         withdrawal_request_amount = wr.amount;
+    }
+
+    function getPaymentStatus(
+        uint256 tab_id
+    )
+        external
+        view
+        returns (uint256 value)
+    {
+        value = payments[tab_id];
     }
 
     // ========= Fallbacks =========

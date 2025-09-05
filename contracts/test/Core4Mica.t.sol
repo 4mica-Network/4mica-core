@@ -48,6 +48,11 @@ contract Core4MicaTest is Test {
             _asSingletonArray(Core4Mica.makeWhole.selector),
             OPERATOR_ROLE
         );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.recordPayment.selector),
+            OPERATOR_ROLE
+        );
         manager.grantRole(OPERATOR_ROLE, address(this), 0);
     }
 
@@ -285,6 +290,36 @@ contract Core4MicaTest is Test {
 
         vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
         core4Mica.finalizeWithdrawal();
+    }
+
+    // === Record payment ===
+
+    function test_RecordPayment() public {
+        uint256 paid = core4Mica.getPaymentStatus(0x1234);
+        assertEq(paid, 0);
+
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.RecordedPayment(0x1234, 1 ether);
+
+        core4Mica.recordPayment(0x1234, 1 ether);
+
+        paid = core4Mica.getPaymentStatus(0x1234);
+        assertEq(paid, 1 ether);
+
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.RecordedPayment(0x1234, 2 ether);
+
+        core4Mica.recordPayment(0x1234, 2 ether);
+
+        paid = core4Mica.getPaymentStatus(0x1234);
+        assertEq(paid, 3 ether);
+    }
+
+    // === Record payment: failure cases ===
+
+    function test_RecordPayment_Revert_AmountZero() public {
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.recordPayment(0x1234, 0);
     }
 
     // === MakeWhole ===
