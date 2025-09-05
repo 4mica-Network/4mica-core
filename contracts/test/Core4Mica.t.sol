@@ -223,23 +223,23 @@ contract Core4MicaTest is Test {
         vm.prank(user1);
         core4Mica.addDeposit{value: minDeposit * 5}();
 
-        uint256 promise_ts = block.timestamp;
-
+        uint256 tab_timestamp = 1;
+        uint256 withdrawal_timestamp = 1;
         vm.prank(user1);
         core4Mica.requestWithdrawal(minDeposit * 4);
 
-        vm.warp(promise_ts + core4Mica.remunerationGracePeriod() + 5);
+        vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
         core4Mica.remunerate(
             user1, user2, minDeposit * 3,
-            0x1234, 17, promise_ts, 0x0
+            0x1234, 17, tab_timestamp, 0x0
         );
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
-        assertEq(withdrawalTimestamp, block.timestamp);
+        assertEq(withdrawalTimestamp, withdrawal_timestamp);
         assertEq(withdrawalAmount, minDeposit * 4);
 
         // fast forward > grace period
-        vm.warp(promise_ts + core4Mica.withdrawalGracePeriod());
+        vm.warp(tab_timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.CollateralWithdrawn(user1, minDeposit * 2);
@@ -260,25 +260,25 @@ contract Core4MicaTest is Test {
         vm.prank(user1);
         core4Mica.addDeposit{value: minDeposit * 4}();
 
-        // user promised something to recipient
-        uint256 promise_ts = block.timestamp;
+        // user promised something to recipient as part of tab
+        uint256 tab_timestamp = 1;
 
         // user requests withdrawal
         vm.prank(user1);
         core4Mica.requestWithdrawal(minDeposit * 2);
 
         // fast forward > remuneration period
-        vm.warp(promise_ts + core4Mica.remunerationGracePeriod() + 5);
+        vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         // user did not pay their promise, so
         // recipient comes to collect remuneration
         core4Mica.remunerate(
             user1, user2, minDeposit * 4,
-            0x1234, 17, promise_ts, 0x0
+            0x1234, 17, tab_timestamp, 0x0
         );
 
         // fast forward > grace period
-        vm.warp(promise_ts + core4Mica.withdrawalGracePeriod());
+        vm.warp(tab_timestamp + core4Mica.withdrawalGracePeriod());
 
         // user gets nothing because their balance was used during remuneration
         assertEq(user1.balance, 0 ether);
@@ -352,8 +352,8 @@ contract Core4MicaTest is Test {
         core4Mica.addDeposit{value: 1 ether}();
 
         uint256 tab_id = 0x1234;
-        uint256 tab_timestamp = block.timestamp;
-        vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
+        uint256 tab_timestamp = 1;
+        vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         vm.expectEmit(true, true, false, true);
         emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
@@ -379,8 +379,8 @@ contract Core4MicaTest is Test {
         // core contract is informed that user1 paid user2 half of the tab
         core4Mica.recordPayment(tab_id, 0.25 ether);
 
-        uint256 tab_timestamp = block.timestamp;
-        vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
+        uint256 tab_timestamp = 1;
+        vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         vm.expectEmit(true, true, false, true);
         emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
