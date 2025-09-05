@@ -54,6 +54,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event RecordedPayment(uint256 indexed tab_id, uint256 amount);
 
+    // ========= Helper structs =========
+    struct Guarantee {
+        uint256 tab_id;
+        uint256 tab_timestamp;
+        address client;
+        address recipient;
+        uint256 req_id;
+        uint256 amount;
+    }
+
     // ========= Constructor =========
     constructor(address manager) AccessManaged(manager) {}
 
@@ -169,35 +179,30 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     function remunerate(
-        address client,
-        address recipient,
-        uint256 amount,
-        uint256 tab_id,
-        uint256 req_id,
-        uint256 tab_timestamp,
+        Guarantee calldata g,
         uint256 signature
     )
         external
         restricted
-        nonZero(amount)
-        validRecipient(recipient)
+        nonZero(g.amount)
+        validRecipient(g.recipient)
         nonReentrant
-        isRegistered(client)
+        isRegistered(g.client)
     {
         // 1. Tab must be overdue
-        if (block.timestamp < tab_timestamp + remunerationGracePeriod)
+        if (block.timestamp < g.tab_timestamp + remunerationGracePeriod)
             revert TabNotYetOverdue();
 
         // 2. Tab must not be expired
-        if (tab_timestamp + tabExpirationTime < block.timestamp)
+        if (g.tab_timestamp + tabExpirationTime < block.timestamp)
             revert TabExpired();
 
         // 3. Tab must not previously be remunerated
-        if (payments[tab_id].remunerated)
+        if (payments[g.tab_id].remunerated)
             revert TabPreviouslyRemunerated();
 
         // 4. Tab must not be paid
-        if (payments[tab_id].paid >= amount)
+        if (payments[g.tab_id].paid >= g.amount)
             revert TabAlreadyPaid();
 
         // 5. Verify signature
@@ -206,16 +211,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert InvalidSignature();
 
         // 6. Client must have sufficient funds
-        if (collateral[client] < amount)
+        if (collateral[g.client] < g.amount)
             revert DoubleSpendingDetected();
 
-        collateral[client] -= amount;
-        payments[tab_id].remunerated = true;
+        collateral[g.client] -= g.amount;
+        payments[g.tab_id].remunerated = true;
 
-        (bool ok, ) = payable(recipient).call{value: amount}("");
+        (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
         if (!ok) revert TransferFailed();
 
-        emit RecipientRemunerated(tab_id, req_id, amount);
+        emit RecipientRemunerated(g.tab_id, g.req_id, g.amount);
     }
 
     // ========= Views / Helpers =========
