@@ -62,18 +62,29 @@ contract Core4MicaScript is Script {
         }
 
         // Operator functions → OPERATOR_ROLE
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.remunerate.selector),
-            OPERATOR_ROLE
-        );
+        bytes4[] memory operatorSelectors = new bytes4[](2);
+        operatorSelectors[0] = Core4Mica.remunerate.selector;
+        operatorSelectors[1] = Core4Mica.recordPayment.selector;
+        for (uint256 i = 0; i < operatorSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(operatorSelectors[i]),
+                OPERATOR_ROLE
+            );
+        }
 
         // Admin-only config functions → USER_ADMIN_ROLE
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.setWithdrawalGracePeriod.selector),
-            USER_ADMIN_ROLE
-        );
+        bytes4[] memory adminSelectors = new bytes4[](4);
+        adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
+        adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
+        adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
+        for (uint256 i = 0; i < adminSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(adminSelectors[i]),
+                USER_ADMIN_ROLE
+            );
+        }
 
         // 3. Grant roles (immediate in local/test: 0 delay)
         manager.grantRole(USER_ROLE, deployer, 0); // deployer can act as USER
