@@ -50,6 +50,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event WithdrawalRequested(address indexed user, uint256 when);
     event WithdrawalCanceled(address indexed user);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
+    event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
+    event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event RecordedPayment(uint256 indexed tab_id, uint256 amount);
 
     // ========= Constructor =========
@@ -72,10 +74,19 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Admin / Manager configuration =========
-    function setGracePeriod(uint256 _gracePeriod) external restricted {
-        if (_gracePeriod == 0) revert AmountZero();
+    function setRemunerationGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+        remunerationGracePeriod = _gracePeriod;
+        emit RemunerationGracePeriodUpdated(_gracePeriod);
+    }
+
+    function setWithdrawalGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
         withdrawalGracePeriod = _gracePeriod;
         emit WithdrawalGracePeriodUpdated(_gracePeriod);
+    }
+
+    function setTabExpirationTime(uint256 _expirationTime) external restricted nonZero(_expirationTime) {
+        tabExpirationTime = _expirationTime;
+        emit TabExpirationTimeUpdated(_expirationTime);
     }
 
     // ========= User flows =========

@@ -67,18 +67,46 @@ contract Core4MicaTest is Test {
 
     // === Admin Config ===
 
-    function test_SetGracePeriod() public {
+    function test_SetWithdrawalGracePeriod() public {
         uint256 newGrace = 2 days;
         vm.expectEmit(false, false, false, true);
         emit Core4Mica.WithdrawalGracePeriodUpdated(newGrace);
-        core4Mica.setGracePeriod(newGrace);
+        core4Mica.setWithdrawalGracePeriod(newGrace);
 
         assertEq(core4Mica.withdrawalGracePeriod(), newGrace);
     }
 
-    function test_SetGracePeriod_Revert_Zero() public {
+    function test_SetWithdrawalGracePeriod_Revert_Zero() public {
         vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setGracePeriod(0);
+        core4Mica.setWithdrawalGracePeriod(0);
+    }
+
+    function test_SetRemunerationGracePeriod() public {
+        uint256 newGrace = 2 days;
+        vm.expectEmit(false, false, false, true);
+        emit Core4Mica.RemunerationGracePeriodUpdated(newGrace);
+        core4Mica.setRemunerationGracePeriod(newGrace);
+
+        assertEq(core4Mica.remunerationGracePeriod(), newGrace);
+    }
+
+    function test_SetRemunerationGracePeriod_Revert_Zero() public {
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setRemunerationGracePeriod(0);
+    }
+
+    function test_SetTabExpirationTime() public {
+        uint256 newGrace = 2 days;
+        vm.expectEmit(false, false, false, true);
+        emit Core4Mica.TabExpirationTimeUpdated(newGrace);
+        core4Mica.setTabExpirationTime(newGrace);
+
+        assertEq(core4Mica.tabExpirationTime(), newGrace);
+    }
+
+    function test_SetTabExpirationTime_Revert_Zero() public {
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setTabExpirationTime(0);
     }
 
     // === Deposit ===

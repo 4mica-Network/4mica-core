@@ -71,7 +71,7 @@ contract Core4MicaScript is Script {
         // Admin-only config functions → USER_ADMIN_ROLE
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.setGracePeriod.selector),
+            _asSingletonArray(Core4Mica.setWithdrawalGracePeriod.selector),
             USER_ADMIN_ROLE
         );
 
