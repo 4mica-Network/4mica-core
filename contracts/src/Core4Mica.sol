@@ -40,11 +40,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Events =========
     event UserRegistered(address indexed user, uint256 initialCollateral);
     event CollateralDeposited(address indexed user, uint256 amount);
-    event RecipientRemunerated(
-        address indexed user,
-        address indexed recipient,
-        uint256 amount
-    );
+    event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 amount);
     event WithdrawalRequested(address indexed user, uint256 when);
     event WithdrawalCanceled(address indexed user);
@@ -172,12 +168,38 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         nonReentrant
         isRegistered(client)
     {
+        // 1. Tab must be overdue
+        if (block.timestamp < tab_timestamp + remunerationGracePeriod)
+            revert TabNotYetOverdue();
+
+        // 2. Tab must not be expired
+        if (tab_timestamp + tabExpirationTime < block.timestamp)
+            revert TabExpired();
+
+        // 3. Tab must not previously be remunerated
+        if (payments[tab_id] == type(uint256).max)
+            revert TabPreviouslyRemunerated();
+
+        // 4. Tab must not be paid
+        if (payments[tab_id] >= amount)
+            revert TabAlreadyPaid();
+
+        // 5. Verify signature
+        // TODO: verify signature
+        if (signature != 0)
+            revert InvalidSignature();
+
+        // 6. Client must have sufficient funds
+        if (collateral[client] < amount)
+            revert DoubleSpendingDetected();
+
         collateral[client] -= amount;
+        payments[tab_id] = type(uint256).max;
 
         (bool ok, ) = payable(recipient).call{value: amount}("");
         if (!ok) revert TransferFailed();
 
-        emit RecipientRemunerated(client, recipient, amount);
+        emit RecipientRemunerated(tab_id, req_id, amount);
     }
 
     // ========= Views / Helpers =========

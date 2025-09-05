@@ -352,15 +352,16 @@ contract Core4MicaTest is Test {
         core4Mica.addDeposit{value: 1 ether}();
 
         uint256 tab_id = 0x1234;
+        uint256 req_id = 17;
         uint256 tab_timestamp = 1;
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         vm.expectEmit(true, true, false, true);
-        emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
+        emit Core4Mica.RecipientRemunerated(tab_id, req_id, 0.5 ether);
 
         core4Mica.remunerate(
             user1, user2, 0.5 ether, 0x1234,
-            17, tab_timestamp, 0x0
+            req_id, tab_timestamp, 0x0
         );
 
         assertEq(user2.balance, 0.5 ether);
@@ -375,6 +376,7 @@ contract Core4MicaTest is Test {
         core4Mica.addDeposit{value: 1 ether}();
 
         uint256 tab_id = 0x1234;
+        uint256 req_id = 17;
 
         // core contract is informed that user1 paid user2 half of the tab
         core4Mica.recordPayment(tab_id, 0.25 ether);
@@ -383,11 +385,11 @@ contract Core4MicaTest is Test {
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         vm.expectEmit(true, true, false, true);
-        emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
+        emit Core4Mica.RecipientRemunerated(tab_id, req_id, 0.5 ether);
 
         core4Mica.remunerate(
             user1, user2, 0.5 ether, tab_id,
-            17, tab_timestamp, 0x0
+            req_id, tab_timestamp, 0x0
         );
 
         // check: user2 is still remunerated for the full amount
