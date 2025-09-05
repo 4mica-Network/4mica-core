@@ -18,7 +18,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error DirectTransferNotAllowed();
 
     // ========= Storage =========
-    uint256 public gracePeriod = 1 days;
+    uint256 public withdrawalGracePeriod = 21 days;
 
     struct WithdrawalRequest {
         uint256 timestamp;
@@ -39,7 +39,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event CollateralWithdrawn(address indexed user, uint256 amount);
     event WithdrawalRequested(address indexed user, uint256 when);
     event WithdrawalCanceled(address indexed user);
-    event GracePeriodUpdated(uint256 newGracePeriod);
+    event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
 
     // ========= Constructor =========
     constructor(address manager) AccessManaged(manager) {}
@@ -63,8 +63,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Admin / Manager configuration =========
     function setGracePeriod(uint256 _gracePeriod) external restricted {
         if (_gracePeriod == 0) revert AmountZero();
-        gracePeriod = _gracePeriod;
-        emit GracePeriodUpdated(_gracePeriod);
+        withdrawalGracePeriod = _gracePeriod;
+        emit WithdrawalGracePeriodUpdated(_gracePeriod);
     }
 
     // ========= User flows =========
@@ -113,7 +113,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     {
         WithdrawalRequest memory request = withdrawalRequests[msg.sender];
         if (request.timestamp == 0) revert NoWithdrawalRequested();
-        if (block.timestamp < request.timestamp + gracePeriod)
+        if (block.timestamp < request.timestamp + withdrawalGracePeriod)
             revert GracePeriodNotElapsed();
 
         /// The user's collateral may have been reduced since the withdrawal was requested.
