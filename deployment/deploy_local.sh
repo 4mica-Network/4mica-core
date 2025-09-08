@@ -73,8 +73,8 @@ ETHEREUM_WS_RPC_URL="$ETHEREUM_WS_RPC_URL"
 ETHEREUM_CONTRACT_ADDRESS="0x5FbDB2315678afecb367f032d93F642f64180aa3"
 EOF
 
-echo "Environment variables written to core/.env:"
-cat core/.env
+echo "Environment variables written to .env:"
+cat .env
 
 echo "If you want to deploy contracts with Forge, run the following command:"
 echo ""
@@ -85,7 +85,11 @@ echo "  --via-ir \\"
 echo "  -vvvv"
 echo ""
 
-# ========== 6. Build Project ==========
+# ========== 6. Generate Prisma file ===
+cargo prisma generate --schema=./core/prisma/schema.prisma
+echo "Built prisma file ✅"
+
+# ========== 7. Build Project ==========
 echo "Building local binary..."
 cargo build
 
