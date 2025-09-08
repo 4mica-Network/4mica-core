@@ -148,13 +148,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit UnlockedBalance(msg.sender, unlock_amount);
     }
 
-    function withdraw(
-        uint256 amount
-    )
-        external
-        nonReentrant
-        nonZero(amount)
-    {
+    function withdraw(uint256 amount) external nonReentrant nonZero(amount) {
         if (balances[msg.sender].available < amount)
             revert InsufficientAvailable();
 
@@ -166,10 +160,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit BalanceWithdrawn(msg.sender, amount);
     }
 
-    function remunerate(
-        Guarantee calldata g,
-        uint256 signature
-    )
+    function remunerate(Guarantee calldata g, uint256 signature)
         external
         nonReentrant
         nonZero(g.amount)
@@ -210,10 +201,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Operator / Manager flows =========
-    function recordPayment(
-        uint256 tab_id,
-        uint256 amount
-    )
+    function recordPayment(uint256 tab_id, uint256 amount)
         external
         restricted
         nonZero(amount)
@@ -224,9 +212,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Views / Helpers =========
-    function getUser(
-        address userAddr
-    )
+    function getUser(address userAddr)
         external
         view
         returns (
@@ -242,9 +228,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         unlock_request_amount = unlockRequests[userAddr].amount;
     }
 
-    function getPaymentStatus(
-        uint256 tab_id
-    )
+    function getPaymentStatus(uint256 tab_id)
         external
         view
         returns (
