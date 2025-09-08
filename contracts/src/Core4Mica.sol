@@ -28,6 +28,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     uint256 public withdrawalGracePeriod = 21 days;
     uint256 public tabExpirationTime = 20.5 days;
 
+    struct UserBalance {
+        uint256 available;
+        uint256 locked;
+    }
+
     struct WithdrawalRequest {
         uint256 timestamp;
         uint256 amount;
@@ -38,14 +43,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         bool remunerated;
     }
 
-    mapping(address => uint256) public collateral;
+    mapping(address => UserBalance) public balances;
     mapping(address => WithdrawalRequest) public withdrawalRequests;
     mapping(uint256 => PaymentStatus) public payments;
 
     // ========= Events =========
-    event CollateralDeposited(address indexed user, uint256 amount);
+    event BalanceDeposited(address indexed user, uint256 amount);
     event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
-    event CollateralWithdrawn(address indexed user, uint256 amount);
+    event BalanceWithdrawn(address indexed user, uint256 amount);
     event WithdrawalRequested(address indexed user, uint256 when);
     event WithdrawalCanceled(address indexed user);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
@@ -95,12 +100,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= User flows =========
     function deposit() external payable nonReentrant nonZero(msg.value) {
-        collateral[msg.sender] += msg.value;
-        emit CollateralDeposited(msg.sender, msg.value);
+        balances[msg.sender].locked += msg.value;
+        emit BalanceDeposited(msg.sender, msg.value);
     }
 
     function requestWithdrawal(uint256 amount) external nonZero(amount) {
-        if (amount > collateral[msg.sender])
+        if (amount > balances[msg.sender].locked)
             revert InsufficientAvailable();
 
         withdrawalRequests[msg.sender] = WithdrawalRequest(block.timestamp, amount);
@@ -122,19 +127,19 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
         /// The user's collateral may have been reduced since the withdrawal was requested.
         /// As such, take the minimum of the two, making sure we never overdraw the account.
-        uint256 withdrawal_amount = Math.min(collateral[msg.sender], request.amount);
+        uint256 withdrawal_amount = Math.min(balances[msg.sender].locked, request.amount);
 
-        if (withdrawal_amount == collateral[msg.sender]) {
-            delete collateral[msg.sender];
+        if (withdrawal_amount == balances[msg.sender].locked) {
+            delete balances[msg.sender].locked;
         } else {
-            collateral[msg.sender] -= withdrawal_amount;
+            balances[msg.sender].locked -= withdrawal_amount;
         }
         delete withdrawalRequests[msg.sender];
 
         (bool ok, ) = payable(msg.sender).call{value: withdrawal_amount}("");
         if (!ok) revert TransferFailed();
 
-        emit CollateralWithdrawn(msg.sender, withdrawal_amount);
+        emit BalanceWithdrawn(msg.sender, withdrawal_amount);
     }
 
     function remunerate(
@@ -168,10 +173,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert InvalidSignature();
 
         // 6. Client must have sufficient funds
-        if (collateral[g.client] < g.amount)
+        if (balances[g.client].locked < g.amount)
             revert DoubleSpendingDetected();
 
-        collateral[g.client] -= g.amount;
+        balances[g.client].locked -= g.amount;
         payments[g.tab_id].remunerated = true;
 
         (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
@@ -201,12 +206,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         external
         view
         returns (
-            uint256 _collateral,
+            uint256 balance_available,
+            uint256 balance_locked,
             uint256 withdrawal_request_timestamp,
             uint256 withdrawal_request_amount
         )
     {
-        _collateral = collateral[userAddr];
+        balance_available = balances[userAddr].available;
+        balance_locked = balances[userAddr].locked;
         withdrawal_request_timestamp = withdrawalRequests[userAddr].timestamp;
         withdrawal_request_amount = withdrawalRequests[userAddr].amount;
     }

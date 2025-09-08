@@ -130,16 +130,18 @@ contract Core4MicaTest is Test {
         vm.startPrank(user1);
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralDeposited(user1, minDeposit);
+        emit Core4Mica.BalanceDeposited(user1, minDeposit);
 
         core4Mica.deposit{value: minDeposit}();
 
         (
-            uint256 totalCollateral,
+            uint256 available,
+            uint256 locked,
             uint256 withdrawTimestamp,
             uint256 withdrawAmount
         ) = core4Mica.getUser(user1);
-        assertEq(totalCollateral, minDeposit, "Total collateral mismatch");
+        assertEq(available, 0, "Available balance mismatch");
+        assertEq(locked, minDeposit, "Locked balance mismatch");
         assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
         assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
     }
@@ -157,8 +159,14 @@ contract Core4MicaTest is Test {
 
         core4Mica.requestWithdrawal(minDeposit);
 
-        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 2);
+        (
+            uint256 available,
+            uint256 locked,
+            uint256 withdrawalTimestamp,
+            uint256 withdrawalAmount
+        ) = core4Mica.getUser(user1);
+        assertEq(available, 0);
+        assertEq(locked, minDeposit * 2);
         assertEq(withdrawalTimestamp, block.timestamp);
         assertEq(withdrawalAmount, minDeposit);
     }
@@ -198,8 +206,14 @@ contract Core4MicaTest is Test {
         emit Core4Mica.WithdrawalCanceled(user1);
 
         core4Mica.cancelWithdrawal();
-        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 2);
+        (
+            uint256 available,
+            uint256 locked,
+            uint256 withdrawalTimestamp,
+            uint256 withdrawalAmount
+        ) = core4Mica.getUser(user1);
+        assertEq(available, 0);
+        assertEq(locked, minDeposit * 2);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
@@ -229,14 +243,20 @@ contract Core4MicaTest is Test {
         vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralWithdrawn(user1, minDeposit);
+        emit Core4Mica.BalanceWithdrawn(user1, minDeposit);
 
         assertEq(user1.balance, 1.998 ether);
         core4Mica.finalizeWithdrawal();
         assertEq(user1.balance, 1.999 ether);
 
-        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit);
+        (
+            uint256 available,
+            uint256 locked,
+            uint256 withdrawalTimestamp,
+            uint256 withdrawalAmount
+        ) = core4Mica.getUser(user1);
+        assertEq(available, 0);
+        assertEq(locked, minDeposit);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
@@ -256,8 +276,14 @@ contract Core4MicaTest is Test {
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, minDeposit * 3);
         core4Mica.remunerate(g, 0x0);
-        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 2);
+        (
+            uint256 available,
+            uint256 locked,
+            uint256 withdrawalTimestamp,
+            uint256 withdrawalAmount
+        ) = core4Mica.getUser(user1);
+        assertEq(available, 0);
+        assertEq(locked, minDeposit * 2);
         assertEq(withdrawalTimestamp, withdrawal_timestamp);
         assertEq(withdrawalAmount, minDeposit * 4);
 
@@ -265,15 +291,16 @@ contract Core4MicaTest is Test {
         vm.warp(tab_timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralWithdrawn(user1, minDeposit * 2);
+        emit Core4Mica.BalanceWithdrawn(user1, minDeposit * 2);
 
         assertEq(user1.balance, 0 ether);
         vm.prank(user1);
         core4Mica.finalizeWithdrawal();
         assertEq(user1.balance, 0.002 ether);
 
-        (collateral, withdrawalTimestamp, withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, 0);
+        (available, locked, withdrawalTimestamp, withdrawalAmount) = core4Mica.getUser(user1);
+        assertEq(available, 0);
+        assertEq(locked, 0);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
@@ -307,8 +334,14 @@ contract Core4MicaTest is Test {
         core4Mica.finalizeWithdrawal();
         assertEq(user1.balance, 0 ether);
 
-        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, 0);
+        (
+            uint256 available,
+            uint256 locked,
+            uint256 withdrawalTimestamp,
+            uint256 withdrawalAmount
+        ) = core4Mica.getUser(user1);
+        assertEq(available, 0);
+        assertEq(locked, 0);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
@@ -396,8 +429,8 @@ contract Core4MicaTest is Test {
         core4Mica.remunerate(g, 0x0);
 
         assertEq(user2.balance, 0.5 ether);
-        (uint256 collateral,, ) = core4Mica.getUser(user1);
-        assertEq(collateral, 0.5 ether);
+        (, uint256 locked,, ) = core4Mica.getUser(user1);
+        assertEq(locked, 0.5 ether);
     }
 
     function test_Remunerate_PartiallyPaidTab() public {
@@ -424,8 +457,8 @@ contract Core4MicaTest is Test {
 
         // check: user2 is still remunerated for the full amount
         assertEq(user2.balance, 0.5 ether);
-        (uint256 collateral,, ) = core4Mica.getUser(user1);
-        assertEq(collateral, 0.5 ether);
+        (, uint256 locked,, ) = core4Mica.getUser(user1);
+        assertEq(locked, 0.5 ether);
     }
 
     // === Remunerate: Failure cases ===
