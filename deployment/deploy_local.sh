@@ -76,6 +76,15 @@ EOF
 echo "Environment variables written to .env:"
 cat .env
 
+echo "If you want to deploy contracts with Forge, run the following command:"
+echo ""
+echo "RPC_URL=\"$ETHEREUM_HTTP_RPC_URL\" forge script contracts/script/Core4Mica.s.sol:Core4MicaScript \\"
+echo "  --rpc-url \"\$RPC_URL\" \\"
+echo "  --broadcast \\"
+echo "  --via-ir \\"
+echo "  -vvvv"
+echo ""
+
 # ========== 6. Generate Prisma file ===
 cargo prisma generate --schema=./core/prisma/schema.prisma
 echo "Built prisma file ✅"
