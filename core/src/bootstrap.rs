@@ -29,7 +29,7 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         log_level,
     } = &app_config.server_config;
 
-    unsafe { env::set_var("RUST_LOG", log_level.as_str()); }
+    env::set_var("RUST_LOG", log_level.as_str());
     env_logger::init();
 
     let cors = CorsLayer::new()
