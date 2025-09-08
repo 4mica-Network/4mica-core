@@ -14,7 +14,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error InsufficientAvailable();
     error TransferFailed();
     error GracePeriodNotElapsed();
-    error NoWithdrawalRequested();
+    error NoUnlockRequested();
     error DirectTransferNotAllowed();
     error DoubleSpendingDetected();
     error TabNotYetOverdue();
@@ -25,7 +25,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
-    uint256 public withdrawalGracePeriod = 21 days;
+    uint256 public unlockGracePeriod = 21 days;
     uint256 public tabExpirationTime = 20.5 days;
 
     struct UserBalance {
@@ -33,7 +33,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         uint256 locked;
     }
 
-    struct WithdrawalRequest {
+    struct UnlockRequest {
         uint256 timestamp;
         uint256 amount;
     }
@@ -44,17 +44,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     mapping(address => UserBalance) public balances;
-    mapping(address => WithdrawalRequest) public withdrawalRequests;
+    mapping(address => UnlockRequest) public unlockRequests;
     mapping(uint256 => PaymentStatus) public payments;
 
     // ========= Events =========
     event BalanceDeposited(address indexed user, uint256 amount);
     event LockedBalance(address indexed user, uint256 amount);
     event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
-    event BalanceWithdrawn(address indexed user, uint256 amount);
-    event WithdrawalRequested(address indexed user, uint256 when);
-    event WithdrawalCanceled(address indexed user);
-    event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
+    event UnlockedBalance(address indexed user, uint256 amount);
+    event UnlockRequested(address indexed user, uint256 when);
+    event UnlockCanceled(address indexed user);
+    event UnlockGracePeriodUpdated(uint256 newGracePeriod);
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event RecordedPayment(uint256 indexed tab_id, uint256 amount);
@@ -89,9 +89,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit RemunerationGracePeriodUpdated(_gracePeriod);
     }
 
-    function setWithdrawalGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
-        withdrawalGracePeriod = _gracePeriod;
-        emit WithdrawalGracePeriodUpdated(_gracePeriod);
+    function setUnlockGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+        unlockGracePeriod = _gracePeriod;
+        emit UnlockGracePeriodUpdated(_gracePeriod);
     }
 
     function setTabExpirationTime(uint256 _expirationTime) external restricted nonZero(_expirationTime) {
@@ -115,42 +115,36 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit LockedBalance(msg.sender, amount);
     }
 
-    function requestWithdrawal(uint256 amount) external nonZero(amount) {
+    function requestUnlock(uint256 amount) external nonZero(amount) {
         if (amount > balances[msg.sender].locked)
             revert InsufficientAvailable();
 
-        withdrawalRequests[msg.sender] = WithdrawalRequest(block.timestamp, amount);
-        emit WithdrawalRequested(msg.sender, block.timestamp);
+        unlockRequests[msg.sender] = UnlockRequest(block.timestamp, amount);
+        emit UnlockRequested(msg.sender, block.timestamp);
     }
 
-    function cancelWithdrawal() external {
-        if (withdrawalRequests[msg.sender].timestamp == 0)
-            revert NoWithdrawalRequested();
-        delete withdrawalRequests[msg.sender];
-        emit WithdrawalCanceled(msg.sender);
+    function cancelUnlock() external {
+        if (unlockRequests[msg.sender].timestamp == 0)
+            revert NoUnlockRequested();
+        delete unlockRequests[msg.sender];
+        emit UnlockCanceled(msg.sender);
     }
 
-    function finalizeWithdrawal() external nonReentrant {
-        WithdrawalRequest memory request = withdrawalRequests[msg.sender];
-        if (request.timestamp == 0) revert NoWithdrawalRequested();
-        if (block.timestamp < request.timestamp + withdrawalGracePeriod)
+    function unlock() external nonReentrant {
+        UnlockRequest memory request = unlockRequests[msg.sender];
+        if (request.timestamp == 0) revert NoUnlockRequested();
+        if (block.timestamp < request.timestamp + unlockGracePeriod)
             revert GracePeriodNotElapsed();
 
         /// The user's collateral may have been reduced since the withdrawal was requested.
         /// As such, take the minimum of the two, making sure we never overdraw the account.
-        uint256 withdrawal_amount = Math.min(balances[msg.sender].locked, request.amount);
+        uint256 unlock_amount = Math.min(balances[msg.sender].locked, request.amount);
 
-        if (withdrawal_amount == balances[msg.sender].locked) {
-            delete balances[msg.sender].locked;
-        } else {
-            balances[msg.sender].locked -= withdrawal_amount;
-        }
-        delete withdrawalRequests[msg.sender];
+        balances[msg.sender].locked -= unlock_amount;
+        balances[msg.sender].available += unlock_amount;
+        delete unlockRequests[msg.sender];
 
-        (bool ok, ) = payable(msg.sender).call{value: withdrawal_amount}("");
-        if (!ok) revert TransferFailed();
-
-        emit BalanceWithdrawn(msg.sender, withdrawal_amount);
+        emit UnlockedBalance(msg.sender, unlock_amount);
     }
 
     function remunerate(
@@ -219,14 +213,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         returns (
             uint256 balance_available,
             uint256 balance_locked,
-            uint256 withdrawal_request_timestamp,
-            uint256 withdrawal_request_amount
+            uint256 unlock_request_timestamp,
+            uint256 unlock_request_amount
         )
     {
         balance_available = balances[userAddr].available;
         balance_locked = balances[userAddr].locked;
-        withdrawal_request_timestamp = withdrawalRequests[userAddr].timestamp;
-        withdrawal_request_amount = withdrawalRequests[userAddr].amount;
+        unlock_request_timestamp = unlockRequests[userAddr].timestamp;
+        unlock_request_amount = unlockRequests[userAddr].amount;
     }
 
     function getPaymentStatus(

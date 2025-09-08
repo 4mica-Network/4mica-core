@@ -51,9 +51,9 @@ contract Core4MicaScript is Script {
         bytes4[] memory userSelectors = new bytes4[](6);
         userSelectors[0] = Core4Mica.deposit.selector;
         userSelectors[1] = Core4Mica.lock.selector;
-        userSelectors[2] = Core4Mica.requestWithdrawal.selector;
-        userSelectors[3] = Core4Mica.cancelWithdrawal.selector;
-        userSelectors[4] = Core4Mica.finalizeWithdrawal.selector;
+        userSelectors[2] = Core4Mica.requestUnlock.selector;
+        userSelectors[3] = Core4Mica.cancelUnlock.selector;
+        userSelectors[4] = Core4Mica.unlock.selector;
         userSelectors[5] = Core4Mica.remunerate.selector;
         for (uint256 i = 0; i < userSelectors.length; i++) {
             manager.setTargetFunctionRole(
@@ -72,7 +72,7 @@ contract Core4MicaScript is Script {
 
         // Admin-only config functions → USER_ADMIN_ROLE
         bytes4[] memory adminSelectors = new bytes4[](3);
-        adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
+        adminSelectors[0] = Core4Mica.setUnlockGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
