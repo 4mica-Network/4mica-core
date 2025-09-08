@@ -100,12 +100,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= User flows =========
-    function deposit()
-        external
-        payable
-        nonReentrant
-        nonZero(msg.value)
-    {
+    function deposit() external payable nonReentrant nonZero(msg.value) {
         uint256 prev_collateral = collateral[msg.sender];
         collateral[msg.sender] += msg.value;
 
@@ -116,14 +111,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         }
     }
 
-    function requestWithdrawal(
-        uint256 amount
-    )
-        external
-        restricted
-        isRegistered(msg.sender)
-        nonZero(amount)
-    {
+    function requestWithdrawal(uint256 amount) external nonZero(amount) {
         if (amount > collateral[msg.sender])
             revert InsufficientAvailable();
 
@@ -131,18 +119,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit WithdrawalRequested(msg.sender, block.timestamp);
     }
 
-    function cancelWithdrawal() external restricted {
+    function cancelWithdrawal() external {
         if (withdrawalRequests[msg.sender].timestamp == 0)
             revert NoWithdrawalRequested();
         delete withdrawalRequests[msg.sender];
         emit WithdrawalCanceled(msg.sender);
     }
 
-    function finalizeWithdrawal()
-        external
-        nonReentrant
-        restricted
-    {
+    function finalizeWithdrawal() external nonReentrant {
         WithdrawalRequest memory request = withdrawalRequests[msg.sender];
         if (request.timestamp == 0) revert NoWithdrawalRequested();
         if (block.timestamp < request.timestamp + withdrawalGracePeriod)
@@ -170,10 +154,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         uint256 signature
     )
         external
-        restricted
+        nonReentrant
         nonZero(g.amount)
         validRecipient(g.recipient)
-        nonReentrant
         isRegistered(g.client)
     {
         // 1. Tab must be overdue
@@ -216,6 +199,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         uint256 amount
     )
         external
+        restricted
         nonZero(amount)
         nonReentrant
     {

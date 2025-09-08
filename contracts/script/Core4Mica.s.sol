@@ -78,6 +78,7 @@ contract Core4MicaScript is Script {
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
+        adminSelectors[3] = Core4Mica.recordPayment.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),
