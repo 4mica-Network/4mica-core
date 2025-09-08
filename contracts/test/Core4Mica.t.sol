@@ -19,36 +19,25 @@ contract Core4MicaTest is Test {
     function setUp() public {
         manager = new AccessManager(address(this));
         core4Mica = new Core4Mica(address(manager));
+
         // Assign all necessary function roles to USER_ROLE (no delay)
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.deposit.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.requestWithdrawal.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.cancelWithdrawal.selector),
-            USER_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.finalizeWithdrawal.selector),
-            USER_ROLE
-        );
+        bytes4[] memory userSelectors = new bytes4[](5);
+        userSelectors[0] = Core4Mica.deposit.selector;
+        userSelectors[1] = Core4Mica.requestWithdrawal.selector;
+        userSelectors[2] = Core4Mica.cancelWithdrawal.selector;
+        userSelectors[3] = Core4Mica.finalizeWithdrawal.selector;
+        userSelectors[4] = Core4Mica.remunerate.selector;
+        for (uint256 i = 0; i < userSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(userSelectors[i]),
+                USER_ROLE
+            );
+        }
         // grant user1 the USER_ROLE immediately (0 delay)
         manager.grantRole(USER_ROLE, user1, 0);
 
-        // grant test contract (us) the OPERATOR_ROLE so we can lockCollateral/makeWhole
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(Core4Mica.remunerate.selector),
-            OPERATOR_ROLE
-        );
+        // grant test contract (us) the OPERATOR_ROLE so we can record Payments
         manager.setTargetFunctionRole(
             address(core4Mica),
             _asSingletonArray(Core4Mica.recordPayment.selector),
