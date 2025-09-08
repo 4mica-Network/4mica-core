@@ -100,7 +100,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= User flows =========
-    function addDeposit()
+    function deposit()
         external
         payable
         nonReentrant

@@ -49,7 +49,7 @@ contract Core4MicaScript is Script {
         // 2. Map Core4Mica functions to roles
         // User-facing functions → USER_ROLE
         bytes4[] memory userSelectors = new bytes4[](4);
-        userSelectors[0] = Core4Mica.addDeposit.selector;
+        userSelectors[0] = Core4Mica.deposit.selector;
         userSelectors[1] = Core4Mica.requestWithdrawal.selector;
         userSelectors[2] = Core4Mica.cancelWithdrawal.selector;
         userSelectors[3] = Core4Mica.finalizeWithdrawal.selector;
