@@ -6,7 +6,6 @@ use env_logger::Env;
 use jsonrpsee::server::Server;
 use log::info;
 use rpc::core::CoreApiServer;
-use std::env;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 
