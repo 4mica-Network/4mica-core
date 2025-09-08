@@ -48,11 +48,12 @@ contract Core4MicaScript is Script {
 
         // 2. Map Core4Mica functions to roles
         // User-facing functions → USER_ROLE
-        bytes4[] memory userSelectors = new bytes4[](4);
+        bytes4[] memory userSelectors = new bytes4[](5);
         userSelectors[0] = Core4Mica.deposit.selector;
         userSelectors[1] = Core4Mica.requestWithdrawal.selector;
         userSelectors[2] = Core4Mica.cancelWithdrawal.selector;
         userSelectors[3] = Core4Mica.finalizeWithdrawal.selector;
+        userSelectors[4] = Core4Mica.remunerate.selector;
         for (uint256 i = 0; i < userSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),
@@ -62,23 +63,17 @@ contract Core4MicaScript is Script {
         }
 
         // Operator functions → OPERATOR_ROLE
-        bytes4[] memory operatorSelectors = new bytes4[](2);
-        operatorSelectors[0] = Core4Mica.remunerate.selector;
-        operatorSelectors[1] = Core4Mica.recordPayment.selector;
-        for (uint256 i = 0; i < operatorSelectors.length; i++) {
-            manager.setTargetFunctionRole(
-                address(core4Mica),
-                _asSingletonArray(operatorSelectors[i]),
-                OPERATOR_ROLE
-            );
-        }
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.recordPayment.selector),
+            OPERATOR_ROLE
+        );
 
         // Admin-only config functions → USER_ADMIN_ROLE
-        bytes4[] memory adminSelectors = new bytes4[](4);
+        bytes4[] memory adminSelectors = new bytes4[](3);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
-        adminSelectors[3] = Core4Mica.recordPayment.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),
