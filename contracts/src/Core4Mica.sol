@@ -43,7 +43,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     mapping(uint256 => PaymentStatus) public payments;
 
     // ========= Events =========
-    event UserRegistered(address indexed user, uint256 initialCollateral);
     event CollateralDeposited(address indexed user, uint256 amount);
     event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 amount);
@@ -96,14 +95,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= User flows =========
     function deposit() external payable nonReentrant nonZero(msg.value) {
-        uint256 prev_collateral = collateral[msg.sender];
         collateral[msg.sender] += msg.value;
-
-        if (prev_collateral == 0) {
-            emit UserRegistered(msg.sender, msg.value);
-        } else {
-            emit CollateralDeposited(msg.sender, msg.value);
-        }
+        emit CollateralDeposited(msg.sender, msg.value);
     }
 
     function requestWithdrawal(uint256 amount) external nonZero(amount) {

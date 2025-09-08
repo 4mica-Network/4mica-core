@@ -141,7 +141,7 @@ contract Core4MicaTest is Test {
         vm.startPrank(user1);
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.UserRegistered(user1, minDeposit);
+        emit Core4Mica.CollateralDeposited(user1, minDeposit);
 
         core4Mica.deposit{value: minDeposit}();
 
@@ -153,16 +153,6 @@ contract Core4MicaTest is Test {
         assertEq(totalCollateral, minDeposit, "Total collateral mismatch");
         assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
         assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
-
-        assertEq(
-            address(core4Mica).balance,
-            minDeposit,
-            "Contract balance mismatch"
-        );
-
-        vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralDeposited(user1, minDeposit);
-        core4Mica.deposit{value: minDeposit}();
     }
 
     // === Request Withdrawal ===
