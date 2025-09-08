@@ -49,6 +49,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Events =========
     event BalanceDeposited(address indexed user, uint256 amount);
+    event LockedBalance(address indexed user, uint256 amount);
     event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
     event BalanceWithdrawn(address indexed user, uint256 amount);
     event WithdrawalRequested(address indexed user, uint256 when);
@@ -100,8 +101,18 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= User flows =========
     function deposit() external payable nonReentrant nonZero(msg.value) {
-        balances[msg.sender].locked += msg.value;
+        balances[msg.sender].available += msg.value;
         emit BalanceDeposited(msg.sender, msg.value);
+    }
+
+    function lock(uint256 amount) external nonReentrant nonZero(amount) {
+        if (amount > balances[msg.sender].available)
+            revert InsufficientAvailable();
+
+        balances[msg.sender].available -= amount;
+        balances[msg.sender].locked += amount;
+
+        emit LockedBalance(msg.sender, amount);
     }
 
     function requestWithdrawal(uint256 amount) external nonZero(amount) {
