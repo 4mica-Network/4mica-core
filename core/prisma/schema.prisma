@@ -10,26 +10,73 @@ generator client {
   output   = "../src/persist/prisma.rs"
 }
 
+// A User represents an entity with an address that can act as a client (payer)
+// or as a server (recipient). Collateral/revenue are cached aggregates.
 model User {
   address String @id
-  deposit Float  @default(0)
+  collateral Float  @default(0)
+  locked_collateral Float @default(0)
   revenue Float  @default(0)
-  // For optimistic locking
+
+  /// Optimistic locking field
   version Int @default(1)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  /// Transactions (deposits, withdrawals, payments)
   transactions UserTransaction[]
+
+  tabs Tabs[] @relation("UserTabs")
+  withdrawals Withdrawal[]
+  collateral_events CollateralEvent[]
+}
+
+model Tabs {
+  id String @id
+
+  user_address String
+  user User @relation("UserTabs", fields: [user_address], references: [address])
+  server_address String
+  start_ts DateTime
+  status TabStatus @default(OPEN)
+  settlement_status SettlementStatus @default(PENDING)
+  guarantees Guarantee[]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([user_address])
+  @@index([server_address])
+}
+
+model Guarantee {
+  tab_id String
+  req_id Int
+  tab Tabs @relation(fields: [tab_id], references: [id])
+  from_address String
+  to_address String
+  value Float
+  start_ts DateTime
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@id([tab_id, req_id])
 }
 
 model UserTransaction {
+  /// Unique transaction ID (blockchain tx hash)
   tx_id        String  @id
-  user_address String
-  recipient_address String
-  amount       Float
-  cert         String?
 
+  /// User that initiated this transaction
+  user_address String
+  user User @relation(fields: [user_address], references: [address])
+  recipient_address String
+  amount Float
+  cert String?
+
+  /// Lifecycle flags
   verified  Boolean @default(false)
   finalized Boolean @default(false)
   failed    Boolean @default(false)
@@ -37,7 +84,61 @@ model UserTransaction {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  user User @relation(fields: [user_address], references: [address])
-
   @@index([user_address, finalized])
+}
+
+model Withdrawal {
+  id String @id
+  user_address String
+  user User @relation(fields: [user_address], references: [address])
+  amount Float
+  ts DateTime @default(now())
+  status WithdrawalStatus @default(PENDING)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([user_address, status])
+}
+
+model CollateralEvent {
+  id String @id @default(cuid())
+  user_address String
+  user User @relation(fields: [user_address], references: [address])
+  amount Float
+  event_type CollateralEventType
+  tab_id String?
+  req_id Int?
+  tx_id String?
+
+  created_at DateTime @default(now())
+
+  @@index([user_address, created_at])
+  @@index([tab_id, req_id])
+}
+
+enum TabStatus {
+  OPEN
+  CLOSED
+}
+
+enum SettlementStatus {
+  PENDING
+  SETTLED
+  FAILED
+  MADEWHOLE
+}
+
+enum WithdrawalStatus {
+  PENDING
+  EXECUTED
+  CANCELLED
+}
+
+enum CollateralEventType {
+  DEPOSIT      // User deposited collateral
+  WITHDRAWAL   // User withdrew collateral
+  RESERVE      // Collateral locked for a guarantee
+  RELEASE      // Collateral unlocked when settled/expired
+  REMUNERATE   // Collateral slashed to pay server
 }
