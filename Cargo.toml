@@ -41,3 +41,10 @@ alloy = "1.0.25"
 hyper = "1.6.0"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
+sea-orm = { version = "1.1.15", features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "mock",
+    "serde-json",
+    "with-uuid",
+] }
