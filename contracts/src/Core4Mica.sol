@@ -165,19 +165,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit CollateralWithdrawn(msg.sender, withdrawal_amount);
     }
 
-    // ========= Operator / Manager flows =========
-    function recordPayment(
-        uint256 tab_id,
-        uint256 amount
-    )
-        external
-        nonZero(amount)
-        nonReentrant
-    {
-        payments[tab_id].paid += amount;
-        emit RecordedPayment(tab_id, amount);
-    }
-
     function remunerate(
         Guarantee calldata g,
         uint256 signature
@@ -221,6 +208,19 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         if (!ok) revert TransferFailed();
 
         emit RecipientRemunerated(g.tab_id, g.req_id, g.amount);
+    }
+
+    // ========= Operator / Manager flows =========
+    function recordPayment(
+        uint256 tab_id,
+        uint256 amount
+    )
+        external
+        nonZero(amount)
+        nonReentrant
+    {
+        payments[tab_id].paid += amount;
+        emit RecordedPayment(tab_id, amount);
     }
 
     // ========= Views / Helpers =========
