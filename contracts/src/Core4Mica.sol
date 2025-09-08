@@ -68,11 +68,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     constructor(address manager) AccessManaged(manager) {}
 
     // ========= Modifiers =========
-    modifier isRegistered(address userAddr) {
-        if (collateral[userAddr] == 0) revert NotRegistered();
-        _;
-    }
-
     modifier nonZero(uint256 amount) {
         if (amount == 0) revert AmountZero();
         _;
@@ -157,7 +152,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         nonReentrant
         nonZero(g.amount)
         validRecipient(g.recipient)
-        isRegistered(g.client)
     {
         // 1. Tab must be overdue
         if (block.timestamp < g.tab_timestamp + remunerationGracePeriod)
