@@ -206,7 +206,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert TabAlreadyPaid();
 
         // 5. Verify signature
-        // TODO: verify signature
+        // TODO(#16): verify signature
         if (signature != 0)
             revert InvalidSignature();
 
