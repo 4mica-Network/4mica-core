@@ -421,27 +421,27 @@ contract Core4MicaTest is Test {
         assertEq(collateral, 0.5 ether);
     }
 
-    // === MakeWhole: Failure cases ===
+    // === Remunerate: Failure cases ===
 
-    function test_RevertMakeWhole_Revert_AmountZero() public {
+    function test_Remunerate_Revert_AmountZero() public {
         vm.expectRevert(Core4Mica.AmountZero.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, user2, 17, 0);
         core4Mica.remunerate(g, 0x0);
     }
 
-    function test_RevertMakeWhole_Revert_InvalidRecipient() public {
+    function test_Remunerate_Revert_InvalidRecipient() public {
         vm.expectRevert(Core4Mica.TransferFailed.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, address(0), 17, 0.5 ether);
         core4Mica.remunerate(g, 0x0);
     }
 
-    function test_RevertMakeWhole_Revert_ClientNotRegistered() public {
+    function test_Remunerate_Revert_ClientNotRegistered() public {
         vm.expectRevert(Core4Mica.NotRegistered.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, user2, 17, 0.5 ether);
         core4Mica.remunerate(g, 0x0);
     }
 
-    function test_RevertMakeWhole_Revert_NotYetOverdue() public {
+    function test_Remunerate_Revert_NotYetOverdue() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
@@ -451,7 +451,7 @@ contract Core4MicaTest is Test {
         core4Mica.remunerate(g, 0x0);
     }
 
-    function test_RevertMakeWhole_Revert_TabExpired() public {
+    function test_Remunerate_Revert_TabExpired() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
@@ -463,7 +463,7 @@ contract Core4MicaTest is Test {
         core4Mica.remunerate(g, 0x0);
     }
 
-    function test_RevertMakeWhole_Revert_PreviouslyRemunerated() public {
+    function test_Remunerate_Revert_PreviouslyRemunerated() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
@@ -481,7 +481,7 @@ contract Core4MicaTest is Test {
         core4Mica.remunerate(g, 0x0);
     }
 
-    function test_RevertMakeWhole_Revert_TabAlreadyPaid() public {
+    function test_Remunerate_Revert_TabAlreadyPaid() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
@@ -496,7 +496,7 @@ contract Core4MicaTest is Test {
         core4Mica.remunerate(g, 0x0);
     }
 
-    function test_RevertMakeWhole_Revert_InvalidSignature() public {
+    function test_Remunerate_Revert_InvalidSignature() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
@@ -508,7 +508,7 @@ contract Core4MicaTest is Test {
         core4Mica.remunerate(g, 0x1);
     }
 
-    function test_RevertMakeWhole_Revert_DoubleSpending() public {
+    function test_Remunerate_Revert_DoubleSpending() public {
         vm.deal(user1, 3 ether);
 
         // user1 deposits fewer than the later remuneration claim
