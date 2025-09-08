@@ -21,12 +21,13 @@ contract Core4MicaTest is Test {
         core4Mica = new Core4Mica(address(manager));
 
         // Assign all necessary function roles to USER_ROLE (no delay)
-        bytes4[] memory userSelectors = new bytes4[](5);
+        bytes4[] memory userSelectors = new bytes4[](6);
         userSelectors[0] = Core4Mica.deposit.selector;
         userSelectors[1] = Core4Mica.requestUnlock.selector;
         userSelectors[2] = Core4Mica.cancelUnlock.selector;
         userSelectors[3] = Core4Mica.unlock.selector;
-        userSelectors[4] = Core4Mica.remunerate.selector;
+        userSelectors[4] = Core4Mica.withdraw.selector;
+        userSelectors[5] = Core4Mica.remunerate.selector;
         for (uint256 i = 0; i < userSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),
@@ -414,6 +415,52 @@ contract Core4MicaTest is Test {
 
         vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
         core4Mica.unlock();
+    }
+
+    // === Withdraw ===
+
+    function test_Withdraw() public {
+        vm.deal(user1, 2 ether);
+        vm.startPrank(user1);
+        core4Mica.deposit{value: 2 ether}();
+        core4Mica.lock(1 ether);
+
+        assertEq(user1.balance, 0 ether);
+        core4Mica.withdraw(0.75 ether);
+        assertEq(user1.balance, 0.75 ether);
+
+        (
+            uint256 available,
+            uint256 locked,
+            uint256 unlockTimestamp,
+            uint256 unlockAmount
+        ) = core4Mica.getUser(user1);
+        assertEq(available, 0.25 ether);
+        assertEq(locked, 1 ether);
+        assertEq(unlockTimestamp, 0);
+        assertEq(unlockAmount, 0);
+    }
+
+    // === Withdraw: Failure cases ===
+
+    function test_Withdraw_Revert_AmountZero() public {
+        vm.deal(user1, 3 ether);
+        vm.startPrank(user1);
+        core4Mica.deposit{value: 2 ether}();
+        core4Mica.lock(1 ether);
+
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.withdraw(0);
+    }
+
+    function test_Withdraw_Revert_InsufficientAvailable() public {
+        vm.deal(user1, 3 ether);
+        vm.startPrank(user1);
+        core4Mica.deposit{value: 2 ether}();
+        core4Mica.lock(1 ether);
+
+        vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
+        core4Mica.withdraw(1.25 ether);
     }
 
     // === Record payment ===

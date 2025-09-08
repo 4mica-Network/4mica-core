@@ -48,13 +48,14 @@ contract Core4MicaScript is Script {
 
         // 2. Map Core4Mica functions to roles
         // User-facing functions → USER_ROLE
-        bytes4[] memory userSelectors = new bytes4[](6);
+        bytes4[] memory userSelectors = new bytes4[](7);
         userSelectors[0] = Core4Mica.deposit.selector;
         userSelectors[1] = Core4Mica.lock.selector;
         userSelectors[2] = Core4Mica.requestUnlock.selector;
         userSelectors[3] = Core4Mica.cancelUnlock.selector;
         userSelectors[4] = Core4Mica.unlock.selector;
-        userSelectors[5] = Core4Mica.remunerate.selector;
+        userSelectors[5] = Core4Mica.withdraw.selector;
+        userSelectors[6] = Core4Mica.remunerate.selector;
         for (uint256 i = 0; i < userSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),
