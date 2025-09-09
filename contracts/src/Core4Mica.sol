@@ -24,8 +24,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
-    uint256 public withdrawalGracePeriod = 21 days;
-    uint256 public tabExpirationTime = 20.5 days;
+    uint256 public withdrawalGracePeriod = 22 days;
+    uint256 public tabExpirationTime = 21 days;
 
     struct WithdrawalRequest {
         uint256 timestamp;
