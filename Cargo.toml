@@ -6,7 +6,7 @@ members = [
     "crates/prisma-cli",
     "crates/rpc",
     "crates/blockchain",
-    "recipient",
+    "recipient", "migration", "crates/migration",
 ]
 
 [workspace.package]
