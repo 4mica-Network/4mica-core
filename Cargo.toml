@@ -3,10 +3,11 @@ resolver = "2"
 members = [
     "core",
     "crates/crypto",
-    "crates/prisma-cli",
     "crates/rpc",
     "crates/blockchain",
-    "recipient", "migration", "crates/migration",
+    "crates/migration",
+    "crates/entities",
+    "recipient",
 ]
 
 [workspace.package]
@@ -14,10 +15,11 @@ edition = "2024"
 
 [workspace.dependencies]
 rpc = { path = "crates/rpc" }
-prisma-cli = { path = "crates/prisma-cli" }
 crypto = { path = "crates/crypto" }
 blockchain = { path = "crates/blockchain" }
-
+migration = { path = "crates/migration" }
+entities = { path = "crates/entities" }
+chrono = "0.4.42"
 anyhow = "1.0.95"
 async-trait = "0.1.86"
 thiserror = "2.0.11"
@@ -30,13 +32,11 @@ serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.138"
 tokio = "1.43.0"
 jsonrpsee = { git = "https://github.com/paritytech/jsonrpsee.git" }
-prisma-client-rust = { git = "https://github.com/Brendonovich/prisma-client-rust", tag = "0.6.11", default-features = false, features = [
-    "postgresql",
-] }
 bls-signatures = "0.15.0"
 hex = "0.4.3"
 test-log = "0.2.17"
-uuid = "1.14.0"
+[dependencies]
+uuid = { version = "1.14", features = ["v4"] }
 alloy = "1.0.25"
 hyper = "1.6.0"
 tower = "0.5"
@@ -44,7 +44,4 @@ tower-http = { version = "0.6", features = ["cors"] }
 sea-orm = { version = "1.1.15", features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",
-    "mock",
-    "serde-json",
-    "with-uuid",
 ] }
