@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::ethereum::EthereumListener;
 use crate::persist::repo::{self, SubmitPaymentTxnError};
-use crate::persist::PersistCtx;
+use crate::persist::{IntoUserTxInfo, PersistCtx};
 
 use alloy::primitives::B256;
 use alloy::providers::fillers::{
@@ -13,11 +13,15 @@ use async_trait::async_trait;
 use blockchain::txtools;
 use crypto::bls::BLSCert;
 use log::{error, info};
+use rpc::RpcResult;
 use rpc::common::{
     PaymentGuaranteeClaims, TransactionVerificationResult, UserInfo, UserTransactionInfo,
 };
 use rpc::core::{CoreApiServer, CorePublicParameters};
-use rpc::RpcResult;
+
+// NEW: pull SeaORM entities/utilities for ad-hoc query of user transactions
+use entities::user_transaction;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 type EthereumProvider = FillProvider<
     JoinFill<
@@ -98,7 +102,7 @@ impl CoreApiServer for CoreService {
     }
 
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
-        let Some(user) = repo::get_user(&self.persist_ctx, user_addr)
+        let Some(user) = repo::get_user(&self.persist_ctx, user_addr.clone())
             .await
             .map_err(|err| {
                 error!("Failed to get user {err}");
@@ -108,16 +112,30 @@ impl CoreApiServer for CoreService {
             return Ok(None);
         };
 
-        let transactions = user.transactions.unwrap();
-        let not_usable_deposit = transactions
+        // Fetch ALL transactions for this user (SeaORM)
+        let transactions = user_transaction::Entity::find()
+            .filter(user_transaction::Column::UserAddress.eq(user_addr))
+            .all(&*self.persist_ctx.db)
+            .await
+            .map_err(|err| {
+                error!("Failed to load user transactions {err}");
+                rpc::internal_error()
+            })?;
+
+        // Compute reserved (not usable) portion
+        let not_usable = transactions
             .iter()
             .filter_map(|tx| if !tx.finalized { Some(tx.amount) } else { None })
             .sum::<f64>();
 
+        // NOTE: SeaORM User entity uses `collateral` as the balance field we manage.
         Ok(Some(UserInfo {
-            deposit: user.deposit,
-            available_deposit: user.deposit - not_usable_deposit,
-            transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
+            deposit: user.collateral,
+            available_deposit: user.collateral - not_usable,
+            transactions: transactions
+                .into_iter()
+                .map(|tx| tx.into_user_tx_info())
+                .collect(),
         }))
     }
 
@@ -128,7 +146,9 @@ impl CoreApiServer for CoreService {
         transaction_id: String,
         amount: f64,
     ) -> RpcResult<BLSCert> {
-        info!("Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
+        info!(
+            "Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}"
+        );
 
         let provider = self.get_ethereum_provider().await?;
 
@@ -167,18 +187,16 @@ impl CoreApiServer for CoreService {
             cert_str,
         )
         .await
-        .map_err(|err| {
-            match err {
-                SubmitPaymentTxnError::QueryError(query_error) => {
-                    error!("{query_error}");
-                    rpc::internal_error()
-                }
-                SubmitPaymentTxnError::UserNotRegistered
-                | SubmitPaymentTxnError::NotEnoughDeposit
-                // We should retry it ourselves if there was a conflict!
-                | SubmitPaymentTxnError::ConflictingTransactions => {
-                    rpc::invalid_params_error(&format!("{err}"))
-                }
+        .map_err(|err| match err {
+            SubmitPaymentTxnError::Db(db_err) => {
+                error!("{db_err}");
+                rpc::internal_error()
+            }
+            SubmitPaymentTxnError::UserNotRegistered
+            | SubmitPaymentTxnError::NotEnoughDeposit
+            // We should retry it ourselves if there was a conflict!
+            | SubmitPaymentTxnError::ConflictingTransactions => {
+                rpc::invalid_params_error(&format!("{err}"))
             }
         })?;
 
@@ -192,11 +210,14 @@ impl CoreApiServer for CoreService {
         let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
             .await
             .map_err(|err| {
-                error!("Failed to get user {err}");
+                error!("Failed to get transactions {err}");
                 rpc::internal_error()
             })?;
 
-        Ok(transactions.into_iter().map(|tx| tx.into()).collect())
+        Ok(transactions
+            .into_iter()
+            .map(|tx| tx.into_user_tx_info())
+            .collect())
     }
 
     async fn verify_transaction(
