@@ -45,7 +45,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event CollateralDeposited(address indexed user, uint256 amount);
     event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 amount);
-    event WithdrawalRequested(address indexed user, uint256 when);
+    event WithdrawalRequested(address indexed user, uint256 when, uint256 amount);
     event WithdrawalCanceled(address indexed user);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
@@ -103,7 +103,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert InsufficientAvailable();
 
         withdrawalRequests[msg.sender] = WithdrawalRequest(block.timestamp, amount);
-        emit WithdrawalRequested(msg.sender, block.timestamp);
+        emit WithdrawalRequested(msg.sender, block.timestamp, amount);
     }
 
     function cancelWithdrawal() external {
