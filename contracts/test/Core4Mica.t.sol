@@ -144,6 +144,23 @@ contract Core4MicaTest is Test {
         assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
     }
 
+    function test_Deposit_MultipleDepositsAccumulate() public {
+        vm.deal(user1, 1 ether);
+        vm.startPrank(user1);
+        core4Mica.deposit{value: minDeposit}();
+        core4Mica.deposit{value: minDeposit}();
+        core4Mica.deposit{value: minDeposit * 3}();
+
+        (
+            uint256 totalCollateral,
+            uint256 withdrawTimestamp,
+            uint256 withdrawAmount
+        ) = core4Mica.getUser(user1);
+        assertEq(totalCollateral, minDeposit * 5, "Total collateral mismatch");
+        assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
+        assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
+    }
+
     // === Request Withdrawal ===
 
     function test_RequestWithdrawal() public {
