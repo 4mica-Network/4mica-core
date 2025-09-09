@@ -568,4 +568,21 @@ contract Core4MicaTest is Test {
         vm.prank(user2);
         core4Mica.remunerate(g, 0x0);
     }
+
+    // === Fallback and Receive revert ===
+
+    function test_Receive_Reverts_TransferFailed() public {
+        vm.deal(user1, 3 ether);
+        vm.prank(user1);
+        (bool ok, bytes memory mem) = address(core4Mica).call{value: 0.25 ether}("");
+        assert(!ok);
+        assertEq(mem, abi.encodeWithSelector(Core4Mica.DirectTransferNotAllowed.selector));
+    }
+
+    function test_Fallback_Reverts_TransferFailed() public {
+        vm.deal(user1, 3 ether);
+        vm.prank(user1);
+        (bool ok, bytes memory mem) = address(core4Mica).call{value: 0.25 ether}(abi.encodeWithSignature("nonExistentFunction()"));
+        assert(!ok);
+    }
 }
