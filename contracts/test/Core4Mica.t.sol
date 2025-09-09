@@ -438,7 +438,7 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_Revert_InvalidRecipient() public {
-        vm.expectRevert(Core4Mica.TransferFailed.selector);
+        vm.expectRevert(Core4Mica.InvalidRecipient.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, address(0), 17, 0.5 ether);
         vm.prank(user2);
         core4Mica.remunerate(g, 0x0);
