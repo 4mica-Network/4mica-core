@@ -21,6 +21,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error TabPreviouslyRemunerated();
     error TabAlreadyPaid();
     error InvalidSignature();
+    error InvalidRecipient();
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -72,7 +73,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     modifier validRecipient(address recipient) {
-        if (recipient == address(0)) revert TransferFailed();
+        if (recipient == address(0)) revert InvalidRecipient();
         _;
     }
 
