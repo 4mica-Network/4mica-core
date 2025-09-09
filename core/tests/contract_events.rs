@@ -2,15 +2,18 @@ use crate::common::contract::AuthorityContract;
 use alloy::providers::{ProviderBuilder, WalletProvider};
 use core_service::config::EthereumConfig;
 use core_service::ethereum::EthereumListener;
-use core_service::persist::{prisma, PersistCtx};
+use core_service::persist::PersistCtx;
 use log::info;
-use test_log::test;
+
+// SeaORM bits
+use entities::user;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 mod common;
 
 // cargo test --test contract_events {test_name} -- --nocapture
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn register_user_event() -> anyhow::Result<()> {
     let anvil_port = 40001u16;
 
@@ -50,20 +53,19 @@ async fn register_user_event() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
-    let user = persist_ctx
-        .client
-        .user()
-        .find_unique(prisma::user::address::equals(user_addr))
-        .exec()
+    let user = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*persist_ctx.db)
         .await?
         .expect("User not registered!");
 
-    assert!(user.deposit - (deposit_amount as f64) < 0.01f64);
+    // Listener should have written the collateral
+    assert!(user.collateral - (deposit_amount as f64) < 0.01f64);
 
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn user_add_deposit_event() -> anyhow::Result<()> {
     let anvil_port = 4000u16;
 
@@ -109,20 +111,18 @@ async fn user_add_deposit_event() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
-    let user = persist_ctx
-        .client
-        .user()
-        .find_unique(prisma::user::address::equals(user_addr))
-        .exec()
+    let user = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*persist_ctx.db)
         .await?
         .expect("User not registered!");
 
-    assert!(user.deposit - (deposit_amount as f64 * 2f64) < 0.01f64);
+    assert!(user.collateral - (deposit_amount as f64 * 2f64) < 0.01f64);
 
     Ok(())
 }
 
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
     let anvil_port = 4000u16;
 
@@ -184,15 +184,13 @@ async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
-    let user = persist_ctx
-        .client
-        .user()
-        .find_unique(prisma::user::address::equals(user_addr))
-        .exec()
+    let user = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*persist_ctx.db)
         .await?
         .expect("User not registered!");
 
-    assert!(user.deposit - (deposit_amount as f64 * 2f64) < 0.01f64);
+    assert!(user.collateral - (deposit_amount as f64 * 2f64) < 0.01f64);
 
     Ok(())
 }
