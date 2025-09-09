@@ -6,7 +6,7 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(
     rs_type = "String",
     db_type = "Enum",
-    enum_name = "CollateralEventType"
+    enum_name = "collateral_event_type"
 )]
 pub enum CollateralEventType {
     #[sea_orm(string_value = "DEPOSIT")]
@@ -20,8 +20,9 @@ pub enum CollateralEventType {
     #[sea_orm(string_value = "REMUNERATE")]
     Remunerate,
 }
+
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "SettlementStatus")]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "settlement_status")]
 pub enum SettlementStatus {
     #[sea_orm(string_value = "PENDING")]
     Pending,
@@ -32,16 +33,18 @@ pub enum SettlementStatus {
     #[sea_orm(string_value = "MADEWHOLE")]
     Madewhole,
 }
+
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "TabStatus")]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "tab_status")]
 pub enum TabStatus {
     #[sea_orm(string_value = "OPEN")]
     Open,
     #[sea_orm(string_value = "CLOSED")]
     Closed,
 }
+
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "WithdrawalStatus")]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "withdrawal_status")]
 pub enum WithdrawalStatus {
     #[sea_orm(string_value = "PENDING")]
     Pending,
