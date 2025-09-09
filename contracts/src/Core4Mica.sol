@@ -9,7 +9,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
 contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Errors =========
-    error NotRegistered();
     error AmountZero();
     error InsufficientAvailable();
     error TransferFailed();
