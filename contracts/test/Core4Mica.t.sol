@@ -432,6 +432,10 @@ contract Core4MicaTest is Test {
         assertEq(user2.balance, 0.5 ether);
         (uint256 collateral,, ) = core4Mica.getUser(user1);
         assertEq(collateral, 0.5 ether);
+
+        (uint256 paid, bool remunerated) = core4Mica.getPaymentStatus(tab_id);
+        assertEq(paid, 0);
+        assertEq(remunerated, true);
     }
 
     function test_Remunerate_PartiallyPaidTab() public {
