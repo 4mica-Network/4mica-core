@@ -153,7 +153,7 @@ contract Core4MicaTest is Test {
         core4Mica.deposit{value: minDeposit * 2}();
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.WithdrawalRequested(user1, block.timestamp);
+        emit Core4Mica.WithdrawalRequested(user1, block.timestamp, minDeposit);
 
         core4Mica.requestWithdrawal(minDeposit);
 
