@@ -180,6 +180,23 @@ contract Core4MicaTest is Test {
         assertEq(withdrawalAmount, minDeposit);
     }
 
+    function test_RequestWithdrawal_OverwritesPrevious() public {
+        vm.deal(user1, 2 ether);
+        vm.startPrank(user1);
+        core4Mica.deposit{value: minDeposit * 5}();
+
+        core4Mica.requestWithdrawal(minDeposit);
+
+        vm.warp(block.timestamp + 2500);
+
+        core4Mica.requestWithdrawal(minDeposit * 3);
+
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, minDeposit * 5);
+        assertEq(withdrawalTimestamp, block.timestamp);
+        assertEq(withdrawalAmount, minDeposit * 3);
+    }
+
     // === Request Withdrawal: Failure cases ===
 
     function test_RequestWithdrawal_Revert_AmountZero() public {
