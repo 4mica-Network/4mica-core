@@ -43,7 +43,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Events =========
     event CollateralDeposited(address indexed user, uint256 amount);
-    event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
+    event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 amount);
     event WithdrawalRequested(address indexed user, uint256 when);
     event WithdrawalCanceled(address indexed user);
@@ -176,7 +176,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
         if (!ok) revert TransferFailed();
 
-        emit RecipientRemunerated(g.tab_id, g.req_id, g.amount);
+        emit RecipientRemunerated(g.tab_id, g.amount);
     }
 
     // ========= Operator / Manager flows =========

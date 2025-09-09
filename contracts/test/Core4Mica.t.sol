@@ -389,7 +389,7 @@ contract Core4MicaTest is Test {
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         vm.expectEmit(true, true, false, true);
-        emit Core4Mica.RecipientRemunerated(tab_id, req_id, 0.5 ether);
+        emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
 
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(tab_id, tab_timestamp, user1, user2, req_id, 0.5 ether);
         vm.prank(user2);
@@ -416,7 +416,7 @@ contract Core4MicaTest is Test {
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         vm.expectEmit(true, true, false, true);
-        emit Core4Mica.RecipientRemunerated(tab_id, req_id, 0.5 ether);
+        emit Core4Mica.RecipientRemunerated(tab_id, 0.5 ether);
 
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(tab_id, tab_timestamp, user1, user2, req_id, 0.5 ether);
         vm.prank(user2);
