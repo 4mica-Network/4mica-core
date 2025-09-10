@@ -132,6 +132,36 @@ contract Core4MicaTest is Test {
         core4Mica.setTabExpirationTime(2 days);
     }
 
+    function test_SetSynchronizationDelay() public {
+        uint256 newGrace = 5 hours;
+        vm.expectEmit(false, false, false, true);
+        emit Core4Mica.SynchronizationDelayUpdated(newGrace);
+        core4Mica.setSynchronizationDelay(newGrace);
+
+        assertEq(core4Mica.synchronizationDelay(), newGrace);
+    }
+
+    function test_SetSynchronizationDelay_Revert_Zero() public {
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setSynchronizationDelay(0);
+    }
+
+    function test_SetSynchronizationDelay_Revert_User_Unauthorized() public {
+        vm.prank(user1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
+        );
+        core4Mica.setSynchronizationDelay(5 hours);
+    }
+
+    function test_SetSynchronizationDelay_Revert_Operator_Unauthorized() public {
+        vm.prank(operator);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
+        );
+        core4Mica.setSynchronizationDelay(5 hours);
+    }
+
     // === Deposit ===
 
     function test_Deposit() public {

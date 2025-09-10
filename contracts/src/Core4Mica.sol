@@ -52,6 +52,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
+    event SynchronizationDelayUpdated(uint256 newExpirationTime);
 
     // ========= Helper structs =========
     struct Guarantee {
@@ -91,6 +92,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     function setTabExpirationTime(uint256 _expirationTime) external restricted nonZero(_expirationTime) {
         tabExpirationTime = _expirationTime;
         emit TabExpirationTimeUpdated(_expirationTime);
+    }
+
+    function setSynchronizationDelay(uint256 _synchronizationDelay) external restricted nonZero(_synchronizationDelay) {
+        synchronizationDelay = _synchronizationDelay;
+        emit SynchronizationDelayUpdated(_synchronizationDelay);
     }
 
     // ========= User flows =========
