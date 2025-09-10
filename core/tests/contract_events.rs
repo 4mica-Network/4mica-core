@@ -4,7 +4,7 @@ use core_service::config::EthereumConfig;
 use core_service::ethereum::EthereumListener;
 use core_service::persist::PersistCtx;
 use log::info;
-
+use test_log::test;
 // SeaORM bits
 use entities::user;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -13,7 +13,7 @@ mod common;
 
 // cargo test --test contract_events {test_name} -- --nocapture
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn register_user_event() -> anyhow::Result<()> {
     let anvil_port = 40001u16;
 
@@ -65,7 +65,7 @@ async fn register_user_event() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn user_add_deposit_event() -> anyhow::Result<()> {
     let anvil_port = 4000u16;
 
@@ -122,7 +122,7 @@ async fn user_add_deposit_event() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
     let anvil_port = 4000u16;
 

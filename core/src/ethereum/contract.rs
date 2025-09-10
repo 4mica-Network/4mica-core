@@ -2,16 +2,32 @@ use alloy::sol;
 
 sol! {
     #[derive(Debug)]
-    event UserRegistered(address _from, uint _collateral);
+    event UserRegistered(address indexed user, uint256 initialCollateral);
 
     #[derive(Debug)]
-    event UserAddDeposit(address _from, uint _collateral);
+    event CollateralDeposited(address indexed user, uint256 amount);
 
     #[derive(Debug)]
-    event RecipientRefunded(
-        bytes32 indexed transactionHash,
-        address indexed sender,
-        address indexed recipient,
-        uint256 amount
-    );
+    event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
+
+    #[derive(Debug)]
+    event CollateralWithdrawn(address indexed user, uint256 amount);
+
+    #[derive(Debug)]
+    event WithdrawalRequested(address indexed user, uint256 when);
+
+    #[derive(Debug)]
+    event WithdrawalCanceled(address indexed user);
+
+    #[derive(Debug)]
+    event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
+
+    #[derive(Debug)]
+    event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
+
+    #[derive(Debug)]
+    event TabExpirationTimeUpdated(uint256 newExpirationTime);
+
+    #[derive(Debug)]
+    event RecordedPayment(uint256 indexed tab_id, uint256 amount);
 }

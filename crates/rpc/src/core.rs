@@ -1,5 +1,5 @@
-use crate::common::{TransactionVerificationResult, UserInfo, UserTransactionInfo};
 use crate::RpcResult;
+use crate::common::{TransactionVerificationResult, UserInfo, UserTransactionInfo};
 use crypto::bls::BLSCert;
 use jsonrpsee::proc_macros::rpc;
 use serde::{Deserialize, Serialize};
@@ -14,8 +14,8 @@ pub trait CoreApi {
     #[method(name = "getPublicParams")]
     async fn get_public_params(&self) -> RpcResult<CorePublicParameters>;
 
-    #[method(name = "registerUser")]
-    async fn register_user(&self, user_addr: String) -> RpcResult<()>;
+    #[method(name = "addCollateral")]
+    async fn add_collateral(&self, user_addr: String, amount: f64) -> RpcResult<()>;
 
     #[method(name = "getUser")]
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>>;
@@ -37,5 +37,5 @@ pub trait CoreApi {
 
     #[method(name = "verifyTransaction")]
     async fn verify_transaction(&self, tx_hash: String)
-        -> RpcResult<TransactionVerificationResult>;
+    -> RpcResult<TransactionVerificationResult>;
 }

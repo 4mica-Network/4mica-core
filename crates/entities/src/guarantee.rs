@@ -16,6 +16,8 @@ pub struct Model {
     #[sea_orm(column_type = "Double")]
     pub value: f64,
     pub start_ts: DateTime,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub cert: Option<String>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
