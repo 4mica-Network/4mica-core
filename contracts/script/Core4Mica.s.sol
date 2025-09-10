@@ -47,21 +47,6 @@ contract Core4MicaScript is Script {
         Core4Mica core4Mica = new Core4Mica(address(manager));
 
         // 2. Map Core4Mica functions to roles
-        // User-facing functions → USER_ROLE
-        bytes4[] memory userSelectors = new bytes4[](5);
-        userSelectors[0] = Core4Mica.deposit.selector;
-        userSelectors[1] = Core4Mica.requestWithdrawal.selector;
-        userSelectors[2] = Core4Mica.cancelWithdrawal.selector;
-        userSelectors[3] = Core4Mica.finalizeWithdrawal.selector;
-        userSelectors[4] = Core4Mica.remunerate.selector;
-        for (uint256 i = 0; i < userSelectors.length; i++) {
-            manager.setTargetFunctionRole(
-                address(core4Mica),
-                _asSingletonArray(userSelectors[i]),
-                USER_ROLE
-            );
-        }
-
         // Operator functions → OPERATOR_ROLE
         manager.setTargetFunctionRole(
             address(core4Mica),
@@ -83,7 +68,6 @@ contract Core4MicaScript is Script {
         }
 
         // 3. Grant roles (immediate in local/test: 0 delay)
-        manager.grantRole(USER_ROLE, deployer, 0); // deployer can act as USER
         manager.grantRole(OPERATOR_ROLE, deployer, 0); // deployer can act as OPERATOR
 
         vm.stopBroadcast();
