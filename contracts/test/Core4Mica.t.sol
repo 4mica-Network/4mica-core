@@ -601,6 +601,45 @@ contract Core4MicaTest is Test {
         core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
+    // === Double spend prevention tests ===
+
+    function test_PreventDoubleSpend_RemunerateTabOpenedAfterRequestingWithdraw() public {
+        vm.deal(user1, 1 ether);
+
+        // User deposits collateral
+        vm.prank(user1);
+        core4Mica.deposit{value: 1 ether}();
+
+        // Later, user requests withdrawal
+        vm.warp(vm.getBlockTimestamp() + 5 days);
+        vm.prank(user1);
+        core4Mica.requestWithdrawal(0.75 ether);
+
+        // Quite some time after the withdrawal request, a guarantee is signed.
+        vm.warp(vm.getBlockTimestamp() + 2 days);
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 0.5 ether);
+
+        // The user does not pay this.
+        // Also, the recipient (user2) has not requested remuneration yet.
+        vm.warp(vm.getBlockTimestamp() + 20 days);
+
+        // Now user withdraws their funds, equal to all funds initially requested be released.
+        vm.prank(user1);
+        core4Mica.finalizeWithdrawal();
+        (uint256 collateral,,) = core4Mica.getUser(user1);
+        assertEq(collateral, 0.25 ether);
+        assertEq(user1.balance, 0.75 ether);
+
+        // some time later, recipient decides to remunerate after all
+        vm.warp(vm.getBlockTimestamp() + 6 hours);
+        vm.prank(user2);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
+        assertEq(user2.balance, 0.5 ether);
+
+        // This remuneration cannot take place, since insufficient user funds are available.
+        // Hence, there is double spending taking place here.
+    }
+
     // === Fallback and Receive revert ===
 
     function test_Receive_Reverts_TransferFailed() public {
