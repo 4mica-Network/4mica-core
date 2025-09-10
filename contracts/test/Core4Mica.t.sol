@@ -16,6 +16,9 @@ contract Core4MicaTest is Test {
     uint64 public constant USER_ROLE = 3;
     uint64 public constant OPERATOR_ROLE = 9;
 
+    bytes32[3] public VALID_SIGNATURE = [bytes32(0), bytes32(0), bytes32(0)];
+    bytes32[3] public INVALID_SIGNATURE = [bytes32(uint256(1)), bytes32(0), bytes32(0)];
+
     function setUp() public {
         manager = new AccessManager(address(this));
         core4Mica = new Core4Mica(address(manager));
@@ -289,7 +292,7 @@ contract Core4MicaTest is Test {
 
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, minDeposit * 3);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
         assertEq(withdrawalTimestamp, withdrawal_timestamp);
@@ -330,7 +333,7 @@ contract Core4MicaTest is Test {
         // user did not pay their promise, so
         // recipient comes to collect remuneration
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, minDeposit * 4);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
 
         // fast forward > grace period
         vm.warp(tab_timestamp + core4Mica.withdrawalGracePeriod());
@@ -450,7 +453,7 @@ contract Core4MicaTest is Test {
 
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(tab_id, tab_timestamp, user1, user2, req_id, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
 
         assertEq(user2.balance, 0.5 ether);
         (uint256 collateral,, ) = core4Mica.getUser(user1);
@@ -481,7 +484,7 @@ contract Core4MicaTest is Test {
 
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(tab_id, tab_timestamp, user1, user2, req_id, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
 
         // check: user2 is still remunerated for the full amount
         assertEq(user2.balance, 0.5 ether);
@@ -495,14 +498,14 @@ contract Core4MicaTest is Test {
         vm.expectRevert(Core4Mica.AmountZero.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, user2, 17, 0);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
     function test_Remunerate_Revert_InvalidRecipient() public {
         vm.expectRevert(Core4Mica.InvalidRecipient.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, address(0), 17, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
     function test_Remunerate_Revert_NotYetOverdue() public {
@@ -513,7 +516,7 @@ contract Core4MicaTest is Test {
         vm.expectRevert(Core4Mica.TabNotYetOverdue.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, user2, 17, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
     function test_Remunerate_Revert_TabExpired() public {
@@ -526,7 +529,7 @@ contract Core4MicaTest is Test {
         vm.expectRevert(Core4Mica.TabExpired.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, user2, 17, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
     function test_Remunerate_Revert_PreviouslyRemunerated() public {
@@ -538,14 +541,14 @@ contract Core4MicaTest is Test {
 
         uint256 tab_id = 0x1234;
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(tab_id, 0, user1, user2, 17, 0.5 ether);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
 
         vm.expectRevert(Core4Mica.TabPreviouslyRemunerated.selector);
 
         // second remuneration attempt on the same tab
         g = Core4Mica.Guarantee(tab_id, 0, user1, user2, 37, 0.75 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
     function test_Remunerate_Revert_TabAlreadyPaid() public {
@@ -561,7 +564,7 @@ contract Core4MicaTest is Test {
         vm.expectRevert(Core4Mica.TabAlreadyPaid.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(tab_id, 0, user1, user2, 17, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
     function test_Remunerate_Revert_InvalidSignature() public {
@@ -574,7 +577,7 @@ contract Core4MicaTest is Test {
         vm.expectRevert(Core4Mica.InvalidSignature.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, user2, 17, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x1);
+        core4Mica.remunerate(g, INVALID_SIGNATURE);
     }
 
     function test_Remunerate_Revert_DoubleSpending() public {
@@ -589,7 +592,7 @@ contract Core4MicaTest is Test {
         vm.expectRevert(Core4Mica.DoubleSpendingDetected.selector);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, 0, user1, user2, 17, 0.5 ether);
         vm.prank(user2);
-        core4Mica.remunerate(g, 0x0);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
     }
 
     // === Fallback and Receive revert ===
