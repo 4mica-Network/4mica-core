@@ -51,7 +51,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
-    event RecordedPayment(uint256 indexed tab_id, uint256 amount);
 
     // ========= Helper structs =========
     struct Guarantee {
@@ -187,7 +186,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         nonReentrant
     {
         payments[tab_id].paid += amount;
-        emit RecordedPayment(tab_id, amount);
     }
 
     // ========= Views / Helpers =========
