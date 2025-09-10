@@ -303,21 +303,21 @@ contract Core4MicaTest is Test {
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
         assertEq(collateral, minDeposit * 2);
         assertEq(withdrawalTimestamp, withdrawal_timestamp);
-        assertEq(withdrawalAmount, minDeposit * 4);
+        assertEq(withdrawalAmount, minDeposit);
 
         // fast forward > grace period
         vm.warp(tab_timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralWithdrawn(user1, minDeposit * 2);
+        emit Core4Mica.CollateralWithdrawn(user1, minDeposit);
 
         assertEq(user1.balance, 0 ether);
         vm.prank(user1);
         core4Mica.finalizeWithdrawal();
-        assertEq(user1.balance, 0.002 ether);
+        assertEq(user1.balance, minDeposit);
 
         (collateral, withdrawalTimestamp, withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, 0);
+        assertEq(collateral, minDeposit);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
@@ -497,6 +497,80 @@ contract Core4MicaTest is Test {
         assertEq(collateral, 0.5 ether);
     }
 
+    function test_Remunerate_GuaranteeIssuedBeforeWithdrawalRequestSynchronization() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.deposit{value: 1 ether}();
+
+        // One day later, user requests a withdrawal
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        vm.prank(user1);
+        core4Mica.requestWithdrawal(0.75 ether);
+
+        // Less than synchronizationDelay time later, a guarantee is issued.
+        vm.warp(vm.getBlockTimestamp() + core4Mica.synchronizationDelay() - 1);
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 0.5 ether);
+
+        // user does not pay their tab; 15 days later recipient requests remuneration
+        vm.warp(vm.getBlockTimestamp() + 15 days);
+        vm.prank(user2);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
+
+        // because the guarantee was issued less than synchronizationDelay after the withdrawal request, the amount
+        // is deducted from the request amount
+        (uint256 collateral,, uint256 withdrawal_amount) = core4Mica.getUser(user1);
+        assertEq(collateral, 0.5 ether);
+        assertEq(withdrawal_amount, 0.25 ether);
+
+        // Then a couple days later, user can withdraw the remainder
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        vm.prank(user1);
+        core4Mica.finalizeWithdrawal();
+        assertEq(user1.balance, 0.25 ether);
+        (collateral,,) = core4Mica.getUser(user1);
+        assertEq(collateral, 0.25 ether);
+    }
+
+    function test_Remunerate_GuaranteeIssuedAfterWithdrawalRequestSynchronization() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.deposit{value: 1 ether}();
+
+        // One day later, user requests a withdrawal
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        vm.prank(user1);
+        core4Mica.requestWithdrawal(0.75 ether);
+
+        // More than synchronizationDelay time later, a guarantee is issued.
+        // The amount must be less than or equal to the total collateral minus the withdrawal amount.
+        // This should be guaranteed by the guarantee issuing party.
+        vm.warp(vm.getBlockTimestamp() + core4Mica.synchronizationDelay() + 1);
+        uint256 amount = 0.24 ether;
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, amount);
+        (uint256 collateral,, uint256 withdrawal_amount) = core4Mica.getUser(user1);
+        assertLe(amount, collateral - withdrawal_amount);
+
+        // user does not pay their tab; 15 days later recipient requests remuneration
+        vm.warp(vm.getBlockTimestamp() + 15 days);
+        vm.prank(user2);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
+        assertEq(user2.balance, 0.24 ether);
+
+        // because the guarantee was issued more than synchronizationDelay after the withdrawal request, the amount
+        // is NOT deducted from the request amount
+        (collateral,, withdrawal_amount) = core4Mica.getUser(user1);
+        assertEq(collateral, 0.76 ether);
+        assertEq(withdrawal_amount, 0.75 ether);
+
+        // Then a couple days later, user can withdraw the full amount
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        vm.prank(user1);
+        core4Mica.finalizeWithdrawal();
+        assertEq(user1.balance, 0.75 ether);
+        (collateral,, withdrawal_amount) = core4Mica.getUser(user1);
+        assertEq(collateral, 0.01 ether);
+    }
+
     // === Remunerate: Failure cases ===
 
     function test_Remunerate_Revert_AmountZero() public {
@@ -603,7 +677,7 @@ contract Core4MicaTest is Test {
 
     // === Double spend prevention tests ===
 
-    function test_PreventDoubleSpend_RemunerateTabOpenedAfterRequestingWithdraw() public {
+    function test_DoubleSpend_IllegalGuarantee() public {
         vm.deal(user1, 1 ether);
 
         // User deposits collateral
@@ -615,8 +689,11 @@ contract Core4MicaTest is Test {
         vm.prank(user1);
         core4Mica.requestWithdrawal(0.75 ether);
 
+        (uint256 initial_collateral, uint256 withdrawal_timestamp, uint256 withdrawal_amount) = core4Mica.getUser(user1);
+
         // Quite some time after the withdrawal request, a guarantee is signed.
-        vm.warp(vm.getBlockTimestamp() + 2 days);
+        uint256 delay = 2 days;
+        vm.warp(vm.getBlockTimestamp() + delay);
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 0.5 ether);
 
         // The user does not pay this.
@@ -633,11 +710,19 @@ contract Core4MicaTest is Test {
         // some time later, recipient decides to remunerate after all
         vm.warp(vm.getBlockTimestamp() + 6 hours);
         vm.prank(user2);
-        core4Mica.remunerate(g, VALID_SIGNATURE);
-        assertEq(user2.balance, 0.5 ether);
 
-        // This remuneration cannot take place, since insufficient user funds are available.
+        // However, this remuneration cannot take place, since insufficient user funds are available.
         // Hence, there is double spending taking place here.
+        vm.expectRevert(Core4Mica.DoubleSpendingDetected.selector);
+        core4Mica.remunerate(g, VALID_SIGNATURE);
+
+        // This double spend took place because
+        // 1. a guarantee was issued for a tab that started more than synchronizationDelay after
+        //    the withdrawal request came in, and
+        assertGt(g.tab_timestamp, withdrawal_timestamp + core4Mica.synchronizationDelay());
+        // 2. because the guarantee's amount exceeded the amount of collateral that would be left after the withdrawal
+        assertGt(g.amount, initial_collateral - withdrawal_amount);
+        // Hence, the guarantee was illegally issued.
     }
 
     // === Fallback and Receive revert ===
