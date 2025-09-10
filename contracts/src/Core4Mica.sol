@@ -3,231 +3,214 @@ pragma solidity ^0.8.29;
 
 import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title Core4Mica
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
 contract Core4Mica is AccessManaged, ReentrancyGuard {
     // ========= Errors =========
-    error AlreadyRegistered();
-    error NotRegistered();
     error AmountZero();
-    error InsufficientFunds();
     error InsufficientAvailable();
-    error InsufficientCollateral();
-    error LockedCollateralNonZero();
     error TransferFailed();
     error GracePeriodNotElapsed();
-    error NoDeregistrationRequested();
-    error DoubleSpendDetected();
+    error NoWithdrawalRequested();
     error DirectTransferNotAllowed();
-    error DeregistrationPending();
+    error DoubleSpendingDetected();
+    error TabNotYetOverdue();
+    error TabExpired();
+    error TabPreviouslyRemunerated();
+    error TabAlreadyPaid();
+    error InvalidSignature();
+    error InvalidRecipient();
+    error IllegalValue();
 
     // ========= Storage =========
-    uint256 public minCollateralAmount = 1 gwei;
-    uint256 public gracePeriod = 1 days;
+    uint256 public remunerationGracePeriod = 14 days;
+    uint256 public withdrawalGracePeriod = 22 days;
+    uint256 public tabExpirationTime = 21 days;
+    uint256 public synchronizationDelay = 6 hours;
 
-    struct User {
-        uint256 totalCollateral;
-        uint256 lockedCollateral;
+    struct WithdrawalRequest {
+        uint256 timestamp;
+        uint256 amount;
     }
 
-    mapping(address => User) public users;
-    mapping(address => uint256) public deregistrationRequestedAt;
+    struct PaymentStatus {
+        uint256 paid;
+        bool remunerated;
+    }
+
+    mapping(address => uint256) public collateral;
+    mapping(address => WithdrawalRequest) public withdrawalRequests;
+    mapping(uint256 => PaymentStatus) public payments;
 
     // ========= Events =========
-    event UserRegistered(address indexed user, uint256 initialCollateral);
     event CollateralDeposited(address indexed user, uint256 amount);
-    event CollateralLocked(address indexed user, uint256 amount);
-    event CollateralUnlocked(address indexed user, uint256 amount);
-    event RecipientMadeWhole(
-        address indexed user,
-        address indexed recipient,
-        uint256 amount
-    );
+    event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 amount);
-    event DeregistrationRequested(address indexed user, uint256 when);
-    event DeregistrationCanceled(address indexed user);
-    event UserDeregistered(address indexed user, uint256 refundedAmount);
-    event MinDepositUpdated(uint256 newMinDeposit);
-    event GracePeriodUpdated(uint256 newGracePeriod);
+    event WithdrawalRequested(address indexed user, uint256 when, uint256 amount);
+    event WithdrawalCanceled(address indexed user);
+    event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
+    event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
+    event TabExpirationTimeUpdated(uint256 newExpirationTime);
+    event SynchronizationDelayUpdated(uint256 newExpirationTime);
+
+    // ========= Helper structs =========
+    struct Guarantee {
+        uint256 tab_id;
+        uint256 tab_timestamp;
+        address client;
+        address recipient;
+        uint256 req_id;
+        uint256 amount;
+    }
 
     // ========= Constructor =========
     constructor(address manager) AccessManaged(manager) {}
 
     // ========= Modifiers =========
-    modifier isRegistered(address userAddr) {
-        if (users[userAddr].totalCollateral == 0) revert NotRegistered();
-        _;
-    }
-
     modifier nonZero(uint256 amount) {
         if (amount == 0) revert AmountZero();
         _;
     }
 
     modifier validRecipient(address recipient) {
-        if (recipient == address(0)) revert TransferFailed();
-        _;
-    }
-
-    modifier minCollateral(uint256 amount) {
-        if (amount < minCollateralAmount) revert InsufficientFunds();
+        if (recipient == address(0)) revert InvalidRecipient();
         _;
     }
 
     // ========= Admin / Manager configuration =========
-    function setMinCollateralAmount(
-        uint256 _minCollateralAmount
-    ) external restricted {
-        if (_minCollateralAmount == 0) revert AmountZero();
-        minCollateralAmount = _minCollateralAmount;
-        emit MinDepositUpdated(_minCollateralAmount);
+    function setRemunerationGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+        if (_gracePeriod >= tabExpirationTime)
+            revert IllegalValue();
+        remunerationGracePeriod = _gracePeriod;
+        emit RemunerationGracePeriodUpdated(_gracePeriod);
     }
 
-    function setGracePeriod(uint256 _gracePeriod) external restricted {
-        if (_gracePeriod == 0) revert AmountZero();
-        gracePeriod = _gracePeriod;
-        emit GracePeriodUpdated(_gracePeriod);
+    function setWithdrawalGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+        if (synchronizationDelay + tabExpirationTime >= _gracePeriod)
+            revert IllegalValue();
+        withdrawalGracePeriod = _gracePeriod;
+        emit WithdrawalGracePeriodUpdated(_gracePeriod);
+    }
+
+    function setTabExpirationTime(uint256 _expirationTime) external restricted nonZero(_expirationTime) {
+        if (synchronizationDelay + _expirationTime >= withdrawalGracePeriod || remunerationGracePeriod >= _expirationTime)
+            revert IllegalValue();
+        tabExpirationTime = _expirationTime;
+        emit TabExpirationTimeUpdated(_expirationTime);
+    }
+
+    function setSynchronizationDelay(uint256 _synchronizationDelay) external restricted nonZero(_synchronizationDelay) {
+        if (_synchronizationDelay + tabExpirationTime >= withdrawalGracePeriod)
+            revert IllegalValue();
+        synchronizationDelay = _synchronizationDelay;
+        emit SynchronizationDelayUpdated(_synchronizationDelay);
     }
 
     // ========= User flows =========
-    function registerUser()
-        external
-        payable
-        nonReentrant
-        minCollateral(msg.value)
-    {
-        if (users[msg.sender].totalCollateral != 0) revert AlreadyRegistered();
-        users[msg.sender] = User({
-            totalCollateral: msg.value,
-            lockedCollateral: 0
-        });
-        emit UserRegistered(msg.sender, msg.value);
-    }
-
-    function addDeposit()
-        external
-        payable
-        nonReentrant
-        isRegistered(msg.sender)
-        nonZero(msg.value)
-        minCollateral(msg.value)
-    {
-        User storage user = users[msg.sender];
-        user.totalCollateral += msg.value;
+    function deposit() external payable nonReentrant nonZero(msg.value) {
+        collateral[msg.sender] += msg.value;
         emit CollateralDeposited(msg.sender, msg.value);
     }
 
-    function withdrawCollateral(
-        uint256 amount
+    function requestWithdrawal(uint256 amount) external nonZero(amount) {
+        if (amount > collateral[msg.sender])
+            revert InsufficientAvailable();
+
+        withdrawalRequests[msg.sender] = WithdrawalRequest(block.timestamp, amount);
+        emit WithdrawalRequested(msg.sender, block.timestamp, amount);
+    }
+
+    function cancelWithdrawal() external {
+        if (withdrawalRequests[msg.sender].timestamp == 0)
+            revert NoWithdrawalRequested();
+        delete withdrawalRequests[msg.sender];
+        emit WithdrawalCanceled(msg.sender);
+    }
+
+    function finalizeWithdrawal() external nonReentrant {
+        WithdrawalRequest memory request = withdrawalRequests[msg.sender];
+        if (request.timestamp == 0) revert NoWithdrawalRequested();
+        if (block.timestamp < request.timestamp + withdrawalGracePeriod)
+            revert GracePeriodNotElapsed();
+
+        /// The user's collateral may have been reduced since the withdrawal was requested.
+        /// As such, take the minimum of the two, making sure we never overdraw the account.
+        uint256 withdrawal_amount = Math.min(collateral[msg.sender], request.amount);
+
+        collateral[msg.sender] -= withdrawal_amount;
+        delete withdrawalRequests[msg.sender];
+
+        (bool ok, ) = payable(msg.sender).call{value: withdrawal_amount}("");
+        if (!ok) revert TransferFailed();
+
+        emit CollateralWithdrawn(msg.sender, withdrawal_amount);
+    }
+
+    function remunerate(
+        Guarantee calldata g,
+        bytes32[3] calldata signature
     )
         external
         nonReentrant
-        restricted
-        nonZero(amount)
-        isRegistered(msg.sender)
+        nonZero(g.amount)
+        validRecipient(g.recipient)
     {
-        User storage user = users[msg.sender];
-        if (user.totalCollateral - user.lockedCollateral < amount)
-            revert InsufficientAvailable();
+        // 1. Tab must be overdue
+        if (block.timestamp < g.tab_timestamp + remunerationGracePeriod)
+            revert TabNotYetOverdue();
 
-        user.totalCollateral -= amount;
+        // 2. Tab must not be expired
+        if (g.tab_timestamp + tabExpirationTime < block.timestamp)
+            revert TabExpired();
 
-        (bool ok, ) = payable(msg.sender).call{value: amount}("");
+        // 3. Tab must not previously be remunerated
+        if (payments[g.tab_id].remunerated)
+            revert TabPreviouslyRemunerated();
+
+        // 4. Tab must not be paid
+        if (payments[g.tab_id].paid >= g.amount)
+            revert TabAlreadyPaid();
+
+        // 5. Verify signature
+        // TODO(#16): verify signature
+        if (signature[0] != 0 || signature[1] != 0 || signature[2] != 0)
+            revert InvalidSignature();
+
+        // 6. Client must have sufficient funds
+        if (collateral[g.client] < g.amount)
+            revert DoubleSpendingDetected();
+
+        collateral[g.client] -= g.amount;
+        payments[g.tab_id].remunerated = true;
+
+        // Subtract the remunerated value from the withdrawal request
+        // whenever the tab was opened BEFORE the withdrawal request
+        // was synchronized.
+        WithdrawalRequest storage wr = withdrawalRequests[g.client];
+        if (g.tab_timestamp < wr.timestamp + synchronizationDelay) {
+            uint256 deduction = Math.min(wr.amount, g.amount);
+            wr.amount -= deduction;
+        }
+
+        (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
         if (!ok) revert TransferFailed();
 
-        emit CollateralWithdrawn(msg.sender, amount);
-    }
-
-    function requestDeregistration()
-        external
-        restricted
-        isRegistered(msg.sender)
-    {
-        deregistrationRequestedAt[msg.sender] = block.timestamp;
-        emit DeregistrationRequested(msg.sender, block.timestamp);
-    }
-
-    function cancelDeregistration() external restricted {
-        if (deregistrationRequestedAt[msg.sender] == 0)
-            revert NoDeregistrationRequested();
-        delete deregistrationRequestedAt[msg.sender];
-        emit DeregistrationCanceled(msg.sender);
-    }
-
-    function finalizeDeregistration()
-        external
-        nonReentrant
-        restricted
-        isRegistered(msg.sender)
-    {
-        uint256 requestedAt = deregistrationRequestedAt[msg.sender];
-        if (requestedAt == 0) revert NoDeregistrationRequested();
-        if (block.timestamp < requestedAt + gracePeriod)
-            revert GracePeriodNotElapsed();
-
-        User storage user = users[msg.sender];
-        if (user.lockedCollateral != 0) revert LockedCollateralNonZero();
-
-        uint256 amount = user.totalCollateral;
-        delete users[msg.sender];
-        delete deregistrationRequestedAt[msg.sender];
-
-        (bool ok, ) = payable(msg.sender).call{value: amount}("");
-        if (!ok) revert TransferFailed();
-
-        emit UserDeregistered(msg.sender, amount);
+        emit RecipientRemunerated(g.tab_id, g.amount);
     }
 
     // ========= Operator / Manager flows =========
-    function lockCollateral(
-        address userAddr,
-        uint256 amount
-    ) external restricted nonZero(amount) isRegistered(userAddr) {
-        if (deregistrationRequestedAt[userAddr] != 0) {
-            revert DeregistrationPending();
-        }
-        User storage user = users[userAddr];
-        if (user.totalCollateral - user.lockedCollateral < amount)
-            revert InsufficientAvailable();
-        user.lockedCollateral += amount;
-
-        emit CollateralLocked(userAddr, amount);
-    }
-
-    function unlockCollateral(
-        address userAddr,
-        uint256 amount
-    ) external restricted nonZero(amount) isRegistered(userAddr) {
-        User storage user = users[userAddr];
-        if (user.lockedCollateral < amount) revert InsufficientCollateral();
-        user.lockedCollateral -= amount;
-
-        emit CollateralUnlocked(userAddr, amount);
-    }
-
-    function makeWhole(
-        address client,
-        address recipient,
+    function recordPayment(
+        uint256 tab_id,
         uint256 amount
     )
         external
         restricted
         nonZero(amount)
-        validRecipient(recipient)
         nonReentrant
-        isRegistered(client)
     {
-        User storage user = users[client];
-        if (user.lockedCollateral < amount) revert DoubleSpendDetected();
-
-        user.lockedCollateral -= amount;
-        user.totalCollateral -= amount;
-
-        (bool ok, ) = payable(recipient).call{value: amount}("");
-        if (!ok) revert TransferFailed();
-
-        emit RecipientMadeWhole(client, recipient, amount);
+        payments[tab_id].paid += amount;
     }
 
     // ========= Views / Helpers =========
@@ -237,23 +220,28 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         external
         view
         returns (
-            uint256 collateral,
-            uint256 locked,
-            uint256 available,
-            uint256 deregRequestedAt
+            uint256 _collateral,
+            uint256 withdrawal_request_timestamp,
+            uint256 withdrawal_request_amount
         )
     {
-        User memory u = users[userAddr];
-        collateral = u.totalCollateral;
-        locked = u.lockedCollateral;
-        available = u.totalCollateral - u.lockedCollateral;
-        deregRequestedAt = deregistrationTimestamp(userAddr);
+        _collateral = collateral[userAddr];
+        withdrawal_request_timestamp = withdrawalRequests[userAddr].timestamp;
+        withdrawal_request_amount = withdrawalRequests[userAddr].amount;
     }
 
-    function deregistrationTimestamp(
-        address userAddr
-    ) public view returns (uint256) {
-        return deregistrationRequestedAt[userAddr];
+    function getPaymentStatus(
+        uint256 tab_id
+    )
+        external
+        view
+        returns (
+            uint256 paid,
+            bool remunerated
+        )
+    {
+        paid = payments[tab_id].paid;
+        remunerated = payments[tab_id].remunerated;
     }
 
     // ========= Fallbacks =========
