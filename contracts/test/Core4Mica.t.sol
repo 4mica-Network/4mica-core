@@ -13,7 +13,6 @@ contract Core4MicaTest is Test {
     address user2 = address(0x222);
     uint256 minDeposit = 1e15; // 0.001 ETH
 
-    uint64 public constant USER_ROLE = 3;
     uint64 public constant OPERATOR_ROLE = 9;
 
     bytes32[3] public VALID_SIGNATURE = [bytes32(0), bytes32(0), bytes32(0)];
@@ -22,23 +21,6 @@ contract Core4MicaTest is Test {
     function setUp() public {
         manager = new AccessManager(address(this));
         core4Mica = new Core4Mica(address(manager));
-
-        // Assign all necessary function roles to USER_ROLE (no delay)
-        bytes4[] memory userSelectors = new bytes4[](5);
-        userSelectors[0] = Core4Mica.deposit.selector;
-        userSelectors[1] = Core4Mica.requestWithdrawal.selector;
-        userSelectors[2] = Core4Mica.cancelWithdrawal.selector;
-        userSelectors[3] = Core4Mica.finalizeWithdrawal.selector;
-        userSelectors[4] = Core4Mica.remunerate.selector;
-        for (uint256 i = 0; i < userSelectors.length; i++) {
-            manager.setTargetFunctionRole(
-                address(core4Mica),
-                _asSingletonArray(userSelectors[i]),
-                USER_ROLE
-            );
-        }
-        // grant user1 the USER_ROLE immediately (0 delay)
-        manager.grantRole(USER_ROLE, user1, 0);
 
         // grant test contract (us) the OPERATOR_ROLE so we can record Payments
         manager.setTargetFunctionRole(
