@@ -19,7 +19,6 @@ env_logger = { workspace = true }
 dotenv = { workspace = true }
 envconfig = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-prisma-client-rust = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server"] }
 hex = { workspace = true }
 alloy = { workspace = true, features = ["provider-ws"] }
@@ -27,9 +26,11 @@ hyper = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 rand = "0.9.0"
-
-
+sea-orm = { workspace = true }
+entities = { workspace = true }
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 [dev-dependencies]
-uuid = { workspace = true }
 test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }
+chrono = { workspace = true }

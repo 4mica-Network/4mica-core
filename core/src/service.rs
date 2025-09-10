@@ -91,11 +91,11 @@ impl CoreApiServer for CoreService {
         Ok(self.public_params.clone())
     }
 
-    async fn register_user(&self, user_addr: String) -> RpcResult<()> {
-        repo::register_user(&self.persist_ctx, user_addr)
+    async fn add_collateral(&self, user_addr: String, amount: f64) -> RpcResult<()> {
+        repo::add_collateral(&self.persist_ctx, user_addr, amount)
             .await
             .map_err(|err| {
-                error!("Failed to register user {err}");
+                error!("Failed to add collateral: {err}");
                 rpc::internal_error()
             })?;
         Ok(())
@@ -105,7 +105,7 @@ impl CoreApiServer for CoreService {
         let Some(user) = repo::get_user(&self.persist_ctx, user_addr.clone())
             .await
             .map_err(|err| {
-                error!("Failed to get user {err}");
+                error!("Failed to get user: {err}");
                 rpc::internal_error()
             })?
         else {
@@ -118,17 +118,17 @@ impl CoreApiServer for CoreService {
             .all(&*self.persist_ctx.db)
             .await
             .map_err(|err| {
-                error!("Failed to load user transactions {err}");
+                error!("Failed to load user transactions: {err}");
                 rpc::internal_error()
             })?;
 
         // Compute reserved (not usable) portion
         let not_usable = transactions
             .iter()
-            .filter_map(|tx| if !tx.finalized { Some(tx.amount) } else { None })
+            .filter(|tx| !tx.finalized)
+            .map(|tx| tx.amount)
             .sum::<f64>();
 
-        // NOTE: SeaORM User entity uses `collateral` as the balance field we manage.
         Ok(Some(UserInfo {
             deposit: user.collateral,
             available_deposit: user.collateral - not_usable,

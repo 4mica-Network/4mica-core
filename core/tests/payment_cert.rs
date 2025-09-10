@@ -5,11 +5,10 @@ use log::info;
 use rpc::common::PaymentGuaranteeClaims;
 use rpc::core::CoreApiClient;
 use rpc::proxy::RpcProxy;
+use test_log::test;
 use tokio::task::JoinHandle;
-
 // --- SeaORM bits ---
-use entities::{user, user_transaction};
-use sea_orm::sea_query::Expr;
+use entities::user_transaction;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 // NOTE: don't import `test` to avoid ambiguity with built-in #[test]
@@ -24,7 +23,7 @@ fn init() -> anyhow::Result<AppConfig> {
     Ok(AppConfig::fetch())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn issue_payment_cert_normal() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
@@ -34,18 +33,13 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
 
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
-    let deposit_amount = 1f64;
 
     let core_client = RpcProxy::new(&core_addr).await?;
-    core_client.register_user(user_addr.clone()).await?;
 
-    let persist_ctx = PersistCtx::new().await?;
-
-    // Manually set user's collateral (was: deposit)
-    entities::user::Entity::update_many()
-        .col_expr(user::Column::Collateral, Expr::value(deposit_amount))
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .exec(&*persist_ctx.db)
+    // add initial collateral
+    let deposit_amount = 1f64;
+    core_client
+        .add_collateral(user_addr.clone(), deposit_amount)
         .await?;
 
     let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -67,9 +61,8 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
     let claims: PaymentGuaranteeClaims = cert.claims_bytes()?.try_into()?;
     assert_eq!(claims.user_addr, user_addr);
 
-    info!("Cert is valid!");
-
     // Check unfinalized tx exists and matches
+    let persist_ctx = PersistCtx::new().await?;
     let transactions = user_transaction::Entity::find()
         .filter(user_transaction::Column::UserAddress.eq(user_addr.clone()))
         .filter(user_transaction::Column::Finalized.eq(false))
@@ -79,11 +72,10 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
     assert_eq!(transactions[0].tx_id, tx_id);
     assert_eq!(transactions[0].amount, deposit_amount / 2f64);
 
-    info!("Transaction is correct!");
     Ok(())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
@@ -94,16 +86,9 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
     let core_client = RpcProxy::new(&core_addr).await?;
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
-    core_client.register_user(user_addr.clone()).await?;
 
-    let persist_ctx = PersistCtx::new().await?;
-
-    // Set collateral to 1.0
-    user::Entity::update_many()
-        .col_expr(user::Column::Collateral, Expr::value(1f64))
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .exec(&*persist_ctx.db)
-        .await?;
+    // give the user 1.0 collateral
+    core_client.add_collateral(user_addr.clone(), 1.0).await?;
 
     // First cert 0.7 succeeds
     let tx_id1 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -111,7 +96,7 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
         .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id1, 0.7f64)
         .await?;
 
-    // Second cert 0.7 should fail (0.7 pending already, 0.7+0.7 > 1.0)
+    // Second cert 0.7 should fail
     let tx_id2 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     let cert_result = core_client
         .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx_id2, 0.7f64)
@@ -121,7 +106,7 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn issue_payment_cert_multiple_certs_same_tx_id_is_idempotent() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
@@ -132,16 +117,9 @@ async fn issue_payment_cert_multiple_certs_same_tx_id_is_idempotent() -> anyhow:
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let core_client = RpcProxy::new(&core_addr).await?;
-    core_client.register_user(user_addr.clone()).await?;
 
-    let persist_ctx = PersistCtx::new().await?;
-
-    // Set collateral to 1.0
-    user::Entity::update_many()
-        .col_expr(user::Column::Collateral, Expr::value(1f64))
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .exec(&*persist_ctx.db)
-        .await?;
+    // user has 1.0 collateral
+    core_client.add_collateral(user_addr.clone(), 1.0).await?;
 
     let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     core_client
@@ -153,7 +131,7 @@ async fn issue_payment_cert_multiple_certs_same_tx_id_is_idempotent() -> anyhow:
         )
         .await?;
 
-    // Upsert is DO NOTHING on conflict: second call succeeds and doesn't duplicate
+    // second call with same tx_id should be idempotent
     core_client
         .issue_payment_cert(
             user_addr.clone(),
@@ -164,16 +142,17 @@ async fn issue_payment_cert_multiple_certs_same_tx_id_is_idempotent() -> anyhow:
         .await?;
 
     // Ensure only one record exists for this tx_id
+    let ctx = PersistCtx::new().await?;
     let txs = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.eq(tx_id))
-        .all(&*persist_ctx.db)
+        .all(&*ctx.db)
         .await?;
     assert_eq!(txs.len(), 1);
 
     Ok(())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
@@ -186,15 +165,9 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
     let deposit_amount = 1f64;
 
     let core_client = RpcProxy::new(&core_addr).await?;
-    core_client.register_user(user_addr.clone()).await?;
 
-    let persist_ctx = PersistCtx::new().await?;
-
-    // Set collateral
-    user::Entity::update_many()
-        .col_expr(user::Column::Collateral, Expr::value(deposit_amount))
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .exec(&*persist_ctx.db)
+    core_client
+        .add_collateral(user_addr.clone(), deposit_amount)
         .await?;
 
     // Launch two concurrent cert requests of 0.7 each; only one should succeed
@@ -203,10 +176,10 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
     let core_client_clone = core_client.clone();
     let tx1_handle: JoinHandle<anyhow::Result<BLSCert>> = tokio::spawn(async move {
         let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
-        let cert = core_client_clone
+        core_client_clone
             .issue_payment_cert(user_addr_clone, recipient_addr_clone, tx_id, 0.7f64)
-            .await?;
-        Ok(cert)
+            .await
+            .map_err(anyhow::Error::from)
     });
 
     let user_addr_clone = user_addr.clone();
@@ -214,42 +187,30 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
     let core_client_clone = core_client.clone();
     let tx2_handle: JoinHandle<anyhow::Result<BLSCert>> = tokio::spawn(async move {
         let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
-        let cert = core_client_clone
+        core_client_clone
             .issue_payment_cert(user_addr_clone, recipient_addr_clone, tx_id, 0.7f64)
-            .await?;
-        Ok(cert)
+            .await
+            .map_err(anyhow::Error::from)
     });
 
     let result1 = tx1_handle.await?;
     let result2 = tx2_handle.await?;
 
     assert!(result1.is_ok() || result2.is_ok(), "expected one success");
-    assert!(
-        result1.is_err() || result2.is_err(),
-        "expected one conflict error"
-    );
+    assert!(result1.is_err() || result2.is_err(), "expected one failure");
 
-    // Version increments are handled in the repo on successful optimistic bump.
-    // We don't assert exact version here because register_user starts at 0 and
-    // racing success path bumps once; failures don't bump.
-
-    // Ensure only one pending tx remains
+    let ctx = PersistCtx::new().await?;
     let txs = user_transaction::Entity::find()
         .filter(user_transaction::Column::UserAddress.eq(user_addr.clone()))
-        .all(&*persist_ctx.db)
+        .all(&*ctx.db)
         .await?;
     assert_eq!(txs.len(), 1);
     assert!((txs[0].amount - 0.7f64).abs() < 0.01f64);
 
-    info!("Transaction is correct!");
     Ok(())
 }
 
-// ---------------------------
-// Additional edge-case tests
-// ---------------------------
-
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn issue_payment_cert_exactly_consumes_all_available() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
@@ -261,17 +222,9 @@ async fn issue_payment_cert_exactly_consumes_all_available() -> anyhow::Result<(
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
 
-    core_client.register_user(user_addr.clone()).await?;
-    let ctx = PersistCtx::new().await?;
+    core_client.add_collateral(user_addr.clone(), 1.0).await?;
 
-    // collateral = 1.0
-    user::Entity::update_many()
-        .col_expr(user::Column::Collateral, Expr::value(1.0))
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .exec(&*ctx.db)
-        .await?;
-
-    // Two certs 0.4 and 0.6 should both succeed (total == 1.0)
+    // Two certs 0.4 and 0.6 should both succeed
     let tx1 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     core_client
         .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx1, 0.4)
@@ -282,7 +235,7 @@ async fn issue_payment_cert_exactly_consumes_all_available() -> anyhow::Result<(
         .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx2, 0.6)
         .await?;
 
-    // Third small one should fail
+    // Third should fail
     let tx3 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     let res = core_client
         .issue_payment_cert(user_addr.clone(), recipient_addr.clone(), tx3, 0.01)
@@ -292,7 +245,7 @@ async fn issue_payment_cert_exactly_consumes_all_available() -> anyhow::Result<(
     Ok(())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn get_transactions_by_hash_returns_expected() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
@@ -304,13 +257,7 @@ async fn get_transactions_by_hash_returns_expected() -> anyhow::Result<()> {
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
 
-    core_client.register_user(user_addr.clone()).await?;
-    let ctx = PersistCtx::new().await?;
-    user::Entity::update_many()
-        .col_expr(user::Column::Collateral, Expr::value(5.0))
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .exec(&*ctx.db)
-        .await?;
+    core_client.add_collateral(user_addr.clone(), 5.0).await?;
 
     let tx1 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     let tx2 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -334,7 +281,7 @@ async fn get_transactions_by_hash_returns_expected() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn verify_transaction_idempotent() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
@@ -346,13 +293,7 @@ async fn verify_transaction_idempotent() -> anyhow::Result<()> {
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
 
-    core_client.register_user(user_addr.clone()).await?;
-    let ctx = PersistCtx::new().await?;
-    user::Entity::update_many()
-        .col_expr(user::Column::Collateral, Expr::value(2.0))
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .exec(&*ctx.db)
-        .await?;
+    core_client.add_collateral(user_addr.clone(), 2.0).await?;
 
     let tx = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     core_client
