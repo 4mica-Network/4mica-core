@@ -11,6 +11,7 @@ contract Core4MicaTest is Test {
     AccessManager manager;
     address user1 = address(0x111);
     address user2 = address(0x222);
+    address operator = address(0x333);
     uint256 minDeposit = 1e15; // 0.001 ETH
 
     uint64 public constant OPERATOR_ROLE = 9;
@@ -22,13 +23,13 @@ contract Core4MicaTest is Test {
         manager = new AccessManager(address(this));
         core4Mica = new Core4Mica(address(manager));
 
-        // grant test contract (us) the OPERATOR_ROLE so we can record Payments
+        // grant operator the OPERATOR_ROLE so we can record Payments
         manager.setTargetFunctionRole(
             address(core4Mica),
             _asSingletonArray(Core4Mica.recordPayment.selector),
             OPERATOR_ROLE
         );
-        manager.grantRole(OPERATOR_ROLE, address(this), 0);
+        manager.grantRole(OPERATOR_ROLE, address(operator), 0);
     }
 
     // helper
@@ -386,6 +387,7 @@ contract Core4MicaTest is Test {
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.RecordedPayment(0x1234, 1 ether);
 
+        vm.prank(operator);
         core4Mica.recordPayment(0x1234, 1 ether);
 
         (paid, remunerated) = core4Mica.getPaymentStatus(0x1234);
@@ -395,6 +397,7 @@ contract Core4MicaTest is Test {
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.RecordedPayment(0x1234, 2 ether);
 
+        vm.prank(operator);
         core4Mica.recordPayment(0x1234, 2 ether);
 
         (paid, remunerated) = core4Mica.getPaymentStatus(0x1234);
@@ -414,6 +417,7 @@ contract Core4MicaTest is Test {
 
     function test_RecordPayment_Revert_AmountZero() public {
         vm.expectRevert(Core4Mica.AmountZero.selector);
+        vm.prank(operator);
         core4Mica.recordPayment(0x1234, 0);
     }
 
@@ -456,6 +460,7 @@ contract Core4MicaTest is Test {
         uint256 req_id = 17;
 
         // core contract is informed that user1 paid user2 half of the tab
+        vm.prank(operator);
         core4Mica.recordPayment(tab_id, 0.25 ether);
 
         uint256 tab_timestamp = 1;
@@ -541,6 +546,7 @@ contract Core4MicaTest is Test {
         vm.warp(core4Mica.remunerationGracePeriod() + 5);
 
         uint256 tab_id = 0x1234;
+        vm.prank(operator);
         core4Mica.recordPayment(tab_id, 0.6 ether);
 
         vm.expectRevert(Core4Mica.TabAlreadyPaid.selector);
