@@ -12,7 +12,6 @@ contract Core4MicaTest is Test {
     address user1 = address(0x111);
     address user2 = address(0x222);
     address operator = address(0x333);
-    uint256 minDeposit = 1e15; // 0.001 ETH
 
     uint64 public constant OPERATOR_ROLE = 9;
 
@@ -136,37 +135,29 @@ contract Core4MicaTest is Test {
     // === Deposit ===
 
     function test_Deposit() public {
-        vm.deal(user1, 1 ether);
+        vm.deal(user1, 5 ether);
         vm.startPrank(user1);
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralDeposited(user1, minDeposit);
+        emit Core4Mica.CollateralDeposited(user1, 1 ether);
 
-        core4Mica.deposit{value: minDeposit}();
+        core4Mica.deposit{value: 1 ether}();
 
-        (
-            uint256 totalCollateral,
-            uint256 withdrawTimestamp,
-            uint256 withdrawAmount
-        ) = core4Mica.getUser(user1);
-        assertEq(totalCollateral, minDeposit, "Total collateral mismatch");
+        (uint256 collateral, uint256 withdrawTimestamp, uint256 withdrawAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, 1 ether, "Total collateral mismatch");
         assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
         assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
     }
 
     function test_Deposit_MultipleDepositsAccumulate() public {
-        vm.deal(user1, 1 ether);
+        vm.deal(user1, 5 ether);
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit}();
-        core4Mica.deposit{value: minDeposit}();
-        core4Mica.deposit{value: minDeposit * 3}();
+        core4Mica.deposit{value: 1 ether}();
+        core4Mica.deposit{value: 1 ether}();
+        core4Mica.deposit{value: 3 ether}();
 
-        (
-            uint256 totalCollateral,
-            uint256 withdrawTimestamp,
-            uint256 withdrawAmount
-        ) = core4Mica.getUser(user1);
-        assertEq(totalCollateral, minDeposit * 5, "Total collateral mismatch");
+        (uint256 collateral, uint256 withdrawTimestamp, uint256 withdrawAmount) = core4Mica.getUser(user1);
+        assertEq(collateral, 5 ether, "Total collateral mismatch");
         assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
         assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
     }
@@ -177,34 +168,34 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 2 ether);
 
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit * 2}();
+        core4Mica.deposit{value: 2 ether}();
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.WithdrawalRequested(user1, block.timestamp, minDeposit);
+        emit Core4Mica.WithdrawalRequested(user1, block.timestamp, 1 ether);
 
-        core4Mica.requestWithdrawal(minDeposit);
+        core4Mica.requestWithdrawal(1 ether);
 
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 2);
+        assertEq(collateral, 2 ether);
         assertEq(withdrawalTimestamp, block.timestamp);
-        assertEq(withdrawalAmount, minDeposit);
+        assertEq(withdrawalAmount, 1 ether);
     }
 
     function test_RequestWithdrawal_OverwritesPrevious() public {
-        vm.deal(user1, 2 ether);
+        vm.deal(user1, 5 ether);
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit * 5}();
+        core4Mica.deposit{value: 5 ether}();
 
-        core4Mica.requestWithdrawal(minDeposit);
+        core4Mica.requestWithdrawal(1 ether);
 
         vm.warp(block.timestamp + 2500);
 
-        core4Mica.requestWithdrawal(minDeposit * 3);
+        core4Mica.requestWithdrawal(3 ether);
 
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 5);
+        assertEq(collateral, 5 ether);
         assertEq(withdrawalTimestamp, block.timestamp);
-        assertEq(withdrawalAmount, minDeposit * 3);
+        assertEq(withdrawalAmount, 3 ether);
     }
 
     // === Request Withdrawal: Failure cases ===
@@ -213,7 +204,7 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 1 ether);
 
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit}();
+        core4Mica.deposit{value: 1 ether}();
 
         vm.expectRevert(Core4Mica.AmountZero.selector);
         core4Mica.requestWithdrawal(0);
@@ -223,10 +214,10 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 1 ether);
 
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit}();
+        core4Mica.deposit{value: 1 ether}();
 
         vm.expectRevert(Core4Mica.InsufficientAvailable.selector);
-        core4Mica.requestWithdrawal(minDeposit * 2);
+        core4Mica.requestWithdrawal(2 ether);
     }
 
     // === Cancel Withdrawal ===
@@ -235,15 +226,15 @@ contract Core4MicaTest is Test {
         vm.deal(user1, 2 ether);
 
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit * 2}();
-        core4Mica.requestWithdrawal(minDeposit);
+        core4Mica.deposit{value: 2 ether}();
+        core4Mica.requestWithdrawal(1 ether);
 
         vm.expectEmit(false, false, false, true);
         emit Core4Mica.WithdrawalCanceled(user1);
 
         core4Mica.cancelWithdrawal();
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 2);
+        assertEq(collateral, 2 ether);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
@@ -252,9 +243,8 @@ contract Core4MicaTest is Test {
 
     function test_CancelWithdrawal_Revert_NoWithdrawalRequested() public {
         vm.deal(user1, 2 ether);
-
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit * 2}();
+        core4Mica.deposit{value: 2 ether}();
 
         vm.expectRevert(Core4Mica.NoWithdrawalRequested.selector);
         core4Mica.cancelWithdrawal();
@@ -263,83 +253,82 @@ contract Core4MicaTest is Test {
     // === Finalize Withdrawal ===
 
     function test_FinalizeWithdrawal_FullAmount() public {
-        vm.deal(user1, 2 ether);
+        vm.deal(user1, 4 ether);
 
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit * 2}();
-        core4Mica.requestWithdrawal(minDeposit);
+        core4Mica.deposit{value: 2 ether}();
+        core4Mica.requestWithdrawal(1 ether);
 
         // fast forward > grace period
         vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralWithdrawn(user1, minDeposit);
+        emit Core4Mica.CollateralWithdrawn(user1, 1 ether);
 
-        assertEq(user1.balance, 1.998 ether);
+        assertEq(user1.balance, 2 ether);
         core4Mica.finalizeWithdrawal();
-        assertEq(user1.balance, 1.999 ether);
+        assertEq(user1.balance, 3 ether);
 
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit);
+        assertEq(collateral, 1 ether);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
 
     function test_FinalizeWithdrawal_NotFullAmount() public {
-        vm.deal(user1, 0.005 ether);
-        vm.deal(user2, 0 ether);
+        vm.deal(user1, 5 ether);
 
         vm.prank(user1);
-        core4Mica.deposit{value: minDeposit * 5}();
+        core4Mica.deposit{value: 5 ether}();
 
         uint256 tab_timestamp = 1;
         uint256 withdrawal_timestamp = 1;
         vm.prank(user1);
-        core4Mica.requestWithdrawal(minDeposit * 4);
+        core4Mica.requestWithdrawal(4 ether);
 
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, minDeposit * 3);
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, 3 ether);
         core4Mica.remunerate(g, VALID_SIGNATURE);
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit * 2);
+        assertEq(collateral, 2 ether);
         assertEq(withdrawalTimestamp, withdrawal_timestamp);
-        assertEq(withdrawalAmount, minDeposit);
+        assertEq(withdrawalAmount, 1 ether);
 
         // fast forward > grace period
         vm.warp(tab_timestamp + core4Mica.withdrawalGracePeriod());
 
         vm.expectEmit(true, false, false, true);
-        emit Core4Mica.CollateralWithdrawn(user1, minDeposit);
+        emit Core4Mica.CollateralWithdrawn(user1, 1 ether);
 
         assertEq(user1.balance, 0 ether);
         vm.prank(user1);
         core4Mica.finalizeWithdrawal();
-        assertEq(user1.balance, minDeposit);
+        assertEq(user1.balance, 1 ether);
 
         (collateral, withdrawalTimestamp, withdrawalAmount) = core4Mica.getUser(user1);
-        assertEq(collateral, minDeposit);
+        assertEq(collateral, 1 ether);
         assertEq(withdrawalTimestamp, 0);
         assertEq(withdrawalAmount, 0);
     }
 
     function test_FinalizeWithdrawal_CollateralGone() public {
-        vm.deal(user1, 0.004 ether);
+        vm.deal(user1, 4 ether);
         vm.prank(user1);
-        core4Mica.deposit{value: minDeposit * 4}();
+        core4Mica.deposit{value: 4 ether}();
 
         // user promised something to recipient as part of tab
         uint256 tab_timestamp = 1;
 
         // user requests withdrawal
         vm.prank(user1);
-        core4Mica.requestWithdrawal(minDeposit * 2);
+        core4Mica.requestWithdrawal(2 ether);
 
         // fast forward > remuneration period
         vm.warp(tab_timestamp + core4Mica.remunerationGracePeriod() + 5);
 
         // user did not pay their promise, so
         // recipient comes to collect remuneration
-        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, minDeposit * 4);
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, 4 ether);
         core4Mica.remunerate(g, VALID_SIGNATURE);
 
         // fast forward > grace period
@@ -385,17 +374,17 @@ contract Core4MicaTest is Test {
     function test_FinalizeWithdrawal_Revert_NoWithdrawalRequested() public {
         vm.deal(user1, 2 ether);
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit * 4}();
+        core4Mica.deposit{value: 2 ether}();
 
         vm.expectRevert(Core4Mica.NoWithdrawalRequested.selector);
         core4Mica.finalizeWithdrawal();
     }
 
     function test_FinalizeWithdrawal_Revert_GracePeriodNotElapsed() public {
-        vm.deal(user1, 2 ether);
+        vm.deal(user1, 4 ether);
         vm.startPrank(user1);
-        core4Mica.deposit{value: minDeposit * 4}();
-        core4Mica.requestWithdrawal(minDeposit * 2);
+        core4Mica.deposit{value: 4 ether}();
+        core4Mica.requestWithdrawal(2 ether);
 
         vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
         core4Mica.finalizeWithdrawal();
