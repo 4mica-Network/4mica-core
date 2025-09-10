@@ -347,6 +347,29 @@ contract Core4MicaTest is Test {
         assertEq(withdrawalAmount, 0);
     }
 
+    function test_FinalizeWithdrawal_FullCollateral() public {
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        core4Mica.deposit{value: 1 ether}();
+
+        vm.prank(user1);
+        core4Mica.requestWithdrawal(1 ether);
+
+        // Fast-forward past withdrawalGracePeriod
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+
+        // Expect event
+        vm.expectEmit(true, true, false, true);
+        emit Core4Mica.CollateralWithdrawn(user1, 1 ether);
+
+        vm.prank(user1);
+        core4Mica.finalizeWithdrawal();
+
+        (uint256 collateral,,) = core4Mica.getUser(user1);
+        assertEq(collateral, 0, "Collateral not deleted");
+        assertEq(address(user1).balance, 1 ether, "User did not receive full collateral");
+    }
+
     // === Finalize Withdrawal: Failure cases ===
 
     function test_FinalizeWithdrawal_Revert_NoWithdrawalRequested() public {
