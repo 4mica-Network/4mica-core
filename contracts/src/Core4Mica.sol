@@ -22,6 +22,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error TabAlreadyPaid();
     error InvalidSignature();
     error InvalidRecipient();
+    error IllegalValue();
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -80,21 +81,29 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Admin / Manager configuration =========
     function setRemunerationGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+        if (_gracePeriod >= tabExpirationTime)
+            revert IllegalValue();
         remunerationGracePeriod = _gracePeriod;
         emit RemunerationGracePeriodUpdated(_gracePeriod);
     }
 
     function setWithdrawalGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+        if (synchronizationDelay + tabExpirationTime >= _gracePeriod)
+            revert IllegalValue();
         withdrawalGracePeriod = _gracePeriod;
         emit WithdrawalGracePeriodUpdated(_gracePeriod);
     }
 
     function setTabExpirationTime(uint256 _expirationTime) external restricted nonZero(_expirationTime) {
+        if (synchronizationDelay + _expirationTime >= withdrawalGracePeriod || remunerationGracePeriod >= _expirationTime)
+            revert IllegalValue();
         tabExpirationTime = _expirationTime;
         emit TabExpirationTimeUpdated(_expirationTime);
     }
 
     function setSynchronizationDelay(uint256 _synchronizationDelay) external restricted nonZero(_synchronizationDelay) {
+        if (_synchronizationDelay + tabExpirationTime >= withdrawalGracePeriod)
+            revert IllegalValue();
         synchronizationDelay = _synchronizationDelay;
         emit SynchronizationDelayUpdated(_synchronizationDelay);
     }

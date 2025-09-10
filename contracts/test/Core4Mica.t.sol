@@ -43,7 +43,7 @@ contract Core4MicaTest is Test {
     // === Admin Config ===
 
     function test_SetWithdrawalGracePeriod() public {
-        uint256 newGrace = 2 days;
+        uint256 newGrace = 23 days;
         vm.expectEmit(false, false, false, true);
         emit Core4Mica.WithdrawalGracePeriodUpdated(newGrace);
         core4Mica.setWithdrawalGracePeriod(newGrace);
@@ -70,6 +70,11 @@ contract Core4MicaTest is Test {
             abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
         );
         core4Mica.setWithdrawalGracePeriod(2 days);
+    }
+
+    function test_SetWithdrawalGracePeriod_Revert_IllegalValue() public {
+        vm.expectRevert(Core4Mica.IllegalValue.selector);
+        core4Mica.setWithdrawalGracePeriod(21 days + 6 hours);
     }
 
     function test_SetRemunerationGracePeriod() public {
@@ -102,8 +107,13 @@ contract Core4MicaTest is Test {
         core4Mica.setRemunerationGracePeriod(2 days);
     }
 
+    function test_SetRemunerationGracePeriod_Revert_IllegalValue() public {
+        vm.expectRevert(Core4Mica.IllegalValue.selector);
+        core4Mica.setRemunerationGracePeriod(21 days + 6 hours);
+    }
+
     function test_SetTabExpirationTime() public {
-        uint256 newGrace = 2 days;
+        uint256 newGrace = 20 days;
         vm.expectEmit(false, false, false, true);
         emit Core4Mica.TabExpirationTimeUpdated(newGrace);
         core4Mica.setTabExpirationTime(newGrace);
@@ -130,6 +140,16 @@ contract Core4MicaTest is Test {
             abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
         );
         core4Mica.setTabExpirationTime(2 days);
+    }
+
+    function test_SetTabExpirationTime_Revert_IllegalValue() public {
+        // tabExpirationTime < remunerationGracePeriod
+        vm.expectRevert(Core4Mica.IllegalValue.selector);
+        core4Mica.setTabExpirationTime(14 days);
+
+        // tabExpirationTime + synchronizationDelay > withdrawalGracePeriod
+        vm.expectRevert(Core4Mica.IllegalValue.selector);
+        core4Mica.setTabExpirationTime(21 days + 18 hours);
     }
 
     function test_SetSynchronizationDelay() public {
@@ -160,6 +180,11 @@ contract Core4MicaTest is Test {
             abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
         );
         core4Mica.setSynchronizationDelay(5 hours);
+    }
+
+    function test_SetSynchronizationDelay_Revert_IllegalValue() public {
+        vm.expectRevert(Core4Mica.IllegalValue.selector);
+        core4Mica.setSynchronizationDelay(1 days);
     }
 
     // === Deposit ===
