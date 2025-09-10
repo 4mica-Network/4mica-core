@@ -27,6 +27,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     uint256 public remunerationGracePeriod = 14 days;
     uint256 public withdrawalGracePeriod = 22 days;
     uint256 public tabExpirationTime = 21 days;
+    uint256 public synchronizationDelay = 6 hours;
 
     struct WithdrawalRequest {
         uint256 timestamp;
@@ -168,6 +169,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
         collateral[g.client] -= g.amount;
         payments[g.tab_id].remunerated = true;
+
+        // Subtract the remunerated value from the withdrawal request
+        // whenever the tab was opened BEFORE the withdrawal request
+        // was synchronized.
+        WithdrawalRequest storage wr = withdrawalRequests[g.client];
+        if (g.tab_timestamp < wr.timestamp + synchronizationDelay) {
+            uint256 deduction = Math.min(wr.amount, g.amount);
+            wr.amount -= deduction;
+        }
 
         (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
         if (!ok) revert TransferFailed();
