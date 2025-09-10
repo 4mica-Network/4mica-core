@@ -124,11 +124,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         /// As such, take the minimum of the two, making sure we never overdraw the account.
         uint256 withdrawal_amount = Math.min(collateral[msg.sender], request.amount);
 
-        if (withdrawal_amount == collateral[msg.sender]) {
-            delete collateral[msg.sender];
-        } else {
-            collateral[msg.sender] -= withdrawal_amount;
-        }
+        collateral[msg.sender] -= withdrawal_amount;
         delete withdrawalRequests[msg.sender];
 
         (bool ok, ) = payable(msg.sender).call{value: withdrawal_amount}("");
