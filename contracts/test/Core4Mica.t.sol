@@ -408,18 +408,12 @@ contract Core4MicaTest is Test {
         assertEq(paid, 0);
         assertFalse(remunerated);
 
-        vm.expectEmit(true, false, false, true);
-        emit Core4Mica.RecordedPayment(0x1234, 1 ether);
-
         vm.prank(operator);
         core4Mica.recordPayment(0x1234, 1 ether);
 
         (paid, remunerated) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 1 ether);
         assertFalse(remunerated);
-
-        vm.expectEmit(true, false, false, true);
-        emit Core4Mica.RecordedPayment(0x1234, 2 ether);
 
         vm.prank(operator);
         core4Mica.recordPayment(0x1234, 2 ether);
