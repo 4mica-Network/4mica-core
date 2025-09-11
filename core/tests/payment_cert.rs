@@ -39,7 +39,7 @@ async fn issue_payment_cert_normal() -> anyhow::Result<()> {
     // add initial collateral
     let deposit_amount = 1f64;
     core_client
-        .add_collateral(user_addr.clone(), deposit_amount)
+        .deposit(user_addr.clone(), deposit_amount)
         .await?;
 
     let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -88,7 +88,7 @@ async fn issue_payment_cert_insufficient_deposit() -> anyhow::Result<()> {
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
 
     // give the user 1.0 collateral
-    core_client.add_collateral(user_addr.clone(), 1.0).await?;
+    core_client.deposit(user_addr.clone(), 1.0).await?;
 
     // First cert 0.7 succeeds
     let tx_id1 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -119,7 +119,7 @@ async fn issue_payment_cert_multiple_certs_same_tx_id_is_idempotent() -> anyhow:
     let core_client = RpcProxy::new(&core_addr).await?;
 
     // user has 1.0 collateral
-    core_client.add_collateral(user_addr.clone(), 1.0).await?;
+    core_client.deposit(user_addr.clone(), 1.0).await?;
 
     let tx_id = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     core_client
@@ -167,7 +167,7 @@ async fn issue_payment_cert_racing_transactions() -> anyhow::Result<()> {
     let core_client = RpcProxy::new(&core_addr).await?;
 
     core_client
-        .add_collateral(user_addr.clone(), deposit_amount)
+        .deposit(user_addr.clone(), deposit_amount)
         .await?;
 
     // Launch two concurrent cert requests of 0.7 each; only one should succeed
@@ -222,7 +222,7 @@ async fn issue_payment_cert_exactly_consumes_all_available() -> anyhow::Result<(
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
 
-    core_client.add_collateral(user_addr.clone(), 1.0).await?;
+    core_client.deposit(user_addr.clone(), 1.0).await?;
 
     // Two certs 0.4 and 0.6 should both succeed
     let tx1 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -257,7 +257,7 @@ async fn get_transactions_by_hash_returns_expected() -> anyhow::Result<()> {
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
 
-    core_client.add_collateral(user_addr.clone(), 5.0).await?;
+    core_client.deposit(user_addr.clone(), 5.0).await?;
 
     let tx1 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     let tx2 = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
@@ -293,7 +293,7 @@ async fn verify_transaction_idempotent() -> anyhow::Result<()> {
     let user_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
     let recipient_addr = format!("0x{}", hex::encode(rand::random::<[u8; 20]>()));
 
-    core_client.add_collateral(user_addr.clone(), 2.0).await?;
+    core_client.deposit(user_addr.clone(), 2.0).await?;
 
     let tx = format!("0x{}", hex::encode(rand::random::<[u8; 32]>()));
     core_client

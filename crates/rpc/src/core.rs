@@ -15,7 +15,7 @@ pub trait CoreApi {
     async fn get_public_params(&self) -> RpcResult<CorePublicParameters>;
 
     #[method(name = "addCollateral")]
-    async fn add_collateral(&self, user_addr: String, amount: f64) -> RpcResult<()>;
+    async fn deposit(&self, user_addr: String, amount: f64) -> RpcResult<()>;
 
     #[method(name = "getUser")]
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>>;

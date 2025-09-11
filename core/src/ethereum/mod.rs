@@ -71,17 +71,13 @@ impl EthereumListener {
                         } = log.data();
                         info!("[EthereumListener] UserRegistered: {user:?}, {initialCollateral}");
 
-                        repo::add_collateral(
-                            &persist_ctx,
-                            user.to_string(),
-                            initialCollateral.into(),
-                        )
-                        .await
-                        .map_err(|err| {
-                            error!("Failed to add collateral (UserRegistered): {err}");
-                            err
-                        })
-                        .ok();
+                        repo::deposit(&persist_ctx, user.to_string(), initialCollateral.into())
+                            .await
+                            .map_err(|err| {
+                                error!("Failed to deposit (UserRegistered): {err}");
+                                err
+                            })
+                            .ok();
                     }
                     Some(&CollateralDeposited::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<CollateralDeposited>().map_err(|err| {
@@ -92,7 +88,7 @@ impl EthereumListener {
                         let CollateralDeposited { user, amount } = log.data();
                         info!("[EthereumListener] CollateralDeposited: {user:?}, {amount}");
 
-                        repo::add_collateral(&persist_ctx, user.to_string(), amount.into())
+                        repo::deposit(&persist_ctx, user.to_string(), amount.into())
                             .await
                             .map_err(|err| {
                                 error!("Failed to add collateral (CollateralDeposited): {err}");
