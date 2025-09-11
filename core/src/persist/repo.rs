@@ -26,11 +26,7 @@ pub async fn get_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<Opt
 //
 
 /// Deposit: increment collateral and record a CollateralEvent::Deposit for auditability.
-pub async fn add_collateral(
-    ctx: &PersistCtx,
-    user_addr: String,
-    amount: f64,
-) -> anyhow::Result<()> {
+pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow::Result<()> {
     use sea_orm::ActiveValue::Set;
 
     let now = Utc::now().naive_utc();
