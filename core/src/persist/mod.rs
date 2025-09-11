@@ -1,8 +1,7 @@
-use std::sync::Arc;
-
 use entities::user_transaction;
 use rpc::common::UserTransactionInfo;
 use sea_orm::{Database, DatabaseConnection};
+use std::sync::Arc;
 
 pub mod repo;
 
@@ -32,10 +31,7 @@ pub trait IntoUserTxInfo {
 
 impl IntoUserTxInfo for user_transaction::Model {
     fn into_user_tx_info(self) -> UserTransactionInfo {
-        // SeaORM commonly uses `chrono::NaiveDateTime` for DateTime columns.
-        // Convert to milliseconds since epoch (UTC).
         let created_at_ms = self.created_at.and_utc().timestamp_millis();
-
         UserTransactionInfo {
             user_addr: self.user_address,
             recipient_addr: self.recipient_address,

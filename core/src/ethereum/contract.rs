@@ -14,7 +14,7 @@ sol! {
     event CollateralWithdrawn(address indexed user, uint256 amount);
 
     #[derive(Debug)]
-    event WithdrawalRequested(address indexed user, uint256 when);
+    event WithdrawalRequested(address indexed user, uint256 when, uint256 amount);
 
     #[derive(Debug)]
     event WithdrawalCanceled(address indexed user);
@@ -27,6 +27,9 @@ sol! {
 
     #[derive(Debug)]
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
+
+    #[derive(Debug)]
+    event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
 
     #[derive(Debug)]
     event RecordedPayment(uint256 indexed tab_id, uint256 amount);

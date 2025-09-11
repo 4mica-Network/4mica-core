@@ -1,4 +1,5 @@
 mod contract;
+
 use crate::config::EthereumConfig;
 use crate::ethereum::contract::*;
 use crate::persist::{PersistCtx, repo};
@@ -10,8 +11,12 @@ use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 use futures_util::StreamExt;
 use log::{error, info, warn};
+use sea_orm::EntityTrait;
 use tokio;
 use tokio::task::JoinHandle;
+
+// NEW: import tabs to resolve user_address from tab_id
+use entities::*;
 
 pub struct EthereumListener {
     config: EthereumConfig,
@@ -43,13 +48,15 @@ impl EthereumListener {
                 WithdrawalGracePeriodUpdated::SIGNATURE,
                 RemunerationGracePeriodUpdated::SIGNATURE,
                 TabExpirationTimeUpdated::SIGNATURE,
+                SynchronizationDelayUpdated::SIGNATURE,
                 RecordedPayment::SIGNATURE,
             ])
+            // start from latest block to avoid replaying full history on fresh boot
             .from_block(BlockNumberOrTag::Latest);
 
         let persist_ctx = self.persist_ctx.clone();
         let _: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-            // TODO: Handle failures and try to reconnect.
+            // ⚠️ You can wrap this in a reconnect loop if desired.
             let sub = provider.subscribe_logs(&filter).await.map_err(|err| {
                 error!("Failed to subscribe to logs: {err}");
                 err
@@ -70,16 +77,20 @@ impl EthereumListener {
                             user,
                             initialCollateral,
                         } = log.data();
-                        info!("[EthereumListener] UserRegistered: {user:?}, {initialCollateral}");
+                        info!(
+                            "[EthereumListener] UserRegistered: {user:?}, initial={initialCollateral}"
+                        );
 
-                        repo::deposit(&persist_ctx, user.to_string(), initialCollateral.into())
-                            .await
-                            .map_err(|err| {
-                                error!("Failed to deposit (UserRegistered): {err}");
-                                err
-                            })
-                            .ok();
+                        // NOTE: if initialCollateral is U256, precision loss is acceptable for f64 here per your schema.
+                        let _ =
+                            repo::deposit(&persist_ctx, user.to_string(), initialCollateral.into())
+                                .await
+                                .map_err(|err| {
+                                    error!("Failed to deposit (UserRegistered): {err}");
+                                    err
+                                });
                     }
+
                     Some(&CollateralDeposited::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<CollateralDeposited>().map_err(|err| {
                             error!("[EthereumListener] Error decoding CollateralDeposited: {err}");
@@ -87,16 +98,16 @@ impl EthereumListener {
                             continue;
                         };
                         let CollateralDeposited { user, amount } = log.data();
-                        info!("[EthereumListener] CollateralDeposited: {user:?}, {amount}");
+                        info!("[EthereumListener] CollateralDeposited: {user:?}, amount={amount}");
 
-                        repo::deposit(&persist_ctx, user.to_string(), amount.into())
+                        let _ = repo::deposit(&persist_ctx, user.to_string(), amount.into())
                             .await
                             .map_err(|err| {
                                 error!("Failed to add collateral (CollateralDeposited): {err}");
                                 err
-                            })
-                            .ok();
+                            });
                     }
+
                     Some(&RecipientRemunerated::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<RecipientRemunerated>().map_err(|err| {
                             error!("[EthereumListener] Error decoding RecipientRemunerated: {err}");
@@ -109,10 +120,43 @@ impl EthereumListener {
                             amount,
                         } = log.data();
                         info!(
-                            "[EthereumListener] RecipientRemunerated: tab {tab_id}, req {req_id}, amount {amount}"
+                            "[EthereumListener] RecipientRemunerated: tab={tab_id}, req={req_id}, amount={amount}"
                         );
-                        // TODO: Add DB logic for remuneration events.
+
+                        // Resolve user_address via Tabs
+                        let tab_id_str = tab_id.to_string();
+                        let user_addr = match tabs::Entity::find_by_id(tab_id_str.clone())
+                            .one(&*persist_ctx.db)
+                            .await
+                        {
+                            Ok(Some(tab)) => tab.user_address,
+                            Ok(None) => {
+                                warn!(
+                                    "[EthereumListener] Missing Tab {tab_id_str} for RecipientRemunerated; skipping"
+                                );
+                                continue;
+                            }
+                            Err(err) => {
+                                error!(
+                                    "[EthereumListener] DB error loading Tab {tab_id_str}: {err}"
+                                );
+                                continue;
+                            }
+                        };
+
+                        let _ = repo::remunerate_recipient(
+                            &persist_ctx,
+                            user_addr,
+                            tab_id.to(),
+                            amount.into(),
+                        )
+                        .await
+                        .map_err(|err| {
+                            error!("Failed to persist RecipientRemunerated: {err}");
+                            err
+                        });
                     }
+
                     Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<CollateralWithdrawn>().map_err(|err| {
                             error!("[EthereumListener] Error decoding CollateralWithdrawn: {err}");
@@ -120,19 +164,44 @@ impl EthereumListener {
                             continue;
                         };
                         let CollateralWithdrawn { user, amount } = log.data();
-                        info!("[EthereumListener] CollateralWithdrawn: {user:?}, {amount}");
-                        // TODO: Handle DB state changes for withdrawals.
+                        info!("[EthereumListener] CollateralWithdrawn: {user:?}, amount={amount}");
+
+                        let _ = repo::finalize_withdrawal(
+                            &persist_ctx,
+                            user.to_string(),
+                            amount.into(),
+                        )
+                        .await
+                        .map_err(|err| {
+                            error!("Failed to finalize withdrawal: {err}");
+                            err
+                        });
                     }
+
                     Some(&WithdrawalRequested::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<WithdrawalRequested>().map_err(|err| {
                             error!("[EthereumListener] Error decoding WithdrawalRequested: {err}");
                         }) else {
                             continue;
                         };
-                        let WithdrawalRequested { user, when } = log.data();
-                        info!("[EthereumListener] WithdrawalRequested: {user:?}, at {when}");
-                        // TODO: Persist withdrawal request.
+                        let WithdrawalRequested { user, when, amount } = log.data();
+                        info!(
+                            "[EthereumListener] WithdrawalRequested: {user:?}, when={when}, amount={amount}"
+                        );
+
+                        let _ = repo::request_withdrawal(
+                            &persist_ctx,
+                            user.to_string(),
+                            when.to(),
+                            amount.into(),
+                        )
+                        .await
+                        .map_err(|err| {
+                            error!("Failed to request withdrawal: {err}");
+                            err
+                        });
                     }
+
                     Some(&WithdrawalCanceled::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<WithdrawalCanceled>().map_err(|err| {
                             error!("[EthereumListener] Error decoding WithdrawalCanceled: {err}");
@@ -141,34 +210,48 @@ impl EthereumListener {
                         };
                         let WithdrawalCanceled { user } = log.data();
                         info!("[EthereumListener] WithdrawalCanceled: {user:?}");
-                        // TODO: Update withdrawal record.
+
+                        let _ = repo::cancel_withdrawal(&persist_ctx, user.to_string())
+                            .await
+                            .map_err(|err| {
+                                error!("Failed to cancel withdrawal: {err}");
+                                err
+                            });
                     }
+
                     Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
-                        let Ok(log) =
-                            log.log_decode::<WithdrawalGracePeriodUpdated>().map_err(|err| {
+                        let Ok(log) = log
+                            .log_decode::<WithdrawalGracePeriodUpdated>()
+                            .map_err(|err| {
                                 error!(
                                     "[EthereumListener] Error decoding WithdrawalGracePeriodUpdated: {err}"
                                 );
-                            }) else {
-                                continue;
-                            };
+                            })
+                        else {
+                            continue;
+                        };
                         let WithdrawalGracePeriodUpdated { newGracePeriod } = log.data();
                         info!("[EthereumListener] WithdrawalGracePeriodUpdated: {newGracePeriod}");
+                        // No DB persistence (config only)
                     }
+
                     Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => {
-                        let Ok(log) =
-                            log.log_decode::<RemunerationGracePeriodUpdated>().map_err(|err| {
+                        let Ok(log) = log
+                            .log_decode::<RemunerationGracePeriodUpdated>()
+                            .map_err(|err| {
                                 error!(
                                     "[EthereumListener] Error decoding RemunerationGracePeriodUpdated: {err}"
                                 );
-                            }) else {
-                                continue;
-                            };
+                            })
+                        else {
+                            continue;
+                        };
                         let RemunerationGracePeriodUpdated { newGracePeriod } = log.data();
                         info!(
                             "[EthereumListener] RemunerationGracePeriodUpdated: {newGracePeriod}"
                         );
                     }
+
                     Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<TabExpirationTimeUpdated>().map_err(|err| {
                             error!(
@@ -180,6 +263,25 @@ impl EthereumListener {
                         let TabExpirationTimeUpdated { newExpirationTime } = log.data();
                         info!("[EthereumListener] TabExpirationTimeUpdated: {newExpirationTime}");
                     }
+
+                    Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => {
+                        let Ok(log) =
+                            log.log_decode::<SynchronizationDelayUpdated>().map_err(|err| {
+                                error!(
+                                    "[EthereumListener] Error decoding SynchronizationDelayUpdated: {err}"
+                                );
+                            })
+                        else {
+                            continue;
+                        };
+                        let SynchronizationDelayUpdated {
+                            newSynchronizationDelay,
+                        } = log.data();
+                        info!(
+                            "[EthereumListener] SynchronizationDelayUpdated: {newSynchronizationDelay}"
+                        );
+                    }
+
                     Some(&RecordedPayment::SIGNATURE_HASH) => {
                         let Ok(log) = log.log_decode::<RecordedPayment>().map_err(|err| {
                             error!("[EthereumListener] Error decoding RecordedPayment: {err}");
@@ -187,9 +289,10 @@ impl EthereumListener {
                             continue;
                         };
                         let RecordedPayment { tab_id, amount } = log.data();
-                        info!("[EthereumListener] RecordedPayment: tab {tab_id}, amount {amount}");
-                        // TODO: Update tab payments in DB.
+                        info!("[EthereumListener] RecordedPayment: tab={tab_id}, amount={amount}");
+                        // TODO: persist if desired
                     }
+
                     log => {
                         info!("[EthereumListener] Received unknown log: {log:?}");
                     }

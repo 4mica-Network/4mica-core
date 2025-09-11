@@ -1,9 +1,14 @@
 use crate::persist::PersistCtx;
+use anyhow::Result;
 use chrono::Utc;
 use entities::{
-    collateral_event, guarantee, sea_orm_active_enums::CollateralEventType, user, user_transaction,
+    collateral_event, guarantee,
+    sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
+    user, user_transaction, withdrawal,
 };
 use rpc::common::TransactionVerificationResult;
+use sea_orm::QueryOrder;
+use sea_orm::prelude::DateTime;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
@@ -28,13 +33,12 @@ pub async fn get_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<Opt
 /// Deposit: increment collateral and record a CollateralEvent::Deposit for auditability.
 pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow::Result<()> {
     use sea_orm::ActiveValue::Set;
-
     let now = Utc::now().naive_utc();
 
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                // 1) Ensure the user row exists
+                // Ensure the user row exists
                 let insert_user = user::ActiveModel {
                     address: Set(user_addr.clone()),
                     revenue: Set(0.0),
@@ -44,8 +48,6 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow
                     collateral: Set(0.0),
                     locked_collateral: Set(0.0),
                 };
-
-                // swallow "already exists" case; only care about DB errors
                 let _ = user::Entity::insert(insert_user)
                     .on_conflict(
                         OnConflict::column(user::Column::Address)
@@ -55,7 +57,7 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow
                     .exec(txn)
                     .await;
 
-                // 2) Increment collateral (+ amount) and update timestamp
+                // Increment collateral
                 user::Entity::update_many()
                     .col_expr(
                         user::Column::Collateral,
@@ -66,7 +68,7 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow
                     .exec(txn)
                     .await?;
 
-                // 3) Insert ledger event for auditability
+                // Insert ledger event
                 let ev = collateral_event::ActiveModel {
                     id: Set(uuid::Uuid::new_v4().to_string()),
                     user_address: Set(user_addr),
@@ -88,40 +90,82 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow
 }
 
 //
-// ────────────────────── TRANSACTIONS ──────────────────────
+// ────────────────────── WITHDRAWALS ──────────────────────
 //
 
-pub async fn get_transactions_by_hash(
+pub async fn request_withdrawal(
     ctx: &PersistCtx,
-    hashes: Vec<String>,
-) -> anyhow::Result<Vec<user_transaction::Model>> {
-    Ok(user_transaction::Entity::find()
-        .filter(user_transaction::Column::TxId.is_in(hashes))
-        .all(&*ctx.db)
-        .await?)
+    user_addr: String,
+    when: i64,
+    amount: f64,
+) -> Result<()> {
+    let now: DateTime = Utc::now().naive_utc();
+    let am = withdrawal::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        user_address: Set(user_addr),
+        amount: Set(amount),
+        ts: Set(DateTime::from_timestamp(when, 0)),
+        status: Set(WithdrawalStatus::Pending),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    withdrawal::Entity::insert(am).exec(&*ctx.db).await?;
+    Ok(())
 }
 
-pub async fn get_unfinalized_transactions(
-    ctx: &PersistCtx,
-) -> anyhow::Result<Vec<user_transaction::Model>> {
-    Ok(user_transaction::Entity::find()
-        .filter(user_transaction::Column::Finalized.eq(false))
+pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()> {
+    let records = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending)) // ✅ fix
         .all(&*ctx.db)
-        .await?)
-}
+        .await?;
 
-pub async fn confirm_transaction(ctx: &PersistCtx, transaction_hash: String) -> anyhow::Result<()> {
-    if let Some(mut tx) = user_transaction::Entity::find_by_id(transaction_hash)
-        .one(&*ctx.db)
-        .await?
-        .map(IntoActiveModel::into_active_model)
-    {
-        tx.finalized = Set(true);
-        tx.updated_at = Set(Utc::now().naive_utc());
-        tx.update(&*ctx.db).await?;
+    for rec in records {
+        let mut am = rec.into_active_model();
+        am.status = Set(WithdrawalStatus::Cancelled);
+        am.updated_at = Set(Utc::now().naive_utc());
+        am.update(&*ctx.db).await?;
     }
     Ok(())
 }
+
+pub async fn finalize_withdrawal(ctx: &PersistCtx, user_addr: String, amount: f64) -> Result<()> {
+    ctx.db
+        .transaction(|txn| {
+            Box::pin(async move {
+                // decrement collateral
+                user::Entity::update_many()
+                    .col_expr(
+                        user::Column::Collateral,
+                        Expr::col(user::Column::Collateral).sub(amount),
+                    )
+                    .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now().naive_utc()))
+                    .filter(user::Column::Address.eq(user_addr.clone()))
+                    .exec(txn)
+                    .await?;
+
+                // mark most recent withdrawal as completed
+                if let Some(w) = withdrawal::Entity::find()
+                    .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+                    .order_by_desc(withdrawal::Column::CreatedAt)
+                    .one(txn)
+                    .await?
+                {
+                    let mut am = w.into_active_model();
+                    am.status = Set(WithdrawalStatus::Executed);
+                    am.updated_at = Set(Utc::now().naive_utc());
+                    am.update(txn).await?;
+                }
+                Ok::<_, sea_orm::DbErr>(())
+            })
+        })
+        .await?;
+    Ok(())
+}
+
+//
+// ────────────────────── TRANSACTIONS ──────────────────────
+//
 
 #[derive(Debug, Error)]
 pub enum SubmitPaymentTxnError {
@@ -158,7 +202,7 @@ pub async fn submit_payment_transaction(
                     return Err(SubmitPaymentTxnError::UserNotRegistered);
                 };
 
-                // Other unfinalized txs reserve deposit
+                // Reserve deposit for other unfinalized txs
                 let pending = user_transaction::Entity::find()
                     .filter(user_transaction::Column::UserAddress.eq(user_addr.clone()))
                     .filter(user_transaction::Column::Finalized.eq(false))
@@ -187,16 +231,17 @@ pub async fn submit_payment_transaction(
                     updated_at: Set(now),
                 };
 
-                user_transaction::Entity::insert(tx_am)
+                // Important: use exec_without_returning so duplicate inserts are no-op
+                let _ = user_transaction::Entity::insert(tx_am)
                     .on_conflict(
                         OnConflict::column(user_transaction::Column::TxId)
                             .do_nothing()
                             .to_owned(),
                     )
-                    .exec(txn)
+                    .exec_without_returning(txn)
                     .await?;
 
-                // Optimistic version bump on user
+                // Optimistic version bump
                 let update_res = user::Entity::update_many()
                     .col_expr(
                         user::Column::Version,
@@ -232,7 +277,6 @@ pub async fn fail_transaction(
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                // Load tx
                 let Some(tx_row) = user_transaction::Entity::find_by_id(transaction_id.clone())
                     .one(txn)
                     .await?
@@ -240,14 +284,17 @@ pub async fn fail_transaction(
                     return Ok(());
                 };
 
-                // Mark as finalized & failed
+                if tx_row.failed {
+                    // ✅ Already failed → idempotent
+                    return Ok(());
+                }
+
                 let mut am = tx_row.clone().into_active_model();
                 am.finalized = Set(true);
                 am.failed = Set(true);
                 am.updated_at = Set(Utc::now().naive_utc());
                 am.update(txn).await?;
 
-                // Decrement user's collateral by the failed amount
                 user::Entity::update_many()
                     .col_expr(
                         user::Column::Collateral,
@@ -300,6 +347,29 @@ pub async fn verify_transaction(
 }
 
 //
+// ────────────────────── TRANSACTION QUERIES ──────────────────────
+//
+
+pub async fn get_transactions_by_hash(
+    ctx: &PersistCtx,
+    hashes: Vec<String>,
+) -> anyhow::Result<Vec<user_transaction::Model>> {
+    Ok(user_transaction::Entity::find()
+        .filter(user_transaction::Column::TxId.is_in(hashes))
+        .all(&*ctx.db)
+        .await?)
+}
+
+pub async fn get_unfinalized_transactions(
+    ctx: &PersistCtx,
+) -> anyhow::Result<Vec<user_transaction::Model>> {
+    Ok(user_transaction::Entity::find()
+        .filter(user_transaction::Column::Finalized.eq(false))
+        .all(&*ctx.db)
+        .await?)
+}
+
+//
 // ────────────────────── GUARANTEES / CERTIFICATES ──────────────────────
 //
 
@@ -311,9 +381,31 @@ pub async fn store_certificate(
     to_addr: String,
     value: f64,
     start_ts: chrono::NaiveDateTime,
-    cert: String, // BLS signature (hex/base64)
+    cert: String,
 ) -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
+
+    // Ensure foreign keys exist
+    for addr in [&from_addr, &to_addr] {
+        let insert_user = user::ActiveModel {
+            address: Set(addr.clone()),
+            revenue: Set(0.0),
+            version: Set(0),
+            created_at: Set(now),
+            updated_at: Set(now),
+            collateral: Set(0.0),
+            locked_collateral: Set(0.0),
+        };
+        let _ = user::Entity::insert(insert_user)
+            .on_conflict(
+                OnConflict::column(user::Column::Address)
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .exec(&*ctx.db)
+            .await;
+    }
+
     let am = guarantee::ActiveModel {
         tab_id: Set(tab_id),
         req_id: Set(req_id),
@@ -321,19 +413,19 @@ pub async fn store_certificate(
         to_address: Set(to_addr),
         value: Set(value),
         start_ts: Set(start_ts),
-        // NOTE: entity field is Option<String>
         cert: Set(Some(cert)),
         created_at: Set(now),
         updated_at: Set(now),
     };
 
-    guarantee::Entity::insert(am)
+    // Use exec_without_returning to avoid "RecordNotInserted"
+    let _ = guarantee::Entity::insert(am)
         .on_conflict(
             OnConflict::columns([guarantee::Column::TabId, guarantee::Column::ReqId])
                 .do_nothing()
                 .to_owned(),
         )
-        .exec(&*ctx.db)
+        .exec_without_returning(&*ctx.db)
         .await?;
 
     Ok(())
@@ -349,4 +441,35 @@ pub async fn get_certificate(
         .filter(guarantee::Column::ReqId.eq(req_id))
         .one(&*ctx.db)
         .await?)
+}
+
+//
+// ────────────────────── REMUNERATION / PAYMENTS ──────────────────────
+//
+
+pub async fn remunerate_recipient(
+    ctx: &PersistCtx,
+    tab_id: String,
+    req_id: i64,
+    amount: f64,
+) -> Result<()> {
+    let now = Utc::now().naive_utc();
+
+    let tab = entities::tabs::Entity::find_by_id(tab_id.clone())
+        .one(&*ctx.db)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Tab not found: {tab_id}"))?;
+
+    let ev = collateral_event::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        user_address: Set(tab.user_address),
+        amount: Set(amount),
+        event_type: Set(CollateralEventType::Remunerate),
+        tab_id: Set(Some(tab_id)),
+        req_id: Set(Some(req_id as i32)),
+        tx_id: Set(None),
+        created_at: Set(now),
+    };
+    collateral_event::Entity::insert(ev).exec(&*ctx.db).await?;
+    Ok(())
 }
