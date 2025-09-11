@@ -91,11 +91,11 @@ impl CoreApiServer for CoreService {
         Ok(self.public_params.clone())
     }
 
-    async fn add_collateral(&self, user_addr: String, amount: f64) -> RpcResult<()> {
-        repo::add_collateral(&self.persist_ctx, user_addr, amount)
+    async fn deposit(&self, user_addr: String, amount: f64) -> RpcResult<()> {
+        repo::deposit(&self.persist_ctx, user_addr, amount)
             .await
             .map_err(|err| {
-                error!("Failed to add collateral: {err}");
+                error!("Failed to deposit: {err}");
                 rpc::internal_error()
             })?;
         Ok(())
