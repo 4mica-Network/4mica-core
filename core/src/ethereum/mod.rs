@@ -9,14 +9,12 @@ use alloy::primitives::Address;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
+use entities::*;
 use futures_util::StreamExt;
 use log::{error, info, warn};
 use sea_orm::EntityTrait;
 use tokio;
 use tokio::task::JoinHandle;
-
-// NEW: import tabs to resolve user_address from tab_id
-use entities::*;
 
 pub struct EthereumListener {
     config: EthereumConfig,
@@ -56,7 +54,7 @@ impl EthereumListener {
 
         let persist_ctx = self.persist_ctx.clone();
         let _: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-            // ⚠️ You can wrap this in a reconnect loop if desired.
+            // TODO can wrap this in a reconnect loop if desired.
             let sub = provider.subscribe_logs(&filter).await.map_err(|err| {
                 error!("Failed to subscribe to logs: {err}");
                 err
@@ -81,7 +79,6 @@ impl EthereumListener {
                             "[EthereumListener] UserRegistered: {user:?}, initial={initialCollateral}"
                         );
 
-                        // NOTE: if initialCollateral is U256, precision loss is acceptable for f64 here per your schema.
                         let _ =
                             repo::deposit(&persist_ctx, user.to_string(), initialCollateral.into())
                                 .await
