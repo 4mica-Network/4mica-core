@@ -362,3 +362,143 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     assert!(events.iter().any(|e| e.amount == 10.0));
     Ok(())
 }
+
+#[test(tokio::test)]
+async fn deposit_negative_rejected_or_noop() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    // Try depositing a negative amount
+    let res = repo::deposit(&ctx, user_addr.clone(), -5.0).await;
+    assert!(
+        res.is_err()
+            || user::Entity::find()
+                .filter(user::Column::Address.eq(user_addr.clone()))
+                .one(&*ctx.db)
+                .await?
+                .is_none()
+    );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
+    let res = repo::request_withdrawal(&ctx, user_addr.clone(), 1, 10.0).await;
+
+    // Should fail gracefully rather than overdrawing
+    assert!(res.is_err());
+
+    // Ensure collateral is unchanged
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, 5.0);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn finalize_withdrawal_twice_is_idempotent() -> anyhow::Result<()> {
+    use entities::sea_orm_active_enums::WithdrawalStatus;
+
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 1, 5.0).await?;
+
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), 5.0).await?;
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), 5.0).await?; // second time
+
+    let w = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+
+    // Status should still be Executed
+    assert_eq!(w.status, WithdrawalStatus::Executed);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let now = Utc::now().naive_utc();
+
+    let user_addr = Uuid::new_v4().to_string();
+    let u_am = entities::user::ActiveModel {
+        address: Set(user_addr.clone()),
+        collateral: Set(0.0),
+        locked_collateral: Set(0.0),
+        revenue: Set(0.0),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    entities::user::Entity::insert(u_am).exec(&*ctx.db).await?;
+
+    let tab_id = Uuid::new_v4().to_string();
+    let tab_am = entities::tabs::ActiveModel {
+        id: Set(tab_id.clone()),
+        user_address: Set(user_addr.clone()),
+        server_address: Set(user_addr.clone()),
+        start_ts: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+        status: Set(entities::sea_orm_active_enums::TabStatus::Open),
+        settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ..Default::default()
+    };
+    entities::tabs::Entity::insert(tab_am)
+        .exec(&*ctx.db)
+        .await?;
+
+    repo::remunerate_recipient(&ctx, tab_id.clone(), 1, 10.0).await?;
+    repo::remunerate_recipient(&ctx, tab_id.clone(), 1, 20.0).await?;
+
+    let events = collateral_event::Entity::find()
+        .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
+        .all(&*ctx.db)
+        .await?;
+
+    // Only one event for the same (tab_id, req_id)
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].amount, 10.0);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn deposit_tiny_amount_preserves_precision() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    let tiny = 1e-12;
+    repo::deposit(&ctx, user_addr.clone(), tiny).await?;
+
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+
+    // Collateral should not collapse to 0.0 because of precision issues
+    assert!(u.collateral > 0.0);
+
+    Ok(())
+}

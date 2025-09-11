@@ -1,6 +1,6 @@
 use crate::persist::PersistCtx;
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use entities::{
     collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
@@ -8,7 +8,6 @@ use entities::{
 };
 use rpc::common::TransactionVerificationResult;
 use sea_orm::QueryOrder;
-use sea_orm::prelude::DateTime;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
@@ -34,7 +33,9 @@ pub async fn get_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<Opt
 pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow::Result<()> {
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();
-
+    if amount < 0.0 {
+        return Err(anyhow::anyhow!("negative deposit not allowed"));
+    }
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
@@ -56,7 +57,9 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: f64) -> anyhow
                     )
                     .exec(txn)
                     .await;
-
+                if amount == 0.0 {
+                    return Ok(());
+                }
                 // Increment collateral
                 user::Entity::update_many()
                     .col_expr(
@@ -99,12 +102,35 @@ pub async fn request_withdrawal(
     when: i64,
     amount: f64,
 ) -> Result<()> {
-    let now: DateTime = Utc::now().naive_utc();
+    if amount <= 0.0 {
+        return Err(anyhow::anyhow!("withdrawal amount must be positive"));
+    }
+
+    // Ensure user exists and has enough collateral
+    let Some(u) = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+    else {
+        return Err(anyhow::anyhow!("user not found"));
+    };
+
+    if amount > u.collateral {
+        return Err(anyhow::anyhow!("insufficient collateral"));
+    }
+
+    let now = Utc::now().naive_utc();
+    let ts = Utc
+        .timestamp_opt(when, 0)
+        .single()
+        .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {}", when))?
+        .naive_utc();
+
     let am = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
         user_address: Set(user_addr),
         amount: Set(amount),
-        ts: Set(DateTime::from_timestamp(when, 0)),
+        ts: Set(ts),
         status: Set(WithdrawalStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
@@ -285,7 +311,7 @@ pub async fn fail_transaction(
                 };
 
                 if tx_row.failed {
-                    // ✅ Already failed → idempotent
+                    // Already failed → idempotent
                     return Ok(());
                 }
 
@@ -455,21 +481,41 @@ pub async fn remunerate_recipient(
 ) -> Result<()> {
     let now = Utc::now().naive_utc();
 
-    let tab = entities::tabs::Entity::find_by_id(tab_id.clone())
-        .one(&*ctx.db)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Tab not found: {tab_id}"))?;
+    ctx.db
+        .transaction(|txn| {
+            Box::pin(async move {
+                let tab = entities::tabs::Entity::find_by_id(tab_id.clone())
+                    .one(txn)
+                    .await?
+                    .ok_or_else(|| sea_orm::DbErr::Custom(format!("Tab not found: {tab_id}")))?;
 
-    let ev = collateral_event::ActiveModel {
-        id: Set(uuid::Uuid::new_v4().to_string()),
-        user_address: Set(tab.user_address),
-        amount: Set(amount),
-        event_type: Set(CollateralEventType::Remunerate),
-        tab_id: Set(Some(tab_id)),
-        req_id: Set(Some(req_id as i32)),
-        tx_id: Set(None),
-        created_at: Set(now),
-    };
-    collateral_event::Entity::insert(ev).exec(&*ctx.db).await?;
+                // Idempotency: if an event already exists for this (tab_id, req_id, Remunerate), do nothing
+                let existing = collateral_event::Entity::find()
+                    .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
+                    .filter(collateral_event::Column::ReqId.eq(req_id as i32))
+                    .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
+                    .one(txn)
+                    .await?;
+
+                if existing.is_some() {
+                    return Ok::<_, sea_orm::DbErr>(());
+                }
+
+                let ev = collateral_event::ActiveModel {
+                    id: Set(uuid::Uuid::new_v4().to_string()),
+                    user_address: Set(tab.user_address),
+                    amount: Set(amount),
+                    event_type: Set(CollateralEventType::Remunerate),
+                    tab_id: Set(Some(tab_id)),
+                    req_id: Set(Some(req_id as i32)),
+                    tx_id: Set(None),
+                    created_at: Set(now),
+                };
+                collateral_event::Entity::insert(ev).exec(txn).await?;
+                Ok(())
+            })
+        })
+        .await?;
+
     Ok(())
 }
