@@ -47,7 +47,7 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(user::Column::Revenue).double().not_null())
+                    .col(ColumnDef::new(user::Column::Revenue).string().not_null())
                     .col(ColumnDef::new(user::Column::Version).integer().not_null())
                     .col(
                         ColumnDef::new(user::Column::CreatedAt)
@@ -59,10 +59,10 @@ impl MigrationTrait for Migration {
                             .timestamp()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(user::Column::Collateral).double().not_null())
+                    .col(ColumnDef::new(user::Column::Collateral).string().not_null())
                     .col(
                         ColumnDef::new(user::Column::LockedCollateral)
-                            .double()
+                            .string()
                             .not_null(),
                     )
                     .to_owned(),
@@ -135,11 +135,7 @@ impl MigrationTrait for Migration {
                     .table(guarantee::Entity)
                     .if_not_exists()
                     .col(ColumnDef::new(guarantee::Column::TabId).string().not_null())
-                    .col(
-                        ColumnDef::new(guarantee::Column::ReqId)
-                            .integer()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(guarantee::Column::ReqId).string().not_null())
                     .col(
                         ColumnDef::new(guarantee::Column::FromAddress)
                             .string()
@@ -150,7 +146,7 @@ impl MigrationTrait for Migration {
                             .string()
                             .not_null(),
                     )
-                    .col(ColumnDef::new(guarantee::Column::Value).double().not_null())
+                    .col(ColumnDef::new(guarantee::Column::Value).string().not_null())
                     .col(
                         ColumnDef::new(guarantee::Column::StartTs)
                             .timestamp()
@@ -212,7 +208,7 @@ impl MigrationTrait for Migration {
                     )
                     .col(
                         ColumnDef::new(user_transaction::Column::Amount)
-                            .double()
+                            .string()
                             .not_null(),
                     )
                     .col(
@@ -277,7 +273,7 @@ impl MigrationTrait for Migration {
                     )
                     .col(
                         ColumnDef::new(withdrawal::Column::Amount)
-                            .double()
+                            .string()
                             .not_null(),
                     )
                     .col(
@@ -331,7 +327,7 @@ impl MigrationTrait for Migration {
                     )
                     .col(
                         ColumnDef::new(collateral_event::Column::Amount)
-                            .double()
+                            .string()
                             .not_null(),
                     )
                     .col(
@@ -348,7 +344,7 @@ impl MigrationTrait for Migration {
                     )
                     .col(
                         ColumnDef::new(collateral_event::Column::ReqId)
-                            .integer()
+                            .string()
                             .null(),
                     )
                     .col(

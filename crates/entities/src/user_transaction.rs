@@ -11,8 +11,8 @@ pub struct Model {
     pub user_address: String,
     #[sea_orm(column_type = "Text")]
     pub recipient_address: String,
-    #[sea_orm(column_type = "Double")]
-    pub amount: f64,
+    #[sea_orm(column_type = "Text")]
+    pub amount: String,
     #[sea_orm(column_type = "Text", nullable)]
     pub cert: Option<String>,
     pub verified: bool,

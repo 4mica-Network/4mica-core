@@ -36,7 +36,7 @@ impl IntoUserTxInfo for user_transaction::Model {
             user_addr: self.user_address,
             recipient_addr: self.recipient_address,
             tx_hash: self.tx_id,
-            amount: self.amount,
+            amount: self.amount.parse().expect("Failed to parse amount as U256"),
             verified: self.verified,
             finalized: self.finalized,
             failed: self.failed,

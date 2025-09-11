@@ -1,5 +1,4 @@
 mod contract;
-
 use crate::config::EthereumConfig;
 use crate::ethereum::contract::*;
 use crate::persist::{PersistCtx, repo};
@@ -79,13 +78,12 @@ impl EthereumListener {
                             "[EthereumListener] UserRegistered: {user:?}, initial={initialCollateral}"
                         );
 
-                        let _ =
-                            repo::deposit(&persist_ctx, user.to_string(), initialCollateral.into())
-                                .await
-                                .map_err(|err| {
-                                    error!("Failed to deposit (UserRegistered): {err}");
-                                    err
-                                });
+                        let _ = repo::deposit(&persist_ctx, user.to_string(), *initialCollateral)
+                            .await
+                            .map_err(|err| {
+                                error!("Failed to deposit (UserRegistered): {err}");
+                                err
+                            });
                     }
 
                     Some(&CollateralDeposited::SIGNATURE_HASH) => {
@@ -97,7 +95,7 @@ impl EthereumListener {
                         let CollateralDeposited { user, amount } = log.data();
                         info!("[EthereumListener] CollateralDeposited: {user:?}, amount={amount}");
 
-                        let _ = repo::deposit(&persist_ctx, user.to_string(), amount.into())
+                        let _ = repo::deposit(&persist_ctx, user.to_string(), *amount)
                             .await
                             .map_err(|err| {
                                 error!("Failed to add collateral (CollateralDeposited): {err}");
@@ -122,7 +120,7 @@ impl EthereumListener {
 
                         // Resolve user_address via Tabs
                         let tab_id_str = tab_id.to_string();
-                        let user_addr = match tabs::Entity::find_by_id(tab_id_str.clone())
+                        let _user_addr = match tabs::Entity::find_by_id(tab_id_str.clone())
                             .one(&*persist_ctx.db)
                             .await
                         {
@@ -141,17 +139,13 @@ impl EthereumListener {
                             }
                         };
 
-                        let _ = repo::remunerate_recipient(
-                            &persist_ctx,
-                            user_addr,
-                            tab_id.to(),
-                            amount.into(),
-                        )
-                        .await
-                        .map_err(|err| {
-                            error!("Failed to persist RecipientRemunerated: {err}");
-                            err
-                        });
+                        let _ =
+                            repo::remunerate_recipient(&persist_ctx, tab_id.to_string(), *amount)
+                                .await
+                                .map_err(|err| {
+                                    error!("Failed to persist RecipientRemunerated: {err}");
+                                    err
+                                });
                     }
 
                     Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
@@ -163,16 +157,12 @@ impl EthereumListener {
                         let CollateralWithdrawn { user, amount } = log.data();
                         info!("[EthereumListener] CollateralWithdrawn: {user:?}, amount={amount}");
 
-                        let _ = repo::finalize_withdrawal(
-                            &persist_ctx,
-                            user.to_string(),
-                            amount.into(),
-                        )
-                        .await
-                        .map_err(|err| {
-                            error!("Failed to finalize withdrawal: {err}");
-                            err
-                        });
+                        let _ = repo::finalize_withdrawal(&persist_ctx, user.to_string(), *amount)
+                            .await
+                            .map_err(|err| {
+                                error!("Failed to finalize withdrawal: {err}");
+                                err
+                            });
                     }
 
                     Some(&WithdrawalRequested::SIGNATURE_HASH) => {
@@ -190,7 +180,7 @@ impl EthereumListener {
                             &persist_ctx,
                             user.to_string(),
                             when.to(),
-                            amount.into(),
+                            *amount,
                         )
                         .await
                         .map_err(|err| {

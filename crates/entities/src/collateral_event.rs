@@ -10,12 +10,12 @@ pub struct Model {
     pub id: String,
     #[sea_orm(column_type = "Text")]
     pub user_address: String,
-    #[sea_orm(column_type = "Double")]
-    pub amount: f64,
+    #[sea_orm(column_type = "Text")]
+    pub amount: String,
     pub event_type: CollateralEventType,
     #[sea_orm(column_type = "Text", nullable)]
     pub tab_id: Option<String>,
-    pub req_id: Option<i32>,
+    pub req_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub tx_id: Option<String>,
     pub created_at: DateTime,

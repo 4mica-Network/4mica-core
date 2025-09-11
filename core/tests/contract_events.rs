@@ -1,17 +1,20 @@
 use crate::common::contract::AuthorityContract;
+use alloy::primitives::U256;
 use alloy::providers::{ProviderBuilder, WalletProvider};
 use core_service::config::EthereumConfig;
 use core_service::ethereum::EthereumListener;
 use core_service::persist::PersistCtx;
-use log::info;
-use test_log::test;
-// SeaORM bits
 use entities::user;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use test_log::test;
 
 mod common;
 
-// cargo test --test contract_events {test_name} -- --nocapture
+// helper to convert U256 → f64 (safe for test amounts)
+fn u256_to_f64(val: U256) -> f64 {
+    let as_u128: u128 = val.try_into().expect("U256 too large for u128");
+    as_u128 as f64
+}
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn register_user_event() -> anyhow::Result<()> {
@@ -22,34 +25,29 @@ async fn register_user_event() -> anyhow::Result<()> {
     let contract = AuthorityContract::deploy(&provider).await?;
 
     let user_addr = provider.default_signer_address().to_string();
-    info!("Wallet default signer address: {user_addr}");
 
     let eth_config = EthereumConfig {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
-        number_of_blocks_to_confirm: 10u64,
-        number_of_pending_blocks: 5u64,
+        number_of_blocks_to_confirm: 10,
+        number_of_pending_blocks: 5,
     };
 
     let persist_ctx = PersistCtx::new().await?;
-
-    info!("Spawning listener...");
     EthereumListener::new(eth_config, persist_ctx.clone())
         .run()
         .await?;
 
-    let deposit_amount = 2e18 as u128;
+    let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
 
-    let tx_hash = contract
+    let _tx_hash = contract
         .registerUser()
-        .value(deposit_amount.try_into()?)
+        .value(deposit_amount)
         .send()
         .await?
         .watch()
         .await?;
-
-    info!("Tx hash: {tx_hash}");
 
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
@@ -59,43 +57,39 @@ async fn register_user_event() -> anyhow::Result<()> {
         .await?
         .expect("User not registered!");
 
-    // Listener should have written the collateral
-    assert!(user.collateral - (deposit_amount as f64) < 0.01f64);
+    assert!((user.collateral - u256_to_f64(deposit_amount)).abs() < 0.01);
 
     Ok(())
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn user_add_deposit_event() -> anyhow::Result<()> {
-    let anvil_port = 4000u16;
+    let anvil_port = 40002u16;
 
     let provider = ProviderBuilder::new()
         .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
     let contract = AuthorityContract::deploy(&provider).await?;
 
     let user_addr = provider.default_signer_address().to_string();
-    info!("Wallet default signer address: {user_addr}");
 
     let eth_config = EthereumConfig {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
-        number_of_blocks_to_confirm: 10u64,
-        number_of_pending_blocks: 5u64,
+        number_of_blocks_to_confirm: 10,
+        number_of_pending_blocks: 5,
     };
 
     let persist_ctx = PersistCtx::new().await?;
-
-    info!("Spawning listener...");
     EthereumListener::new(eth_config, persist_ctx.clone())
         .run()
         .await?;
 
-    let deposit_amount = 2e18 as u128;
+    let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
 
     contract
         .registerUser()
-        .value(deposit_amount.try_into()?)
+        .value(deposit_amount)
         .send()
         .await?
         .watch()
@@ -103,7 +97,7 @@ async fn user_add_deposit_event() -> anyhow::Result<()> {
 
     contract
         .addDepositUser()
-        .value(deposit_amount.try_into()?)
+        .value(deposit_amount)
         .send()
         .await?
         .watch()
@@ -117,42 +111,39 @@ async fn user_add_deposit_event() -> anyhow::Result<()> {
         .await?
         .expect("User not registered!");
 
-    assert!(user.collateral - (deposit_amount as f64 * 2f64) < 0.01f64);
+    assert!((user.collateral - (u256_to_f64(deposit_amount) * 2.0)).abs() < 0.01);
 
     Ok(())
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
-    let anvil_port = 4000u16;
+    let anvil_port = 40003u16;
 
     let provider = ProviderBuilder::new()
         .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
     let contract = AuthorityContract::deploy(&provider).await?;
 
     let user_addr = provider.default_signer_address().to_string();
-    info!("Wallet default signer address: {user_addr}");
 
     let eth_config = EthereumConfig {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
-        number_of_blocks_to_confirm: 10u64,
-        number_of_pending_blocks: 5u64,
+        number_of_blocks_to_confirm: 10,
+        number_of_pending_blocks: 5,
     };
 
     let persist_ctx = PersistCtx::new().await?;
-
-    info!("Spawning listener...");
     EthereumListener::new(eth_config, persist_ctx.clone())
         .run()
         .await?;
 
-    let deposit_amount = 2e18 as u128; // In wei
+    let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
 
     contract
         .registerUser()
-        .value(deposit_amount.try_into()?)
+        .value(deposit_amount)
         .send()
         .await?
         .watch()
@@ -160,27 +151,21 @@ async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
 
     let add_result = contract
         .addDepositUser()
-        .value(1000u128.try_into()?) // In wei
+        .value(U256::from(1000u128))
         .send()
         .await;
 
-    info!("First addDeposit result: {:?}", add_result);
-
     if let Ok(result) = add_result {
-        result.watch().await?;
+        let _ = result.watch().await?;
     }
 
-    info!("Sending second addDeposit request...");
-
-    let add_result = contract
+    let _ = contract
         .addDepositUser()
-        .value(deposit_amount.try_into()?)
+        .value(deposit_amount)
         .send()
         .await?
         .watch()
         .await;
-
-    info!("Second addDeposit result: {:?}", add_result);
 
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
@@ -190,7 +175,7 @@ async fn user_add_deposit_after_contract_error() -> anyhow::Result<()> {
         .await?
         .expect("User not registered!");
 
-    assert!(user.collateral - (deposit_amount as f64 * 2f64) < 0.01f64);
+    assert!((user.collateral - (u256_to_f64(deposit_amount) * 2.0)).abs() < 0.01);
 
     Ok(())
 }

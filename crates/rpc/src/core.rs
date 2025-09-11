@@ -1,9 +1,9 @@
 use crate::RpcResult;
 use crate::common::{TransactionVerificationResult, UserInfo, UserTransactionInfo};
+use alloy_primitives::U256;
 use crypto::bls::BLSCert;
 use jsonrpsee::proc_macros::rpc;
 use serde::{Deserialize, Serialize};
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorePublicParameters {
     pub public_key: Vec<u8>,
@@ -15,7 +15,7 @@ pub trait CoreApi {
     async fn get_public_params(&self) -> RpcResult<CorePublicParameters>;
 
     #[method(name = "addCollateral")]
-    async fn deposit(&self, user_addr: String, amount: f64) -> RpcResult<()>;
+    async fn deposit(&self, user_addr: String, amount: U256) -> RpcResult<()>;
 
     #[method(name = "getUser")]
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>>;
@@ -26,7 +26,7 @@ pub trait CoreApi {
         user_addr: String,
         recipient_addr: String,
         transaction_id: String,
-        amount: f64,
+        amount: U256,
     ) -> RpcResult<BLSCert>;
 
     #[method(name = "getTransactionsByHash")]

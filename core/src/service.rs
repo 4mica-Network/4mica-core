@@ -3,7 +3,7 @@ use crate::ethereum::EthereumListener;
 use crate::persist::repo::{self, SubmitPaymentTxnError};
 use crate::persist::{IntoUserTxInfo, PersistCtx};
 
-use alloy::primitives::B256;
+use alloy::primitives::{B256, U256};
 use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
 };
@@ -12,15 +12,13 @@ use alloy::rpc::types::Transaction;
 use async_trait::async_trait;
 use blockchain::txtools;
 use crypto::bls::BLSCert;
+use entities::user_transaction;
 use log::{error, info};
 use rpc::RpcResult;
 use rpc::common::{
     PaymentGuaranteeClaims, TransactionVerificationResult, UserInfo, UserTransactionInfo,
 };
 use rpc::core::{CoreApiServer, CorePublicParameters};
-
-// NEW: pull SeaORM entities/utilities for ad-hoc query of user transactions
-use entities::user_transaction;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 type EthereumProvider = FillProvider<
@@ -76,11 +74,11 @@ impl CoreService {
         tx: &Transaction,
         sender_address: &str,
         recipient_address: &str,
-        amount: f64,
+        amount: U256,
     ) -> RpcResult<()> {
         let user = txtools::parse_eth_address(sender_address, "user")?;
         let recipient = txtools::parse_eth_address(recipient_address, "recipient")?;
-        let expected = txtools::convert_amount_to_u256(amount)?;
+        let expected = amount;
         txtools::validate_transaction(tx, user, recipient, expected)
     }
 }
@@ -91,7 +89,7 @@ impl CoreApiServer for CoreService {
         Ok(self.public_params.clone())
     }
 
-    async fn deposit(&self, user_addr: String, amount: f64) -> RpcResult<()> {
+    async fn deposit(&self, user_addr: String, amount: U256) -> RpcResult<()> {
         repo::deposit(&self.persist_ctx, user_addr, amount)
             .await
             .map_err(|err| {
@@ -100,7 +98,6 @@ impl CoreApiServer for CoreService {
             })?;
         Ok(())
     }
-
     async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
         let Some(user) = repo::get_user(&self.persist_ctx, user_addr.clone())
             .await
@@ -123,28 +120,40 @@ impl CoreApiServer for CoreService {
             })?;
 
         // Compute reserved (not usable) portion
-        let not_usable = transactions
+        let not_usable: U256 = transactions
             .iter()
             .filter(|tx| !tx.finalized)
-            .map(|tx| tx.amount)
-            .sum::<f64>();
+            .map(|tx| {
+                tx.amount
+                    .parse::<U256>()
+                    .unwrap_or_else(|_| U256::from(0u64))
+            })
+            .fold(U256::from(0u64), |acc, x| acc.saturating_add(x));
+
+        // Parse user collateral
+        let collateral: U256 = user.collateral.parse::<U256>().map_err(|e| {
+            error!("Invalid collateral value: {e}");
+            rpc::internal_error()
+        })?;
+
+        // Available = collateral - reserved (saturating to zero if underflow)
+        let available = collateral.checked_sub(not_usable).unwrap();
 
         Ok(Some(UserInfo {
-            deposit: user.collateral,
-            available_deposit: user.collateral - not_usable,
+            deposit: collateral,
+            available_deposit: available,
             transactions: transactions
                 .into_iter()
                 .map(|tx| tx.into_user_tx_info())
                 .collect(),
         }))
     }
-
     async fn issue_payment_cert(
         &self,
         user_addr: String,
         recipient_addr: String,
         transaction_id: String,
-        amount: f64,
+        amount: U256,
     ) -> RpcResult<BLSCert> {
         info!(
             "Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}"
@@ -194,7 +203,7 @@ impl CoreApiServer for CoreService {
             }
             SubmitPaymentTxnError::UserNotRegistered
             | SubmitPaymentTxnError::NotEnoughDeposit
-            // We should retry it ourselves if there was a conflict!
+            // TODO, what happens in case of conflict?
             | SubmitPaymentTxnError::ConflictingTransactions => {
                 rpc::invalid_params_error(&format!("{err}"))
             }
