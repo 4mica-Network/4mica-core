@@ -25,7 +25,7 @@ fn init() -> anyhow::Result<AppConfig> {
 //
 #[ignore]
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-async fn add_collateral_via_rpc() -> anyhow::Result<()> {
+async fn deposit_via_rpc() -> anyhow::Result<()> {
     let config = init()?;
     let core_addr = {
         let core_service::config::ServerConfig { host, port, .. } = &config.server_config;
@@ -39,7 +39,7 @@ async fn add_collateral_via_rpc() -> anyhow::Result<()> {
 
     // Add collateral over RPC
     core_client
-        .add_collateral(user_addr.clone(), 5.0)
+        .deposit(user_addr.clone(), 5.0)
         .await
         .map_err(anyhow::Error::from)?;
 
@@ -49,7 +49,7 @@ async fn add_collateral_via_rpc() -> anyhow::Result<()> {
         .filter(user::Column::Address.eq(user_addr.clone()))
         .one(&*persist_ctx.db)
         .await?
-        .expect("User not created by add_collateral!");
+        .expect("User not created by deposit!");
 
     assert_eq!(user_row.collateral, 5.0);
 
@@ -61,27 +61,27 @@ async fn add_collateral_via_rpc() -> anyhow::Result<()> {
 //
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-async fn add_collateral_creates_and_increments_user() -> anyhow::Result<()> {
+async fn deposit_creates_and_increments_user() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
     // First call should create the user
-    repo::add_collateral(&ctx, user_addr.clone(), 5.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
     let u1 = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
         .one(&*ctx.db)
         .await?
-        .expect("user missing after add_collateral");
+        .expect("user missing after deposit");
     assert_eq!(u1.collateral, 5.0);
 
     // Second call increments collateral
-    repo::add_collateral(&ctx, user_addr.clone(), 3.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), 3.0).await?;
     let u2 = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
         .one(&*ctx.db)
         .await?
-        .expect("user missing after add_collateral second time");
+        .expect("user missing after deposit second time");
     assert_eq!(u2.collateral, 8.0);
 
     Ok(())
@@ -118,7 +118,7 @@ async fn submit_payment_tx_not_enough_deposit() -> anyhow::Result<()> {
     let user_addr = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
 
-    repo::add_collateral(&ctx, user_addr.clone(), 2.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), 2.0).await?;
 
     let err = repo::submit_payment_transaction(
         &ctx,
@@ -144,7 +144,7 @@ async fn submit_verify_confirm_fail_flow() -> anyhow::Result<()> {
     let user_addr = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
 
-    repo::add_collateral(&ctx, user_addr.clone(), 10.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), 10.0).await?;
 
     // Submit tx A = 3.0
     let tx_a = Uuid::new_v4().to_string();
@@ -223,7 +223,7 @@ async fn multiple_submissions_exactly_use_all_collateral() -> anyhow::Result<()>
     let user_addr = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
 
-    repo::add_collateral(&ctx, user_addr.clone(), 5.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
 
     let tx1 = Uuid::new_v4().to_string();
     let tx2 = Uuid::new_v4().to_string();
