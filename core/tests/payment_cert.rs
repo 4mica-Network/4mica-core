@@ -1,17 +1,14 @@
 use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
 use crypto::bls::BLSCert;
+use entities::user_transaction;
 use log::info;
 use rpc::common::PaymentGuaranteeClaims;
 use rpc::core::CoreApiClient;
 use rpc::proxy::RpcProxy;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use test_log::test;
 use tokio::task::JoinHandle;
-// --- SeaORM bits ---
-use entities::user_transaction;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-
-// NOTE: don't import `test` to avoid ambiguity with built-in #[test]
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv()
         .map_err(|err| {
