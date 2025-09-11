@@ -49,6 +49,7 @@ impl EthereumListener {
 
         let persist_ctx = self.persist_ctx.clone();
         let _: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+            // TODO: Handle failures and try to reconnect.
             let sub = provider.subscribe_logs(&filter).await.map_err(|err| {
                 error!("Failed to subscribe to logs: {err}");
                 err
