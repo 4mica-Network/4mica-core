@@ -30,6 +30,7 @@ sea-orm = { workspace = true }
 entities = { workspace = true }
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+alloy-primitives = { workspace = true }
 [dev-dependencies]
 test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }

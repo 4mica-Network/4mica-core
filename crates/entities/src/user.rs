@@ -7,15 +7,15 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
     pub address: String,
-    #[sea_orm(column_type = "Double")]
-    pub revenue: f64,
+    #[sea_orm(column_type = "Text")]
+    pub revenue: String,
     pub version: i32,
     pub created_at: DateTime,
     pub updated_at: DateTime,
-    #[sea_orm(column_type = "Double")]
-    pub collateral: f64,
-    #[sea_orm(column_type = "Double")]
-    pub locked_collateral: f64,
+    #[sea_orm(column_type = "Text")]
+    pub collateral: String,
+    #[sea_orm(column_type = "Text")]
+    pub locked_collateral: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

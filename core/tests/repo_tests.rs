@@ -1,3 +1,4 @@
+use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
@@ -21,13 +22,13 @@ async fn deposit_zero_does_not_crash() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
-    repo::deposit(&ctx, user_addr.clone(), 0.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(0u64)).await?;
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert_eq!(u.collateral, 0.0);
+    assert_eq!(u.collateral, U256::from(0u64).to_string());
     Ok(())
 }
 
@@ -37,14 +38,14 @@ async fn deposit_large_value() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
-    let big = 1e12;
+    let big = U256::from(1000000000000u64);
     repo::deposit(&ctx, user_addr.clone(), big).await?;
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert_eq!(u.collateral, big);
+    assert_eq!(u.collateral, big.to_string());
     Ok(())
 }
 
@@ -54,15 +55,15 @@ async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
-    repo::deposit(&ctx, user_addr.clone(), 10.0).await?;
-    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert_eq!(u.collateral, 15.0);
+    assert_eq!(u.collateral, U256::from(15u64).to_string());
 
     let events = collateral_event::Entity::find()
         .filter(collateral_event::Column::UserAddress.eq(user_addr))
@@ -82,7 +83,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
-    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     let tx_id = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
@@ -92,7 +93,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
         user_addr.clone(),
         recipient.clone(),
         tx_id.clone(),
-        2.0,
+        U256::from(2u64),
         "c1".to_string(),
     )
     .await?;
@@ -101,7 +102,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
         user_addr.clone(),
         recipient,
         tx_id.clone(),
-        2.0,
+        U256::from(2u64),
         "c1".to_string(),
     )
     .await?;
@@ -120,7 +121,7 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
-    repo::deposit(&ctx, user_addr.clone(), 10.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
 
     let tx_id = Uuid::new_v4().to_string();
     repo::submit_payment_transaction(
@@ -128,20 +129,31 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
         user_addr.clone(),
         recipient,
         tx_id.clone(),
-        3.0,
+        U256::from(3u64),
         "cert".to_string(),
     )
     .await?;
 
-    repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
+    // First fail → collateral should drop
     repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
 
-    let u = user::Entity::find()
+    let u1 = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u1.collateral, U256::from(7u64).to_string());
+
+    // Second fail → no further effect (idempotent)
+    repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
+
+    let u2 = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert!((u.collateral - 7.0).abs() < f64::EPSILON);
+    assert_eq!(u2.collateral, U256::from(7u64).to_string());
+
     Ok(())
 }
 
@@ -152,7 +164,7 @@ async fn transaction_verification_flow() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
-    repo::deposit(&ctx, user_addr.clone(), 10.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
 
     let tx_id = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
@@ -162,7 +174,7 @@ async fn transaction_verification_flow() -> anyhow::Result<()> {
         user_addr.clone(),
         recipient,
         tx_id.clone(),
-        2.0,
+        U256::from(2u64),
         "cert".into(),
     )
     .await?;
@@ -188,9 +200,9 @@ async fn withdrawal_request_cancel_finalize_flow() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
-    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
-    repo::request_withdrawal(&ctx, user_addr.clone(), 12345, 2.5).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 12345, U256::from(2u64)).await?;
     let w1 = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
         .one(&*ctx.db)
@@ -205,7 +217,7 @@ async fn withdrawal_request_cancel_finalize_flow() -> anyhow::Result<()> {
         .unwrap();
     assert_eq!(w2.status, WithdrawalStatus::Cancelled);
 
-    repo::finalize_withdrawal(&ctx, user_addr.clone(), 2.0).await?;
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(2u64)).await?;
     let w3 = withdrawal::Entity::find_by_id(w1.id.clone())
         .one(&*ctx.db)
         .await?
@@ -219,17 +231,17 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
-    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
-    repo::request_withdrawal(&ctx, user_addr.clone(), 123, 5.0).await?;
-    repo::finalize_withdrawal(&ctx, user_addr.clone(), 3.0).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 123, U256::from(5u64)).await?;
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(3u64)).await?;
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert!((u.collateral - 2.0).abs() < f64::EPSILON);
+    assert_eq!(u.collateral, U256::from(2u64).to_string());
     Ok(())
 }
 
@@ -238,7 +250,7 @@ async fn duplicate_certificate_insert_is_noop() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let tab_id = Uuid::new_v4().to_string();
-    let req_id = 99;
+    let req_id = Uuid::new_v4().to_string();
     let now = Utc::now().naive_utc();
 
     let user_addr = Uuid::new_v4().to_string();
@@ -248,9 +260,9 @@ async fn duplicate_certificate_insert_is_noop() -> anyhow::Result<()> {
     for addr in [&user_addr, &from_addr, &to_addr] {
         let u_am = entities::user::ActiveModel {
             address: Set(addr.to_string()),
-            collateral: Set(0.0),
-            locked_collateral: Set(0.0),
-            revenue: Set(0.0),
+            collateral: Set(U256::from(0u64).to_string()),
+            locked_collateral: Set(U256::from(0u64).to_string()),
+            revenue: Set(U256::from(0u64).to_string()),
             version: Set(0),
             created_at: Set(now),
             updated_at: Set(now),
@@ -277,10 +289,10 @@ async fn duplicate_certificate_insert_is_noop() -> anyhow::Result<()> {
     repo::store_certificate(
         &ctx,
         tab_id.clone(),
-        req_id,
+        req_id.clone(),
         from_addr.clone(),
         to_addr.clone(),
-        100.0,
+        U256::from(100u64),
         now,
         "cert".into(),
     )
@@ -288,10 +300,10 @@ async fn duplicate_certificate_insert_is_noop() -> anyhow::Result<()> {
     repo::store_certificate(
         &ctx,
         tab_id.clone(),
-        req_id,
+        req_id.clone(),
         from_addr,
         to_addr,
-        200.0,
+        U256::from(200u64),
         now,
         "cert2".into(),
     )
@@ -303,7 +315,7 @@ async fn duplicate_certificate_insert_is_noop() -> anyhow::Result<()> {
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert_eq!(g.value, 100.0);
+    assert_eq!(g.value, U256::from(100u64).to_string());
     Ok(())
 }
 
@@ -311,7 +323,7 @@ async fn duplicate_certificate_insert_is_noop() -> anyhow::Result<()> {
 async fn get_missing_certificate_returns_none() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let cert = repo::get_certificate(&ctx, "nope".into(), 123).await?;
+    let cert = repo::get_certificate(&ctx, "nope".into(), 123.to_string()).await?;
     assert!(cert.is_none());
     Ok(())
 }
@@ -325,9 +337,9 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     let user_addr = Uuid::new_v4().to_string();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set(0.0),
-        locked_collateral: Set(0.0),
-        revenue: Set(0.0),
+        collateral: Set(U256::from(0u64).to_string()),
+        locked_collateral: Set(U256::from(0u64).to_string()),
+        revenue: Set(U256::from(0u64).to_string()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
@@ -351,7 +363,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
         .exec(&*ctx.db)
         .await?;
 
-    repo::remunerate_recipient(&ctx, tab_id.clone(), 456, 10.0).await?;
+    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(10u64)).await?;
 
     let events = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id))
@@ -359,27 +371,11 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
         .await?;
 
     assert_eq!(events.len(), 1);
-    assert!(events.iter().any(|e| e.amount == 10.0));
-    Ok(())
-}
-
-#[test(tokio::test)]
-async fn deposit_negative_rejected_or_noop() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-
-    // Try depositing a negative amount
-    let res = repo::deposit(&ctx, user_addr.clone(), -5.0).await;
     assert!(
-        res.is_err()
-            || user::Entity::find()
-                .filter(user::Column::Address.eq(user_addr.clone()))
-                .one(&*ctx.db)
-                .await?
-                .is_none()
+        events
+            .iter()
+            .any(|e| e.amount == U256::from(10u64).to_string())
     );
-
     Ok(())
 }
 
@@ -389,19 +385,17 @@ async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
-    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
-    let res = repo::request_withdrawal(&ctx, user_addr.clone(), 1, 10.0).await;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
+    let res = repo::request_withdrawal(&ctx, user_addr.clone(), 1, U256::from(10u64)).await;
 
-    // Should fail gracefully rather than overdrawing
     assert!(res.is_err());
 
-    // Ensure collateral is unchanged
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert_eq!(u.collateral, 5.0);
+    assert_eq!(u.collateral, U256::from(5u64).to_string());
 
     Ok(())
 }
@@ -414,11 +408,11 @@ async fn finalize_withdrawal_twice_is_idempotent() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
-    repo::deposit(&ctx, user_addr.clone(), 5.0).await?;
-    repo::request_withdrawal(&ctx, user_addr.clone(), 1, 5.0).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 1, U256::from(5u64)).await?;
 
-    repo::finalize_withdrawal(&ctx, user_addr.clone(), 5.0).await?;
-    repo::finalize_withdrawal(&ctx, user_addr.clone(), 5.0).await?; // second time
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
@@ -426,7 +420,6 @@ async fn finalize_withdrawal_twice_is_idempotent() -> anyhow::Result<()> {
         .await?
         .unwrap();
 
-    // Status should still be Executed
     assert_eq!(w.status, WithdrawalStatus::Executed);
 
     Ok(())
@@ -441,9 +434,9 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
     let user_addr = Uuid::new_v4().to_string();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set(0.0),
-        locked_collateral: Set(0.0),
-        revenue: Set(0.0),
+        collateral: Set(U256::from(0u64).to_string()),
+        locked_collateral: Set(U256::from(0u64).to_string()),
+        revenue: Set(U256::from(0u64).to_string()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
@@ -467,38 +460,16 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         .exec(&*ctx.db)
         .await?;
 
-    repo::remunerate_recipient(&ctx, tab_id.clone(), 1, 10.0).await?;
-    repo::remunerate_recipient(&ctx, tab_id.clone(), 1, 20.0).await?;
+    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(10u64)).await?;
+    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(20u64)).await?;
 
     let events = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
         .all(&*ctx.db)
         .await?;
 
-    // Only one event for the same (tab_id, req_id)
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].amount, 10.0);
-
-    Ok(())
-}
-
-#[test(tokio::test)]
-async fn deposit_tiny_amount_preserves_precision() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-
-    let tiny = 1e-12;
-    repo::deposit(&ctx, user_addr.clone(), tiny).await?;
-
-    let u = user::Entity::find()
-        .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
-        .await?
-        .unwrap();
-
-    // Collateral should not collapse to 0.0 because of precision issues
-    assert!(u.collateral > 0.0);
+    assert_eq!(events[0].amount, U256::from(10u64).to_string());
 
     Ok(())
 }

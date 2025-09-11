@@ -1,3 +1,4 @@
+use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5,7 +6,7 @@ pub struct PaymentGuaranteeClaims {
     pub user_addr: String,
     pub recipient_addr: String,
     pub tx_hash: String,
-    pub amount: f64,
+    pub amount: U256,
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
@@ -29,7 +30,7 @@ pub struct UserTransactionInfo {
     pub user_addr: String,
     pub recipient_addr: String,
     pub tx_hash: String,
-    pub amount: f64,
+    pub amount: U256,
     pub verified: bool,
     pub finalized: bool,
     pub failed: bool,
@@ -39,8 +40,8 @@ pub struct UserTransactionInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInfo {
-    pub deposit: f64,
-    pub available_deposit: f64,
+    pub deposit: U256,
+    pub available_deposit: U256,
     pub transactions: Vec<UserTransactionInfo>,
 }
 

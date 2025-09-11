@@ -10,8 +10,8 @@ pub struct Model {
     pub id: String,
     #[sea_orm(column_type = "Text")]
     pub user_address: String,
-    #[sea_orm(column_type = "Double")]
-    pub amount: f64,
+    #[sea_orm(column_type = "Text")]
+    pub amount: String,
     pub ts: DateTime,
     pub status: WithdrawalStatus,
     pub created_at: DateTime,

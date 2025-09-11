@@ -12,3 +12,4 @@ path = "src/mod.rs"
 serde = { version = "1.0.160", features = ["derive"] }
 async-std = { version = "1", features = ["attributes", "tokio1"] }
 sea-orm = { workspace = true }
+alloy-primitives = { workspace = true }
