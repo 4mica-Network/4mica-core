@@ -473,3 +473,377 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test(tokio::test)]
+async fn deposit_overflow_protection() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), U256::MAX).await?;
+    // second deposit should overflow and error
+    let res = repo::deposit(&ctx, user_addr.clone(), U256::from(1u8)).await;
+    assert!(res.is_err());
+
+    // value should remain U256::MAX
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, U256::MAX.to_string());
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn deposit_fails_on_invalid_collateral_in_db() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let now = Utc::now().naive_utc();
+    let user_addr = Uuid::new_v4().to_string();
+
+    // Manually insert broken collateral
+    let am = entities::user::ActiveModel {
+        address: Set(user_addr.clone()),
+        collateral: Set("not_a_number".to_string()),
+        locked_collateral: Set("0".to_string()),
+        revenue: Set("0".to_string()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    entities::user::Entity::insert(am).exec(&*ctx.db).await?;
+
+    // Any deposit should now fail when parsing collateral
+    let res = repo::deposit(&ctx, user_addr.clone(), U256::from(1u64)).await;
+    assert!(res.is_err());
+    Ok(())
+}
+
+//
+// ────────────────────── WITHDRAWALS ──────────────────────
+//
+
+#[test(tokio::test)]
+async fn finalize_without_any_request_is_noop() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+    // No request was created; finalize should be a no-op
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(3u64)).await?;
+
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, U256::from(10u64).to_string());
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> {
+    use entities::sea_orm_active_enums::WithdrawalStatus;
+
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), U256::from(6u64)).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 111, U256::from(5u64)).await?;
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
+
+    // Calling cancel afterward should be a no-op on Executed withdrawals
+    repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
+
+    let w = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(w.status, WithdrawalStatus::Executed);
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
+    use entities::sea_orm_active_enums::WithdrawalStatus;
+
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), U256::from(8u64)).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 222, U256::from(3u64)).await?;
+
+    repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
+
+    let w = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(w.status, WithdrawalStatus::Cancelled);
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn finalize_withdrawal_underflow_errors() -> anyhow::Result<()> {
+    // We will deliberately pass a larger amount to finalize than the user's collateral
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    // User has 3, request a valid 2, but finalize with 5 to trigger underflow
+    repo::deposit(&ctx, user_addr.clone(), U256::from(3u64)).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 333, U256::from(2u64)).await?;
+
+    let res = repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await;
+    assert!(res.is_err());
+
+    // Ensure collateral unchanged on error
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, U256::from(3u64).to_string());
+    Ok(())
+}
+
+//
+// ────────────────────── TRANSACTIONS ──────────────────────
+//
+
+#[test(tokio::test)]
+async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+    let recipient = Uuid::new_v4().to_string();
+    repo::deposit(&ctx, user_addr.clone(), U256::from(9u64)).await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+    for _ in 0..3 {
+        // same tx inserted multiple times must stay single-row
+        let _ = repo::submit_payment_transaction(
+            &ctx,
+            user_addr.clone(),
+            recipient.clone(),
+            tx_id.clone(),
+            U256::from(2u64),
+            "cert".into(),
+        )
+        .await;
+    }
+
+    let txs = user_transaction::Entity::find()
+        .filter(user_transaction::Column::TxId.eq(tx_id))
+        .all(&*ctx.db)
+        .await?;
+    assert_eq!(txs.len(), 1);
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn fail_verified_transaction_updates_once() -> anyhow::Result<()> {
+    use rpc::common::TransactionVerificationResult;
+
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+    let recipient = Uuid::new_v4().to_string();
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+
+    repo::submit_payment_transaction(
+        &ctx,
+        user_addr.clone(),
+        recipient,
+        tx_id.clone(),
+        U256::from(3u64),
+        "cert".into(),
+    )
+    .await?;
+    // verify
+    let res = repo::verify_transaction(&ctx, tx_id.clone()).await?;
+    assert!(matches!(
+        res,
+        TransactionVerificationResult::Verified | TransactionVerificationResult::AlreadyVerified
+    ));
+
+    // now fail: should mark failed (finalized) and subtract once
+    repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
+    // failing again should be no-op
+    repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
+
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, U256::from(7u64).to_string());
+    Ok(())
+}
+
+//
+// ────────────────────── CERTIFICATES & REMUNERATION ──────────────────────
+//
+
+#[test(tokio::test)]
+async fn store_certificate_autocreates_users() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let now = Utc::now().naive_utc();
+
+    // Tab & primary user
+    let user_addr = Uuid::new_v4().to_string();
+    let tab_id = Uuid::new_v4().to_string();
+    let u_am = entities::user::ActiveModel {
+        address: Set(user_addr.clone()),
+        collateral: Set("0".into()),
+        locked_collateral: Set("0".into()),
+        revenue: Set("0".into()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    entities::user::Entity::insert(u_am).exec(&*ctx.db).await?;
+    let tab_am = entities::tabs::ActiveModel {
+        id: Set(tab_id.clone()),
+        user_address: Set(user_addr.clone()),
+        server_address: Set(user_addr.clone()),
+        start_ts: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+        status: Set(entities::sea_orm_active_enums::TabStatus::Open),
+        settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ..Default::default()
+    };
+    entities::tabs::Entity::insert(tab_am)
+        .exec(&*ctx.db)
+        .await?;
+
+    // Unknown addresses that should be auto-created
+    let from_addr = Uuid::new_v4().to_string();
+    let to_addr = Uuid::new_v4().to_string();
+
+    repo::store_certificate(
+        &ctx,
+        tab_id.clone(),
+        Uuid::new_v4().to_string(),
+        from_addr.clone(),
+        to_addr.clone(),
+        U256::from(42u64),
+        now,
+        "cert".into(),
+    )
+    .await?;
+
+    // from & to must exist now
+    let from = user::Entity::find()
+        .filter(user::Column::Address.eq(from_addr))
+        .one(&*ctx.db)
+        .await?;
+    let to = user::Entity::find()
+        .filter(user::Column::Address.eq(to_addr))
+        .one(&*ctx.db)
+        .await?;
+    assert!(from.is_some() && to.is_some());
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn remunerate_without_tab_errors() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let res = repo::remunerate_recipient(&ctx, "missing_tab".into(), U256::from(5u64)).await;
+    assert!(res.is_err());
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let now = Utc::now().naive_utc();
+
+    let user_addr = Uuid::new_v4().to_string();
+    let u_am = entities::user::ActiveModel {
+        address: Set(user_addr.clone()),
+        collateral: Set("0".into()),
+        locked_collateral: Set("0".into()),
+        revenue: Set("0".into()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    entities::user::Entity::insert(u_am).exec(&*ctx.db).await?;
+
+    let tab_id = Uuid::new_v4().to_string();
+    let tab_am = entities::tabs::ActiveModel {
+        id: Set(tab_id.clone()),
+        user_address: Set(user_addr.clone()),
+        server_address: Set(user_addr.clone()),
+        start_ts: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+        status: Set(entities::sea_orm_active_enums::TabStatus::Open),
+        settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ..Default::default()
+    };
+    entities::tabs::Entity::insert(tab_am)
+        .exec(&*ctx.db)
+        .await?;
+
+    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(0u64)).await?;
+    // duplicate remuneration should still be blocked by idempotency on (tab_id, Remunerate)
+    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(0u64)).await?;
+
+    let events = collateral_event::Entity::find()
+        .filter(collateral_event::Column::TabId.eq(tab_id))
+        .all(&*ctx.db)
+        .await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, CollateralEventType::Remunerate);
+    assert_eq!(events[0].amount, U256::from(0u64).to_string());
+    Ok(())
+}
+
+//
+// ────────────────────── ADVERSARIAL INPUT SANITY ──────────────────────
+//
+
+#[test(tokio::test)]
+async fn weird_identifiers_do_not_crash() -> anyhow::Result<()> {
+    // ORM should parameterize these safely; we just ensure no panics/errors.
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let strange_user = "'; DROP TABLE users; --".to_string();
+    let strange_recipient = "0xdeadbeef::weird".to_string();
+
+    // Creating a user via deposit should succeed with strange address string
+    let _ = repo::deposit(&ctx, strange_user.clone(), U256::from(1u64)).await?;
+
+    // Submitting a tx with weird strings should either succeed or give a typed error, but not crash
+    let _ = repo::submit_payment_transaction(
+        &ctx,
+        strange_user.clone(),
+        strange_recipient.clone(),
+        "tx::id::odd".into(),
+        U256::from(1u64),
+        "cert".into(),
+    )
+    .await;
+
+    Ok(())
+}
