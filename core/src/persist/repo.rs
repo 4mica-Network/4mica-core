@@ -57,10 +57,10 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: U256) -> anyho
                     user.collateral = new_collateral.to_string();
                     user.updated_at = now;
 
-                    let mut am = user.into_active_model();
-                    am.collateral = Set(new_collateral.to_string());
-                    am.updated_at = Set(now);
-                    am.update(txn).await?;
+                    let mut active_model = user.into_active_model();
+                    active_model.collateral = Set(new_collateral.to_string());
+                    active_model.updated_at = Set(now);
+                    active_model.update(txn).await?;
                 } else {
                     // First time → insert
                     let insert_user = user::ActiveModel {
@@ -130,7 +130,7 @@ pub async fn request_withdrawal(
         .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {}", when))?
         .naive_utc();
 
-    let am = withdrawal::ActiveModel {
+    let active_model = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
         user_address: Set(user_addr),
         requested_amount: Set(amount.to_string()),
@@ -140,7 +140,9 @@ pub async fn request_withdrawal(
         created_at: Set(now),
         updated_at: Set(now),
     };
-    withdrawal::Entity::insert(am).exec(&*ctx.db).await?;
+    withdrawal::Entity::insert(active_model)
+        .exec(&*ctx.db)
+        .await?;
     Ok(())
 }
 
@@ -157,10 +159,10 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
         }
         1 => {
             let rec = records.into_iter().next().unwrap();
-            let mut am = rec.into_active_model();
-            am.status = Set(WithdrawalStatus::Cancelled);
-            am.updated_at = Set(Utc::now().naive_utc());
-            am.update(&*ctx.db).await?;
+            let mut active_model = rec.into_active_model();
+            active_model.status = Set(WithdrawalStatus::Cancelled);
+            active_model.updated_at = Set(Utc::now().naive_utc());
+            active_model.update(&*ctx.db).await?;
         }
         n => {
             // log an error if more than one record is found
@@ -188,7 +190,7 @@ pub async fn finalize_withdrawal(
                     .await?
                     .ok_or(sea_orm::DbErr::Custom("user not found".into()))?;
 
-                if let Some(w) = withdrawal::Entity::find()
+                if let Some(withdrawal) = withdrawal::Entity::find()
                     .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
                     .filter(
                         withdrawal::Column::Status
@@ -211,11 +213,11 @@ pub async fn finalize_withdrawal(
                     am_user.update(txn).await?;
 
                     // record executed amount
-                    let mut am_w = w.into_active_model();
-                    am_w.status = Set(WithdrawalStatus::Executed);
-                    am_w.executed_amount = Set(executed_amount.to_string());
-                    am_w.updated_at = Set(Utc::now().naive_utc());
-                    am_w.update(txn).await?;
+                    let mut active_model_withdrawal = withdrawal.into_active_model();
+                    active_model_withdrawal.status = Set(WithdrawalStatus::Executed);
+                    active_model_withdrawal.executed_amount = Set(executed_amount.to_string());
+                    active_model_withdrawal.updated_at = Set(Utc::now().naive_utc());
+                    active_model_withdrawal.update(txn).await?;
                 }
 
                 Ok::<_, sea_orm::DbErr>(())
@@ -286,7 +288,7 @@ pub async fn submit_payment_transaction(
                 }
                 // Upsert tx row
                 let now = Utc::now().naive_utc();
-                let tx_am = user_transaction::ActiveModel {
+                let tx_active_model = user_transaction::ActiveModel {
                     tx_id: Set(transaction_id.clone()),
                     user_address: Set(user_addr.clone()),
                     recipient_address: Set(recipient_address),
@@ -300,7 +302,7 @@ pub async fn submit_payment_transaction(
                 };
 
                 // Important: use exec_without_returning so duplicate inserts are no-op
-                let _ = user_transaction::Entity::insert(tx_am)
+                let _ = user_transaction::Entity::insert(tx_active_model)
                     .on_conflict(
                         OnConflict::column(user_transaction::Column::TxId)
                             .do_nothing()
@@ -358,11 +360,11 @@ pub async fn fail_transaction(
                 }
 
                 // mark as failed + finalized
-                let mut am = tx_row.clone().into_active_model();
-                am.finalized = Set(true);
-                am.failed = Set(true);
-                am.updated_at = Set(Utc::now().naive_utc());
-                am.update(txn).await?;
+                let mut active_model = tx_row.clone().into_active_model();
+                active_model.finalized = Set(true);
+                active_model.failed = Set(true);
+                active_model.updated_at = Set(Utc::now().naive_utc());
+                active_model.update(txn).await?;
 
                 // subtract collateral only once
                 let user_row = user::Entity::find()
@@ -380,10 +382,10 @@ pub async fn fail_transaction(
                     "underflow on fail_transaction".into(),
                 ))?;
 
-                let mut user_am = user_row.into_active_model();
-                user_am.collateral = Set(new_collateral.to_string());
-                user_am.updated_at = Set(Utc::now().naive_utc());
-                user_am.update(txn).await?;
+                let mut user_active_model = user_row.into_active_model();
+                user_active_model.collateral = Set(new_collateral.to_string());
+                user_active_model.updated_at = Set(Utc::now().naive_utc());
+                user_active_model.update(txn).await?;
 
                 Ok::<_, sea_orm::DbErr>(())
             })
@@ -413,10 +415,10 @@ pub async fn verify_transaction(
                     return Ok(TransactionVerificationResult::AlreadyVerified);
                 }
 
-                let mut am = tx.into_active_model();
-                am.verified = Set(true);
-                am.updated_at = Set(Utc::now().naive_utc());
-                am.update(txn).await?;
+                let mut active_model = tx.into_active_model();
+                active_model.verified = Set(true);
+                active_model.updated_at = Set(Utc::now().naive_utc());
+                active_model.update(txn).await?;
 
                 Ok(TransactionVerificationResult::Verified)
             })
@@ -486,7 +488,7 @@ pub async fn store_certificate(
             .await;
     }
 
-    let am = guarantee::ActiveModel {
+    let active_model = guarantee::ActiveModel {
         tab_id: Set(tab_id),
         req_id: Set(req_id),
         from_address: Set(from_addr),
@@ -499,7 +501,7 @@ pub async fn store_certificate(
     };
 
     // Use exec_without_returning to avoid "RecordNotInserted"
-    let _ = guarantee::Entity::insert(am)
+    let _ = guarantee::Entity::insert(active_model)
         .on_conflict(
             OnConflict::columns([guarantee::Column::TabId, guarantee::Column::ReqId])
                 .do_nothing()
@@ -566,10 +568,10 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
                     // subtract only if there is enough; otherwise leave as is
                     if current >= amount {
                         let new_collateral = current - amount;
-                        let mut user_am = user_row.into_active_model();
-                        user_am.collateral = Set(new_collateral.to_string());
-                        user_am.updated_at = Set(now);
-                        user_am.update(txn).await?;
+                        let mut user_active_model = user_row.into_active_model();
+                        user_active_model.collateral = Set(new_collateral.to_string());
+                        user_active_model.updated_at = Set(now);
+                        user_active_model.update(txn).await?;
                     }
                 }
 
