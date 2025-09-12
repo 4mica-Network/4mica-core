@@ -30,8 +30,8 @@ pub enum SettlementStatus {
     Settled,
     #[sea_orm(string_value = "FAILED")]
     Failed,
-    #[sea_orm(string_value = "MADEWHOLE")]
-    Madewhole,
+    #[sea_orm(string_value = "REMUNERATED")]
+    Remunerated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
