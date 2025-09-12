@@ -33,14 +33,13 @@ impl IntoUserTxInfo for user_transaction::Model {
     fn into_user_tx_info(self) -> UserTransactionInfo {
         let created_at_ms = self.created_at.and_utc().timestamp_millis();
         UserTransactionInfo {
-            user_addr: self.user_address,
-            recipient_addr: self.recipient_address,
+            user_address: self.user_address,
+            recipient_address: self.recipient_address,
             tx_hash: self.tx_id,
             amount: self.amount.parse().expect("Failed to parse amount as U256"),
             verified: self.verified,
             finalized: self.finalized,
             failed: self.failed,
-            cert: self.cert,
             created_at: created_at_ms,
         }
     }
