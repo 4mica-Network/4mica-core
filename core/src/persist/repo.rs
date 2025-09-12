@@ -257,7 +257,7 @@ pub async fn submit_payment_transaction(
                     .filter(user_transaction::Column::TxId.ne(transaction_id.clone()))
                     .all(txn)
                     .await?;
-                let not_usable_deposit: U256 = pending
+                let locked_deposit: U256 = pending
                     .iter()
                     .map(|tx| U256::from_str(&tx.amount).unwrap_or(U256::from(0)))
                     .fold(U256::from(0), |acc, x| acc.saturating_add(x));
@@ -267,7 +267,7 @@ pub async fn submit_payment_transaction(
                         "invalid collateral value".to_string(),
                     ))
                 })?;
-                if not_usable_deposit.saturating_add(amount) > user_collateral {
+                if locked_deposit.saturating_add(amount) > user_collateral {
                     return Err(SubmitPaymentTxnError::NotEnoughDeposit);
                 }
                 // Upsert tx row
