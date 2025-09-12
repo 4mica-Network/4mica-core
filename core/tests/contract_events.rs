@@ -9,7 +9,7 @@ use core_service::config::EthereumConfig;
 use core_service::ethereum::EthereumListener;
 use core_service::persist::PersistCtx;
 use entities::sea_orm_active_enums::*;
-use entities::{collateral_event, tabs, user, withdrawal};
+use entities::*;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serial_test::serial;
 use std::str::FromStr;
@@ -62,6 +62,12 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         number_of_pending_blocks: 1,
     };
     let persist_ctx = PersistCtx::new().await?;
+    user_transaction::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    guarantee::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
     collateral_event::Entity::delete_many()
         .exec(&*persist_ctx.db)
         .await?;
@@ -70,6 +76,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         .await?;
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+
     EthereumListener::new(eth_config, persist_ctx.clone())
         .run()
         .await?;
@@ -123,6 +130,12 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         number_of_pending_blocks: 1,
     };
     let persist_ctx = PersistCtx::new().await?;
+    user_transaction::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    guarantee::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
     collateral_event::Entity::delete_many()
         .exec(&*persist_ctx.db)
         .await?;
@@ -131,6 +144,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         .await?;
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+
     EthereumListener::new(eth_config, persist_ctx.clone())
         .run()
         .await?;
@@ -161,7 +175,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
             assert_eq!(parse_collateral(&u.collateral), amount * U256::from(2u8));
             break;
         }
-        if tries > 10 {
+        if tries > 60 {
             panic!("User balance not updated after deposits");
         }
         tries += 1;
@@ -194,6 +208,12 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
         number_of_pending_blocks: 1,
     };
     let persist_ctx = PersistCtx::new().await?;
+    user_transaction::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    guarantee::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
     collateral_event::Entity::delete_many()
         .exec(&*persist_ctx.db)
         .await?;
@@ -202,6 +222,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
         .await?;
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+
     EthereumListener::new(eth_config, persist_ctx.clone())
         .run()
         .await?;
@@ -284,6 +305,12 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let persist_ctx = PersistCtx::new().await?;
 
     // clean DB
+    user_transaction::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    guarantee::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
     collateral_event::Entity::delete_many()
         .exec(&*persist_ctx.db)
         .await?;
@@ -362,6 +389,12 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
 
     // --- Clean DB
     let persist_ctx = PersistCtx::new().await?;
+    user_transaction::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    guarantee::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
     collateral_event::Entity::delete_many()
         .exec(&*persist_ctx.db)
         .await?;

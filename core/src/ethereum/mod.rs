@@ -31,23 +31,22 @@ impl EthereumListener {
     pub async fn run(&self) -> anyhow::Result<()> {
         let ws = WsConnect::new(&self.config.ws_rpc_url);
         let provider = ProviderBuilder::new().connect_ws(ws).await?;
-
+        let events_signatures = vec![
+            CollateralDeposited::SIGNATURE,
+            RecipientRemunerated::SIGNATURE,
+            CollateralWithdrawn::SIGNATURE,
+            WithdrawalRequested::SIGNATURE,
+            WithdrawalCanceled::SIGNATURE,
+            WithdrawalGracePeriodUpdated::SIGNATURE,
+            RemunerationGracePeriodUpdated::SIGNATURE,
+            TabExpirationTimeUpdated::SIGNATURE,
+            SynchronizationDelayUpdated::SIGNATURE,
+            RecordedPayment::SIGNATURE,
+        ];
         let contract_address: Address = self.config.contract_address.parse()?;
         let filter = Filter::new()
             .address(contract_address)
-            .events(vec![
-                UserRegistered::SIGNATURE,
-                CollateralDeposited::SIGNATURE,
-                RecipientRemunerated::SIGNATURE,
-                CollateralWithdrawn::SIGNATURE,
-                WithdrawalRequested::SIGNATURE,
-                WithdrawalCanceled::SIGNATURE,
-                WithdrawalGracePeriodUpdated::SIGNATURE,
-                RemunerationGracePeriodUpdated::SIGNATURE,
-                TabExpirationTimeUpdated::SIGNATURE,
-                SynchronizationDelayUpdated::SIGNATURE,
-                RecordedPayment::SIGNATURE,
-            ])
+            .events(events_signatures)
             .from_block(BlockNumberOrTag::Latest);
 
         let persist_ctx = self.persist_ctx.clone();
@@ -62,9 +61,6 @@ impl EthereumListener {
 
             while let Some(log) = stream.next().await {
                 match log.topic0() {
-                    Some(&UserRegistered::SIGNATURE_HASH) => {
-                        Self::handle_user_registered(&persist_ctx, log).await
-                    }
                     Some(&CollateralDeposited::SIGNATURE_HASH) => {
                         Self::handle_collateral_deposited(&persist_ctx, log).await
                     }
@@ -104,24 +100,6 @@ impl EthereumListener {
         });
 
         Ok(())
-    }
-
-    async fn handle_user_registered(persist_ctx: &PersistCtx, log: alloy::rpc::types::Log) {
-        let Ok(log) = log.log_decode::<UserRegistered>().map_err(|err| {
-            error!("[EthereumListener] Error decoding UserRegistered: {err}");
-        }) else {
-            return;
-        };
-
-        let UserRegistered {
-            user,
-            initialCollateral,
-        } = log.data();
-        info!("[EthereumListener] UserRegistered: {user:?}, initial={initialCollateral}");
-
-        if let Err(err) = repo::deposit(persist_ctx, user.to_string(), *initialCollateral).await {
-            error!("Failed to deposit (UserRegistered): {err}");
-        }
     }
 
     async fn handle_collateral_deposited(persist_ctx: &PersistCtx, log: alloy::rpc::types::Log) {
