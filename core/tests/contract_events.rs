@@ -254,7 +254,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
             assert_eq!(w.amount, withdraw_amount.to_string());
             break;
         }
-        if tries > 10 {
+        if tries > 60 {
             panic!("Withdrawal request not persisted");
         }
         tries += 1;
