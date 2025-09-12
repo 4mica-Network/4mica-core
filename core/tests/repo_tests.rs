@@ -936,3 +936,41 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
 
     Ok(())
 }
+
+#[test(tokio::test)]
+async fn submit_payment_transaction_respects_pending_withdrawals() -> anyhow::Result<()> {
+    use core_service::persist::repo::SubmitPaymentTxnError;
+
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+    let recipient = Uuid::new_v4().to_string();
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+    repo::request_withdrawal(&ctx, user_addr.clone(), 12345, U256::from(6u64)).await?;
+    let err = repo::submit_payment_transaction(
+        &ctx,
+        user_addr.clone(),
+        recipient.clone(),
+        Uuid::new_v4().to_string(),
+        U256::from(5u64),
+        "cert".into(),
+    )
+    .await
+    .expect_err("tx should be rejected due to insufficient free collateral");
+
+    match err {
+        SubmitPaymentTxnError::NotEnoughDeposit => (),
+        other => panic!("unexpected error: {:?}", other),
+    }
+    repo::submit_payment_transaction(
+        &ctx,
+        user_addr.clone(),
+        recipient,
+        Uuid::new_v4().to_string(),
+        U256::from(4u64),
+        "cert".into(),
+    )
+    .await?;
+
+    Ok(())
+}

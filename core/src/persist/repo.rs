@@ -269,15 +269,32 @@ pub async fn submit_payment_transaction(
                 };
 
                 // Reserve deposit for other unfinalized txs
-                let pending = user_transaction::Entity::find()
+                let pending_txs = user_transaction::Entity::find()
                     .filter(user_transaction::Column::UserAddress.eq(user_address.clone()))
                     .filter(user_transaction::Column::Finalized.eq(false))
                     .filter(user_transaction::Column::TxId.ne(transaction_id.clone()))
                     .all(txn)
                     .await?;
-                let locked_deposit: U256 = pending
+                let locked_deposit: U256 = pending_txs
                     .iter()
                     .map(|tx| U256::from_str(&tx.amount).unwrap_or(U256::from(0)))
+                    .fold(U256::from(0), |acc, x| acc.saturating_add(x));
+
+                // 🔒 Also reserve for any pending withdrawals
+                let pending_withdrawals = withdrawal::Entity::find()
+                    .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
+                    .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
+                    .all(txn)
+                    .await?;
+
+                // lock the remaining (requested - executed) for each pending withdrawal
+                let locked_withdrawals: U256 = pending_withdrawals
+                    .iter()
+                    .map(|w| {
+                        let req = U256::from_str(&w.requested_amount).unwrap_or(U256::from(0));
+                        let exe = U256::from_str(&w.executed_amount).unwrap_or(U256::from(0));
+                        req.saturating_sub(exe)
+                    })
                     .fold(U256::from(0), |acc, x| acc.saturating_add(x));
 
                 let user_collateral = U256::from_str(&user_row.collateral).map_err(|_| {
@@ -285,9 +302,14 @@ pub async fn submit_payment_transaction(
                         "invalid collateral value".to_string(),
                     ))
                 })?;
-                if locked_deposit.saturating_add(amount) > user_collateral {
+
+                // total locked = other in-flight txs + pending withdrawals
+                let locked_total = locked_deposit.saturating_add(locked_withdrawals);
+
+                if locked_total.saturating_add(amount) > user_collateral {
                     return Err(SubmitPaymentTxnError::NotEnoughDeposit);
                 }
+
                 let now = Utc::now().naive_utc();
                 let tx_active_model = user_transaction::ActiveModel {
                     tx_id: Set(transaction_id.clone()),
