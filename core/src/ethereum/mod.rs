@@ -123,28 +123,13 @@ impl EthereumListener {
         }) else {
             return;
         };
-
         let RecipientRemunerated { tab_id, amount } = log.data();
         info!("[EthereumListener] RecipientRemunerated: tab={tab_id}, amount={amount}");
 
         let tab_id_str = tab_id.to_string();
-        let _user_addr = match tabs::Entity::find_by_id(tab_id_str.clone())
-            .one(&*persist_ctx.db)
-            .await
-        {
-            Ok(Some(tab)) => tab.user_address,
-            Ok(None) => {
-                warn!(
-                    "[EthereumListener] Missing Tab {tab_id_str} for RecipientRemunerated; skipping"
-                );
-                return;
-            }
-            Err(err) => {
-                error!("[EthereumListener] DB error loading Tab {tab_id_str}: {err}");
-                return;
-            }
+        let Some(_user_addr) = Self::find_user_address(persist_ctx, &tab_id_str).await else {
+            return;
         };
-
         if let Err(err) = repo::remunerate_recipient(persist_ctx, tab_id.to_string(), *amount).await
         {
             error!("Failed to persist RecipientRemunerated: {err}");
@@ -263,5 +248,22 @@ impl EthereumListener {
         let RecordedPayment { tab_id, amount } = log.data();
         info!("[EthereumListener] RecordedPayment: tab={tab_id}, amount={amount}");
         // TODO: persist if desired
+    }
+
+    async fn find_user_address(persist_ctx: &PersistCtx, tab_id: &str) -> Option<String> {
+        match tabs::Entity::find_by_id(tab_id.to_owned())
+            .one(&*persist_ctx.db)
+            .await
+        {
+            Ok(Some(tab)) => Some(tab.user_address),
+            Ok(None) => {
+                warn!("[EthereumListener] Missing Tab {tab_id} for RecipientRemunerated; skipping");
+                None
+            }
+            Err(err) => {
+                error!("[EthereumListener] DB error loading Tab {tab_id}: {err}");
+                None
+            }
+        }
     }
 }
