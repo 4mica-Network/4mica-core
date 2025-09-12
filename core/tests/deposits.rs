@@ -108,7 +108,6 @@ async fn deposit_fails_on_invalid_collateral_in_db() -> anyhow::Result<()> {
         address: Set(user_addr.clone()),
         collateral: Set("not_a_number".to_string()),
         locked_collateral: Set("0".to_string()),
-        revenue: Set("0".to_string()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),

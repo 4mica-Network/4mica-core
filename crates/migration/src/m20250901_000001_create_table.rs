@@ -47,7 +47,6 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(user::Column::Revenue).string().not_null())
                     .col(ColumnDef::new(user::Column::Version).integer().not_null())
                     .col(
                         ColumnDef::new(user::Column::CreatedAt)

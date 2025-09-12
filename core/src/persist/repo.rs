@@ -67,7 +67,6 @@ pub async fn deposit(ctx: &PersistCtx, user_address: String, amount: U256) -> an
                     // First time → insert
                     let insert_user = user::ActiveModel {
                         address: Set(user_address.clone()),
-                        revenue: Set(U256::from(0).to_string()),
                         version: Set(0),
                         created_at: Set(now),
                         updated_at: Set(now),
@@ -389,7 +388,6 @@ pub async fn store_guarantee(
     for addr in [&from_addr, &to_addr] {
         let insert_user = user::ActiveModel {
             address: Set(addr.clone()),
-            revenue: Set(value.to_string()),
             version: Set(0),
             created_at: Set(now),
             updated_at: Set(now),
