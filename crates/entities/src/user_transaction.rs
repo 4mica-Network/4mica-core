@@ -14,7 +14,6 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub amount: String,
     #[sea_orm(column_type = "Text", nullable)]
-    pub cert: Option<String>,
     pub verified: bool,
     pub finalized: bool,
     pub failed: bool,

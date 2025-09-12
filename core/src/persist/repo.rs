@@ -8,9 +8,8 @@ use entities::{
     user, user_transaction, withdrawal,
 };
 use log::error;
-use rpc::common::TransactionVerificationResult;
 use sea_orm::QueryOrder;
-use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
 };
@@ -254,110 +253,39 @@ pub async fn submit_payment_transaction(
     recipient_address: String,
     transaction_id: String,
     amount: U256,
-    cert: String,
-) -> Result<(), SubmitPaymentTxnError> {
-    ctx.db
-        .transaction::<_, (), SubmitPaymentTxnError>(|txn| {
-            Box::pin(async move {
-                // Ensure the user exists
-                let Some(user_row) = user::Entity::find()
-                    .filter(user::Column::Address.eq(user_address.clone()))
-                    .one(txn)
-                    .await?
-                else {
-                    return Err(SubmitPaymentTxnError::UserNotRegistered);
-                };
+) -> Result<(), sea_orm::DbErr> {
+    let now = Utc::now().naive_utc();
 
-                // Reserve deposit for other unfinalized txs
-                let pending_txs = user_transaction::Entity::find()
-                    .filter(user_transaction::Column::UserAddress.eq(user_address.clone()))
-                    .filter(user_transaction::Column::Finalized.eq(false))
-                    .filter(user_transaction::Column::TxId.ne(transaction_id.clone()))
-                    .all(txn)
-                    .await?;
-                let locked_deposit: U256 = pending_txs
-                    .iter()
-                    .map(|tx| U256::from_str(&tx.amount).unwrap_or(U256::from(0)))
-                    .fold(U256::from(0), |acc, x| acc.saturating_add(x));
+    // Optional: if you still want to ensure user row exists.
+    let Some(_) = user::Entity::find()
+        .filter(user::Column::Address.eq(user_address.clone()))
+        .one(&*ctx.db)
+        .await?
+    else {
+        return Err(sea_orm::DbErr::Custom("user not found".into()));
+    };
 
-                // 🔒 Also reserve for any pending withdrawals
-                let pending_withdrawals = withdrawal::Entity::find()
-                    .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
-                    .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
-                    .all(txn)
-                    .await?;
+    let tx = user_transaction::ActiveModel {
+        tx_id: Set(transaction_id),
+        user_address: Set(user_address),
+        recipient_address: Set(recipient_address),
+        amount: Set(amount.to_string()),
+        verified: Set(false),
+        finalized: Set(false),
+        failed: Set(false),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
 
-                // lock the remaining (requested - executed) for each pending withdrawal
-                let locked_withdrawals: U256 = pending_withdrawals
-                    .iter()
-                    .map(|w| {
-                        let req = U256::from_str(&w.requested_amount).unwrap_or(U256::from(0));
-                        let exe = U256::from_str(&w.executed_amount).unwrap_or(U256::from(0));
-                        req.saturating_sub(exe)
-                    })
-                    .fold(U256::from(0), |acc, x| acc.saturating_add(x));
-
-                let user_collateral = U256::from_str(&user_row.collateral).map_err(|_| {
-                    SubmitPaymentTxnError::Db(sea_orm::DbErr::Custom(
-                        "invalid collateral value".to_string(),
-                    ))
-                })?;
-
-                // total locked = other in-flight txs + pending withdrawals
-                let locked_total = locked_deposit.saturating_add(locked_withdrawals);
-
-                if locked_total.saturating_add(amount) > user_collateral {
-                    return Err(SubmitPaymentTxnError::NotEnoughDeposit);
-                }
-
-                let now = Utc::now().naive_utc();
-                let tx_active_model = user_transaction::ActiveModel {
-                    tx_id: Set(transaction_id.clone()),
-                    user_address: Set(user_address.clone()),
-                    recipient_address: Set(recipient_address),
-                    amount: Set(amount.to_string()),
-                    cert: Set(Some(cert)),
-                    verified: Set(false),
-                    finalized: Set(false),
-                    failed: Set(false),
-                    created_at: Set(now),
-                    updated_at: Set(now),
-                };
-
-                // Important: use exec_without_returning so duplicate inserts are no-op
-                let _ = user_transaction::Entity::insert(tx_active_model)
-                    .on_conflict(
-                        OnConflict::column(user_transaction::Column::TxId)
-                            .do_nothing()
-                            .to_owned(),
-                    )
-                    .exec_without_returning(txn)
-                    .await?;
-
-                // Optimistic version bump
-                let update_res = user::Entity::update_many()
-                    .col_expr(
-                        user::Column::Version,
-                        Expr::col(user::Column::Version).add(1),
-                    )
-                    .col_expr(user::Column::UpdatedAt, Expr::value(now))
-                    .filter(user::Column::Address.eq(user_address.clone()))
-                    .filter(user::Column::Version.eq(user_row.version))
-                    .exec(txn)
-                    .await?;
-
-                if update_res.rows_affected != 1 {
-                    return Err(SubmitPaymentTxnError::ConflictingTransactions);
-                }
-
-                Ok(())
-            })
-        })
-        .await
-        .map_err(|e| match e {
-            sea_orm::TransactionError::Transaction(err) => err,
-            sea_orm::TransactionError::Connection(err) => SubmitPaymentTxnError::Db(err),
-        })?;
+    // Duplicate tx_id → no-op
+    user_transaction::Entity::insert(tx)
+        .on_conflict(
+            OnConflict::column(user_transaction::Column::TxId)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(&*ctx.db)
+        .await?;
 
     Ok(())
 }
@@ -418,39 +346,6 @@ pub async fn fail_transaction(
     Ok(())
 }
 
-pub async fn verify_transaction(
-    ctx: &PersistCtx,
-    transaction_id: String,
-) -> anyhow::Result<TransactionVerificationResult> {
-    let result = ctx
-        .db
-        .transaction::<_, TransactionVerificationResult, sea_orm::DbErr>(|txn| {
-            Box::pin(async move {
-                let tx = user_transaction::Entity::find_by_id(transaction_id.clone())
-                    .one(txn)
-                    .await?;
-
-                let Some(tx) = tx else {
-                    return Ok(TransactionVerificationResult::NotFound);
-                };
-
-                if tx.verified {
-                    return Ok(TransactionVerificationResult::AlreadyVerified);
-                }
-
-                let mut active_model = tx.into_active_model();
-                active_model.verified = Set(true);
-                active_model.updated_at = Set(Utc::now().naive_utc());
-                active_model.update(txn).await?;
-
-                Ok(TransactionVerificationResult::Verified)
-            })
-        })
-        .await?;
-
-    Ok(result)
-}
-
 //
 // ────────────────────── TRANSACTION QUERIES ──────────────────────
 //
@@ -478,7 +373,7 @@ pub async fn get_unfinalized_transactions(
 // ────────────────────── GUARANTEES / CERTIFICATES ──────────────────────
 //
 
-pub async fn store_certificate(
+pub async fn store_guarantee(
     ctx: &PersistCtx,
     tab_id: String,
     req_id: String,
@@ -536,7 +431,7 @@ pub async fn store_certificate(
     Ok(())
 }
 
-pub async fn get_certificate(
+pub async fn get_guarantee(
     ctx: &PersistCtx,
     tab_id: String,
     req_id: String,

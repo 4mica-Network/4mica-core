@@ -212,11 +212,6 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(user_transaction::Column::Cert)
-                            .string()
-                            .null(),
-                    )
-                    .col(
                         ColumnDef::new(user_transaction::Column::Verified)
                             .boolean()
                             .not_null(),

@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentGuaranteeClaims {
-    pub user_addr: String,
-    pub recipient_addr: String,
-    pub tx_hash: String,
+    pub user_address: String,
+    pub recipient_address: String,
+    pub tab_id: String,
+    pub req_id: String,
     pub amount: U256,
+    pub timestamp: u64,
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
@@ -27,21 +29,21 @@ impl TryFrom<Vec<u8>> for PaymentGuaranteeClaims {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTransactionInfo {
-    pub user_addr: String,
-    pub recipient_addr: String,
+    pub user_address: String,
+    pub recipient_address: String,
     pub tx_hash: String,
     pub amount: U256,
     pub verified: bool,
     pub finalized: bool,
     pub failed: bool,
-    pub cert: Option<String>,
     pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInfo {
-    pub deposit: U256,
-    pub available_deposit: U256,
+    pub collateral: U256,
+    pub available_collateral: U256,
+    pub guarantees: Vec<PaymentGuaranteeClaims>,
     pub transactions: Vec<UserTransactionInfo>,
 }
 
@@ -51,11 +53,4 @@ pub enum PaymentVerificationResult {
     Verified(PaymentGuaranteeClaims),
     AlreadyVerified(PaymentGuaranteeClaims),
     InvalidCertificate,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TransactionVerificationResult {
-    Verified,
-    AlreadyVerified,
-    NotFound,
 }
