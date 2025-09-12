@@ -109,13 +109,9 @@ impl EthereumListener {
                         }) else {
                             continue;
                         };
-                        let RecipientRemunerated {
-                            tab_id,
-                            req_id,
-                            amount,
-                        } = log.data();
+                        let RecipientRemunerated { tab_id, amount } = log.data();
                         info!(
-                            "[EthereumListener] RecipientRemunerated: tab={tab_id}, req={req_id}, amount={amount}"
+                            "[EthereumListener] RecipientRemunerated: tab={tab_id}, amount={amount}"
                         );
 
                         // Resolve user_address via Tabs

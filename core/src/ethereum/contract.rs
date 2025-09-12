@@ -8,7 +8,7 @@ sol! {
     event CollateralDeposited(address indexed user, uint256 amount);
 
     #[derive(Debug)]
-    event RecipientRemunerated(uint256 indexed tab_id, uint256 req_id, uint256 amount);
+    event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
 
     #[derive(Debug)]
     event CollateralWithdrawn(address indexed user, uint256 amount);
