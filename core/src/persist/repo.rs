@@ -132,7 +132,8 @@ pub async fn request_withdrawal(
     let am = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
         user_address: Set(user_addr),
-        amount: Set(amount.to_string()),
+        requested_amount: Set(amount.to_string()),
+        executed_amount: Set("0".to_string()),
         ts: Set(ts),
         status: Set(WithdrawalStatus::Pending),
         created_at: Set(now),
@@ -162,19 +163,17 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
 pub async fn finalize_withdrawal(
     ctx: &PersistCtx,
     user_addr: String,
-    amount: U256,
+    executed_amount: U256, // 👈 actual on-chain payout
 ) -> anyhow::Result<()> {
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                // fetch user
                 let user = user::Entity::find()
                     .filter(user::Column::Address.eq(user_addr.clone()))
                     .one(txn)
                     .await?
                     .ok_or(sea_orm::DbErr::Custom("user not found".into()))?;
 
-                // find most recent withdrawal that is Pending OR Cancelled
                 if let Some(w) = withdrawal::Entity::find()
                     .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
                     .filter(
@@ -185,11 +184,11 @@ pub async fn finalize_withdrawal(
                     .one(txn)
                     .await?
                 {
-                    // subtract collateral
+                    // subtract only the executed amount
                     let current = U256::from_str(&user.collateral)
                         .map_err(|e| sea_orm::DbErr::Custom(format!("invalid collateral: {e}")))?;
                     let new_collateral = current
-                        .checked_sub(amount)
+                        .checked_sub(executed_amount)
                         .ok_or(sea_orm::DbErr::Custom("underflow on withdrawal".into()))?;
 
                     let mut am_user = user.into_active_model();
@@ -197,14 +196,14 @@ pub async fn finalize_withdrawal(
                     am_user.updated_at = Set(Utc::now().naive_utc());
                     am_user.update(txn).await?;
 
-                    // mark withdrawal executed
+                    // record executed amount
                     let mut am_w = w.into_active_model();
                     am_w.status = Set(WithdrawalStatus::Executed);
+                    am_w.executed_amount = Set(executed_amount.to_string());
                     am_w.updated_at = Set(Utc::now().naive_utc());
                     am_w.update(txn).await?;
                 }
 
-                // if no eligible withdrawal found → idempotent no-op
                 Ok::<_, sea_orm::DbErr>(())
             })
         })
@@ -520,15 +519,19 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
+                // ── 1️⃣ Locate the tab (gives us the user address)
                 let tab = entities::tabs::Entity::find_by_id(tab_id.clone())
                     .one(txn)
                     .await?
                     .ok_or_else(|| sea_orm::DbErr::Custom(format!("Tab not found: {tab_id}")))?;
 
-                // Idempotency: if an event already exists for this (tab_id, req_id, Remunerate), do nothing
+                // ── 2️⃣ Idempotency: if this tab already has a Remunerate event → exit
                 let existing = collateral_event::Entity::find()
                     .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
-                    .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
+                    .filter(
+                        collateral_event::Column::EventType
+                            .eq(entities::sea_orm_active_enums::CollateralEventType::Remunerate),
+                    )
                     .one(txn)
                     .await?;
 
@@ -536,18 +539,42 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
                     return Ok::<_, sea_orm::DbErr>(());
                 }
 
+                // ── 3️⃣ Try to decrement the user’s collateral only if possible
+                if let Some(user_row) = user::Entity::find()
+                    .filter(user::Column::Address.eq(tab.user_address.clone()))
+                    .one(txn)
+                    .await?
+                {
+                    let current = U256::from_str(&user_row.collateral).map_err(|e| {
+                        sea_orm::DbErr::Custom(format!("Invalid collateral value: {e}"))
+                    })?;
+
+                    // subtract only if there is enough; otherwise leave as is
+                    if current >= amount {
+                        let new_collateral = current - amount;
+                        let mut user_am = user_row.into_active_model();
+                        user_am.collateral = Set(new_collateral.to_string());
+                        user_am.updated_at = Set(now);
+                        user_am.update(txn).await?;
+                    }
+                }
+
+                // ── 4️⃣ Always record the remuneration event
                 let ev = collateral_event::ActiveModel {
                     id: Set(uuid::Uuid::new_v4().to_string()),
                     user_address: Set(tab.user_address),
                     amount: Set(amount.to_string()),
-                    event_type: Set(CollateralEventType::Remunerate),
+                    event_type: Set(
+                        entities::sea_orm_active_enums::CollateralEventType::Remunerate,
+                    ),
                     tab_id: Set(Some(tab_id)),
                     req_id: Set(None),
                     tx_id: Set(None),
                     created_at: Set(now),
                 };
                 collateral_event::Entity::insert(ev).exec(txn).await?;
-                Ok(())
+
+                Ok::<_, sea_orm::DbErr>(())
             })
         })
         .await?;

@@ -847,3 +847,92 @@ async fn weird_identifiers_do_not_crash() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test(tokio::test)]
+async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() -> anyhow::Result<()>
+{
+    use entities::sea_orm_active_enums::WithdrawalStatus;
+
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    // user starts with 10
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+
+    // user requests 8
+    repo::request_withdrawal(&ctx, user_addr.clone(), 42, U256::from(8u64)).await?;
+
+    // but chain only executes 5
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
+
+    // user collateral must now be 10 – 5 = 5
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, U256::from(5u64).to_string());
+
+    // withdrawal row must be Executed and executed_amount = 5, requested amount still 8
+    let w = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(w.status, WithdrawalStatus::Executed);
+    assert_eq!(
+        w.requested_amount,
+        U256::from(8u64).to_string(),
+        "requested amount unchanged"
+    );
+    assert_eq!(
+        w.executed_amount,
+        U256::from(5u64).to_string(),
+        "executed amount persisted correctly"
+    );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() -> anyhow::Result<()>
+{
+    use entities::sea_orm_active_enums::WithdrawalStatus;
+
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+
+    // request 4, chain executes full 4
+    repo::request_withdrawal(&ctx, user_addr.clone(), 99, U256::from(4u64)).await?;
+    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(4u64)).await?;
+
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, U256::from(6u64).to_string());
+
+    let w = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(w.status, WithdrawalStatus::Executed);
+    assert_eq!(
+        w.requested_amount,
+        U256::from(4u64).to_string(),
+        "requested amount unchanged"
+    );
+    assert_eq!(
+        w.executed_amount,
+        U256::from(4u64).to_string(),
+        "executed amount persisted correctly"
+    );
+
+    Ok(())
+}
