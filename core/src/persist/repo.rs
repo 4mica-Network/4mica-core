@@ -150,13 +150,10 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
         .await?;
 
     for rec in records {
-        // only update if it's still pending
-        if rec.status == WithdrawalStatus::Pending {
-            let mut am = rec.into_active_model();
-            am.status = Set(WithdrawalStatus::Cancelled);
-            am.updated_at = Set(Utc::now().naive_utc());
-            am.update(&*ctx.db).await?;
-        }
+        let mut am = rec.into_active_model();
+        am.status = Set(WithdrawalStatus::Cancelled);
+        am.updated_at = Set(Utc::now().naive_utc());
+        am.update(&*ctx.db).await?;
     }
 
     Ok(())
