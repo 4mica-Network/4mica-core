@@ -251,7 +251,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
             .one(&*persist_ctx.db)
             .await?
         {
-            assert_eq!(w.amount, withdraw_amount.to_string());
+            assert_eq!(w.requested_amount, withdraw_amount.to_string());
             break;
         }
         if tries > 60 {
@@ -582,6 +582,190 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+
+    Ok(())
+}
+
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial]
+async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()> {
+    use entities::sea_orm_active_enums::WithdrawalStatus;
+
+    init()?;
+    let anvil_port = 40120u16;
+    let provider = ProviderBuilder::new()
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+
+    // --- Deploy contracts
+    let access_manager =
+        AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let user_addr = provider.default_signer_address().to_string();
+
+    // --- Start the EthereumListener
+    let eth_config = EthereumConfig {
+        ws_rpc_url: format!("ws://localhost:{anvil_port}"),
+        http_rpc_url: format!("http://localhost:{anvil_port}"),
+        contract_address: contract.address().to_string(),
+        number_of_blocks_to_confirm: 1,
+        number_of_pending_blocks: 1,
+    };
+    let persist_ctx = PersistCtx::new().await?;
+    // clean DB
+    user_transaction::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    guarantee::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    collateral_event::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    withdrawal::Entity::delete_many()
+        .exec(&*persist_ctx.db)
+        .await?;
+    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+
+    EthereumListener::new(eth_config, persist_ctx.clone())
+        .run()
+        .await?;
+
+    // ── 1️⃣ Deposit 10 ETH ──
+    let ten_eth = U256::from(10_000_000_000_000_000_000u128);
+    contract
+        .deposit()
+        .value(ten_eth)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    // Wait until user is persisted
+    let mut tries = 0;
+    while user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*persist_ctx.db)
+        .await?
+        .is_none()
+    {
+        if tries > 30 {
+            panic!("User not created after deposit");
+        }
+        tries += 1;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    // ── 2️⃣ User requests withdrawal of 8 ETH while 10 ETH is available ──
+    let eight_eth = U256::from(8_000_000_000_000_000_000u128);
+    contract
+        .requestWithdrawal(eight_eth)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    // Capture the request timestamp from chain
+    let req_block = provider
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .expect("no latest block");
+    let req_ts: u64 = req_block.header.timestamp;
+
+    // Read timing params
+    let sync_delay: u64 = contract.synchronizationDelay().call().await?.to::<u64>();
+    let grace: u64 = contract.remunerationGracePeriod().call().await?.to::<u64>();
+    let withdraw_grace: u64 = contract.withdrawalGracePeriod().call().await?.to::<u64>();
+
+    // ── 3️⃣ Create a tab and remunerate 4 ETH AFTER the request's sync window ──
+    // Choose tab_timestamp >= request.timestamp + synchronizationDelay so the contract
+    // DOES NOT shrink the pending withdrawal request.
+    let tab_ts: u64 = req_ts + sync_delay + 1;
+
+    // Insert tab in DB so listener can attach events
+    let tab_id_str = 43u64.to_string();
+    let now = Utc::now().naive_utc();
+    let t_am = entities::tabs::ActiveModel {
+        id: Set(tab_id_str.clone()),
+        user_address: Set(user_addr.clone()),
+        server_address: Set(user_addr.clone()),
+        start_ts: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+        status: Set(entities::sea_orm_active_enums::TabStatus::Open),
+        settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ..Default::default()
+    };
+    tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;
+
+    // Advance time so the tab is OVERDUE but NOT EXPIRED relative to tab_ts.
+    // We must move at least sync_delay + grace after the withdrawal request,
+    // so that:  block.timestamp ≥ tab_ts + remunerationGracePeriod.
+    let jump = sync_delay + grace + 3600; // +1h safety margin
+    provider.anvil_increase_time(jump as u64).await?;
+    provider.anvil_mine(Some(1), None).await?;
+
+    // Now call remunerate(4 ETH). Since tab_ts >= wr.ts + syncDelay,
+    // the request amount is NOT shrunk.
+    let g = Core4Mica::Guarantee {
+        tab_id: U256::from(43u64),
+        tab_timestamp: U256::from(tab_ts),
+        client: user_addr.parse()?,
+        recipient: user_addr.parse()?,
+        req_id: U256::from(1u64),
+        amount: U256::from(4_000_000_000_000_000_000u128), // 4 ETH
+    };
+    let sig = [[0u8; 32].into(), [0u8; 32].into(), [0u8; 32].into()];
+    contract.remunerate(g, sig).send().await?.watch().await?;
+
+    // ── 4️⃣ Advance time beyond withdrawal grace period and finalize ──
+    // Ensure we pass wr.timestamp + withdrawalGracePeriod.
+    provider
+        .anvil_increase_time((withdraw_grace + 2 * 24 * 60 * 60) as u64)
+        .await?;
+    provider.anvil_mine(Some(1), None).await?;
+
+    contract.finalizeWithdrawal().send().await?.watch().await?;
+
+    // ── 5️⃣ Check DB: requested = 8 ETH, executed = 6 ETH (10 – 4), collateral reduced by 6 ──
+    let six_eth = U256::from(6_000_000_000_000_000_000u128);
+
+    let mut tries = 0;
+    loop {
+        if let Some(w) = withdrawal::Entity::find()
+            .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+            .one(&*persist_ctx.db)
+            .await?
+        {
+            if w.status == WithdrawalStatus::Executed {
+                let u = user::Entity::find()
+                    .filter(user::Column::Address.eq(user_addr.clone()))
+                    .one(&*persist_ctx.db)
+                    .await?
+                    .unwrap();
+
+                let executed = U256::from_str(w.executed_amount.as_str())?;
+                let requested = U256::from_str(&w.requested_amount)?;
+
+                assert_eq!(requested, eight_eth, "requested amount unchanged");
+                assert_eq!(
+                    executed, six_eth,
+                    "executed amount = min(requested, remaining collateral) = 6 ETH"
+                );
+                assert_eq!(
+                    parse_collateral(&u.collateral),
+                    U256::from(0u64),
+                    "collateral reduced exactly by executed amount"
+                );
+                break;
+            }
+        }
+        if tries > 40 {
+            panic!("Withdrawal execution not reflected in DB");
+        }
+        tries += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 
     Ok(())
 }

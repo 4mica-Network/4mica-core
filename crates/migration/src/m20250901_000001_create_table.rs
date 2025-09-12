@@ -272,7 +272,12 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(withdrawal::Column::Amount)
+                        ColumnDef::new(withdrawal::Column::RequestedAmount)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(withdrawal::Column::ExecutedAmount)
                             .string()
                             .not_null(),
                     )
