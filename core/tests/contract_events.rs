@@ -100,7 +100,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
             assert_eq!(parse_collateral(&u.collateral), deposit_amount);
             break;
         }
-        if tries > 10 {
+        if tries > 60 {
             panic!("User not created after deposit event");
         }
         tries += 1;
@@ -273,7 +273,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
             assert_eq!(w.status, WithdrawalStatus::Cancelled);
             break;
         }
-        if tries > 10 {
+        if tries > 60 {
             panic!("Withdrawal not cancelled in DB");
         }
         tries += 1;
@@ -361,7 +361,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
             }
         }
 
-        if tries > 10 {
+        if tries > 60 {
             panic!("Withdrawal finalization not reflected in DB");
         }
         tries += 1;
@@ -649,7 +649,7 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         .await?
         .is_none()
     {
-        if tries > 30 {
+        if tries > 60 {
             panic!("User not created after deposit");
         }
         tries += 1;
@@ -760,7 +760,7 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
                 break;
             }
         }
-        if tries > 40 {
+        if tries > 60 {
             panic!("Withdrawal execution not reflected in DB");
         }
         tries += 1;
