@@ -2,7 +2,7 @@ use alloy::sol;
 
 sol! {
     #[derive(Debug)]
-    event UserRegistered(address indexed user, uint256 initialCollateral);
+    event UserRegistered(address indexed user, uint256 initial_collateral);
 
     #[derive(Debug)]
     event CollateralDeposited(address indexed user, uint256 amount);
