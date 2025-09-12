@@ -7,6 +7,7 @@ use entities::{
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     user, user_transaction, withdrawal,
 };
+use log::error;
 use rpc::common::TransactionVerificationResult;
 use sea_orm::QueryOrder;
 use sea_orm::sea_query::{Expr, OnConflict};
@@ -150,11 +151,24 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
         .all(&*ctx.db)
         .await?;
 
-    for rec in records {
-        let mut am = rec.into_active_model();
-        am.status = Set(WithdrawalStatus::Cancelled);
-        am.updated_at = Set(Utc::now().naive_utc());
-        am.update(&*ctx.db).await?;
+    match records.len() {
+        0 => {
+            return Ok(());
+        }
+        1 => {
+            let rec = records.into_iter().next().unwrap();
+            let mut am = rec.into_active_model();
+            am.status = Set(WithdrawalStatus::Cancelled);
+            am.updated_at = Set(Utc::now().naive_utc());
+            am.update(&*ctx.db).await?;
+        }
+        n => {
+            // log an error if more than one record is found
+            error!(
+                "Expected exactly one pending withdrawal for user {}, but found {}",
+                user_addr, n
+            );
+        }
     }
 
     Ok(())
