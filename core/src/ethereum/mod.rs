@@ -41,7 +41,6 @@ impl EthereumListener {
             RemunerationGracePeriodUpdated::SIGNATURE,
             TabExpirationTimeUpdated::SIGNATURE,
             SynchronizationDelayUpdated::SIGNATURE,
-            RecordedPayment::SIGNATURE,
         ];
         let contract_address: Address = self.config.contract_address.parse()?;
         let filter = Filter::new()
@@ -87,9 +86,6 @@ impl EthereumListener {
                     }
                     Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => {
                         Self::handle_synchronization_delay_updated(log).await
-                    }
-                    Some(&RecordedPayment::SIGNATURE_HASH) => {
-                        Self::handle_recorded_payment(log).await
                     }
                     _ => info!("[EthereumListener] Received unknown log: {log:?}"),
                 }
@@ -236,18 +232,6 @@ impl EthereumListener {
             newSynchronizationDelay,
         } = log.data();
         info!("[EthereumListener] SynchronizationDelayUpdated: {newSynchronizationDelay}");
-    }
-
-    async fn handle_recorded_payment(log: alloy::rpc::types::Log) {
-        let Ok(log) = log.log_decode::<RecordedPayment>().map_err(|err| {
-            error!("[EthereumListener] Error decoding RecordedPayment: {err}");
-        }) else {
-            return;
-        };
-
-        let RecordedPayment { tab_id, amount } = log.data();
-        info!("[EthereumListener] RecordedPayment: tab={tab_id}, amount={amount}");
-        // TODO: persist if desired
     }
 
     async fn find_user_address(persist_ctx: &PersistCtx, tab_id: &str) -> Option<String> {
