@@ -20,9 +20,12 @@ use thiserror::Error;
 // ────────────────────── USER FUNCTIONS ──────────────────────
 //
 
-pub async fn get_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<Option<user::Model>> {
+pub async fn get_user(
+    ctx: &PersistCtx,
+    user_address: String,
+) -> anyhow::Result<Option<user::Model>> {
     Ok(user::Entity::find()
-        .filter(user::Column::Address.eq(user_addr))
+        .filter(user::Column::Address.eq(user_address))
         .one(&*ctx.db)
         .await?)
 }
@@ -32,7 +35,7 @@ pub async fn get_user(ctx: &PersistCtx, user_addr: String) -> anyhow::Result<Opt
 //
 
 /// Deposit: increment collateral and record a CollateralEvent::Deposit for auditability.
-pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: U256) -> anyhow::Result<()> {
+pub async fn deposit(ctx: &PersistCtx, user_address: String, amount: U256) -> anyhow::Result<()> {
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();
 
@@ -41,7 +44,7 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: U256) -> anyho
             Box::pin(async move {
                 // Try to fetch existing user
                 if let Some(mut user) = user::Entity::find()
-                    .filter(user::Column::Address.eq(user_addr.clone()))
+                    .filter(user::Column::Address.eq(user_address.clone()))
                     .one(txn)
                     .await?
                 {
@@ -64,7 +67,7 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: U256) -> anyho
                 } else {
                     // First time → insert
                     let insert_user = user::ActiveModel {
-                        address: Set(user_addr.clone()),
+                        address: Set(user_address.clone()),
                         revenue: Set(U256::from(0).to_string()),
                         version: Set(0),
                         created_at: Set(now),
@@ -79,7 +82,7 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: U256) -> anyho
                 if amount > U256::from(0) {
                     let ev = collateral_event::ActiveModel {
                         id: Set(uuid::Uuid::new_v4().to_string()),
-                        user_address: Set(user_addr),
+                        user_address: Set(user_address),
                         amount: Set(amount.to_string()),
                         event_type: Set(CollateralEventType::Deposit),
                         tab_id: Set(None),
@@ -104,13 +107,13 @@ pub async fn deposit(ctx: &PersistCtx, user_addr: String, amount: U256) -> anyho
 
 pub async fn request_withdrawal(
     ctx: &PersistCtx,
-    user_addr: String,
+    user_address: String,
     when: i64,
     amount: U256,
 ) -> Result<()> {
     // Ensure user exists and has enough collateral
     let Some(u) = user::Entity::find()
-        .filter(user::Column::Address.eq(user_addr.clone()))
+        .filter(user::Column::Address.eq(user_address.clone()))
         .one(&*ctx.db)
         .await?
     else {
@@ -132,7 +135,7 @@ pub async fn request_withdrawal(
 
     let active_model = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
-        user_address: Set(user_addr),
+        user_address: Set(user_address),
         requested_amount: Set(amount.to_string()),
         executed_amount: Set("0".to_string()),
         ts: Set(ts),
@@ -146,9 +149,9 @@ pub async fn request_withdrawal(
     Ok(())
 }
 
-pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()> {
+pub async fn cancel_withdrawal(ctx: &PersistCtx, user_address: String) -> Result<()> {
     let records = withdrawal::Entity::find()
-        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
         .all(&*ctx.db)
         .await?;
@@ -167,7 +170,7 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
         n => {
             error!(
                 "Expected exactly one pending withdrawal for user {}, but found {}",
-                user_addr, n
+                user_address, n
             );
         }
     }
@@ -177,20 +180,20 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
 
 pub async fn finalize_withdrawal(
     ctx: &PersistCtx,
-    user_addr: String,
+    user_address: String,
     executed_amount: U256,
 ) -> anyhow::Result<()> {
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
                 let user = user::Entity::find()
-                    .filter(user::Column::Address.eq(user_addr.clone()))
+                    .filter(user::Column::Address.eq(user_address.clone()))
                     .one(txn)
                     .await?
                     .ok_or(sea_orm::DbErr::Custom("user not found".into()))?;
 
                 if let Some(withdrawal) = withdrawal::Entity::find()
-                    .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+                    .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
                     .filter(
                         withdrawal::Column::Status
                             .is_in(vec![WithdrawalStatus::Pending, WithdrawalStatus::Cancelled]),
@@ -247,7 +250,7 @@ pub enum SubmitPaymentTxnError {
 
 pub async fn submit_payment_transaction(
     ctx: &PersistCtx,
-    user_addr: String,
+    user_address: String,
     recipient_address: String,
     transaction_id: String,
     amount: U256,
@@ -258,7 +261,7 @@ pub async fn submit_payment_transaction(
             Box::pin(async move {
                 // Ensure the user exists
                 let Some(user_row) = user::Entity::find()
-                    .filter(user::Column::Address.eq(user_addr.clone()))
+                    .filter(user::Column::Address.eq(user_address.clone()))
                     .one(txn)
                     .await?
                 else {
@@ -267,7 +270,7 @@ pub async fn submit_payment_transaction(
 
                 // Reserve deposit for other unfinalized txs
                 let pending = user_transaction::Entity::find()
-                    .filter(user_transaction::Column::UserAddress.eq(user_addr.clone()))
+                    .filter(user_transaction::Column::UserAddress.eq(user_address.clone()))
                     .filter(user_transaction::Column::Finalized.eq(false))
                     .filter(user_transaction::Column::TxId.ne(transaction_id.clone()))
                     .all(txn)
@@ -288,7 +291,7 @@ pub async fn submit_payment_transaction(
                 let now = Utc::now().naive_utc();
                 let tx_active_model = user_transaction::ActiveModel {
                     tx_id: Set(transaction_id.clone()),
-                    user_address: Set(user_addr.clone()),
+                    user_address: Set(user_address.clone()),
                     recipient_address: Set(recipient_address),
                     amount: Set(amount.to_string()),
                     cert: Set(Some(cert)),
@@ -316,7 +319,7 @@ pub async fn submit_payment_transaction(
                         Expr::col(user::Column::Version).add(1),
                     )
                     .col_expr(user::Column::UpdatedAt, Expr::value(now))
-                    .filter(user::Column::Address.eq(user_addr.clone()))
+                    .filter(user::Column::Address.eq(user_address.clone()))
                     .filter(user::Column::Version.eq(user_row.version))
                     .exec(txn)
                     .await?;
@@ -339,7 +342,7 @@ pub async fn submit_payment_transaction(
 
 pub async fn fail_transaction(
     ctx: &PersistCtx,
-    user_addr: String,
+    user_address: String,
     transaction_id: String,
 ) -> anyhow::Result<()> {
     ctx.db
@@ -366,7 +369,7 @@ pub async fn fail_transaction(
 
                 // subtract collateral only once
                 let user_row = user::Entity::find()
-                    .filter(user::Column::Address.eq(user_addr.clone()))
+                    .filter(user::Column::Address.eq(user_address.clone()))
                     .one(txn)
                     .await?
                     .ok_or(sea_orm::DbErr::Custom("user not found".into()))?;
