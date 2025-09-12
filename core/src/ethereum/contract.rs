@@ -30,7 +30,4 @@ sol! {
 
     #[derive(Debug)]
     event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
-
-    #[derive(Debug)]
-    event RecordedPayment(uint256 indexed tab_id, uint256 amount);
 }
