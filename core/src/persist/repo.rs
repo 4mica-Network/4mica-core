@@ -165,7 +165,6 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
             active_model.update(&*ctx.db).await?;
         }
         n => {
-            // log an error if more than one record is found
             error!(
                 "Expected exactly one pending withdrawal for user {}, but found {}",
                 user_addr, n
@@ -179,7 +178,7 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_addr: String) -> Result<()
 pub async fn finalize_withdrawal(
     ctx: &PersistCtx,
     user_addr: String,
-    executed_amount: U256, // 👈 actual on-chain payout
+    executed_amount: U256,
 ) -> anyhow::Result<()> {
     ctx.db
         .transaction(|txn| {
@@ -286,7 +285,6 @@ pub async fn submit_payment_transaction(
                 if locked_deposit.saturating_add(amount) > user_collateral {
                     return Err(SubmitPaymentTxnError::NotEnoughDeposit);
                 }
-                // Upsert tx row
                 let now = Utc::now().naive_utc();
                 let tx_active_model = user_transaction::ActiveModel {
                     tx_id: Set(transaction_id.clone()),
