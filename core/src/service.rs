@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::ethereum::EthereumListener;
-use crate::persist::repo::{self};
+use crate::persist::repo;
 use crate::persist::{IntoUserTxInfo, PersistCtx};
 
 use alloy::providers::fillers::{
@@ -13,13 +13,11 @@ use async_trait::async_trait;
 use blockchain::txtools;
 use chrono::Utc;
 use crypto::bls::BLSCert;
-use entities::sea_orm_active_enums::WithdrawalStatus;
-use entities::{user, user_transaction, withdrawal};
 use log::{error, info};
 use rpc::RpcResult;
 use rpc::common::*;
 use rpc::core::{CoreApiServer, CorePublicParameters};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait, sea_query::Expr};
+
 use std::str::FromStr;
 
 type EthereumProvider = FillProvider<
@@ -43,7 +41,6 @@ impl CoreService {
 
         let persist_ctx = PersistCtx::new().await?;
 
-        // Start blockchain listener
         EthereumListener::new(config.ethereum_config.clone(), persist_ctx.clone())
             .run()
             .await?;
@@ -80,7 +77,7 @@ impl CoreService {
         txtools::validate_transaction(tx, user, recipient, amount)
     }
 
-    pub async fn handle_promise(
+    async fn handle_promise(
         &self,
         transaction_id: String,
         promise: PaymentGuaranteeClaims,
@@ -94,7 +91,6 @@ impl CoreService {
             promise.amount
         );
 
-        // business checks moved from repo
         self.check_free_collateral_for_tx(&promise.user_address, &transaction_id, promise.amount)
             .await?;
         let guarantee = self.create_guarantee(&promise).await?;
@@ -102,86 +98,71 @@ impl CoreService {
         Ok(guarantee)
     }
 
-    /// Check user free collateral & optimistic lock (old repo checks).
+    /// Check user free collateral & optimistic lock using repo helpers only.
     async fn check_free_collateral_for_tx(
         &self,
         user_addr: &str,
         tx_id: &str,
         amount: U256,
     ) -> RpcResult<()> {
-        self.persist_ctx
-            .db
-            .transaction::<_, (), sea_orm::DbErr>(|txn| {
-                let user_addr = user_addr.to_string();
-                let tx_id = tx_id.to_string();
-                Box::pin(async move {
-                    // user must exist
-                    let Some(user_row) = user::Entity::find()
-                        .filter(user::Column::Address.eq(user_addr.clone()))
-                        .one(txn)
-                        .await?
-                    else {
-                        return Err(sea_orm::DbErr::Custom("User not registered".into()));
-                    };
-
-                    // lock from other unfinalized transactions
-                    let pending_txs = user_transaction::Entity::find()
-                        .filter(user_transaction::Column::UserAddress.eq(user_addr.clone()))
-                        .filter(user_transaction::Column::Finalized.eq(false))
-                        .filter(user_transaction::Column::TxId.ne(tx_id.clone()))
-                        .all(txn)
-                        .await?;
-                    let locked_deposit: U256 = pending_txs
-                        .iter()
-                        .map(|tx| U256::from_str(&tx.amount).unwrap_or(U256::ZERO))
-                        .fold(U256::ZERO, |acc, x| acc.saturating_add(x));
-
-                    // lock from pending withdrawals
-                    let pending_withdrawals = withdrawal::Entity::find()
-                        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
-                        .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
-                        .all(txn)
-                        .await?;
-                    let locked_withdrawals: U256 = pending_withdrawals
-                        .iter()
-                        .map(|w| {
-                            let req = U256::from_str(&w.requested_amount).unwrap_or(U256::ZERO);
-                            let exe = U256::from_str(&w.executed_amount).unwrap_or(U256::ZERO);
-                            req.saturating_sub(exe)
-                        })
-                        .fold(U256::ZERO, |acc, x| acc.saturating_add(x));
-
-                    let user_collateral = U256::from_str(&user_row.collateral)
-                        .map_err(|_| sea_orm::DbErr::Custom("invalid collateral value".into()))?;
-                    let locked_total = locked_deposit.saturating_add(locked_withdrawals);
-
-                    if locked_total.saturating_add(amount) > user_collateral {
-                        return Err(sea_orm::DbErr::Custom("Not enough deposit".into()));
-                    }
-
-                    // optimistic version bump
-                    let now = Utc::now().naive_utc();
-                    let update_res = user::Entity::update_many()
-                        .col_expr(
-                            user::Column::Version,
-                            Expr::col(user::Column::Version).add(1),
-                        )
-                        .col_expr(user::Column::UpdatedAt, Expr::value(now))
-                        .filter(user::Column::Address.eq(user_addr.clone()))
-                        .filter(user::Column::Version.eq(user_row.version))
-                        .exec(txn)
-                        .await?;
-                    if update_res.rows_affected != 1 {
-                        return Err(sea_orm::DbErr::Custom("Conflicting transactions".into()));
-                    }
-                    Ok(())
-                })
-            })
+        let Some(user_row) = repo::get_user(&self.persist_ctx, user_addr.to_string())
             .await
             .map_err(|e| {
-                error!("Collateral check failed: {e}");
-                rpc::invalid_params_error(&format!("{e}"))
+                error!("DB error: {e}");
+                rpc::internal_error()
+            })?
+        else {
+            return Err(rpc::invalid_params_error("User not registered"));
+        };
+
+        let pending_txs =
+            repo::get_unfinalized_transactions_for_user(&self.persist_ctx, user_addr, Some(tx_id))
+                .await
+                .map_err(|e| {
+                    error!("DB error: {e}");
+                    rpc::internal_error()
+                })?;
+
+        let locked_deposit: U256 = pending_txs
+            .iter()
+            .map(|tx| U256::from_str(&tx.amount).unwrap_or(U256::ZERO))
+            .fold(U256::ZERO, |acc, x| acc.saturating_add(x));
+
+        let pending_withdrawals =
+            repo::get_pending_withdrawals_for_user(&self.persist_ctx, user_addr)
+                .await
+                .map_err(|e| {
+                    error!("DB error: {e}");
+                    rpc::internal_error()
+                })?;
+
+        let locked_withdrawals: U256 = pending_withdrawals
+            .iter()
+            .map(|w| {
+                let req = U256::from_str(&w.requested_amount).unwrap_or(U256::ZERO);
+                let exe = U256::from_str(&w.executed_amount).unwrap_or(U256::ZERO);
+                req.saturating_sub(exe)
             })
+            .fold(U256::ZERO, |acc, x| acc.saturating_add(x));
+
+        let user_collateral = U256::from_str(&user_row.collateral)
+            .map_err(|_| rpc::invalid_params_error("invalid collateral value"))?;
+        let locked_total = locked_deposit.saturating_add(locked_withdrawals);
+
+        if locked_total.saturating_add(amount) > user_collateral {
+            return Err(rpc::invalid_params_error("Not enough deposit"));
+        }
+
+        let bumped = repo::bump_user_version(&self.persist_ctx, user_addr, user_row.version)
+            .await
+            .map_err(|e| {
+                error!("DB error: {e}");
+                rpc::internal_error()
+            })?;
+        if !bumped {
+            return Err(rpc::invalid_params_error("Conflicting transactions"));
+        }
+        Ok(())
     }
 
     async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> RpcResult<BLSCert> {
@@ -254,9 +235,7 @@ impl CoreApiServer for CoreService {
             return Ok(None);
         };
 
-        let transactions = user_transaction::Entity::find()
-            .filter(user_transaction::Column::UserAddress.eq(user_addr.clone()))
-            .all(&*self.persist_ctx.db)
+        let transactions = repo::get_user_transactions(&self.persist_ctx, &user_addr)
             .await
             .map_err(|err| {
                 error!("Failed to load user transactions: {err}");
