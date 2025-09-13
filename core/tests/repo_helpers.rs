@@ -1,0 +1,158 @@
+use alloy::primitives::U256;
+use core_service::config::AppConfig;
+use core_service::persist::PersistCtx;
+use core_service::persist::repo;
+use entities::sea_orm_active_enums::WithdrawalStatus;
+use entities::user;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use test_log::test;
+use uuid::Uuid;
+
+fn init() -> anyhow::Result<AppConfig> {
+    dotenv::dotenv().ok();
+    Ok(AppConfig::fetch())
+}
+
+/// Ensure get_user_transactions only returns transactions for the given user.
+#[test(tokio::test)]
+async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+    let other_user = Uuid::new_v4().to_string();
+    let recipient = Uuid::new_v4().to_string();
+
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
+    repo::deposit(&ctx, other_user.clone(), U256::from(10)).await?;
+
+    let tx_id_1 = Uuid::new_v4().to_string();
+    let tx_id_2 = Uuid::new_v4().to_string();
+
+    repo::submit_payment_transaction(
+        &ctx,
+        user_addr.clone(),
+        recipient.clone(),
+        tx_id_1.clone(),
+        U256::from(1),
+    )
+    .await?;
+    repo::submit_payment_transaction(
+        &ctx,
+        other_user.clone(),
+        recipient.clone(),
+        tx_id_2.clone(),
+        U256::from(1),
+    )
+    .await?;
+
+    let txs = repo::get_user_transactions(&ctx, &user_addr).await?;
+    assert_eq!(txs.len(), 1);
+    assert_eq!(txs[0].tx_id, tx_id_1);
+    Ok(())
+}
+
+/// Ensure get_unfinalized_transactions_for_user excludes the passed tx_id.
+#[test(tokio::test)]
+async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+    let recipient = Uuid::new_v4().to_string();
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
+
+    let tx_id_1 = Uuid::new_v4().to_string();
+    let tx_id_2 = Uuid::new_v4().to_string();
+
+    repo::submit_payment_transaction(
+        &ctx,
+        user_addr.clone(),
+        recipient.clone(),
+        tx_id_1.clone(),
+        U256::from(2),
+    )
+    .await?;
+    repo::submit_payment_transaction(
+        &ctx,
+        user_addr.clone(),
+        recipient.clone(),
+        tx_id_2.clone(),
+        U256::from(2),
+    )
+    .await?;
+
+    let all = repo::get_unfinalized_transactions_for_user(&ctx, &user_addr, None).await?;
+    assert_eq!(all.len(), 2);
+
+    let filtered =
+        repo::get_unfinalized_transactions_for_user(&ctx, &user_addr, Some(&tx_id_1)).await?;
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].tx_id, tx_id_2);
+    Ok(())
+}
+
+/// Ensure get_pending_withdrawals_for_user finds only pending ones.
+#[test(tokio::test)]
+async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+    repo::deposit(&ctx, user_addr.clone(), U256::from(20)).await?;
+
+    let when = chrono::Utc::now().timestamp();
+    // request withdrawal of 5
+    repo::request_withdrawal(&ctx, user_addr.clone(), when, U256::from(5)).await?;
+
+    let pending = repo::get_pending_withdrawals_for_user(&ctx, &user_addr).await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].status, WithdrawalStatus::Pending);
+
+    // cancel it
+    repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
+
+    let pending_after = repo::get_pending_withdrawals_for_user(&ctx, &user_addr).await?;
+    assert_eq!(pending_after.len(), 0);
+    Ok(())
+}
+
+/// bump_user_version should increase version once and return false on second attempt
+#[test(tokio::test)]
+async fn bump_user_version_increments_once() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = Uuid::new_v4().to_string();
+    repo::deposit(&ctx, user_addr.clone(), U256::from(1)).await?;
+
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+
+    let ok = repo::bump_user_version(&ctx, &user_addr, u.version).await?;
+    assert!(ok);
+
+    // old version again should fail
+    let second = repo::bump_user_version(&ctx, &user_addr, u.version).await?;
+    assert!(!second);
+    Ok(())
+}
+
+/// Ensure get_tab_by_id returns None for unknown id (simple smoke test)
+#[test(tokio::test)]
+async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let res = repo::get_tab_by_id(&ctx, "non-existent-id").await?;
+    assert!(res.is_none());
+    Ok(())
+}
+
+/// Ensure has_remunerate_event_for_tab returns false for unknown tab
+#[test(tokio::test)]
+async fn has_remunerate_event_for_tab_false_for_unknown() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let res = repo::has_remunerate_event_for_tab(&ctx, "non-existent-id").await?;
+    assert!(!res);
+    Ok(())
+}

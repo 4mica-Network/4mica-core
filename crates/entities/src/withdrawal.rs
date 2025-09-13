@@ -13,7 +13,7 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub requested_amount: String,
     pub executed_amount: String,
-    pub ts: DateTime,
+    pub request_ts: DateTime,
     pub status: WithdrawalStatus,
     pub created_at: DateTime,
     pub updated_at: DateTime,

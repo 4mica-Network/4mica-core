@@ -276,7 +276,7 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(withdrawal::Column::Ts)
+                        ColumnDef::new(withdrawal::Column::RequestTs)
                             .timestamp()
                             .not_null(),
                     )

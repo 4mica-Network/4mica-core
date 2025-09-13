@@ -131,17 +131,17 @@ pub async fn request_withdrawal(
         .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {}", when))?
         .naive_utc();
 
-    let active_model = withdrawal::ActiveModel {
+    let withdrawal_model = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
         user_address: Set(user_address),
         requested_amount: Set(amount.to_string()),
         executed_amount: Set("0".to_string()),
-        ts: Set(ts),
+        request_ts: Set(ts),
         status: Set(WithdrawalStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
     };
-    withdrawal::Entity::insert(active_model)
+    withdrawal::Entity::insert(withdrawal_model)
         .exec(&*ctx.db)
         .await?;
     Ok(())
@@ -512,4 +512,87 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
         .await?;
 
     Ok(())
+}
+
+// ────────────────────── EXTRA HELPERS FOR SERVICE ──────────────────────
+
+/// Fetch user transactions for a user (optionally only unfinalized)
+pub async fn get_user_transactions(
+    ctx: &PersistCtx,
+    user_address: &str,
+) -> anyhow::Result<Vec<user_transaction::Model>> {
+    Ok(user_transaction::Entity::find()
+        .filter(user_transaction::Column::UserAddress.eq(user_address))
+        .all(&*ctx.db)
+        .await?)
+}
+
+/// Fetch unfinalized transactions for a user
+pub async fn get_unfinalized_transactions_for_user(
+    ctx: &PersistCtx,
+    user_address: &str,
+    exclude_tx_id: Option<&str>,
+) -> anyhow::Result<Vec<user_transaction::Model>> {
+    let mut query = user_transaction::Entity::find()
+        .filter(user_transaction::Column::UserAddress.eq(user_address))
+        .filter(user_transaction::Column::Finalized.eq(false));
+
+    if let Some(exclude) = exclude_tx_id {
+        query = query.filter(user_transaction::Column::TxId.ne(exclude));
+    }
+
+    Ok(query.all(&*ctx.db).await?)
+}
+
+/// Fetch pending withdrawals for a user
+pub async fn get_pending_withdrawals_for_user(
+    ctx: &PersistCtx,
+    user_address: &str,
+) -> anyhow::Result<Vec<withdrawal::Model>> {
+    Ok(withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_address))
+        .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
+        .all(&*ctx.db)
+        .await?)
+}
+
+/// Optimistic version bump – returns true if bumped, false if conflict
+pub async fn bump_user_version(
+    ctx: &PersistCtx,
+    user_address: &str,
+    current_version: i32,
+) -> anyhow::Result<bool> {
+    use sea_orm::sea_query::Expr;
+    let now = chrono::Utc::now().naive_utc();
+    let res = user::Entity::update_many()
+        .col_expr(
+            user::Column::Version,
+            Expr::col(user::Column::Version).add(1),
+        )
+        .col_expr(user::Column::UpdatedAt, Expr::value(now))
+        .filter(user::Column::Address.eq(user_address))
+        .filter(user::Column::Version.eq(current_version))
+        .exec(&*ctx.db)
+        .await?;
+    Ok(res.rows_affected == 1)
+}
+
+/// Get a single tab by id
+pub async fn get_tab_by_id(
+    ctx: &PersistCtx,
+    tab_id: &str,
+) -> anyhow::Result<Option<entities::tabs::Model>> {
+    Ok(entities::tabs::Entity::find_by_id(tab_id.to_string())
+        .one(&*ctx.db)
+        .await?)
+}
+
+/// Check if a Remunerate event already exists for a tab
+pub async fn has_remunerate_event_for_tab(ctx: &PersistCtx, tab_id: &str) -> anyhow::Result<bool> {
+    let existing = collateral_event::Entity::find()
+        .filter(collateral_event::Column::TabId.eq(tab_id))
+        .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
+        .one(&*ctx.db)
+        .await?;
+    Ok(existing.is_some())
 }
