@@ -71,13 +71,13 @@ pub async fn deposit(ctx: &PersistCtx, user_address: String, amount: U256) -> an
                         created_at: Set(now),
                         updated_at: Set(now),
                         collateral: Set(amount.to_string()),
-                        locked_collateral: Set(U256::from(0).to_string()),
+                        locked_collateral: Set(U256::ZERO.to_string()),
                     };
                     user::Entity::insert(insert_user).exec(txn).await?;
                 }
 
                 // Insert collateral event (even for 0 deposits if you want to log them)
-                if amount > U256::from(0) {
+                if amount > U256::ZERO {
                     let ev = collateral_event::ActiveModel {
                         id: Set(uuid::Uuid::new_v4().to_string()),
                         user_address: Set(user_address),
@@ -595,4 +595,31 @@ pub async fn has_remunerate_event_for_tab(ctx: &PersistCtx, tab_id: &str) -> any
         .one(&*ctx.db)
         .await?;
     Ok(existing.is_some())
+}
+
+pub async fn update_user_lock_and_version(
+    ctx: &PersistCtx,
+    user_address: &str,
+    current_version: i32,
+    new_locked: U256,
+) -> anyhow::Result<bool> {
+    use sea_orm::sea_query::Expr;
+    let now = chrono::Utc::now().naive_utc();
+
+    let res = user::Entity::update_many()
+        .col_expr(
+            user::Column::Version,
+            Expr::col(user::Column::Version).add(1),
+        )
+        .col_expr(
+            user::Column::LockedCollateral,
+            Expr::value(new_locked.to_string()),
+        )
+        .col_expr(user::Column::UpdatedAt, Expr::value(now))
+        .filter(user::Column::Address.eq(user_address))
+        .filter(user::Column::Version.eq(current_version))
+        .exec(&*ctx.db)
+        .await?;
+
+    Ok(res.rows_affected == 1)
 }

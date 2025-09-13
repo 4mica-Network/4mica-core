@@ -387,7 +387,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
     let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
 
-    // --- Clean DB
+    // Clean DB
     let persist_ctx = PersistCtx::new().await?;
     user_transaction::Entity::delete_many()
         .exec(&*persist_ctx.db)
@@ -404,7 +404,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
 
-    // --- Start listener
+    //  Start listener
     let eth_config = EthereumConfig {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
@@ -419,7 +419,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
     let user_addr = provider.default_signer_address().to_string();
 
-    // --- Deposit so listener creates the user
+    // Deposit so listener creates the user
     contract
         .deposit()
         .value(U256::from(10_000u64))
@@ -460,7 +460,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     };
     tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;
 
-    // --- Move chain time well beyond any default grace period.
+    // Move chain time well beyond any default grace period.
     let expiration_secs: u64 = 21 * 24 * 60 * 60;
     provider
         .anvil_increase_time((expiration_secs - 2 * 24 * 60 * 60) as u64)
@@ -474,7 +474,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         .expect("no latest block");
     let current_ts: u64 = latest_after_jump.header.timestamp;
 
-    // --- Query grace/expiration periods from the contract
+    // Query grace/expiration periods from the contract
     let grace: u64 = contract.remunerationGracePeriod().call().await?.to::<u64>();
     let expiry: u64 = contract.tabExpirationTime().call().await?.to::<u64>();
 
@@ -495,10 +495,10 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     };
     let sig = [[0u8; 32].into(), [0u8; 32].into(), [0u8; 32].into()];
 
-    // --- Call remunerate
+    // Call remunerate
     contract.remunerate(g, sig).send().await?.watch().await?;
 
-    // --- Verify remuneration persisted
+    // Verify remuneration persisted
     let mut tries = 0;
     loop {
         let events = collateral_event::Entity::find()
@@ -596,13 +596,13 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     let provider = ProviderBuilder::new()
         .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
 
-    // --- Deploy contracts
+    // Deploy contracts
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
     let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
     let user_addr = provider.default_signer_address().to_string();
 
-    // --- Start the EthereumListener
+    // Start the EthereumListener
     let eth_config = EthereumConfig {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
@@ -631,7 +631,6 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         .run()
         .await?;
 
-    // ── 1️⃣ Deposit 10 ETH ──
     let ten_eth = U256::from(10_000_000_000_000_000_000u128);
     contract
         .deposit()
@@ -656,7 +655,6 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    // ── 2️⃣ User requests withdrawal of 8 ETH while 10 ETH is available ──
     let eight_eth = U256::from(8_000_000_000_000_000_000u128);
     contract
         .requestWithdrawal(eight_eth)
@@ -677,9 +675,6 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     let grace: u64 = contract.remunerationGracePeriod().call().await?.to::<u64>();
     let withdraw_grace: u64 = contract.withdrawalGracePeriod().call().await?.to::<u64>();
 
-    // ── 3️⃣ Create a tab and remunerate 4 ETH AFTER the request's sync window ──
-    // Choose tab_timestamp >= request.timestamp + synchronizationDelay so the contract
-    // DOES NOT shrink the pending withdrawal request.
     let tab_ts: u64 = req_ts + sync_delay + 1;
 
     // Insert tab in DB so listener can attach events
@@ -718,7 +713,6 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     let sig = [[0u8; 32].into(), [0u8; 32].into(), [0u8; 32].into()];
     contract.remunerate(g, sig).send().await?.watch().await?;
 
-    // ── 4️⃣ Advance time beyond withdrawal grace period and finalize ──
     // Ensure we pass wr.timestamp + withdrawalGracePeriod.
     provider
         .anvil_increase_time((withdraw_grace + 2 * 24 * 60 * 60) as u64)
@@ -727,7 +721,6 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
 
     contract.finalizeWithdrawal().send().await?.watch().await?;
 
-    // ── 5️⃣ Check DB: requested = 8 ETH, executed = 6 ETH (10 – 4), collateral reduced by 6 ──
     let six_eth = U256::from(6_000_000_000_000_000_000u128);
 
     let mut tries = 0;
@@ -754,7 +747,7 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
                 );
                 assert_eq!(
                     parse_collateral(&u.collateral),
-                    U256::from(0u64),
+                    U256::ZERO,
                     "collateral reduced exactly by executed amount"
                 );
                 break;

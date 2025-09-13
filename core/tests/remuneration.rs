@@ -22,8 +22,8 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     let user_addr = Uuid::new_v4().to_string();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set(U256::from(0u64).to_string()),
-        locked_collateral: Set(U256::from(0u64).to_string()),
+        collateral: Set(U256::ZERO.to_string()),
+        locked_collateral: Set(U256::ZERO.to_string()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
@@ -107,8 +107,8 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         .exec(&*ctx.db)
         .await?;
 
-    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(0u64)).await?;
-    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(0u64)).await?;
+    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::ZERO).await?;
+    repo::remunerate_recipient(&ctx, tab_id.clone(), U256::ZERO).await?;
 
     let events = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id))
@@ -116,7 +116,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         .await?;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_type, CollateralEventType::Remunerate);
-    assert_eq!(events[0].amount, U256::from(0u64).to_string());
+    assert_eq!(events[0].amount, U256::ZERO.to_string());
     Ok(())
 }
 
