@@ -36,3 +36,4 @@ serial_test = { workspace = true }
 test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }
 chrono = { workspace = true }
+once_cell = "1.21.3"

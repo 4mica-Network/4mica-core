@@ -102,7 +102,7 @@ impl CoreService {
     async fn check_free_collateral_for_tx(
         &self,
         user_addr: &str,
-        tx_id: &str,
+        _tx_id: &str,
         amount: U256,
     ) -> RpcResult<()> {
         let Some(user_row) = repo::get_user(&self.persist_ctx, user_addr.to_string())
@@ -114,57 +114,39 @@ impl CoreService {
         else {
             return Err(rpc::invalid_params_error("User not registered"));
         };
-
-        let pending_txs =
-            repo::get_unfinalized_transactions_for_user(&self.persist_ctx, user_addr, Some(tx_id))
-                .await
-                .map_err(|e| {
-                    error!("DB error: {e}");
-                    rpc::internal_error()
-                })?;
-
-        let locked_deposit: U256 = pending_txs
-            .iter()
-            .map(|tx| U256::from_str(&tx.amount).unwrap_or(U256::ZERO))
-            .fold(U256::ZERO, |acc, x| acc.saturating_add(x));
-
-        let pending_withdrawals =
-            repo::get_pending_withdrawals_for_user(&self.persist_ctx, user_addr)
-                .await
-                .map_err(|e| {
-                    error!("DB error: {e}");
-                    rpc::internal_error()
-                })?;
-
-        let locked_withdrawals: U256 = pending_withdrawals
-            .iter()
-            .map(|w| {
-                let req = U256::from_str(&w.requested_amount).unwrap_or(U256::ZERO);
-                let exe = U256::from_str(&w.executed_amount).unwrap_or(U256::ZERO);
-                req.saturating_sub(exe)
-            })
-            .fold(U256::ZERO, |acc, x| acc.saturating_add(x));
-
-        let user_collateral = U256::from_str(&user_row.collateral)
+        let total_collateral = U256::from_str(&user_row.collateral)
             .map_err(|_| rpc::invalid_params_error("invalid collateral value"))?;
-        let locked_total = locked_deposit.saturating_add(locked_withdrawals);
+        let current_locked = U256::from_str(&user_row.locked_collateral)
+            .map_err(|_| rpc::invalid_params_error("invalid locked collateral value"))?;
 
-        if locked_total.saturating_add(amount) > user_collateral {
-            return Err(rpc::invalid_params_error("Not enough deposit"));
+        let free_collateral = total_collateral
+            .checked_sub(current_locked)
+            .unwrap_or(U256::ZERO);
+        if free_collateral < amount {
+            return Err(rpc::invalid_params_error("Not enough free collateral"));
         }
+        let new_locked = current_locked
+            .checked_add(amount)
+            .ok_or_else(|| rpc::invalid_params_error("overflow on locked collateral"))?;
 
-        let bumped = repo::bump_user_version(&self.persist_ctx, user_addr, user_row.version)
-            .await
-            .map_err(|e| {
-                error!("DB error: {e}");
-                rpc::internal_error()
-            })?;
+        let bumped = repo::update_user_lock_and_version(
+            &self.persist_ctx,
+            user_addr,
+            user_row.version,
+            new_locked,
+        )
+        .await
+        .map_err(|e| {
+            error!("DB error: {e}");
+            rpc::internal_error()
+        })?;
+
         if !bumped {
             return Err(rpc::invalid_params_error("Conflicting transactions"));
         }
+
         Ok(())
     }
-
     async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> RpcResult<BLSCert> {
         let claims = PaymentGuaranteeClaims {
             user_address: promise.user_address.clone(),
