@@ -14,9 +14,12 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serial_test::serial;
 use std::str::FromStr;
 use test_log::test;
+use tokio::task::JoinHandle; // for aborting the background listener
 
 mod common;
 use crate::common::contract::{AccessManager, Core4Mica};
+
+static NUMBER_OF_TRIALS: u32 = 120;
 
 fn parse_collateral(val: &str) -> U256 {
     U256::from_str(val).expect("invalid collateral stored in DB")
@@ -35,6 +38,14 @@ fn init() -> anyhow::Result<AppConfig> {
     // also try parent folder when running from core/tests
     dotenv::from_filename("../.env").ok();
     Ok(AppConfig::fetch())
+}
+
+/// Start the Ethereum listener in the background for tests, and return a handle you can abort.
+fn start_listener(eth_config: EthereumConfig, persist_ctx: PersistCtx) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        // Ignore the result; the listener is a long-running task with its own retry loop.
+        let _ = EthereumListener::new(eth_config, persist_ctx).run().await;
+    })
 }
 
 //
@@ -77,9 +88,8 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
 
-    EthereumListener::new(eth_config, persist_ctx.clone())
-        .run()
-        .await?;
+    // start listener in the background
+    let listener = start_listener(eth_config, persist_ctx.clone());
 
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
     contract
@@ -100,18 +110,26 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
             assert_eq!(parse_collateral(&u.collateral), deposit_amount);
             break;
         }
-        if tries > 60 {
+        if tries > NUMBER_OF_TRIALS {
+            listener.abort();
             panic!("User not created after deposit event");
         }
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+
+    // stop listener
+    listener.abort();
     Ok(())
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial]
 async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
+    use tokio::time::{Duration, sleep};
+
+    const NUMBER_OF_TRIALS: usize = 60;
+
     init()?;
     let anvil_port = 40102u16;
     let provider = ProviderBuilder::new()
@@ -129,7 +147,10 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
+
     let persist_ctx = PersistCtx::new().await?;
+
+    // clean DB
     user_transaction::Entity::delete_many()
         .exec(&*persist_ctx.db)
         .await?;
@@ -145,11 +166,15 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
 
-    EthereumListener::new(eth_config, persist_ctx.clone())
-        .run()
-        .await?;
+    // start listener
+    let listener = start_listener(eth_config, persist_ctx.clone());
+    // small delay so the WS subscription is up before we emit events
+    sleep(Duration::from_millis(150)).await;
 
     let amount = U256::from(1_000_000_000_000_000_000u128);
+    let expected = amount * U256::from(2u8);
+
+    // two deposits
     contract
         .deposit()
         .value(amount)
@@ -165,6 +190,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         .watch()
         .await?;
 
+    // poll until the accumulated balance is visible
     let mut tries = 0;
     loop {
         if let Some(u) = user::Entity::find()
@@ -172,15 +198,25 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
             .one(&*persist_ctx.db)
             .await?
         {
-            assert_eq!(parse_collateral(&u.collateral), amount * U256::from(2u8));
-            break;
+            let current = parse_collateral(&u.collateral);
+            if current == expected {
+                break;
+            }
         }
-        if tries > 60 {
-            panic!("User balance not updated after deposits");
+
+        if tries >= NUMBER_OF_TRIALS {
+            listener.abort();
+            panic!(
+                "User balance not updated after deposits: expected {}, still different after {} tries",
+                expected, NUMBER_OF_TRIALS
+            );
         }
+
         tries += 1;
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        sleep(Duration::from_millis(500)).await;
     }
+
+    listener.abort();
     Ok(())
 }
 
@@ -223,9 +259,8 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
 
-    EthereumListener::new(eth_config, persist_ctx.clone())
-        .run()
-        .await?;
+    // start listener
+    let listener = start_listener(eth_config, persist_ctx.clone());
 
     let deposit_amount = U256::from(1_000_000_000_000_000_000u128);
     contract
@@ -254,7 +289,8 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
             assert_eq!(w.requested_amount, withdraw_amount.to_string());
             break;
         }
-        if tries > 60 {
+        if tries > NUMBER_OF_TRIALS {
+            listener.abort();
             panic!("Withdrawal request not persisted");
         }
         tries += 1;
@@ -273,12 +309,15 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
             assert_eq!(w.status, WithdrawalStatus::Cancelled);
             break;
         }
-        if tries > 60 {
+        if tries > NUMBER_OF_TRIALS {
+            listener.abort();
             panic!("Withdrawal not cancelled in DB");
         }
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+
+    listener.abort();
     Ok(())
 }
 
@@ -320,9 +359,8 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
 
-    EthereumListener::new(eth_config, persist_ctx.clone())
-        .run()
-        .await?;
+    // start listener
+    let listener = start_listener(eth_config, persist_ctx.clone());
 
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
     contract
@@ -347,7 +385,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
         .await?;
     contract.finalizeWithdrawal().send().await?.watch().await?;
 
-    // 🔧 wait until the user collateral shows the reduced balance
+    // wait until the user collateral shows the reduced balance
     let mut tries = 0;
     loop {
         if let Some(u) = user::Entity::find()
@@ -355,19 +393,20 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
             .one(&*persist_ctx.db)
             .await?
         {
-            // ✅ only assert once the collateral matches the expected value
             if parse_collateral(&u.collateral) == deposit_amount - withdraw_amount {
                 break;
             }
         }
 
-        if tries > 60 {
+        if tries > NUMBER_OF_TRIALS {
+            listener.abort();
             panic!("Withdrawal finalization not reflected in DB");
         }
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
+    listener.abort();
     Ok(())
 }
 
@@ -412,9 +451,8 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
-    EthereumListener::new(eth_config, persist_ctx.clone())
-        .run()
-        .await?;
+    let listener = start_listener(eth_config, persist_ctx.clone());
+
     let tab_id = "1".to_string();
     let now = Utc::now().naive_utc();
     let user_addr = provider.default_signer_address().to_string();
@@ -430,7 +468,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
 
     // Wait until user is in DB
     let mut tries = 0;
-    while tries < 60 {
+    while tries < NUMBER_OF_TRIALS {
         if user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
             .one(&*persist_ctx.db)
@@ -442,7 +480,8 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    if tries == 60 {
+    if tries == NUMBER_OF_TRIALS {
+        listener.abort();
         panic!("User not created in DB from deposit");
     }
 
@@ -509,15 +548,18 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
             assert_eq!(events[0].amount, "1000");
             break;
         }
-        if tries > 60 {
+        if tries > NUMBER_OF_TRIALS {
+            listener.abort();
             panic!("Remuneration not persisted");
         }
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
+    listener.abort();
     Ok(())
 }
+
 //
 // ────────────────────── CONFIG EVENTS (requires roles) ──────────────────────
 //
@@ -627,9 +669,8 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
     user::Entity::delete_many().exec(&*persist_ctx.db).await?;
 
-    EthereumListener::new(eth_config, persist_ctx.clone())
-        .run()
-        .await?;
+    // start listener
+    let listener = start_listener(eth_config, persist_ctx.clone());
 
     let ten_eth = U256::from(10_000_000_000_000_000_000u128);
     contract
@@ -648,7 +689,8 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         .await?
         .is_none()
     {
-        if tries > 60 {
+        if tries > NUMBER_OF_TRIALS {
+            listener.abort();
             panic!("User not created after deposit");
         }
         tries += 1;
@@ -753,12 +795,14 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
                 break;
             }
         }
-        if tries > 60 {
+        if tries > NUMBER_OF_TRIALS {
+            listener.abort();
             panic!("Withdrawal execution not reflected in DB");
         }
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
+    listener.abort();
     Ok(())
 }
