@@ -10,6 +10,9 @@ pub enum BlockchainListenerError {
     #[error("Tab not found: {0}")]
     TabNotFound(String),
 
+    #[error("User not found: {0}")]
+    UserNotFound(String),
+
     /// Any other unexpected error.
     #[error("Unexpected error: {0}")]
     Other(#[from] anyhow::Error),
