@@ -168,9 +168,7 @@ impl EthereumListener {
         info!("[EthereumListener] RecipientRemunerated: tab={tab_id}, amount={amount}");
 
         let tab_id_str = tab_id.to_string();
-        let maybe_user_addr = Self::find_user_address(persist_ctx, &tab_id_str).await?;
-        let _user_addr = maybe_user_addr
-            .ok_or_else(|| BlockchainListenerError::TabNotFound(tab_id_str.clone()))?;
+        let _user_addr = Self::find_user_address(persist_ctx, &tab_id_str).await?;
 
         repo::remunerate_recipient(persist_ctx, tab_id_str, *amount).await?;
         Ok(())
@@ -252,10 +250,12 @@ impl EthereumListener {
     async fn find_user_address(
         persist_ctx: &PersistCtx,
         tab_id: &str,
-    ) -> Result<Option<String>, BlockchainListenerError> {
+    ) -> Result<String, BlockchainListenerError> {
         let tab = tabs::Entity::find_by_id(tab_id.to_owned())
             .one(&*persist_ctx.db)
             .await?;
-        Ok(tab.map(|t| t.user_address))
+        Ok(tab
+            .map(|t| t.user_address)
+            .ok_or_else(|| BlockchainListenerError::UserNotFound(tab_id.to_owned()))?)
     }
 }
