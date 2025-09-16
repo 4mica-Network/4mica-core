@@ -76,21 +76,10 @@ impl CoreService {
         txtools::validate_transaction(tx, user, recipient, amount)
     }
 
-    async fn handle_promise(
-        &self,
-        transaction_id: String,
-        promise: PaymentGuaranteeClaims,
-    ) -> RpcResult<BLSCert> {
-        info!(
-            "Issuing guarantee for user: {}, recipient: {}, tab_id: {}, req_id: {}, amount: {}",
-            promise.user_address,
-            promise.recipient_address,
-            promise.tab_id,
-            promise.req_id,
-            promise.amount
-        );
+    async fn handle_promise(&self, promise: PaymentGuaranteeClaims) -> RpcResult<BLSCert> {
+        info!("Received guarantee request for promise: {:?}", promise);
 
-        self.check_free_collateral_for_tx(&promise.user_address, &transaction_id, promise.amount)
+        self.check_free_collateral_for_tx(&promise.user_address, promise.amount)
             .await?;
         let guarantee = self.create_guarantee(&promise).await?;
         self.persist_guarantee(&promise, &guarantee).await?;
@@ -101,7 +90,6 @@ impl CoreService {
     async fn check_free_collateral_for_tx(
         &self,
         user_address: &str,
-        _tx_id: &str,
         amount: U256,
     ) -> RpcResult<()> {
         let user = match repo::get_user(&self.persist_ctx, user_address).await {
@@ -252,7 +240,6 @@ impl CoreApiServer for CoreService {
         recipient_addr: String,
         tab_id: String,
         req_id: String,
-        transaction_id: String,
         amount: U256,
     ) -> RpcResult<BLSCert> {
         let promise = PaymentGuaranteeClaims {
@@ -263,7 +250,7 @@ impl CoreApiServer for CoreService {
             amount,
             timestamp: Utc::now().timestamp() as u64,
         };
-        self.handle_promise(transaction_id, promise).await
+        self.handle_promise(promise).await
     }
 
     async fn get_transactions_by_hash(
