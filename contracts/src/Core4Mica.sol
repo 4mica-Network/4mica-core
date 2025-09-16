@@ -172,7 +172,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     function remunerate(
         Guarantee calldata g,
-        bytes32[3] calldata signature
+        BLS.G2Point calldata signature
     )
         external
         nonReentrant
@@ -196,8 +196,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert TabAlreadyPaid();
 
         // 5. Verify signature
-        // TODO(#16): verify signature
-        if (signature[0] != 0 || signature[1] != 0 || signature[2] != 0)
+        if (!verifyGuaranteeSignature(g, signature))
             revert InvalidSignature();
 
         // 6. Client must have sufficient funds
