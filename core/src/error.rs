@@ -62,6 +62,9 @@ pub enum PersistDbError {
     #[error("Tab not found: {0}")]
     TabNotFound(String),
 
+    #[error("Transaction not found: {0}")]
+    TransactionNotFound(String),
+
     #[error("Invalid timestamp: {0}")]
     InvalidTimestamp(i64),
 

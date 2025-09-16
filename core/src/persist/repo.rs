@@ -262,12 +262,21 @@ pub async fn fail_transaction(
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                let Some(tx_row) = user_transaction::Entity::find_by_id(transaction_id.clone())
+                let tx_row = match user_transaction::Entity::find_by_id(transaction_id.clone())
                     .one(txn)
                     .await?
-                else {
-                    return Ok(());
+                {
+                    Some(row) => row,
+                    None => {
+                        // ← Proper domain error instead of silent success
+                        return Err(PersistDbError::TransactionNotFound(transaction_id));
+                    }
                 };
+
+                if tx_row.user_address != user_address {
+                    return Err(PersistDbError::UserNotFound(user_address));
+                    // or define a dedicated TransactionUserMismatch(...) error
+                }
 
                 if tx_row.failed {
                     // Already failed → idempotent
