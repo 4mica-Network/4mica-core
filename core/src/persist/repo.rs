@@ -1,7 +1,7 @@
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use anyhow::Result;
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use entities::{
     collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
@@ -130,7 +130,11 @@ pub async fn request_withdrawal(
         .single()
         .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {}", when))?
         .naive_utc();
-
+    if ts > now + Duration::minutes(2) {
+        return Err(anyhow::anyhow!(
+            "timestamp too far in the future (max 2 minutes)"
+        ));
+    }
     let withdrawal_model = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
         user_address: Set(user_address),
