@@ -1,9 +1,11 @@
 use alloy::primitives::U256;
+use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use entities::{user, user_transaction};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
 use uuid::Uuid;
 
@@ -12,11 +14,36 @@ fn init() -> anyhow::Result<AppConfig> {
     Ok(AppConfig::fetch())
 }
 
+// Ensure a user row exists (idempotent)
+async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
+    let now = Utc::now().naive_utc();
+    let am = entities::user::ActiveModel {
+        address: Set(addr.to_string()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("0".to_string()),
+        locked_collateral: Set("0".to_string()),
+        ..Default::default()
+    };
+    user::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(&*ctx.db)
+        .await?;
+    Ok(())
+}
+
 #[test(tokio::test)]
 async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     let tx_id = Uuid::new_v4().to_string();
@@ -53,6 +80,8 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
 
     let tx_id = Uuid::new_v4().to_string();
@@ -83,6 +112,8 @@ async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(9u64)).await?;
 
     let tx_id = Uuid::new_v4().to_string();

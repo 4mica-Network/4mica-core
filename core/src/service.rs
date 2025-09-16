@@ -1,8 +1,7 @@
 use crate::config::AppConfig;
+use crate::error::PersistDbError;
 use crate::ethereum::EthereumListener;
-use crate::persist::repo;
-use crate::persist::{IntoUserTxInfo, PersistCtx};
-
+use crate::persist::{IntoUserTxInfo, PersistCtx, repo};
 use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
 };
@@ -101,27 +100,27 @@ impl CoreService {
     /// Check user free collateral & optimistic lock using repo helpers only.
     async fn check_free_collateral_for_tx(
         &self,
-        user_addr: &str,
+        user_address: &str,
         _tx_id: &str,
         amount: U256,
     ) -> RpcResult<()> {
-        let Some(user_row) = repo::get_user(&self.persist_ctx, user_addr.to_string())
-            .await
-            .map_err(|e| {
+        let user = match repo::get_user(&self.persist_ctx, user_address).await {
+            Ok(u) => u,
+            Err(PersistDbError::UserNotFound(_)) => {
+                return Err(rpc::invalid_params_error("User not registered"));
+            }
+            Err(e) => {
                 error!("DB error: {e}");
-                rpc::internal_error()
-            })?
-        else {
-            return Err(rpc::invalid_params_error("User not registered"));
+                return Err(rpc::internal_error());
+            }
         };
-        let total_collateral = U256::from_str(&user_row.collateral)
+
+        let total_collateral = U256::from_str(&user.collateral)
             .map_err(|_| rpc::invalid_params_error("invalid collateral value"))?;
-        let current_locked = U256::from_str(&user_row.locked_collateral)
+        let current_locked = U256::from_str(&user.locked_collateral)
             .map_err(|_| rpc::invalid_params_error("invalid locked collateral value"))?;
 
-        let free_collateral = total_collateral
-            .checked_sub(current_locked)
-            .unwrap_or(U256::ZERO);
+        let free_collateral = total_collateral.saturating_sub(current_locked);
         if free_collateral < amount {
             return Err(rpc::invalid_params_error("Not enough free collateral"));
         }
@@ -131,8 +130,8 @@ impl CoreService {
 
         let bumped = repo::update_user_lock_and_version(
             &self.persist_ctx,
-            user_addr,
-            user_row.version,
+            user_address,
+            user.version,
             new_locked,
         )
         .await
@@ -142,11 +141,11 @@ impl CoreService {
         })?;
 
         if !bumped {
-            return Err(rpc::invalid_params_error("Conflicting transactions"));
+            return Err(rpc::invalid_params_error("Invalid parameters"));
         }
-
         Ok(())
     }
+
     async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> RpcResult<BLSCert> {
         let claims = PaymentGuaranteeClaims {
             user_address: promise.user_address.clone(),
@@ -196,8 +195,8 @@ impl CoreApiServer for CoreService {
         Ok(self.public_params.clone())
     }
 
-    async fn deposit(&self, user_addr: String, amount: U256) -> RpcResult<()> {
-        repo::deposit(&self.persist_ctx, user_addr, amount)
+    async fn deposit(&self, user_address: String, amount: U256) -> RpcResult<()> {
+        repo::deposit(&self.persist_ctx, user_address, amount)
             .await
             .map_err(|err| {
                 error!("Failed to deposit: {err}");
@@ -206,18 +205,16 @@ impl CoreApiServer for CoreService {
         Ok(())
     }
 
-    async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
-        let Some(user) = repo::get_user(&self.persist_ctx, user_addr.clone())
-            .await
-            .map_err(|err| {
+    async fn get_user(&self, user_address: String) -> RpcResult<Option<UserInfo>> {
+        let user = match repo::get_user(&self.persist_ctx, &user_address).await {
+            Ok(u) => u,
+            Err(PersistDbError::UserNotFound(_)) => return Ok(None),
+            Err(err) => {
                 error!("Failed to get user: {err}");
-                rpc::internal_error()
-            })?
-        else {
-            return Ok(None);
+                return Err(rpc::internal_error());
+            }
         };
-
-        let transactions = repo::get_user_transactions(&self.persist_ctx, &user_addr)
+        let transactions = repo::get_user_transactions(&self.persist_ctx, &user_address)
             .await
             .map_err(|err| {
                 error!("Failed to load user transactions: {err}");
@@ -249,7 +246,7 @@ impl CoreApiServer for CoreService {
 
     async fn issue_guarantee(
         &self,
-        user_addr: String,
+        user_address: String,
         recipient_addr: String,
         tab_id: String,
         req_id: String,
@@ -257,7 +254,7 @@ impl CoreApiServer for CoreService {
         amount: U256,
     ) -> RpcResult<BLSCert> {
         let promise = PaymentGuaranteeClaims {
-            user_address: user_addr,
+            user_address: user_address,
             recipient_address: recipient_addr,
             tab_id,
             req_id,

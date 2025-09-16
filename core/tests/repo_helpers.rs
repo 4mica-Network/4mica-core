@@ -1,16 +1,41 @@
 use alloy::primitives::U256;
+use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use entities::sea_orm_active_enums::WithdrawalStatus;
 use entities::user;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
 use uuid::Uuid;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
     Ok(AppConfig::fetch())
+}
+
+// Ensure a user row exists (idempotent)
+async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
+    let now = Utc::now().naive_utc();
+    let am = entities::user::ActiveModel {
+        address: Set(addr.to_string()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("0".to_string()),
+        locked_collateral: Set("0".to_string()),
+        ..Default::default()
+    };
+    user::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(&*ctx.db)
+        .await?;
+    Ok(())
 }
 
 /// Ensure get_user_transactions only returns transactions for the given user.
@@ -21,6 +46,9 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
     let user_addr = Uuid::new_v4().to_string();
     let other_user = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
+    ensure_user(&ctx, &other_user).await?;
 
     repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
     repo::deposit(&ctx, other_user.clone(), U256::from(10)).await?;
@@ -58,6 +86,8 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
     let recipient = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
 
     let tx_id_1 = Uuid::new_v4().to_string();
@@ -96,6 +126,8 @@ async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(20)).await?;
 
     let when = chrono::Utc::now().timestamp();
@@ -120,6 +152,8 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(1)).await?;
 
     let u = user::Entity::find()

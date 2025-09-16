@@ -10,6 +10,7 @@ use core_service::ethereum::EthereumListener;
 use core_service::persist::PersistCtx;
 use entities::sea_orm_active_enums::*;
 use entities::*;
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serial_test::serial;
 use std::str::FromStr;
@@ -46,6 +47,29 @@ fn start_listener(eth_config: EthereumConfig, persist_ctx: PersistCtx) -> JoinHa
         // Ignore the result; the listener is a long-running task with its own retry loop.
         let _ = EthereumListener::new(eth_config, persist_ctx).run().await;
     })
+}
+
+/// Ensure a user row exists (idempotent).
+async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
+    let now = Utc::now().naive_utc();
+    let am = user::ActiveModel {
+        address: Set(addr.to_string()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("0".to_string()),
+        locked_collateral: Set("0".to_string()),
+        ..Default::default()
+    };
+    user::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(&*persist_ctx.db)
+        .await?;
+    Ok(())
 }
 
 //
@@ -91,6 +115,9 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     // start listener in the background
     let listener = start_listener(eth_config, persist_ctx.clone());
 
+    // strictly ensure user exists before a deposit event is processed
+    ensure_user(&persist_ctx, &user_addr).await?;
+
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
     contract
         .deposit()
@@ -112,7 +139,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         }
         if tries > NUMBER_OF_TRIALS {
             listener.abort();
-            panic!("User not created after deposit event");
+            panic!("User not updated after deposit event");
         }
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -170,6 +197,9 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     let listener = start_listener(eth_config, persist_ctx.clone());
     // small delay so the WS subscription is up before we emit events
     sleep(Duration::from_millis(150)).await;
+
+    // strictly ensure user exists before deposit events
+    ensure_user(&persist_ctx, &user_addr).await?;
 
     let amount = U256::from(1_000_000_000_000_000_000u128);
     let expected = amount * U256::from(2u8);
@@ -261,6 +291,9 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
 
     // start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
+
+    // ensure user exists before deposit/withdrawal events
+    ensure_user(&persist_ctx, &user_addr).await?;
 
     let deposit_amount = U256::from(1_000_000_000_000_000_000u128);
     contract
@@ -362,6 +395,9 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     // start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
 
+    // ensure user exists before deposit/withdrawal events
+    ensure_user(&persist_ctx, &user_addr).await?;
+
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
     contract
         .deposit()
@@ -457,7 +493,10 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
     let user_addr = provider.default_signer_address().to_string();
 
-    // Deposit so listener creates the user
+    // ensure user exists before deposit/remuneration events
+    ensure_user(&persist_ctx, &user_addr).await?;
+
+    // Deposit so listener updates the user
     contract
         .deposit()
         .value(U256::from(10_000u64))
@@ -466,23 +505,22 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         .watch()
         .await?;
 
-    // Wait until user is in DB
+    // Wait until collateral is non-zero
     let mut tries = 0;
-    while tries < NUMBER_OF_TRIALS {
-        if user::Entity::find()
-            .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
-            .await?
-            .is_some()
-        {
+    while let Some(u) = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*persist_ctx.db)
+        .await?
+    {
+        if parse_collateral(&u.collateral) > U256::ZERO {
             break;
         }
         tries += 1;
+        if tries == NUMBER_OF_TRIALS {
+            listener.abort();
+            panic!("User not updated in DB from deposit");
+        }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-    if tries == NUMBER_OF_TRIALS {
-        listener.abort();
-        panic!("User not created in DB from deposit");
     }
 
     // Insert only the tab
@@ -672,6 +710,9 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     // start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
 
+    // ensure user exists before deposit/remunerate/withdraw events
+    ensure_user(&persist_ctx, &user_addr).await?;
+
     let ten_eth = U256::from(10_000_000_000_000_000_000u128);
     contract
         .deposit()
@@ -681,17 +722,19 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         .watch()
         .await?;
 
-    // Wait until user is persisted
+    // Wait until user has collateral
     let mut tries = 0;
-    while user::Entity::find()
+    while let Some(u) = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
         .one(&*persist_ctx.db)
         .await?
-        .is_none()
     {
+        if parse_collateral(&u.collateral) == ten_eth {
+            break;
+        }
         if tries > NUMBER_OF_TRIALS {
             listener.abort();
-            panic!("User not created after deposit");
+            panic!("User not updated after deposit");
         }
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -736,8 +779,6 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;
 
     // Advance time so the tab is OVERDUE but NOT EXPIRED relative to tab_ts.
-    // We must move at least sync_delay + grace after the withdrawal request,
-    // so that:  block.timestamp ≥ tab_ts + remunerationGracePeriod.
     let jump = sync_delay + grace + 3600; // +1h safety margin
     provider.anvil_increase_time(jump as u64).await?;
     provider.anvil_mine(Some(1), None).await?;

@@ -47,6 +47,9 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
         .exec(&*ctx.db)
         .await?;
 
+    // Fund user so remuneration of 10 passes strict checks
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+
     repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(10u64)).await?;
 
     let events = collateral_event::Entity::find()
@@ -107,7 +110,9 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         .exec(&*ctx.db)
         .await?;
 
+    // 0 amount requires only that user exists (already inserted)
     repo::remunerate_recipient(&ctx, tab_id.clone(), U256::ZERO).await?;
+    // Duplicate remuneration is a no-op due to idempotency
     repo::remunerate_recipient(&ctx, tab_id.clone(), U256::ZERO).await?;
 
     let events = collateral_event::Entity::find()
@@ -131,7 +136,6 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),
         locked_collateral: Set("0".into()),
-
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
@@ -155,7 +159,11 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         .exec(&*ctx.db)
         .await?;
 
+    // Fund for the first remuneration to succeed
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+
     repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(10u64)).await?;
+    // Second call is a no-op (idempotent), even if amount differs
     repo::remunerate_recipient(&ctx, tab_id.clone(), U256::from(20u64)).await?;
 
     let events = collateral_event::Entity::find()
