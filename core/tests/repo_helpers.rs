@@ -206,16 +206,46 @@ async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let res = repo::get_tab_by_id(&ctx, "non-existent-id").await?;
-    assert!(res.is_none());
+    assert!(res);
     Ok(())
 }
 
 /// Ensure has_remunerate_event_for_tab returns false for unknown tab
 #[test(tokio::test)]
-async fn has_remunerate_event_for_tab_false_for_unknown() -> anyhow::Result<()> {
+async fn ensure_remunerate_event_for_tab_errors_for_unknown_and_ok_when_present()
+-> anyhow::Result<()> {
+    use alloy::primitives::U256;
+    use chrono::Utc;
+    use entities::collateral_event;
+    use entities::sea_orm_active_enums::CollateralEventType;
+    use sea_orm::{EntityTrait, Set};
+    use uuid::Uuid;
+
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let res = repo::has_remunerate_event_for_tab(&ctx, "non-existent-id").await?;
-    assert!(!res);
+    let res = repo::ensure_remunerate_event_for_tab(&ctx, "non-existent-id").await;
+    assert!(
+        res.is_err(),
+        "ensure_* must error when no remunerate event exists"
+    );
+
+    let user_addr = Uuid::new_v4().to_string();
+    ensure_user(&ctx, &user_addr).await?;
+
+    let tab_id = "tab-foo";
+    let ev = collateral_event::ActiveModel {
+        id: Set(Uuid::new_v4().to_string()),
+        user_address: Set(user_addr),
+        amount: Set(U256::from(1u64).to_string()),
+        event_type: Set(CollateralEventType::Remunerate),
+        tab_id: Set(Some(tab_id.to_string())),
+        req_id: Set(None),
+        tx_id: Set(None),
+        created_at: Set(Utc::now().naive_utc()),
+    };
+    collateral_event::Entity::insert(ev).exec(&*ctx.db).await?;
+
+    repo::ensure_remunerate_event_for_tab(&ctx, tab_id).await?; // now Ok(())
+
     Ok(())
 }

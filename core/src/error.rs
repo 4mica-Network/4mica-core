@@ -62,6 +62,9 @@ pub enum PersistDbError {
     #[error("Tab not found: {0}")]
     TabNotFound(String),
 
+    #[error("No remunerate event found for tab {0}")]
+    RemunerateEventNotFound(String),
+
     #[error("Transaction not found: {0}")]
     TransactionNotFound(String),
 
