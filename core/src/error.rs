@@ -77,6 +77,9 @@ pub enum PersistDbError {
     #[error("Insufficient collateral")]
     InsufficientCollateral,
 
+    #[error("No pending withdrawal found for user {user}")]
+    WithdrawalNotFound { user: String },
+
     #[error("Multiple pending withdrawals for user {user} (found {count})")]
     MultiplePendingWithdrawals { user: String, count: usize },
 }
