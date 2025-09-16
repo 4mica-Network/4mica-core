@@ -79,7 +79,7 @@ impl CoreService {
     async fn handle_promise(&self, promise: PaymentGuaranteeClaims) -> RpcResult<BLSCert> {
         info!("Received guarantee request for promise: {:?}", promise);
 
-        self.check_free_collateral_for_tx(&promise.user_address, promise.amount)
+        self.locked_collateral(&promise.user_address, promise.amount)
             .await?;
         let guarantee = self.create_guarantee(&promise).await?;
         self.persist_guarantee(&promise, &guarantee).await?;
@@ -87,11 +87,7 @@ impl CoreService {
     }
 
     /// Check user free collateral & optimistic lock using repo helpers only.
-    async fn check_free_collateral_for_tx(
-        &self,
-        user_address: &str,
-        amount: U256,
-    ) -> RpcResult<()> {
+    async fn locked_collateral(&self, user_address: &str, amount: U256) -> RpcResult<()> {
         let user = match repo::get_user(&self.persist_ctx, user_address).await {
             Ok(u) => u,
             Err(PersistDbError::UserNotFound(_)) => {
