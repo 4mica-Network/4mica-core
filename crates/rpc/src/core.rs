@@ -27,7 +27,6 @@ pub trait CoreApi {
         recipient_addr: String,
         tab_id: String,
         req_id: String,
-        transaction_id: String,
         amount: U256,
     ) -> RpcResult<BLSCert>;
 
