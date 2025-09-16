@@ -324,19 +324,21 @@ pub async fn get_transactions_by_hash(
     ctx: &PersistCtx,
     hashes: Vec<String>,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
-    Ok(user_transaction::Entity::find()
+    let rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.is_in(hashes))
         .all(&*ctx.db)
-        .await?)
+        .await?;
+    Ok(rows)
 }
 
 pub async fn get_unfinalized_transactions(
     ctx: &PersistCtx,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
-    Ok(user_transaction::Entity::find()
+    let rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::Finalized.eq(false))
         .all(&*ctx.db)
-        .await?)
+        .await?;
+    Ok(rows)
 }
 
 //
@@ -405,11 +407,12 @@ pub async fn get_guarantee(
     tab_id: String,
     req_id: String,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
-    Ok(guarantee::Entity::find()
+    let res = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
         .filter(guarantee::Column::ReqId.eq(req_id))
         .one(&*ctx.db)
-        .await?)
+        .await?;
+    Ok(res)
 }
 
 //
@@ -486,10 +489,11 @@ pub async fn get_user_transactions(
     ctx: &PersistCtx,
     user_address: &str,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
-    Ok(user_transaction::Entity::find()
+    let rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::UserAddress.eq(user_address))
         .all(&*ctx.db)
-        .await?)
+        .await?;
+    Ok(rows)
 }
 
 /// Fetch unfinalized transactions for a user
@@ -506,7 +510,8 @@ pub async fn get_unfinalized_transactions_for_user(
         query = query.filter(user_transaction::Column::TxId.ne(exclude));
     }
 
-    Ok(query.all(&*ctx.db).await?)
+    let rows = query.all(&*ctx.db).await?;
+    Ok(rows)
 }
 
 /// Fetch pending withdrawals for a user
@@ -514,11 +519,12 @@ pub async fn get_pending_withdrawals_for_user(
     ctx: &PersistCtx,
     user_address: &str,
 ) -> Result<Vec<withdrawal::Model>, PersistDbError> {
-    Ok(withdrawal::Entity::find()
+    let rows = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_address))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
         .all(&*ctx.db)
-        .await?)
+        .await?;
+    Ok(rows)
 }
 
 /// Optimistic version bump – returns true if bumped, false if conflict
@@ -547,9 +553,10 @@ pub async fn get_tab_by_id(
     ctx: &PersistCtx,
     tab_id: &str,
 ) -> Result<Option<entities::tabs::Model>, PersistDbError> {
-    Ok(entities::tabs::Entity::find_by_id(tab_id.to_string())
+    let res = entities::tabs::Entity::find_by_id(tab_id.to_string())
         .one(&*ctx.db)
-        .await?)
+        .await?;
+    Ok(res)
 }
 
 /// Check if a Remunerate event already exists for a tab
