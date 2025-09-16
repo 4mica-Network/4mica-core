@@ -130,11 +130,6 @@ pub async fn request_withdrawal(
         .single()
         .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {}", when))?
         .naive_utc();
-    if ts > now + Duration::minutes(2) {
-        return Err(anyhow::anyhow!(
-            "timestamp too far in the future (max 2 minutes)"
-        ));
-    }
     let withdrawal_model = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
         user_address: Set(user_address),
@@ -415,7 +410,7 @@ pub async fn store_guarantee(
         to_address: Set(to_addr),
         value: Set(value.to_string()),
         start_ts: Set(start_ts),
-        cert: Set(Some(cert)),
+        cert: Set(cert),
         created_at: Set(now),
         updated_at: Set(now),
     };
