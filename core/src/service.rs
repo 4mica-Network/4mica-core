@@ -2,7 +2,7 @@ use crate::{
     config::AppConfig,
     error::PersistDbError,
     ethereum::EthereumListener,
-    persist::{IntoUserTxInfo, PersistCtx, repo},
+    persist::{PersistCtx, repo},
 };
 use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
@@ -326,55 +326,6 @@ impl CoreApiServer for CoreService {
     async fn get_public_params(&self) -> RpcResult<CorePublicParameters> {
         Ok(self.public_params.clone())
     }
-
-    async fn deposit(&self, user_address: String, amount: U256) -> RpcResult<()> {
-        repo::deposit(&self.persist_ctx, user_address, amount)
-            .await
-            .map_err(|err| {
-                error!("Failed to deposit: {err}");
-                rpc::internal_error()
-            })?;
-        Ok(())
-    }
-
-    async fn get_user(&self, user_address: String) -> RpcResult<Option<UserInfo>> {
-        let user = match repo::get_user(&self.persist_ctx, &user_address).await {
-            Ok(u) => u,
-            Err(PersistDbError::UserNotFound(_)) => return Ok(None),
-            Err(err) => {
-                error!("Failed to get user: {err}");
-                return Err(rpc::internal_error());
-            }
-        };
-        let transactions = repo::get_user_transactions(&self.persist_ctx, &user_address)
-            .await
-            .map_err(|err| {
-                error!("Failed to load user transactions: {err}");
-                rpc::internal_error()
-            })?;
-
-        let not_usable = U256::from_str(&user.locked_collateral).map_err(|e| {
-            error!("Invalid locked collateral value: {e}");
-            rpc::internal_error()
-        })?;
-
-        let collateral: U256 = U256::from_str(&user.collateral).map_err(|e| {
-            error!("Invalid collateral value: {e}");
-            rpc::internal_error()
-        })?;
-        let available = collateral.saturating_sub(not_usable);
-
-        Ok(Some(UserInfo {
-            collateral,
-            available_collateral: available,
-            guarantees: vec![],
-            transactions: transactions
-                .into_iter()
-                .map(|tx| tx.into_user_tx_info())
-                .collect(),
-        }))
-    }
-
     async fn issue_guarantee(
         &self,
         user_address: String,
@@ -392,21 +343,5 @@ impl CoreApiServer for CoreService {
             timestamp: Utc::now().timestamp() as u64,
         };
         self.handle_promise(promise).await
-    }
-
-    async fn get_transactions_by_hash(
-        &self,
-        hashes: Vec<String>,
-    ) -> RpcResult<Vec<UserTransactionInfo>> {
-        let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
-            .await
-            .map_err(|err| {
-                error!("Failed to get transactions {err}");
-                rpc::internal_error()
-            })?;
-        Ok(transactions
-            .into_iter()
-            .map(|tx| tx.into_user_tx_info())
-            .collect())
     }
 }
