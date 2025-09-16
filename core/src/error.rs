@@ -82,4 +82,10 @@ pub enum PersistDbError {
 
     #[error("Multiple pending withdrawals for user {user} (found {count})")]
     MultiplePendingWithdrawals { user: String, count: usize },
+
+    #[error("optimistic lock conflict for user {user}, expected version {expected_version}")]
+    OptimisticLockConflict { user: String, expected_version: i32 },
+
+    #[error("invariant violation: {0}")]
+    InvariantViolation(String),
 }
