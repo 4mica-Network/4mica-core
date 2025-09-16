@@ -156,7 +156,6 @@ impl CoreService {
             error!("Failed to serialize the payment guarantee cert: {err}");
             rpc::internal_error()
         })?;
-        let now = Utc::now().naive_utc();
         repo::store_guarantee(
             &self.persist_ctx,
             promise.tab_id.clone(),
@@ -164,7 +163,7 @@ impl CoreService {
             promise.user_address.clone(),
             promise.recipient_address.clone(),
             promise.amount,
-            now,
+            Utc::now().naive_utc(),
             cert_str,
         )
         .await
@@ -207,11 +206,10 @@ impl CoreApiServer for CoreService {
                 rpc::internal_error()
             })?;
 
-        let not_usable: U256 = transactions
-            .iter()
-            .filter(|tx| !tx.finalized)
-            .map(|tx| U256::from_str(&tx.amount).unwrap_or(U256::ZERO))
-            .fold(U256::ZERO, |acc, x| acc.saturating_add(x));
+        let not_usable = U256::from_str(&user.locked_collateral).map_err(|e| {
+            error!("Invalid locked collateral value: {e}");
+            rpc::internal_error()
+        })?;
 
         let collateral: U256 = U256::from_str(&user.collateral).map_err(|e| {
             error!("Invalid collateral value: {e}");
