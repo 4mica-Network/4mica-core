@@ -1,20 +1,19 @@
+use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
-use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use entities::{
     collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     user, user_transaction, withdrawal,
 };
-use log::error;
 use sea_orm::QueryOrder;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
 };
 use std::str::FromStr;
-use thiserror::Error;
+
 //
 // ────────────────────── USER FUNCTIONS ──────────────────────
 //
@@ -22,7 +21,7 @@ use thiserror::Error;
 pub async fn get_user(
     ctx: &PersistCtx,
     user_address: String,
-) -> anyhow::Result<Option<user::Model>> {
+) -> Result<Option<user::Model>, PersistDbError> {
     Ok(user::Entity::find()
         .filter(user::Column::Address.eq(user_address))
         .one(&*ctx.db)
@@ -34,8 +33,12 @@ pub async fn get_user(
 //
 
 /// Deposit: increment collateral and record a CollateralEvent::Deposit for auditability.
-pub async fn deposit(ctx: &PersistCtx, user_address: String, amount: U256) -> anyhow::Result<()> {
-    use sea_orm::ActiveValue::Set;
+pub async fn deposit(
+    ctx: &PersistCtx,
+    user_address: String,
+    amount: U256,
+) -> Result<(), PersistDbError> {
+    use sea_orm::ActiveValue::Set as AvSet;
     let now = Utc::now().naive_utc();
 
     ctx.db
@@ -48,30 +51,31 @@ pub async fn deposit(ctx: &PersistCtx, user_address: String, amount: U256) -> an
                     .await?
                 {
                     // Already exists → update
-                    let current = U256::from_str(&user.collateral).map_err(|e| {
-                        sea_orm::DbErr::Custom(format!("invalid collateral value: {e}"))
-                    })?;
+                    let current = U256::from_str(&user.collateral)
+                        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
-                    let new_collateral = current
-                        .checked_add(amount)
-                        .ok_or(sea_orm::DbErr::Custom("overflow".to_string()))?;
+                    let new_collateral = current.checked_add(amount).ok_or_else(|| {
+                        PersistDbError::DatabaseFailure(sea_orm::DbErr::Custom(
+                            "overflow".to_string(),
+                        ))
+                    })?;
 
                     user.collateral = new_collateral.to_string();
                     user.updated_at = now;
 
                     let mut active_model = user.into_active_model();
-                    active_model.collateral = Set(new_collateral.to_string());
-                    active_model.updated_at = Set(now);
+                    active_model.collateral = AvSet(new_collateral.to_string());
+                    active_model.updated_at = AvSet(now);
                     active_model.update(txn).await?;
                 } else {
                     // First time → insert
                     let insert_user = user::ActiveModel {
-                        address: Set(user_address.clone()),
-                        version: Set(0),
-                        created_at: Set(now),
-                        updated_at: Set(now),
-                        collateral: Set(amount.to_string()),
-                        locked_collateral: Set(U256::ZERO.to_string()),
+                        address: AvSet(user_address.clone()),
+                        version: AvSet(0),
+                        created_at: AvSet(now),
+                        updated_at: AvSet(now),
+                        collateral: AvSet(amount.to_string()),
+                        locked_collateral: AvSet(U256::ZERO.to_string()),
                     };
                     user::Entity::insert(insert_user).exec(txn).await?;
                 }
@@ -79,19 +83,19 @@ pub async fn deposit(ctx: &PersistCtx, user_address: String, amount: U256) -> an
                 // Insert collateral event (even for 0 deposits if you want to log them)
                 if amount > U256::ZERO {
                     let ev = collateral_event::ActiveModel {
-                        id: Set(uuid::Uuid::new_v4().to_string()),
-                        user_address: Set(user_address),
-                        amount: Set(amount.to_string()),
-                        event_type: Set(CollateralEventType::Deposit),
-                        tab_id: Set(None),
-                        req_id: Set(None),
-                        tx_id: Set(None),
-                        created_at: Set(now),
+                        id: AvSet(uuid::Uuid::new_v4().to_string()),
+                        user_address: AvSet(user_address),
+                        amount: AvSet(amount.to_string()),
+                        event_type: AvSet(CollateralEventType::Deposit),
+                        tab_id: AvSet(None),
+                        req_id: AvSet(None),
+                        tx_id: AvSet(None),
+                        created_at: AvSet(now),
                     };
                     collateral_event::Entity::insert(ev).exec(txn).await?;
                 }
 
-                Ok::<_, sea_orm::DbErr>(())
+                Ok::<_, PersistDbError>(())
             })
         })
         .await?;
@@ -108,28 +112,29 @@ pub async fn request_withdrawal(
     user_address: String,
     when: i64,
     amount: U256,
-) -> Result<()> {
+) -> Result<(), PersistDbError> {
     // Ensure user exists and has enough collateral
     let Some(u) = user::Entity::find()
         .filter(user::Column::Address.eq(user_address.clone()))
         .one(&*ctx.db)
         .await?
     else {
-        return Err(anyhow::anyhow!("user not found"));
+        return Err(PersistDbError::UserNotFound(user_address));
     };
 
     let user_collateral = U256::from_str(&u.collateral)
-        .map_err(|e| anyhow::anyhow!("invalid collateral value: {}", e))?;
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
     if amount > user_collateral {
-        return Err(anyhow::anyhow!("insufficient collateral"));
+        return Err(PersistDbError::InsufficientCollateral);
     }
 
     let now = Utc::now().naive_utc();
     let ts = Utc
         .timestamp_opt(when, 0)
         .single()
-        .ok_or_else(|| anyhow::anyhow!("invalid timestamp: {}", when))?
+        .ok_or_else(|| PersistDbError::InvalidTimestamp(when))?
         .naive_utc();
+
     let withdrawal_model = withdrawal::ActiveModel {
         id: Set(uuid::Uuid::new_v4().to_string()),
         user_address: Set(user_address),
@@ -146,7 +151,10 @@ pub async fn request_withdrawal(
     Ok(())
 }
 
-pub async fn cancel_withdrawal(ctx: &PersistCtx, user_address: String) -> Result<()> {
+pub async fn cancel_withdrawal(
+    ctx: &PersistCtx,
+    user_address: String,
+) -> Result<(), PersistDbError> {
     let records = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
@@ -154,32 +162,27 @@ pub async fn cancel_withdrawal(ctx: &PersistCtx, user_address: String) -> Result
         .await?;
 
     match records.len() {
-        0 => {
-            return Ok(());
-        }
+        0 => Ok(()),
         1 => {
             let rec = records.into_iter().next().unwrap();
             let mut active_model = rec.into_active_model();
             active_model.status = Set(WithdrawalStatus::Cancelled);
             active_model.updated_at = Set(Utc::now().naive_utc());
             active_model.update(&*ctx.db).await?;
+            Ok(())
         }
-        n => {
-            error!(
-                "Expected exactly one pending withdrawal for user {}, but found {}",
-                user_address, n
-            );
-        }
+        n => Err(PersistDbError::MultiplePendingWithdrawals {
+            user: user_address,
+            count: n,
+        }),
     }
-
-    Ok(())
 }
 
 pub async fn finalize_withdrawal(
     ctx: &PersistCtx,
     user_address: String,
     executed_amount: U256,
-) -> anyhow::Result<()> {
+) -> Result<(), PersistDbError> {
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
@@ -187,7 +190,7 @@ pub async fn finalize_withdrawal(
                     .filter(user::Column::Address.eq(user_address.clone()))
                     .one(txn)
                     .await?
-                    .ok_or(sea_orm::DbErr::Custom("user not found".into()))?;
+                    .ok_or_else(|| PersistDbError::UserNotFound(user_address.clone()))?;
 
                 if let Some(withdrawal) = withdrawal::Entity::find()
                     .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
@@ -201,10 +204,12 @@ pub async fn finalize_withdrawal(
                 {
                     // subtract only the executed amount
                     let current = U256::from_str(&user.collateral)
-                        .map_err(|e| sea_orm::DbErr::Custom(format!("invalid collateral: {e}")))?;
-                    let new_collateral = current
-                        .checked_sub(executed_amount)
-                        .ok_or(sea_orm::DbErr::Custom("underflow on withdrawal".into()))?;
+                        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+                    if executed_amount > current {
+                        return Err(PersistDbError::InsufficientCollateral);
+                    }
+                    let new_collateral = current - executed_amount;
 
                     let mut am_user = user.into_active_model();
                     am_user.collateral = Set(new_collateral.to_string());
@@ -219,7 +224,7 @@ pub async fn finalize_withdrawal(
                     active_model_withdrawal.update(txn).await?;
                 }
 
-                Ok::<_, sea_orm::DbErr>(())
+                Ok::<_, PersistDbError>(())
             })
         })
         .await?;
@@ -230,37 +235,22 @@ pub async fn finalize_withdrawal(
 // ────────────────────── TRANSACTIONS ──────────────────────
 //
 
-#[derive(Debug, Error)]
-pub enum SubmitPaymentTxnError {
-    #[error("Database error: {0:?}")]
-    Db(#[from] sea_orm::DbErr),
-
-    #[error("User is not registered yet!")]
-    UserNotRegistered,
-
-    #[error("Not enough deposit available!")]
-    NotEnoughDeposit,
-
-    #[error("Found conflicting transactions!")]
-    ConflictingTransactions,
-}
-
 pub async fn submit_payment_transaction(
     ctx: &PersistCtx,
     user_address: String,
     recipient_address: String,
     transaction_id: String,
     amount: U256,
-) -> Result<(), sea_orm::DbErr> {
+) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
 
-    // Optional: if you still want to ensure user row exists.
+    // Ensure user row exists.
     let Some(_) = user::Entity::find()
         .filter(user::Column::Address.eq(user_address.clone()))
         .one(&*ctx.db)
         .await?
     else {
-        return Err(sea_orm::DbErr::Custom("user not found".into()));
+        return Err(PersistDbError::UserNotFound(user_address));
     };
 
     let tx = user_transaction::ActiveModel {
@@ -292,7 +282,7 @@ pub async fn fail_transaction(
     ctx: &PersistCtx,
     user_address: String,
     transaction_id: String,
-) -> anyhow::Result<()> {
+) -> Result<(), PersistDbError> {
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
@@ -320,23 +310,24 @@ pub async fn fail_transaction(
                     .filter(user::Column::Address.eq(user_address.clone()))
                     .one(txn)
                     .await?
-                    .ok_or(sea_orm::DbErr::Custom("user not found".into()))?;
+                    .ok_or_else(|| PersistDbError::UserNotFound(user_address.clone()))?;
 
-                let current = U256::from_str(&user_row.collateral).map_err(|e| {
-                    sea_orm::DbErr::Custom(format!("invalid collateral value: {e}"))
-                })?;
+                let current = U256::from_str(&user_row.collateral)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
                 let delta = U256::from_str(&tx_row.amount)
-                    .map_err(|e| sea_orm::DbErr::Custom(format!("invalid tx amount: {e}")))?;
-                let new_collateral = current.checked_sub(delta).ok_or(sea_orm::DbErr::Custom(
-                    "underflow on fail_transaction".into(),
-                ))?;
+                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+
+                if delta > current {
+                    return Err(PersistDbError::InsufficientCollateral);
+                }
+                let new_collateral = current - delta;
 
                 let mut user_active_model = user_row.into_active_model();
                 user_active_model.collateral = Set(new_collateral.to_string());
                 user_active_model.updated_at = Set(Utc::now().naive_utc());
                 user_active_model.update(txn).await?;
 
-                Ok::<_, sea_orm::DbErr>(())
+                Ok::<_, PersistDbError>(())
             })
         })
         .await?;
@@ -351,7 +342,7 @@ pub async fn fail_transaction(
 pub async fn get_transactions_by_hash(
     ctx: &PersistCtx,
     hashes: Vec<String>,
-) -> anyhow::Result<Vec<user_transaction::Model>> {
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     Ok(user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.is_in(hashes))
         .all(&*ctx.db)
@@ -360,7 +351,7 @@ pub async fn get_transactions_by_hash(
 
 pub async fn get_unfinalized_transactions(
     ctx: &PersistCtx,
-) -> anyhow::Result<Vec<user_transaction::Model>> {
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     Ok(user_transaction::Entity::find()
         .filter(user_transaction::Column::Finalized.eq(false))
         .all(&*ctx.db)
@@ -380,7 +371,7 @@ pub async fn store_guarantee(
     value: U256,
     start_ts: chrono::NaiveDateTime,
     cert: String,
-) -> anyhow::Result<()> {
+) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
 
     // Ensure foreign keys exist
@@ -393,14 +384,14 @@ pub async fn store_guarantee(
             collateral: Set("0".to_string()),
             locked_collateral: Set("0".to_string()),
         };
-        let _ = user::Entity::insert(insert_user)
+        user::Entity::insert(insert_user)
             .on_conflict(
                 OnConflict::column(user::Column::Address)
                     .do_nothing()
                     .to_owned(),
             )
-            .exec(&*ctx.db)
-            .await;
+            .exec_without_returning(&*ctx.db)
+            .await?;
     }
 
     let active_model = guarantee::ActiveModel {
@@ -416,7 +407,7 @@ pub async fn store_guarantee(
     };
 
     // Use exec_without_returning to avoid "RecordNotInserted"
-    let _ = guarantee::Entity::insert(active_model)
+    guarantee::Entity::insert(active_model)
         .on_conflict(
             OnConflict::columns([guarantee::Column::TabId, guarantee::Column::ReqId])
                 .do_nothing()
@@ -432,7 +423,7 @@ pub async fn get_guarantee(
     ctx: &PersistCtx,
     tab_id: String,
     req_id: String,
-) -> anyhow::Result<Option<guarantee::Model>> {
+) -> Result<Option<guarantee::Model>, PersistDbError> {
     Ok(guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
         .filter(guarantee::Column::ReqId.eq(req_id))
@@ -444,7 +435,11 @@ pub async fn get_guarantee(
 // ────────────────────── REMUNERATION / PAYMENTS ──────────────────────
 //
 
-pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256) -> Result<()> {
+pub async fn remunerate_recipient(
+    ctx: &PersistCtx,
+    tab_id: String,
+    amount: U256,
+) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
 
     ctx.db
@@ -454,20 +449,17 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
                 let tab = entities::tabs::Entity::find_by_id(tab_id.clone())
                     .one(txn)
                     .await?
-                    .ok_or_else(|| sea_orm::DbErr::Custom(format!("Tab not found: {tab_id}")))?;
+                    .ok_or_else(|| PersistDbError::TabNotFound(tab_id.clone()))?;
 
                 // ── 2️⃣ Idempotency: if this tab already has a Remunerate event → exit
                 let existing = collateral_event::Entity::find()
                     .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
-                    .filter(
-                        collateral_event::Column::EventType
-                            .eq(entities::sea_orm_active_enums::CollateralEventType::Remunerate),
-                    )
+                    .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
                     .one(txn)
                     .await?;
 
                 if existing.is_some() {
-                    return Ok::<_, sea_orm::DbErr>(());
+                    return Ok::<_, PersistDbError>(());
                 }
 
                 // ── 3️⃣ Try to decrement the user’s collateral only if possible
@@ -476,9 +468,8 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
                     .one(txn)
                     .await?
                 {
-                    let current = U256::from_str(&user_row.collateral).map_err(|e| {
-                        sea_orm::DbErr::Custom(format!("Invalid collateral value: {e}"))
-                    })?;
+                    let current = U256::from_str(&user_row.collateral)
+                        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
                     // subtract only if there is enough; otherwise leave as is
                     if current >= amount {
@@ -495,9 +486,7 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
                     id: Set(uuid::Uuid::new_v4().to_string()),
                     user_address: Set(tab.user_address),
                     amount: Set(amount.to_string()),
-                    event_type: Set(
-                        entities::sea_orm_active_enums::CollateralEventType::Remunerate,
-                    ),
+                    event_type: Set(CollateralEventType::Remunerate),
                     tab_id: Set(Some(tab_id)),
                     req_id: Set(None),
                     tx_id: Set(None),
@@ -505,7 +494,7 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
                 };
                 collateral_event::Entity::insert(ev).exec(txn).await?;
 
-                Ok::<_, sea_orm::DbErr>(())
+                Ok::<_, PersistDbError>(())
             })
         })
         .await?;
@@ -519,7 +508,7 @@ pub async fn remunerate_recipient(ctx: &PersistCtx, tab_id: String, amount: U256
 pub async fn get_user_transactions(
     ctx: &PersistCtx,
     user_address: &str,
-) -> anyhow::Result<Vec<user_transaction::Model>> {
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     Ok(user_transaction::Entity::find()
         .filter(user_transaction::Column::UserAddress.eq(user_address))
         .all(&*ctx.db)
@@ -531,7 +520,7 @@ pub async fn get_unfinalized_transactions_for_user(
     ctx: &PersistCtx,
     user_address: &str,
     exclude_tx_id: Option<&str>,
-) -> anyhow::Result<Vec<user_transaction::Model>> {
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let mut query = user_transaction::Entity::find()
         .filter(user_transaction::Column::UserAddress.eq(user_address))
         .filter(user_transaction::Column::Finalized.eq(false));
@@ -547,7 +536,7 @@ pub async fn get_unfinalized_transactions_for_user(
 pub async fn get_pending_withdrawals_for_user(
     ctx: &PersistCtx,
     user_address: &str,
-) -> anyhow::Result<Vec<withdrawal::Model>> {
+) -> Result<Vec<withdrawal::Model>, PersistDbError> {
     Ok(withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_address))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
@@ -560,7 +549,7 @@ pub async fn bump_user_version(
     ctx: &PersistCtx,
     user_address: &str,
     current_version: i32,
-) -> anyhow::Result<bool> {
+) -> Result<bool, PersistDbError> {
     use sea_orm::sea_query::Expr;
     let now = chrono::Utc::now().naive_utc();
     let res = user::Entity::update_many()
@@ -580,14 +569,17 @@ pub async fn bump_user_version(
 pub async fn get_tab_by_id(
     ctx: &PersistCtx,
     tab_id: &str,
-) -> anyhow::Result<Option<entities::tabs::Model>> {
+) -> Result<Option<entities::tabs::Model>, PersistDbError> {
     Ok(entities::tabs::Entity::find_by_id(tab_id.to_string())
         .one(&*ctx.db)
         .await?)
 }
 
 /// Check if a Remunerate event already exists for a tab
-pub async fn has_remunerate_event_for_tab(ctx: &PersistCtx, tab_id: &str) -> anyhow::Result<bool> {
+pub async fn has_remunerate_event_for_tab(
+    ctx: &PersistCtx,
+    tab_id: &str,
+) -> Result<bool, PersistDbError> {
     let existing = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id))
         .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
@@ -601,7 +593,7 @@ pub async fn update_user_lock_and_version(
     user_address: &str,
     current_version: i32,
     new_locked: U256,
-) -> anyhow::Result<bool> {
+) -> Result<bool, PersistDbError> {
     use sea_orm::sea_query::Expr;
     let now = chrono::Utc::now().naive_utc();
 
