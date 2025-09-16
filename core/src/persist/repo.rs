@@ -419,7 +419,6 @@ pub async fn store_guarantee(
         )
         .exec_without_returning(&*ctx.db)
         .await?;
-
     Ok(())
 }
 
@@ -550,24 +549,42 @@ pub async fn get_pending_withdrawals_for_user(
 }
 
 /// Optimistic version bump – returns true if bumped, false if conflict
+/// Atomically bump the user's version if `current_version` matches.
+/// Returns `Ok(())` on success; `Err(PersistDbError::OptimisticLockConflict{..})` if stale.
 pub async fn bump_user_version(
     ctx: &PersistCtx,
     user_address: &str,
     current_version: i32,
-) -> Result<bool, PersistDbError> {
+) -> Result<(), PersistDbError> {
+    use chrono::Utc;
     use sea_orm::sea_query::Expr;
-    let now = chrono::Utc::now().naive_utc();
+
+    let now = Utc::now().naive_utc();
+
     let res = user::Entity::update_many()
+        // Prefer filters first for readability; SQL is identical
+        .filter(user::Column::Address.eq(user_address))
+        .filter(user::Column::Version.eq(current_version))
+        // Atomic increment + timestamp
         .col_expr(
             user::Column::Version,
             Expr::col(user::Column::Version).add(1),
         )
         .col_expr(user::Column::UpdatedAt, Expr::value(now))
-        .filter(user::Column::Address.eq(user_address))
-        .filter(user::Column::Version.eq(current_version))
         .exec(&*ctx.db)
         .await?;
-    Ok(res.rows_affected == 1)
+
+    match res.rows_affected {
+        1 => Ok(()),
+        0 => Err(PersistDbError::OptimisticLockConflict {
+            user: user_address.to_owned(),
+            expected_version: current_version,
+        }),
+        n => Err(PersistDbError::InvariantViolation(format!(
+            "bump_user_version updated {} rows for address {}",
+            n, user_address
+        ))),
+    }
 }
 
 /// Get a single tab by id

@@ -166,18 +166,37 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(1)).await?;
 
-    let u = user::Entity::find()
+    let u0 = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
         .one(&*ctx.db)
         .await?
         .unwrap();
+    let v0 = u0.version;
 
-    let ok = repo::bump_user_version(&ctx, &user_addr, u.version).await?;
-    assert!(ok);
+    // First bump succeeds
+    let res1 = repo::bump_user_version(&ctx, &user_addr, v0).await;
+    assert!(res1.is_ok(), "first bump should succeed");
 
-    // old version again should fail
-    let second = repo::bump_user_version(&ctx, &user_addr, u.version).await?;
-    assert!(!second);
+    // Version incremented by 1
+    let u1 = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u1.version, v0 + 1);
+
+    // Second bump with stale version must error
+    let res2 = repo::bump_user_version(&ctx, &user_addr, v0).await;
+    assert!(res2.is_err(), "second bump with old version should error");
+
+    // Version unchanged after failed attempt
+    let u2 = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u2.version, v0 + 1);
+
     Ok(())
 }
 
