@@ -15,7 +15,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serial_test::serial;
 use std::str::FromStr;
 use test_log::test;
-use tokio::task::JoinHandle; // for aborting the background listener
+use tokio::task::JoinHandle;
 
 mod common;
 use crate::common::contract::{AccessManager, Core4Mica};
@@ -533,6 +533,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ttl: Set(300),
         ..Default::default()
     };
     tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;
@@ -774,6 +775,7 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ttl: Set(300),
         ..Default::default()
     };
     tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;

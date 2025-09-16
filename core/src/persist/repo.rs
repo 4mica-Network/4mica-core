@@ -516,6 +516,30 @@ pub async fn get_user_transactions(
     Ok(rows)
 }
 
+/// Return the most recent guarantee for a tab (by created_at DESC)
+pub async fn get_last_guarantee_for_tab(
+    ctx: &PersistCtx,
+    tab_id: &str,
+) -> Result<Option<guarantee::Model>, PersistDbError> {
+    let row = guarantee::Entity::find()
+        .filter(guarantee::Column::TabId.eq(tab_id))
+        .order_by_desc(guarantee::Column::CreatedAt)
+        .one(&*ctx.db)
+        .await?;
+    Ok(row)
+}
+
+/// Read TTL (in seconds) from `tabs.ttl`. Returns Err(TabNotFound) if the tab doesn't exist.
+pub async fn get_tab_ttl_seconds(ctx: &PersistCtx, tab_id: &str) -> Result<u64, PersistDbError> {
+    let tab = entities::tabs::Entity::find_by_id(tab_id.to_string())
+        .one(&*ctx.db)
+        .await?
+        .ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_owned()))?;
+
+    let ttl = tab.ttl as u64;
+    Ok(ttl)
+}
+
 /// Fetch unfinalized transactions for a user
 pub async fn get_unfinalized_transactions_for_user(
     ctx: &PersistCtx,

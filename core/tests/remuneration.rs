@@ -41,6 +41,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ttl: Set(300), // <-- added
         ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
@@ -104,6 +105,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ttl: Set(300), // <-- added
         ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
@@ -153,6 +155,7 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        ttl: Set(300), // <-- added
         ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
