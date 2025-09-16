@@ -1,7 +1,7 @@
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use anyhow::Result;
-use chrono::{Duration, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use entities::{
     collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},

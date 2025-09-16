@@ -11,12 +11,12 @@ use sea_orm::entity::prelude::*;
 pub enum CollateralEventType {
     #[sea_orm(string_value = "DEPOSIT")]
     Deposit,
-    #[sea_orm(string_value = "WITHDRAWAL")]
-    Withdrawal,
+    #[sea_orm(string_value = "WITHDRAW")]
+    Withdraw,
     #[sea_orm(string_value = "RESERVE")]
     Reserve,
-    #[sea_orm(string_value = "RELEASE")]
-    Release,
+    #[sea_orm(string_value = "CANCEL_RESERVE")]
+    CancelReserve,
     #[sea_orm(string_value = "REMUNERATE")]
     Remunerate,
 }
