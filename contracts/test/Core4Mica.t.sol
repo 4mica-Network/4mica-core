@@ -798,13 +798,10 @@ contract Core4MicaTest is Test {
 
     // === Verify Guarantee Signature ===
 
-
     function test_VerifyGuaranteeSignature() public {
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
         BLS.G2Point memory signature = BlsHelper.signGuarantee(g, PRIVATE_KEY);
-
-        bool is_valid = core4Mica.verifyGuaranteeSignature(g, signature);
-        assert(is_valid);
+        assert(core4Mica.verifyGuaranteeSignature(g, signature));
     }
 
     function test_VerifyGuaranteeSignature_InvalidGuarantee() public {
@@ -812,19 +809,15 @@ contract Core4MicaTest is Test {
         BLS.G2Point memory signature_g1 = BlsHelper.signGuarantee(g1, PRIVATE_KEY);
 
         Core4Mica.Guarantee memory g2 = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 4 ether);
-
-        bool is_valid = core4Mica.verifyGuaranteeSignature(g2, signature_g1);
-        assert(!is_valid);
+        assert(!core4Mica.verifyGuaranteeSignature(g2, signature_g1));
     }
 
     function test_VerifyGuaranteeSignature_InvalidSigningKey() public {
-        bytes32 otherKey = bytes32(0x5B85C3922AB2E2738F196576D00A8583CBE4A1C6BCA85DDFC65438574F42377C);
-
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
-        BLS.G2Point memory signature_with_other_key = BlsHelper.signGuarantee(g, otherKey);
 
-        bool is_valid = core4Mica.verifyGuaranteeSignature(g, signature_with_other_key);
-        assert(!is_valid);
+        bytes32 otherKey = bytes32(0x5B85C3922AB2E2738F196576D00A8583CBE4A1C6BCA85DDFC65438574F42377C);
+        BLS.G2Point memory signature_with_other_key = BlsHelper.signGuarantee(g, otherKey);
+        assert(!core4Mica.verifyGuaranteeSignature(g, signature_with_other_key));
     }
 
     // === Fallback and Receive revert ===
