@@ -6,6 +6,7 @@ import "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
+import {BlsHelper} from "./BlsHelpers.sol";
 
 contract Core4MicaTest is Test {
     Core4Mica core4Mica;
@@ -18,6 +19,7 @@ contract Core4MicaTest is Test {
 
     bytes32[3] public VALID_SIGNATURE = [bytes32(0), bytes32(0), bytes32(0)];
     bytes32[3] public INVALID_SIGNATURE = [bytes32(uint256(1)), bytes32(0), bytes32(0)];
+    bytes32 public PRIVATE_KEY = bytes32(0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3);
 
     function setUp() public {
         manager = new AccessManager(address(this));
@@ -809,6 +811,45 @@ contract Core4MicaTest is Test {
         // 2. because the guarantee's amount exceeded the amount of collateral that would be left after the withdrawal
         assertGt(g.amount, initial_collateral - withdrawal_amount);
         // Hence, the guarantee was illegally issued.
+    }
+
+    // === Verify Guarantee Signature ===
+
+    function setPublicKey() public {
+        core4Mica.setGuaranteeVerificationKey(BlsHelper.getPublicKey(PRIVATE_KEY));
+    }
+
+    function test_VerifyGuaranteeSignature() public {
+        setPublicKey();
+
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
+        BLS.G2Point memory signature = BlsHelper.signGuarantee(g, PRIVATE_KEY);
+
+        bool is_valid = core4Mica.verifyGuaranteeSignature(g, signature);
+        assert(is_valid);
+    }
+
+    function test_VerifyGuaranteeSignature_InvalidGuarantee() public {
+        setPublicKey();
+
+        Core4Mica.Guarantee memory g1 = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
+        BLS.G2Point memory signature_g1 = BlsHelper.signGuarantee(g1, PRIVATE_KEY);
+
+        Core4Mica.Guarantee memory g2 = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 4 ether);
+
+        bool is_valid = core4Mica.verifyGuaranteeSignature(g2, signature_g1);
+        assert(!is_valid);
+    }
+
+    function test_VerifyGuaranteeSignature_InvalidSigningKey() public {
+        setPublicKey();
+        bytes32 otherKey = bytes32(0x5B85C3922AB2E2738F196576D00A8583CBE4A1C6BCA85DDFC65438574F42377C);
+
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
+        BLS.G2Point memory signature_with_other_key = BlsHelper.signGuarantee(g, otherKey);
+
+        bool is_valid = core4Mica.verifyGuaranteeSignature(g, signature_with_other_key);
+        assert(!is_valid);
     }
 
     // === Fallback and Receive revert ===

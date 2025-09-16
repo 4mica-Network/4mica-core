@@ -38,6 +38,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         bytes32(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
     );
 
+    /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
+    BLS.G1Point internal NEGATED_G1_GENERATOR = BLS.G1Point(
+        bytes32(0x0000000000000000000000000000000017F1D3A73197D7942695638C4FA9AC0F),
+        bytes32(0xC3688C4F9774B905A14E3A3F171BAC586C55E83FF97A1AEFFB3AF00ADB22C6BB),
+        bytes32(0x00000000000000000000000000000000114D1D6855D545A8AA7D76C8CF2E21F2),
+        bytes32(0x67816AEF1DB507C96655B9D5CAAC42364E6F38BA0ECB751BAD54DCD6B939C2CA)
+    );
+
     struct WithdrawalRequest {
         uint256 timestamp;
         uint256 amount;
@@ -256,6 +264,27 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     {
         paid = payments[tab_id].paid;
         remunerated = payments[tab_id].remunerated;
+    }
+
+    // === Signature verification ===
+    function encodeGuarantee(Guarantee memory g) public pure returns (bytes memory) {
+        return abi.encodePacked(g.tab_id, g.req_id, g.client, g.recipient, g.amount, g.tab_timestamp);
+    }
+
+    function verifyGuaranteeSignature(Guarantee memory guarantee, BLS.G2Point memory signature)
+        public
+        view
+        returns (bool)
+    {
+        BLS.G1Point[] memory g1Points = new BLS.G1Point[](2);
+        g1Points[0] = NEGATED_G1_GENERATOR;
+        g1Points[1] = GUARANTEE_VERIFICATION_KEY;
+
+        BLS.G2Point[] memory g2Points = new BLS.G2Point[](2);
+        g2Points[0] = signature;
+        g2Points[1] = BLS.hashToG2(encodeGuarantee(guarantee));
+
+        return BLS.pairing(g1Points, g2Points);
     }
 
     // ========= Fallbacks =========
