@@ -16,7 +16,7 @@ pub struct Model {
     pub value: String,
     pub start_ts: DateTime,
     #[sea_orm(column_type = "Text", nullable)]
-    pub cert: Option<String>,
+    pub cert: String,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
