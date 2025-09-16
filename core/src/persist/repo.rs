@@ -199,39 +199,50 @@ pub async fn finalize_withdrawal(
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                let user = get_user_on(txn, &user_address).await?;
+                let now = Utc::now().naive_utc();
 
-                if let Some(withdrawal) = withdrawal::Entity::find()
-                    .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
-                    .filter(
-                        withdrawal::Column::Status
-                            .is_in(vec![WithdrawalStatus::Pending, WithdrawalStatus::Cancelled]),
-                    )
+                // strict user fetch
+                let user = get_user_on(txn, &user_address).await?;
+                let current = U256::from_str(&user.collateral)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+                // most recent Pending withdrawal; if none => error
+                let withdrawal = withdrawal::Entity::find()
+                    .filter(withdrawal::Column::UserAddress.eq(&user_address))
+                    .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
                     .order_by_desc(withdrawal::Column::CreatedAt)
                     .one(txn)
                     .await?
-                {
-                    // subtract only the executed amount
-                    let current = U256::from_str(&user.collateral)
-                        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                    .ok_or(PersistDbError::WithdrawalNotFound {
+                        user: user_address.clone(),
+                    })?;
 
-                    if executed_amount > current {
-                        return Err(PersistDbError::InsufficientCollateral);
-                    }
-                    let new_collateral = current - executed_amount;
-
-                    let mut am_user = user.into_active_model();
-                    am_user.collateral = Set(new_collateral.to_string());
-                    am_user.updated_at = Set(Utc::now().naive_utc());
-                    am_user.update(txn).await?;
-
-                    // record executed amount
-                    let mut active_model_withdrawal = withdrawal.into_active_model();
-                    active_model_withdrawal.status = Set(WithdrawalStatus::Executed);
-                    active_model_withdrawal.executed_amount = Set(executed_amount.to_string());
-                    active_model_withdrawal.updated_at = Set(Utc::now().naive_utc());
-                    active_model_withdrawal.update(txn).await?;
+                // ensure we never execute more than requested
+                let requested = U256::from_str(&withdrawal.requested_amount)
+                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+                if executed_amount > requested {
+                    return Err(PersistDbError::InvalidTxAmount(
+                        "executed_amount exceeds requested_amount".into(),
+                    ));
                 }
+
+                if executed_amount > current {
+                    return Err(PersistDbError::InsufficientCollateral);
+                }
+
+                // update user balance
+                let new_collateral = current - executed_amount;
+                let mut am_user = user.into_active_model();
+                am_user.collateral = Set(new_collateral.to_string());
+                am_user.updated_at = Set(now);
+                am_user.update(txn).await?;
+
+                // mark withdrawal executed
+                let mut am_w = withdrawal.into_active_model();
+                am_w.status = Set(WithdrawalStatus::Executed);
+                am_w.executed_amount = Set(executed_amount.to_string());
+                am_w.updated_at = Set(now);
+                am_w.update(txn).await?;
 
                 Ok::<_, PersistDbError>(())
             })
@@ -512,15 +523,16 @@ pub async fn get_unfinalized_transactions_for_user(
     user_address: &str,
     exclude_tx_id: Option<&str>,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
-    let mut query = user_transaction::Entity::find()
+    let exclude =
+        exclude_tx_id.ok_or_else(|| PersistDbError::TransactionNotFound("None".to_string()))?;
+
+    let rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::UserAddress.eq(user_address))
-        .filter(user_transaction::Column::Finalized.eq(false));
+        .filter(user_transaction::Column::Finalized.eq(false))
+        .filter(user_transaction::Column::TxId.ne(exclude))
+        .all(&*ctx.db)
+        .await?;
 
-    if let Some(exclude) = exclude_tx_id {
-        query = query.filter(user_transaction::Column::TxId.ne(exclude));
-    }
-
-    let rows = query.all(&*ctx.db).await?;
     Ok(rows)
 }
 

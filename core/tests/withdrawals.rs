@@ -60,7 +60,7 @@ async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-async fn finalize_withdrawal_twice_is_idempotent() -> anyhow::Result<()> {
+async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 
     let _ = init()?;
@@ -71,22 +71,26 @@ async fn finalize_withdrawal_twice_is_idempotent() -> anyhow::Result<()> {
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
     repo::request_withdrawal(&ctx, user_addr.clone(), 1, U256::from(5u64)).await?;
 
-    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
+    // First finalize succeeds
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
+    // Second finalize should now ERROR (no pending withdrawal left)
+    let res = repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await;
+    assert!(res.is_err(), "second finalize must error");
+
+    // State remains Executed
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
         .one(&*ctx.db)
         .await?
         .unwrap();
-
     assert_eq!(w.status, WithdrawalStatus::Executed);
 
     Ok(())
 }
 
 #[test(tokio::test)]
-async fn withdrawal_request_cancel_finalize_flow() -> anyhow::Result<()> {
+async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 
     let _ = init()?;
@@ -96,6 +100,7 @@ async fn withdrawal_request_cancel_finalize_flow() -> anyhow::Result<()> {
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
+    // Create and verify it's Pending
     repo::request_withdrawal(&ctx, user_addr.clone(), 12345, U256::from(2u64)).await?;
     let w1 = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
@@ -104,6 +109,7 @@ async fn withdrawal_request_cancel_finalize_flow() -> anyhow::Result<()> {
         .unwrap();
     assert_eq!(w1.status, WithdrawalStatus::Pending);
 
+    // Cancel it
     repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
     let w2 = withdrawal::Entity::find_by_id(w1.id.clone())
         .one(&*ctx.db)
@@ -111,12 +117,24 @@ async fn withdrawal_request_cancel_finalize_flow() -> anyhow::Result<()> {
         .unwrap();
     assert_eq!(w2.status, WithdrawalStatus::Cancelled);
 
-    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(2u64)).await?;
+    // Finalize after cancel should now ERROR
+    let res = repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(2u64)).await;
+    assert!(res.is_err(), "finalize after cancel must error");
+
+    // Status remains Cancelled and collateral unchanged (5)
     let w3 = withdrawal::Entity::find_by_id(w1.id.clone())
         .one(&*ctx.db)
         .await?
         .unwrap();
-    assert_eq!(w3.status, WithdrawalStatus::Executed);
+    assert_eq!(w3.status, WithdrawalStatus::Cancelled);
+
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(&*ctx.db)
+        .await?
+        .unwrap();
+    assert_eq!(u.collateral, U256::from(5u64).to_string());
+
     Ok(())
 }
 
@@ -142,16 +160,22 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-async fn finalize_without_any_request_is_noop() -> anyhow::Result<()> {
+async fn finalize_without_any_request_errors_and_preserves_collateral() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
-    // No request was created; finalize should be a no-op
-    repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(3u64)).await?;
 
+    // No request exists; finalize must ERROR now
+    let res = repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(3u64)).await;
+    assert!(
+        res.is_err(),
+        "finalize without a pending request must error"
+    );
+
+    // Collateral unchanged
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
         .one(&*ctx.db)

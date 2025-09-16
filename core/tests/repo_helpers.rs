@@ -110,13 +110,23 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
     )
     .await?;
 
-    let all = repo::get_unfinalized_transactions_for_user(&ctx, &user_addr, None).await?;
+    // Baseline: both are present and unfinalized
+    let all = repo::get_user_transactions(&ctx, &user_addr).await?;
     assert_eq!(all.len(), 2);
 
+    // Excluding tx_id_1 should yield only tx_id_2
     let filtered =
         repo::get_unfinalized_transactions_for_user(&ctx, &user_addr, Some(&tx_id_1)).await?;
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].tx_id, tx_id_2);
+
+    // Calling with None should now error
+    let none_res = repo::get_unfinalized_transactions_for_user(&ctx, &user_addr, None).await;
+    assert!(
+        none_res.is_err(),
+        "expected error when exclude_tx_id is None"
+    );
+
     Ok(())
 }
 
