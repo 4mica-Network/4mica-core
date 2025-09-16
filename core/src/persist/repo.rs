@@ -38,6 +38,33 @@ pub async fn get_user_on<C: ConnectionTrait>(
         .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
 }
 
+async fn ensure_user_exists_on<C: ConnectionTrait>(
+    conn: &C,
+    addr: &str,
+) -> Result<(), PersistDbError> {
+    let now = Utc::now().naive_utc();
+    let insert_user = user::ActiveModel {
+        address: Set(addr.to_owned()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("0".to_string()),
+        locked_collateral: Set("0".to_string()),
+    };
+
+    // Idempotent insert; avoids "RecordNotInserted" on DO NOTHING
+    user::Entity::insert(insert_user)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(conn)
+        .await?;
+
+    Ok(())
+}
+
 //
 // ────────────────────── COLLATERAL EVENTS ──────────────────────
 //
@@ -357,28 +384,12 @@ pub async fn store_guarantee(
 ) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
 
-    // Ensure foreign keys exist
-    for addr in [&from_addr, &to_addr] {
-        let insert_user = user::ActiveModel {
-            address: Set(addr.clone()),
-            version: Set(0),
-            created_at: Set(now),
-            updated_at: Set(now),
-            collateral: Set("0".to_string()),
-            locked_collateral: Set("0".to_string()),
-        };
-        user::Entity::insert(insert_user)
-            .on_conflict(
-                OnConflict::column(user::Column::Address)
-                    .do_nothing()
-                    .to_owned(),
-            )
-            .exec_without_returning(&*ctx.db)
-            .await?;
-    }
+    // Ensure foreign keys exist (idempotent, race-safe)
+    ensure_user_exists_on(&*ctx.db, &from_addr).await?;
+    ensure_user_exists_on(&*ctx.db, &to_addr).await?;
 
     let active_model = guarantee::ActiveModel {
-        tab_id: Set(tab_id),
+        tab_id: Set(tab_id.clone()),
         req_id: Set(req_id),
         from_address: Set(from_addr),
         to_address: Set(to_addr),
@@ -389,7 +400,6 @@ pub async fn store_guarantee(
         updated_at: Set(now),
     };
 
-    // Use exec_without_returning to avoid "RecordNotInserted"
     guarantee::Entity::insert(active_model)
         .on_conflict(
             OnConflict::columns([guarantee::Column::TabId, guarantee::Column::ReqId])
