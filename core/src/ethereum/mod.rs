@@ -31,22 +31,14 @@ impl EthereumListener {
         }
     }
 
-    /// Public entry point.  Keeps the listener alive with automatic reconnect.
+    /// Public entry point. Keeps the listener alive with automatic reconnect.
     pub async fn run(&self) -> anyhow::Result<()> {
         let ws = WsConnect::new(&self.config.ws_rpc_url);
         let provider = ProviderBuilder::new().connect_ws(ws).await?;
 
-        let events_signatures = vec![
-            CollateralDeposited::SIGNATURE,
-            RecipientRemunerated::SIGNATURE,
-            CollateralWithdrawn::SIGNATURE,
-            WithdrawalRequested::SIGNATURE,
-            WithdrawalCanceled::SIGNATURE,
-            WithdrawalGracePeriodUpdated::SIGNATURE,
-            RemunerationGracePeriodUpdated::SIGNATURE,
-            TabExpirationTimeUpdated::SIGNATURE,
-            SynchronizationDelayUpdated::SIGNATURE,
-        ];
+        // Use the names exported by contract.rs (human-readable ABI signatures)
+        let events_signatures = all_event_signatures();
+
         let contract_address: Address = self.config.contract_address.parse()?;
         let filter = Filter::new()
             .address(contract_address)
