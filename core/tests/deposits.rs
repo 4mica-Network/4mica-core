@@ -4,6 +4,7 @@ use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use entities::{collateral_event, sea_orm_active_enums::CollateralEventType, user};
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::str::FromStr;
 use test_log::test;
@@ -12,6 +13,28 @@ use uuid::Uuid;
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
     Ok(AppConfig::fetch())
+}
+
+async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
+    let now = Utc::now().naive_utc();
+    let am = entities::user::ActiveModel {
+        address: Set(addr.to_string()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("0".to_string()),
+        locked_collateral: Set("0".to_string()),
+        ..Default::default()
+    };
+    user::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(&*ctx.db)
+        .await?;
+    Ok(())
 }
 
 async fn load_user(ctx: &PersistCtx, addr: &str) -> user::Model {
@@ -29,6 +52,7 @@ async fn deposit_zero_does_not_crash() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::ZERO).await?;
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
@@ -45,6 +69,7 @@ async fn deposit_large_value() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     let big = U256::from(1000000000000u64);
     repo::deposit(&ctx, user_addr.clone(), big).await?;
     let u = user::Entity::find()
@@ -62,6 +87,7 @@ async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
@@ -91,6 +117,7 @@ async fn deposit_overflow_protection() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::MAX).await?;
     // second deposit should overflow and error
     let res = repo::deposit(&ctx, user_addr.clone(), U256::from(1u8)).await;
@@ -113,7 +140,7 @@ async fn deposit_fails_on_invalid_collateral_in_db() -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
     let user_addr = Uuid::new_v4().to_string();
 
-    // Manually insert broken collateral
+    // Manually insert broken collateral (no ensure_user on purpose)
     let am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("not_a_number".to_string()),
@@ -137,6 +164,7 @@ async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Re
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     // give the user 100 units of collateral
     repo::deposit(&ctx, user_addr.clone(), U256::from(100u64)).await?;
 
@@ -162,6 +190,7 @@ async fn lock_fails_if_not_enough_free_collateral() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     // deposit only 10
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
 
@@ -187,6 +216,7 @@ async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(20u64)).await?;
     let u = load_user(&ctx, &user_addr).await;
     let version = u.version;
@@ -212,6 +242,7 @@ async fn multiple_locks_accumulate_locked_collateral() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(50u64)).await?;
 
     // first lock of 10
@@ -235,6 +266,7 @@ async fn lock_fails_on_u256_overflow() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     // deposit the maximum U256 value
     repo::deposit(&ctx, user_addr.clone(), U256::MAX).await?;
 

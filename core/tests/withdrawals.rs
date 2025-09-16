@@ -1,9 +1,11 @@
 use alloy::primitives::U256;
+use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use entities::{user, withdrawal};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
 use uuid::Uuid;
 
@@ -12,12 +14,36 @@ fn init() -> anyhow::Result<AppConfig> {
     Ok(AppConfig::fetch())
 }
 
+// Ensure a user row exists (idempotent)
+async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
+    let now = Utc::now().naive_utc();
+    let am = entities::user::ActiveModel {
+        address: Set(addr.to_string()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("0".to_string()),
+        locked_collateral: Set("0".to_string()),
+        ..Default::default()
+    };
+    user::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(&*ctx.db)
+        .await?;
+    Ok(())
+}
+
 #[test(tokio::test)]
 async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
     let res = repo::request_withdrawal(&ctx, user_addr.clone(), 1, U256::from(10u64)).await;
 
@@ -41,6 +67,7 @@ async fn finalize_withdrawal_twice_is_idempotent() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
     repo::request_withdrawal(&ctx, user_addr.clone(), 1, U256::from(5u64)).await?;
 
@@ -65,6 +92,8 @@ async fn withdrawal_request_cancel_finalize_flow() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     repo::request_withdrawal(&ctx, user_addr.clone(), 12345, U256::from(2u64)).await?;
@@ -96,6 +125,8 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
+
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     repo::request_withdrawal(&ctx, user_addr.clone(), 123, U256::from(5u64)).await?;
@@ -116,6 +147,7 @@ async fn finalize_without_any_request_is_noop() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
     // No request was created; finalize should be a no-op
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(3u64)).await?;
@@ -137,6 +169,7 @@ async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> 
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(6u64)).await?;
     repo::request_withdrawal(&ctx, user_addr.clone(), 111, U256::from(5u64)).await?;
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
@@ -161,6 +194,7 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(8u64)).await?;
     repo::request_withdrawal(&ctx, user_addr.clone(), 222, U256::from(3u64)).await?;
 
@@ -182,6 +216,7 @@ async fn finalize_withdrawal_underflow_errors() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(3u64)).await?;
     repo::request_withdrawal(&ctx, user_addr.clone(), 333, U256::from(2u64)).await?;
 
@@ -207,6 +242,7 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
     let user_addr = Uuid::new_v4().to_string();
 
     // user starts with 10
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
 
     // user requests 8
@@ -253,6 +289,7 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
     let ctx = PersistCtx::new().await?;
     let user_addr = Uuid::new_v4().to_string();
 
+    ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
 
     // request 4, chain executes full 4
