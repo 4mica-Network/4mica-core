@@ -2,18 +2,20 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
+use entities::sea_orm_active_enums::SettlementStatus;
 use entities::{
     collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     user, user_transaction, withdrawal,
 };
+use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
+use std::str::FromStr;
+
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
 };
-use std::str::FromStr;
-
 //
 // ────────────────────── USER FUNCTIONS ──────────────────────
 //
@@ -24,8 +26,6 @@ pub async fn get_user(ctx: &PersistCtx, user_address: &str) -> Result<user::Mode
         .await?
         .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
 }
-
-use sea_orm::ConnectionTrait;
 
 pub async fn get_user_on<C: ConnectionTrait>(
     conn: &C,
@@ -439,7 +439,6 @@ pub async fn get_guarantee(
 // ────────────────────── REMUNERATION / PAYMENTS ──────────────────────
 //
 
-/// Remunerate the recipient for a tab.
 pub async fn remunerate_recipient(
     ctx: &PersistCtx,
     tab_id: String,
@@ -450,38 +449,43 @@ pub async fn remunerate_recipient(
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                // 1) Locate tab (strict)
-                let tab = entities::tabs::Entity::find_by_id(tab_id.clone())
-                    .one(txn)
-                    .await?
-                    .ok_or_else(|| PersistDbError::TabNotFound(tab_id.clone()))?;
+                // strict fetch (same txn)
+                let tab = get_tab_by_id_on(txn, &tab_id).await?;
 
-                // 2) Idempotency: if a Remunerate event already exists → exit early
-                let existing = collateral_event::Entity::find()
-                    .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
-                    .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
-                    .one(txn)
+                // Compare-and-set using typed `.set(ActiveModel { ... })`
+                let cas = entities::tabs::Entity::update_many()
+                    .filter(entities::tabs::Column::Id.eq(tab_id.clone()))
+                    .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
+                    .set(entities::tabs::ActiveModel {
+                        settlement_status: Set(SettlementStatus::Settled),
+                        updated_at: Set(now),
+                        ..Default::default()
+                    })
+                    .exec(txn)
                     .await?;
-                if existing.is_some() {
+
+                if cas.rows_affected == 0 {
+                    // already settled → idempotent no-op
                     return Ok::<_, PersistDbError>(());
                 }
 
-                // 3) User must exist AND have sufficient collateral
+                // debit if needed
                 let user_row = get_user_on(txn, &tab.user_address).await?;
                 let current = U256::from_str(&user_row.collateral)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
                 if current < amount {
+                    // whole txn rolls back (CAS included)
                     return Err(PersistDbError::InsufficientCollateral);
                 }
+                if amount > U256::ZERO {
+                    let mut user_am = user_row.into_active_model();
+                    user_am.collateral = Set((current - amount).to_string());
+                    user_am.updated_at = Set(now);
+                    user_am.update(txn).await?;
+                }
 
-                let new_collateral = current - amount;
-                let mut user_active_model = user_row.into_active_model();
-                user_active_model.collateral = Set(new_collateral.to_string());
-                user_active_model.updated_at = Set(now);
-                user_active_model.update(txn).await?;
-
-                // 4) Record the remuneration event
+                // audit event
                 let ev = collateral_event::ActiveModel {
                     id: Set(uuid::Uuid::new_v4().to_string()),
                     user_address: Set(tab.user_address),
@@ -620,6 +624,16 @@ pub async fn get_tab_by_id(
         .one(&*ctx.db)
         .await?;
     Ok(res)
+}
+
+pub async fn get_tab_by_id_on<C: ConnectionTrait>(
+    conn: &C,
+    tab_id: &str,
+) -> Result<entities::tabs::Model, PersistDbError> {
+    entities::tabs::Entity::find_by_id(tab_id.to_string())
+        .one(conn)
+        .await?
+        .ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_owned()))
 }
 
 /// Check if a Remunerate event already exists for a tab
