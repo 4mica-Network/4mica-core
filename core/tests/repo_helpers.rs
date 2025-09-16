@@ -206,7 +206,7 @@ async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let res = repo::get_tab_by_id(&ctx, "non-existent-id").await?;
-    assert!(res);
+    assert!(res.is_none());
     Ok(())
 }
 
