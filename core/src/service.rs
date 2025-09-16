@@ -1,6 +1,8 @@
+// service.rs
+
 use crate::{
     config::AppConfig,
-    error::PersistDbError,
+    error::{PersistDbError, ServiceError, ServiceResult, service_error_to_rpc},
     ethereum::EthereumListener,
     persist::{PersistCtx, repo},
 };
@@ -10,6 +12,7 @@ use alloy::providers::fillers::{
 use alloy::providers::{Identity, ProviderBuilder, RootProvider, WsConnect};
 use alloy::rpc::types::Transaction;
 use alloy_primitives::U256;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
 use chrono::{TimeZone, Utc};
@@ -20,7 +23,6 @@ use rpc::{
     common::*,
     core::{CoreApiServer, CorePublicParameters},
 };
-
 use std::str::FromStr;
 
 type EthereumProvider = FillProvider<
@@ -59,13 +61,13 @@ impl CoreService {
         WsConnect::new(&self.config.ethereum_config.ws_rpc_url)
     }
 
-    pub async fn get_ethereum_provider(&self) -> RpcResult<EthereumProvider> {
+    pub async fn get_ethereum_provider(&self) -> ServiceResult<EthereumProvider> {
         ProviderBuilder::new()
             .connect_ws(self.ws_connection_details())
             .await
             .map_err(|err| {
                 error!("Failed to connect to Ethereum provider: {err}");
-                rpc::internal_error()
+                ServiceError::Other(anyhow!(err))
             })
     }
 
@@ -79,16 +81,23 @@ impl CoreService {
         sender_address: &str,
         recipient_address: &str,
         amount: U256,
-    ) -> RpcResult<()> {
-        let user = txtools::parse_eth_address(sender_address, "user")?;
-        let recipient = txtools::parse_eth_address(recipient_address, "recipient")?;
+    ) -> ServiceResult<()> {
+        let user = txtools::parse_eth_address(sender_address, "user")
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))?;
+        let recipient = txtools::parse_eth_address(recipient_address, "recipient")
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))?;
         txtools::validate_transaction(tx, user, recipient, amount)
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))
     }
 
     /// Perform validations for promises.
-    async fn preflight_promise_checks(&self, promise: &PaymentGuaranteeClaims) -> RpcResult<()> {
+    async fn preflight_promise_checks(
+        &self,
+        promise: &PaymentGuaranteeClaims,
+    ) -> ServiceResult<()> {
         // small helper for brevity
-        let invalid = |msg: &str| -> RpcResult<()> { Err(rpc::invalid_params_error(msg)) };
+        let invalid =
+            |msg: &str| -> ServiceResult<()> { Err(ServiceError::InvalidParams(msg.to_string())) };
 
         // 1) signature
         if !self.verify_promise_signature(promise) {
@@ -100,72 +109,59 @@ impl CoreService {
         }
 
         // 2) req_id & start_ts checks against the most recent guarantee for this tab
-        let last_opt =
-            match repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id).await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!(
-                        "preflight: get_last_guarantee_for_tab failed: tab_id={} err={}",
-                        promise.tab_id, e
-                    );
-                    return Err(rpc::internal_error());
-                }
-            };
-
-        let cur_req_id = match promise.req_id.parse::<u64>() {
-            Ok(v) => v,
-            Err(e) => {
+        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id)
+            .await
+            .map_err(|e| {
                 error!(
-                    "preflight: invalid req_id: tab_id={} req_id='{}' err={}",
-                    promise.tab_id, promise.req_id, e
+                    "preflight: get_last_guarantee_for_tab failed: tab_id={} err={}",
+                    promise.tab_id, e
                 );
-                return invalid("invalid req_id");
+                ServiceError::from(e)
+            })?;
+
+        let cur_req_id = promise.req_id.parse::<u64>().map_err(|e| {
+            error!(
+                "preflight: invalid req_id: tab_id={} req_id='{}' err={}",
+                promise.tab_id, promise.req_id, e
+            );
+            ServiceError::InvalidParams("invalid req_id".into())
+        })?;
+
+        if let Some(last) = last_opt.as_ref() {
+            let prev_req_id = last.req_id.parse::<u64>().map_err(|e| {
+                error!(
+                    "preflight: invalid previous req_id in DB: tab_id={} prev_req_id='{}' err={}",
+                    promise.tab_id, last.req_id, e
+                );
+                ServiceError::Other(anyhow!("invalid previous req_id"))
+            })?;
+
+            let expected = prev_req_id.saturating_add(1);
+            if cur_req_id != expected {
+                error!(
+                    "preflight: req_id not incremented: tab_id={} prev_req_id={} expected={} got={}",
+                    promise.tab_id, prev_req_id, expected, cur_req_id
+                );
+                return invalid("req_id not incremented");
             }
-        };
 
-        match last_opt.as_ref() {
-            Some(last) => {
-                let prev_req_id = match last.req_id.parse::<u64>() {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!(
-                            "preflight: invalid previous req_id in DB: tab_id={} prev_req_id='{}' err={}",
-                            promise.tab_id, last.req_id, e
-                        );
-                        return invalid("invalid previous req_id");
-                    }
-                };
-
-                let expected = prev_req_id.saturating_add(1);
-                if cur_req_id != expected {
-                    error!(
-                        "preflight: req_id not incremented: tab_id={} prev_req_id={} expected={} got={}",
-                        promise.tab_id, prev_req_id, expected, cur_req_id
-                    );
-                    return invalid("req_id not incremented");
-                }
-
-                // DB has NaiveDateTime; guard against negatives before casting to u64
-                let prev_ts_i64 = last.start_ts.and_utc().timestamp();
-                if prev_ts_i64 < 0 {
-                    error!(
-                        "preflight: negative previous start_ts in DB: tab_id={} prev_ts_i64={}",
-                        promise.tab_id, prev_ts_i64
-                    );
-                    return Err(rpc::internal_error());
-                }
-                let prev_start_ts = prev_ts_i64 as u64;
-
-                if promise.timestamp != prev_start_ts {
-                    error!(
-                        "preflight: modified start_ts: tab_id={} expected={} got={}",
-                        promise.tab_id, prev_start_ts, promise.timestamp
-                    );
-                    return invalid("modified start_ts");
-                }
+            // DB has NaiveDateTime; guard against negatives before casting to u64
+            let prev_ts_i64 = last.start_ts.and_utc().timestamp();
+            if prev_ts_i64 < 0 {
+                error!(
+                    "preflight: negative previous start_ts in DB: tab_id={} prev_ts_i64={}",
+                    promise.tab_id, prev_ts_i64
+                );
+                return Err(ServiceError::Other(anyhow!("negative previous start_ts")));
             }
-            None => {
-                // first request for this tab — nothing to compare
+            let prev_start_ts = prev_ts_i64 as u64;
+
+            if promise.timestamp != prev_start_ts {
+                error!(
+                    "preflight: modified start_ts: tab_id={} expected={} got={}",
+                    promise.tab_id, prev_start_ts, promise.timestamp
+                );
+                return invalid("modified start_ts");
             }
         }
 
@@ -173,7 +169,7 @@ impl CoreService {
         let now_i64 = Utc::now().timestamp();
         if now_i64 < 0 {
             error!("preflight: system time before epoch: now_i64={}", now_i64);
-            return Err(rpc::internal_error());
+            return Err(ServiceError::Other(anyhow!("system time before epoch")));
         }
         let now_secs = now_i64 as u64;
 
@@ -200,7 +196,7 @@ impl CoreService {
                     "preflight: failed to read tab TTL: tab_id={} err={}",
                     promise.tab_id, e
                 );
-                return Err(rpc::internal_error());
+                return Err(ServiceError::from(e));
             }
         };
 
@@ -216,7 +212,7 @@ impl CoreService {
         Ok(())
     }
 
-    async fn handle_promise(&self, promise: PaymentGuaranteeClaims) -> RpcResult<BLSCert> {
+    async fn handle_promise(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         info!("Received guarantee request for promise: {:?}", promise);
         self.preflight_promise_checks(&promise).await?;
         self.lock_collateral(&promise.user_address, promise.amount)
@@ -230,16 +226,16 @@ impl CoreService {
         &self,
         promise: &PaymentGuaranteeClaims,
         cert: &BLSCert,
-    ) -> RpcResult<()> {
+    ) -> ServiceResult<()> {
         let cert_str = serde_json::to_string(cert).map_err(|err| {
             error!("Failed to serialize the payment guarantee cert: {err}");
-            rpc::internal_error()
+            ServiceError::Other(anyhow!(err))
         })?;
 
         // store the *claim’s* start_ts, not “now”
         let start_dt = match Utc.timestamp_opt(promise.timestamp as i64, 0).single() {
             Some(dt) => dt.naive_utc(),
-            None => return Err(rpc::invalid_params_error("invalid timestamp")),
+            None => return Err(ServiceError::InvalidParams("invalid timestamp".into())),
         };
 
         repo::store_guarantee(
@@ -255,35 +251,37 @@ impl CoreService {
         .await
         .map_err(|err| {
             error!("Failed to store guarantee: {err}");
-            rpc::internal_error()
+            ServiceError::from(err)
         })
     }
 
     /// Check user free collateral & optimistic lock using repo helpers only.
-    async fn lock_collateral(&self, user_address: &str, amount: U256) -> RpcResult<()> {
+    async fn lock_collateral(&self, user_address: &str, amount: U256) -> ServiceResult<()> {
         let user = match repo::get_user(&self.persist_ctx, user_address).await {
             Ok(u) => u,
             Err(PersistDbError::UserNotFound(_)) => {
-                return Err(rpc::invalid_params_error("User not registered"));
+                return Err(ServiceError::InvalidParams("User not registered".into()));
             }
             Err(e) => {
                 error!("DB error: {e}");
-                return Err(rpc::internal_error());
+                return Err(ServiceError::from(e));
             }
         };
 
         let total_collateral = U256::from_str(&user.collateral)
-            .map_err(|_| rpc::invalid_params_error("invalid collateral value"))?;
+            .map_err(|_| ServiceError::InvalidParams("invalid collateral value".into()))?;
         let current_locked = U256::from_str(&user.locked_collateral)
-            .map_err(|_| rpc::invalid_params_error("invalid locked collateral value"))?;
+            .map_err(|_| ServiceError::InvalidParams("invalid locked collateral value".into()))?;
 
         let free_collateral = total_collateral.saturating_sub(current_locked);
         if free_collateral < amount {
-            return Err(rpc::invalid_params_error("Not enough free collateral"));
+            return Err(ServiceError::InvalidParams(
+                "Not enough free collateral".into(),
+            ));
         }
         let new_locked = current_locked
             .checked_add(amount)
-            .ok_or_else(|| rpc::invalid_params_error("overflow on locked collateral"))?;
+            .ok_or_else(|| ServiceError::InvalidParams("overflow on locked collateral".into()))?;
 
         // Use new Result<(), PersistDbError> signature.
         match repo::update_user_lock_and_version(
@@ -296,16 +294,16 @@ impl CoreService {
         {
             Ok(()) => Ok(()),
             Err(PersistDbError::OptimisticLockConflict { .. }) => {
-                Err(rpc::invalid_params_error("Invalid parameters"))
+                Err(ServiceError::OptimisticLockConflict)
             }
             Err(e) => {
                 error!("DB error: {e}");
-                Err(rpc::internal_error())
+                Err(ServiceError::from(e))
             }
         }
     }
 
-    async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> RpcResult<BLSCert> {
+    async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         let claims = PaymentGuaranteeClaims {
             user_address: promise.user_address.clone(),
             recipient_address: promise.recipient_address.clone(),
@@ -316,7 +314,7 @@ impl CoreService {
         };
         BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
             error!("Failed to issue the payment guarantee cert: {err}");
-            rpc::internal_error()
+            ServiceError::Other(anyhow!(err))
         })
     }
 }
@@ -326,6 +324,7 @@ impl CoreApiServer for CoreService {
     async fn get_public_params(&self) -> RpcResult<CorePublicParameters> {
         Ok(self.public_params.clone())
     }
+
     async fn issue_guarantee(
         &self,
         user_address: String,
@@ -335,13 +334,15 @@ impl CoreApiServer for CoreService {
         amount: U256,
     ) -> RpcResult<BLSCert> {
         let promise = PaymentGuaranteeClaims {
-            user_address: user_address,
+            user_address,
             recipient_address: recipient_addr,
             tab_id,
             req_id,
             amount,
             timestamp: Utc::now().timestamp() as u64,
         };
-        self.handle_promise(promise).await
+        self.handle_promise(promise)
+            .await
+            .map_err(service_error_to_rpc)
     }
 }
