@@ -50,6 +50,10 @@ contract Core4MicaTest is Test {
 
     // === Admin Config ===
 
+    function AccessUnauthorizedError(address accessor) public returns (bytes memory) {
+        return abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(accessor));
+    }
+
     function test_SetWithdrawalGracePeriod() public {
         uint256 newGrace = 23 days;
         vm.expectEmit(false, false, false, true);
@@ -66,17 +70,13 @@ contract Core4MicaTest is Test {
 
     function test_SetWithdrawalGracePeriod_Revert_User_Unauthorized() public {
         vm.prank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
-        );
+        vm.expectRevert(AccessUnauthorizedError(user1));
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
     function test_SetWithdrawalGracePeriod_Revert_Operator_Unauthorized() public {
         vm.prank(operator);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
-        );
+        vm.expectRevert(AccessUnauthorizedError(operator));
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
@@ -101,17 +101,13 @@ contract Core4MicaTest is Test {
 
     function test_SetRemunerationGracePeriod_Revert_User_Unauthorized() public {
         vm.prank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
-        );
+        vm.expectRevert(AccessUnauthorizedError(user1));
         core4Mica.setRemunerationGracePeriod(2 days);
     }
 
     function test_SetRemunerationGracePeriod_Revert_Operator_Unauthorized() public {
         vm.prank(operator);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
-        );
+        vm.expectRevert(AccessUnauthorizedError(operator));
         core4Mica.setRemunerationGracePeriod(2 days);
     }
 
@@ -136,17 +132,13 @@ contract Core4MicaTest is Test {
 
     function test_SetTabExpirationTime_Revert_User_Unauthorized() public {
         vm.prank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
-        );
+        vm.expectRevert(AccessUnauthorizedError(user1));
         core4Mica.setTabExpirationTime(2 days);
     }
 
     function test_SetTabExpirationTime_Revert_Operator_Unauthorized() public {
         vm.prank(operator);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
-        );
+        vm.expectRevert(AccessUnauthorizedError(operator));
         core4Mica.setTabExpirationTime(2 days);
     }
 
@@ -176,17 +168,13 @@ contract Core4MicaTest is Test {
 
     function test_SetSynchronizationDelay_Revert_User_Unauthorized() public {
         vm.prank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
-        );
+        vm.expectRevert(AccessUnauthorizedError(user1));
         core4Mica.setSynchronizationDelay(5 hours);
     }
 
     function test_SetSynchronizationDelay_Revert_Operator_Unauthorized() public {
         vm.prank(operator);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
-        );
+        vm.expectRevert(AccessUnauthorizedError(operator));
         core4Mica.setSynchronizationDelay(5 hours);
     }
 
@@ -220,18 +208,14 @@ contract Core4MicaTest is Test {
 
     function test_SetVerificationKey_Revert_User_Unauthorized() public {
         BLS.G1Point memory key = newKey();
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
-        );
+        vm.expectRevert(AccessUnauthorizedError(user1));
         vm.prank(user1);
         core4Mica.setGuaranteeVerificationKey(key);
     }
 
     function test_SetVerificationKey_Revert_Operator_Unauthorized() public {
         BLS.G1Point memory key = newKey();
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
-        );
+        vm.expectRevert(AccessUnauthorizedError(operator));
         vm.prank(operator);
         core4Mica.setGuaranteeVerificationKey(key);
     }
@@ -524,9 +508,7 @@ contract Core4MicaTest is Test {
 
     function test_RecordPayment_Revert_Unauthorized() public {
         vm.prank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
-        );
+        vm.expectRevert(AccessUnauthorizedError(user1));
         core4Mica.recordPayment(0x1234, 0);
     }
 
