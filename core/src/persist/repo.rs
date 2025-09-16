@@ -591,24 +591,34 @@ pub async fn bump_user_version(
 pub async fn get_tab_by_id(
     ctx: &PersistCtx,
     tab_id: &str,
-) -> Result<Option<entities::tabs::Model>, PersistDbError> {
+) -> Result<entities::tabs::Model, PersistDbError> {
     let res = entities::tabs::Entity::find_by_id(tab_id.to_string())
         .one(&*ctx.db)
         .await?;
-    Ok(res)
+    res.ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_string()))
 }
 
 /// Check if a Remunerate event already exists for a tab
-pub async fn has_remunerate_event_for_tab(
+pub async fn ensure_remunerate_event_for_tab(
     ctx: &PersistCtx,
     tab_id: &str,
-) -> Result<bool, PersistDbError> {
-    let existing = collateral_event::Entity::find()
+) -> Result<(), PersistDbError> {
+    use sea_orm::QuerySelect;
+
+    let some_id = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id))
         .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
+        .select_only()
+        .column(collateral_event::Column::Id)
+        .limit(1)
+        .into_tuple::<String>()
         .one(&*ctx.db)
         .await?;
-    Ok(existing.is_some())
+
+    match some_id {
+        Some(_) => Ok(()),
+        None => Err(PersistDbError::RemunerateEventNotFound(tab_id.to_owned())),
+    }
 }
 
 pub async fn update_user_lock_and_version(
