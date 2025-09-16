@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract Core4MicaTest is Test {
     Core4Mica core4Mica;
@@ -185,6 +186,47 @@ contract Core4MicaTest is Test {
     function test_SetSynchronizationDelay_Revert_IllegalValue() public {
         vm.expectRevert(Core4Mica.IllegalValue.selector);
         core4Mica.setSynchronizationDelay(1 days);
+    }
+
+    function newKey() public returns (BLS.G1Point memory) {
+        return BLS.G1Point(
+            bytes32(0x1000000000000000000000000000000000000000000000000000000000000001),
+            bytes32(0x0100000000000000000000000000000000000000000000000000000000000010),
+            bytes32(0x0010000000000000000000000000000000000000000000000000000000000100),
+            bytes32(0x0001000000000000000000000000000000000000000000000000000000001000)
+        );
+    }
+
+    function test_SetVerificationKey() public {
+        BLS.G1Point memory key = newKey();
+        vm.expectEmit(false, false, false, true);
+        emit Core4Mica.VerificationKeyUpdated(key);
+
+        core4Mica.setGuaranteeVerificationKey(key);
+
+        (bytes32 x_a, bytes32 x_b, bytes32 y_a, bytes32 y_b) = core4Mica.GUARANTEE_VERIFICATION_KEY();
+        assertEq(x_a, key.x_a);
+        assertEq(x_b, key.x_b);
+        assertEq(y_a, key.y_a);
+        assertEq(x_b, key.x_b);
+    }
+
+    function test_SetVerificationKey_Revert_User_Unauthorized() public {
+        BLS.G1Point memory key = newKey();
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(user1))
+        );
+        vm.prank(user1);
+        core4Mica.setGuaranteeVerificationKey(key);
+    }
+
+    function test_SetVerificationKey_Revert_Operator_Unauthorized() public {
+        BLS.G1Point memory key = newKey();
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, address(operator))
+        );
+        vm.prank(operator);
+        core4Mica.setGuaranteeVerificationKey(key);
     }
 
     // === Deposit ===
@@ -782,7 +824,7 @@ contract Core4MicaTest is Test {
     function test_Fallback_Reverts_TransferFailed() public {
         vm.deal(user1, 3 ether);
         vm.prank(user1);
-        (bool ok, bytes memory mem) = address(core4Mica).call{value: 0.25 ether}(abi.encodeWithSignature("nonExistentFunction()"));
+        (bool ok,) = address(core4Mica).call{value: 0.25 ether}(abi.encodeWithSignature("nonExistentFunction()"));
         assert(!ok);
     }
 }

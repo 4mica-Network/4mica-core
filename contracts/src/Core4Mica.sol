@@ -4,6 +4,7 @@ pragma solidity ^0.8.29;
 import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 /// @title Core4Mica
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
@@ -30,6 +31,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     uint256 public tabExpirationTime = 21 days;
     uint256 public synchronizationDelay = 6 hours;
 
+    BLS.G1Point public GUARANTEE_VERIFICATION_KEY = BLS.G1Point(
+        bytes32(0x000000000000000000000000000000000fffffffffffffffffffffffffffffff),
+        bytes32(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff),
+        bytes32(0x000000000000000000000000000000000fffffffffffffffffffffffffffffff),
+        bytes32(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+    );
+
     struct WithdrawalRequest {
         uint256 timestamp;
         uint256 amount;
@@ -54,6 +62,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event SynchronizationDelayUpdated(uint256 newExpirationTime);
+    event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
 
     // ========= Helper structs =========
     struct Guarantee {
@@ -106,6 +115,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert IllegalValue();
         synchronizationDelay = _synchronizationDelay;
         emit SynchronizationDelayUpdated(_synchronizationDelay);
+    }
+
+    function setGuaranteeVerificationKey(BLS.G1Point calldata verificationKey) external restricted {
+        GUARANTEE_VERIFICATION_KEY = verificationKey;
+        emit VerificationKeyUpdated(verificationKey);
     }
 
     // ========= User flows =========
