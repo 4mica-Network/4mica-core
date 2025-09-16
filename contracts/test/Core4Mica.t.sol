@@ -25,6 +25,9 @@ contract Core4MicaTest is Test {
         manager = new AccessManager(address(this));
         core4Mica = new Core4Mica(address(manager));
 
+        /// Initialize the signature verification key
+        setVerificationKey(PRIVATE_KEY);
+
         // grant operator the OPERATOR_ROLE so we can record Payments
         manager.setTargetFunctionRole(
             address(core4Mica),
@@ -34,13 +37,17 @@ contract Core4MicaTest is Test {
         manager.grantRole(OPERATOR_ROLE, address(operator), 0);
     }
 
-    // helper
+    // helpers
 
     function _asSingletonArray(
         bytes4 selector
     ) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
+    }
+
+    function setVerificationKey(bytes32 privateKey) public {
+        core4Mica.setGuaranteeVerificationKey(BlsHelper.getPublicKey(privateKey));
     }
 
     // === Admin Config ===
@@ -815,13 +822,8 @@ contract Core4MicaTest is Test {
 
     // === Verify Guarantee Signature ===
 
-    function setPublicKey() public {
-        core4Mica.setGuaranteeVerificationKey(BlsHelper.getPublicKey(PRIVATE_KEY));
-    }
 
     function test_VerifyGuaranteeSignature() public {
-        setPublicKey();
-
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
         BLS.G2Point memory signature = BlsHelper.signGuarantee(g, PRIVATE_KEY);
 
@@ -830,8 +832,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_VerifyGuaranteeSignature_InvalidGuarantee() public {
-        setPublicKey();
-
         Core4Mica.Guarantee memory g1 = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
         BLS.G2Point memory signature_g1 = BlsHelper.signGuarantee(g1, PRIVATE_KEY);
 
@@ -842,7 +842,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_VerifyGuaranteeSignature_InvalidSigningKey() public {
-        setPublicKey();
         bytes32 otherKey = bytes32(0x5B85C3922AB2E2738F196576D00A8583CBE4A1C6BCA85DDFC65438574F42377C);
 
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, vm.getBlockTimestamp(), user1, user2, 17, 3 ether);
