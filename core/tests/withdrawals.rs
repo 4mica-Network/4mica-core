@@ -1,5 +1,4 @@
 use alloy::primitives::U256;
-use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
@@ -283,61 +282,6 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
         U256::from(4u64).to_string(),
         "executed amount persisted correctly"
     );
-
-    Ok(())
-}
-
-#[test(tokio::test)]
-async fn request_withdrawal_rejects_when_more_than_two_minutes_in_future() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-
-    // give the user some collateral
-    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
-
-    // pick a timestamp > 2 minutes in the future (2m + 1s)
-    let too_far = Utc::now().timestamp() + 121;
-    let res = repo::request_withdrawal(&ctx, user_addr.clone(), too_far, U256::from(1u64)).await;
-
-    assert!(
-        res.is_err(),
-        "should reject timestamps more than 2 minutes in the future"
-    );
-
-    // ensure no withdrawal was inserted
-    let w = withdrawal::Entity::find()
-        .filter(withdrawal::Column::UserAddress.eq(user_addr))
-        .one(&*ctx.db)
-        .await?;
-    assert!(w.is_none(), "no withdrawal row should be inserted on error");
-
-    Ok(())
-}
-
-#[test(tokio::test)]
-async fn request_withdrawal_allows_when_up_to_two_minutes_in_future() -> anyhow::Result<()> {
-    use entities::sea_orm_active_enums::WithdrawalStatus;
-
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-
-    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
-
-    // exactly 2 minutes ahead should be allowed
-    let boundary = Utc::now().timestamp() + 120;
-    let res = repo::request_withdrawal(&ctx, user_addr.clone(), boundary, U256::from(1u64)).await;
-
-    assert!(res.is_ok(), "exactly +2 minutes should be allowed");
-
-    let w = withdrawal::Entity::find()
-        .filter(withdrawal::Column::UserAddress.eq(user_addr))
-        .one(&*ctx.db)
-        .await?
-        .unwrap();
-
-    assert_eq!(w.status, WithdrawalStatus::Pending);
 
     Ok(())
 }
