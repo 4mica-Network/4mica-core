@@ -26,6 +26,9 @@ contract Core4MicaTest is Test {
         /// Initialize the signature verification key
         setVerificationKey(PRIVATE_KEY);
 
+        // always deal user1 5 ether
+        vm.deal(user1, 5 ether);
+
         // grant operator the OPERATOR_ROLE so we can record Payments
         manager.setTargetFunctionRole(
             address(core4Mica),
@@ -223,7 +226,6 @@ contract Core4MicaTest is Test {
     // === Deposit ===
 
     function test_Deposit() public {
-        vm.deal(user1, 5 ether);
         vm.startPrank(user1);
 
         vm.expectEmit(true, false, false, true);
@@ -238,7 +240,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Deposit_MultipleDepositsAccumulate() public {
-        vm.deal(user1, 5 ether);
         vm.startPrank(user1);
         core4Mica.deposit{value: 1 ether}();
         core4Mica.deposit{value: 1 ether}();
@@ -253,8 +254,6 @@ contract Core4MicaTest is Test {
     // === Request Withdrawal ===
 
     function test_RequestWithdrawal() public {
-        vm.deal(user1, 2 ether);
-
         vm.startPrank(user1);
         core4Mica.deposit{value: 2 ether}();
 
@@ -270,7 +269,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_RequestWithdrawal_OverwritesPrevious() public {
-        vm.deal(user1, 5 ether);
         vm.startPrank(user1);
         core4Mica.deposit{value: 5 ether}();
 
@@ -289,8 +287,6 @@ contract Core4MicaTest is Test {
     // === Request Withdrawal: Failure cases ===
 
     function test_RequestWithdrawal_Revert_AmountZero() public {
-        vm.deal(user1, 1 ether);
-
         vm.startPrank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -299,8 +295,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_RequestWithdrawal_Revert_TooMuch() public {
-        vm.deal(user1, 1 ether);
-
         vm.startPrank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -311,8 +305,6 @@ contract Core4MicaTest is Test {
     // === Cancel Withdrawal ===
 
     function test_CancelWithdrawal() public {
-        vm.deal(user1, 2 ether);
-
         vm.startPrank(user1);
         core4Mica.deposit{value: 2 ether}();
         core4Mica.requestWithdrawal(1 ether);
@@ -330,7 +322,6 @@ contract Core4MicaTest is Test {
     // === Cancel Withdrawal: Failure cases ===
 
     function test_CancelWithdrawal_Revert_NoWithdrawalRequested() public {
-        vm.deal(user1, 2 ether);
         vm.startPrank(user1);
         core4Mica.deposit{value: 2 ether}();
 
@@ -341,8 +332,6 @@ contract Core4MicaTest is Test {
     // === Finalize Withdrawal ===
 
     function test_FinalizeWithdrawal_FullAmount() public {
-        vm.deal(user1, 4 ether);
-
         vm.startPrank(user1);
         core4Mica.deposit{value: 2 ether}();
         core4Mica.requestWithdrawal(1 ether);
@@ -353,9 +342,9 @@ contract Core4MicaTest is Test {
         vm.expectEmit(true, false, false, true);
         emit Core4Mica.CollateralWithdrawn(user1, 1 ether);
 
-        assertEq(user1.balance, 2 ether);
-        core4Mica.finalizeWithdrawal();
         assertEq(user1.balance, 3 ether);
+        core4Mica.finalizeWithdrawal();
+        assertEq(user1.balance, 4 ether);
 
         (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(user1);
         assertEq(collateral, 1 ether);
@@ -364,8 +353,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_FinalizeWithdrawal_NotFullAmount() public {
-        vm.deal(user1, 5 ether);
-
         vm.prank(user1);
         core4Mica.deposit{value: 5 ether}();
 
@@ -402,9 +389,8 @@ contract Core4MicaTest is Test {
     }
 
     function test_FinalizeWithdrawal_CollateralGone() public {
-        vm.deal(user1, 4 ether);
         vm.prank(user1);
-        core4Mica.deposit{value: 4 ether}();
+        core4Mica.deposit{value: 5 ether}();
 
         // user promised something to recipient as part of tab
         uint256 tab_timestamp = 1;
@@ -418,7 +404,7 @@ contract Core4MicaTest is Test {
 
         // user did not pay their promise, so
         // recipient comes to collect remuneration
-        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, 4 ether);
+        Core4Mica.Guarantee memory g = Core4Mica.Guarantee(0x1234, tab_timestamp, user1, user2, 17, 5 ether);
         BLS.G2Point memory signature = BlsHelper.signGuarantee(g, PRIVATE_KEY);
 
         core4Mica.remunerate(g, signature);
@@ -439,7 +425,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_FinalizeWithdrawal_FullCollateral() public {
-        vm.deal(user1, 1 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -458,13 +443,12 @@ contract Core4MicaTest is Test {
 
         (uint256 collateral,,) = core4Mica.getUser(user1);
         assertEq(collateral, 0, "Collateral not deleted");
-        assertEq(address(user1).balance, 1 ether, "User did not receive full collateral");
+        assertEq(address(user1).balance, 5 ether, "User did not receive full collateral");
     }
 
     // === Finalize Withdrawal: Failure cases ===
 
     function test_FinalizeWithdrawal_Revert_NoWithdrawalRequested() public {
-        vm.deal(user1, 2 ether);
         vm.startPrank(user1);
         core4Mica.deposit{value: 2 ether}();
 
@@ -473,7 +457,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_FinalizeWithdrawal_Revert_GracePeriodNotElapsed() public {
-        vm.deal(user1, 4 ether);
         vm.startPrank(user1);
         core4Mica.deposit{value: 4 ether}();
         core4Mica.requestWithdrawal(2 ether);
@@ -521,8 +504,6 @@ contract Core4MicaTest is Test {
     // === Remuneration ===
 
     function test_Remunerate() public {
-        vm.deal(user1, 3 ether);
-        vm.deal(user2, 0);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -550,8 +531,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_PartiallyPaidTab() public {
-        vm.deal(user1, 3 ether);
-        vm.deal(user2, 0);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -581,7 +560,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_GuaranteeIssuedBeforeWithdrawalRequestSynchronization() public {
-        vm.deal(user1, 1 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -610,13 +588,12 @@ contract Core4MicaTest is Test {
         vm.warp(vm.getBlockTimestamp() + 7 days);
         vm.prank(user1);
         core4Mica.finalizeWithdrawal();
-        assertEq(user1.balance, 0.25 ether);
+        assertEq(user1.balance, 4.25 ether);
         (collateral,,) = core4Mica.getUser(user1);
         assertEq(collateral, 0.25 ether);
     }
 
     function test_Remunerate_GuaranteeIssuedAfterWithdrawalRequestSynchronization() public {
-        vm.deal(user1, 1 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -652,7 +629,7 @@ contract Core4MicaTest is Test {
         vm.warp(vm.getBlockTimestamp() + 7 days);
         vm.prank(user1);
         core4Mica.finalizeWithdrawal();
-        assertEq(user1.balance, 0.75 ether);
+        assertEq(user1.balance, 4.75 ether);
         (collateral,, withdrawal_amount) = core4Mica.getUser(user1);
         assertEq(collateral, 0.01 ether);
     }
@@ -678,7 +655,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_Revert_NotYetOverdue() public {
-        vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -691,7 +667,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_Revert_TabExpired() public {
-        vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -706,7 +681,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_Revert_PreviouslyRemunerated() public {
-        vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -726,7 +700,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_Revert_TabAlreadyPaid() public {
-        vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -745,7 +718,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_Revert_InvalidSignature() public {
-        vm.deal(user1, 3 ether);
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -761,8 +733,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Remunerate_Revert_DoubleSpending() public {
-        vm.deal(user1, 3 ether);
-
         // user1 deposits fewer than the later remuneration claim
         vm.prank(user1);
         core4Mica.deposit{value: 0.25 ether}();
@@ -780,8 +750,6 @@ contract Core4MicaTest is Test {
     // === Double spend prevention tests ===
 
     function test_DoubleSpend_IllegalGuarantee() public {
-        vm.deal(user1, 1 ether);
-
         // User deposits collateral
         vm.prank(user1);
         core4Mica.deposit{value: 1 ether}();
@@ -808,7 +776,7 @@ contract Core4MicaTest is Test {
         core4Mica.finalizeWithdrawal();
         (uint256 collateral,,) = core4Mica.getUser(user1);
         assertEq(collateral, 0.25 ether);
-        assertEq(user1.balance, 0.75 ether);
+        assertEq(user1.balance, 4.75 ether);
 
         // some time later, recipient decides to remunerate after all
         vm.warp(vm.getBlockTimestamp() + 6 hours);
@@ -862,7 +830,6 @@ contract Core4MicaTest is Test {
     // === Fallback and Receive revert ===
 
     function test_Receive_Reverts_TransferFailed() public {
-        vm.deal(user1, 3 ether);
         vm.prank(user1);
         (bool ok, bytes memory mem) = address(core4Mica).call{value: 0.25 ether}("");
         assert(!ok);
@@ -870,7 +837,6 @@ contract Core4MicaTest is Test {
     }
 
     function test_Fallback_Reverts_TransferFailed() public {
-        vm.deal(user1, 3 ether);
         vm.prank(user1);
         (bool ok,) = address(core4Mica).call{value: 0.25 ether}(abi.encodeWithSignature("nonExistentFunction()"));
         assert(!ok);
