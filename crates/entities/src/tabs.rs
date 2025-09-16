@@ -18,6 +18,7 @@ pub struct Model {
     pub settlement_status: SettlementStatus,
     pub created_at: DateTime,
     pub updated_at: DateTime,
+    pub ttl: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
