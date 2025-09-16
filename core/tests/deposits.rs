@@ -1,6 +1,7 @@
 use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::AppConfig;
+use core_service::error::PersistDbError;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use entities::{collateral_event, sea_orm_active_enums::CollateralEventType, user};
@@ -173,10 +174,7 @@ async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Re
     assert_eq!(U256::from_str(&before.locked_collateral)?, U256::ZERO);
 
     // lock 40 units
-    let ok =
-        repo::update_user_lock_and_version(&ctx, &user_addr, before_version, U256::from(40u64))
-            .await?;
-    assert!(ok);
+    repo::update_user_lock_and_version(&ctx, &user_addr, before_version, U256::from(40u64)).await?;
 
     let after = load_user(&ctx, &user_addr).await;
     assert_eq!(after.version, before_version + 1);
@@ -196,8 +194,7 @@ async fn lock_fails_if_not_enough_free_collateral() -> anyhow::Result<()> {
 
     // Pre-lock 8 units
     let u = load_user(&ctx, &user_addr).await;
-    let _ =
-        repo::update_user_lock_and_version(&ctx, &user_addr, u.version, U256::from(8u64)).await?;
+    repo::update_user_lock_and_version(&ctx, &user_addr, u.version, U256::from(8u64)).await?;
 
     // free collateral is only 2; trying to lock 5 more must be rejected in our own check
     let u2 = load_user(&ctx, &user_addr).await;
@@ -222,14 +219,16 @@ async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
     let version = u.version;
 
     // first update bumps version to version + 1
-    let ok1 =
-        repo::update_user_lock_and_version(&ctx, &user_addr, version, U256::from(5u64)).await?;
-    assert!(ok1);
+    repo::update_user_lock_and_version(&ctx, &user_addr, version, U256::from(5u64)).await?;
 
-    // second update tries with old version -> must not update
-    let ok2 =
-        repo::update_user_lock_and_version(&ctx, &user_addr, version, U256::from(10u64)).await?;
-    assert!(!ok2);
+    // second update tries with old version -> must error with OptimisticLockConflict
+    let err = repo::update_user_lock_and_version(&ctx, &user_addr, version, U256::from(10u64))
+        .await
+        .expect_err("expected optimistic lock conflict");
+    match err {
+        PersistDbError::OptimisticLockConflict { .. } => { /* expected */ }
+        other => panic!("unexpected error: {other:?}"),
+    }
 
     let after = load_user(&ctx, &user_addr).await;
     assert_eq!(U256::from_str(&after.locked_collateral)?, U256::from(5u64));
@@ -247,13 +246,11 @@ async fn multiple_locks_accumulate_locked_collateral() -> anyhow::Result<()> {
 
     // first lock of 10
     let u1 = load_user(&ctx, &user_addr).await;
-    let _ =
-        repo::update_user_lock_and_version(&ctx, &user_addr, u1.version, U256::from(10u64)).await?;
+    repo::update_user_lock_and_version(&ctx, &user_addr, u1.version, U256::from(10u64)).await?;
 
     // second lock to total 25 (fresh version)
     let u2 = load_user(&ctx, &user_addr).await;
-    let _ =
-        repo::update_user_lock_and_version(&ctx, &user_addr, u2.version, U256::from(25u64)).await?;
+    repo::update_user_lock_and_version(&ctx, &user_addr, u2.version, U256::from(25u64)).await?;
 
     let after = load_user(&ctx, &user_addr).await;
     assert_eq!(U256::from_str(&after.locked_collateral)?, U256::from(25u64));

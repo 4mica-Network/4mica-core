@@ -128,22 +128,24 @@ impl CoreService {
             .checked_add(amount)
             .ok_or_else(|| rpc::invalid_params_error("overflow on locked collateral"))?;
 
-        let bumped = repo::update_user_lock_and_version(
+        // Use new Result<(), PersistDbError> signature.
+        match repo::update_user_lock_and_version(
             &self.persist_ctx,
             user_address,
             user.version,
             new_locked,
         )
         .await
-        .map_err(|e| {
-            error!("DB error: {e}");
-            rpc::internal_error()
-        })?;
-
-        if !bumped {
-            return Err(rpc::invalid_params_error("Invalid parameters"));
+        {
+            Ok(()) => Ok(()),
+            Err(PersistDbError::OptimisticLockConflict { .. }) => {
+                Err(rpc::invalid_params_error("Invalid parameters"))
+            }
+            Err(e) => {
+                error!("DB error: {e}");
+                Err(rpc::internal_error())
+            }
         }
-        Ok(())
     }
 
     async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> RpcResult<BLSCert> {

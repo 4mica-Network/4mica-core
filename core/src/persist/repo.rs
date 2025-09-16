@@ -591,11 +591,11 @@ pub async fn bump_user_version(
 pub async fn get_tab_by_id(
     ctx: &PersistCtx,
     tab_id: &str,
-) -> Result<entities::tabs::Model, PersistDbError> {
+) -> Result<Option<entities::tabs::Model>, PersistDbError> {
     let res = entities::tabs::Entity::find_by_id(tab_id.to_string())
         .one(&*ctx.db)
         .await?;
-    res.ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_string()))
+    Ok(res)
 }
 
 /// Check if a Remunerate event already exists for a tab
@@ -620,17 +620,26 @@ pub async fn ensure_remunerate_event_for_tab(
         None => Err(PersistDbError::RemunerateEventNotFound(tab_id.to_owned())),
     }
 }
-
+/// Optimistic lock + version bump for `locked_collateral`.
+/// Atomically sets `LockedCollateral` to `new_locked` and bumps the user's version
+/// if `current_version` matches.
+/// Returns `Ok(())` on success; `Err(PersistDbError::OptimisticLockConflict{..})` if stale.
 pub async fn update_user_lock_and_version(
     ctx: &PersistCtx,
     user_address: &str,
     current_version: i32,
     new_locked: U256,
-) -> Result<bool, PersistDbError> {
+) -> Result<(), PersistDbError> {
+    use chrono::Utc;
     use sea_orm::sea_query::Expr;
-    let now = chrono::Utc::now().naive_utc();
+
+    let now = Utc::now().naive_utc();
 
     let res = user::Entity::update_many()
+        // Prefer filters first for readability; SQL is identical
+        .filter(user::Column::Address.eq(user_address))
+        .filter(user::Column::Version.eq(current_version))
+        // Atomic increment + field write + timestamp
         .col_expr(
             user::Column::Version,
             Expr::col(user::Column::Version).add(1),
@@ -640,10 +649,18 @@ pub async fn update_user_lock_and_version(
             Expr::value(new_locked.to_string()),
         )
         .col_expr(user::Column::UpdatedAt, Expr::value(now))
-        .filter(user::Column::Address.eq(user_address))
-        .filter(user::Column::Version.eq(current_version))
         .exec(&*ctx.db)
         .await?;
 
-    Ok(res.rows_affected == 1)
+    match res.rows_affected {
+        1 => Ok(()),
+        0 => Err(PersistDbError::OptimisticLockConflict {
+            user: user_address.to_owned(),
+            expected_version: current_version,
+        }),
+        n => Err(PersistDbError::InvariantViolation(format!(
+            "update_user_lock_and_version updated {} rows for address {}",
+            n, user_address
+        ))),
+    }
 }
