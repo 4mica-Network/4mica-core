@@ -69,7 +69,7 @@ impl CoreService {
     }
 
     fn verify_promise_signature(&self, _p: &PaymentGuaranteeClaims) -> bool {
-        // TODO: implement real signature verification
+        // TODO(#24): implement real signature verification
         true
     }
 
