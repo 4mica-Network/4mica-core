@@ -316,7 +316,8 @@ pub async fn fail_transaction(
                 let mut active_model = tx_row.clone().into_active_model();
                 active_model.finalized = Set(true);
                 active_model.failed = Set(true);
-                active_model.updated_at = Set(Utc::now().naive_utc());
+                let now = Utc::now().naive_utc();
+                active_model.updated_at = Set(now);
                 active_model.update(txn).await?;
 
                 // subtract collateral only once (strict fetch)
@@ -334,7 +335,7 @@ pub async fn fail_transaction(
 
                 let mut user_active_model = user_row.into_active_model();
                 user_active_model.collateral = Set(new_collateral.to_string());
-                user_active_model.updated_at = Set(Utc::now().naive_utc());
+                user_active_model.updated_at = Set(now);
                 user_active_model.update(txn).await?;
 
                 Ok::<_, PersistDbError>(())
