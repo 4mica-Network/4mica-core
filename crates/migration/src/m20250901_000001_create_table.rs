@@ -382,6 +382,16 @@ impl MigrationTrait for Migration {
                     .to_owned(),
             )
             .await?;
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+        CREATE UNIQUE INDEX uniq_tab_remunerate_event
+        ON "CollateralEvent" (tab_id)
+        WHERE event_type = 'REMUNERATE';
+        "#,
+            )
+            .await?;
 
         Ok(())
     }
@@ -440,7 +450,14 @@ impl MigrationTrait for Migration {
                     .to_owned(),
             )
             .await?;
-
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                DROP INDEX IF EXISTS uniq_tab_remunerate_event;
+                "#,
+            )
+            .await?;
         Ok(())
     }
 }

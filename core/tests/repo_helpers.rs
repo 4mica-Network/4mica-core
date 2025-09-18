@@ -232,38 +232,50 @@ async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ensure has_remunerate_event_for_tab returns false for unknown tab
 #[test(tokio::test)]
-async fn ensure_remunerate_event_for_tab_errors_for_unknown_and_ok_when_present()
--> anyhow::Result<()> {
+async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let res = repo::ensure_remunerate_event_for_tab(&ctx, "non-existent-id").await;
-    assert!(
-        res.is_err(),
-        "ensure_* must error when no remunerate event exists"
-    );
-
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
-
     ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = "tab-foo";
-    let ev = collateral_event::ActiveModel {
+    let now = Utc::now().naive_utc();
+
+    let ev1 = collateral_event::ActiveModel {
         id: Set(format!("0x{:040x}", rand::random::<u128>())),
-        user_address: Set(user_addr),
+        user_address: Set(user_addr.clone()),
         amount: Set(U256::from(1u64).to_string()),
         event_type: Set(CollateralEventType::Remunerate),
         tab_id: Set(Some(tab_id.to_string())),
         req_id: Set(None),
         tx_id: Set(None),
-        created_at: Set(Utc::now().naive_utc()),
+        created_at: Set(now),
     };
-    collateral_event::Entity::insert(ev)
+    // First insert must succeed
+    collateral_event::Entity::insert(ev1)
         .exec(ctx.db.as_ref())
         .await?;
 
-    repo::ensure_remunerate_event_for_tab(&ctx, tab_id).await?; // now Ok(())
+    // Second insert with same tab_id + Remunerate must fail due to the unique index
+    let ev2 = collateral_event::ActiveModel {
+        id: Set(format!("0x{:040x}", rand::random::<u128>())),
+        user_address: Set(user_addr),
+        amount: Set(U256::from(2u64).to_string()),
+        event_type: Set(CollateralEventType::Remunerate),
+        tab_id: Set(Some(tab_id.to_string())),
+        req_id: Set(None),
+        tx_id: Set(None),
+        created_at: Set(now),
+    };
+
+    let res = collateral_event::Entity::insert(ev2)
+        .exec(ctx.db.as_ref())
+        .await;
+    assert!(
+        res.is_err(),
+        "second Remunerate event for same tab should violate unique index"
+    );
 
     Ok(())
 }
