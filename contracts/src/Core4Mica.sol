@@ -171,6 +171,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     /// TODO(#20): compress signature
+    /// TODO(#21): permit batch verification
     function remunerate(
         Guarantee calldata g,
         BLS.G2Point calldata signature
