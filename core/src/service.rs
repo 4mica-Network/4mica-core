@@ -163,7 +163,7 @@ impl CoreService {
         self.preflight_promise_checks(&promise).await?;
         self.lock_collateral(&promise.user_address, promise.amount)
             .await?;
-        let guarantee = self.create_guarantee(&promise).await?;
+        let guarantee = self.create_bls_cert(&promise).await?;
         self.persist_guarantee(&promise, &guarantee).await?;
         Ok(guarantee)
     }
@@ -240,7 +240,7 @@ impl CoreService {
         })
     }
 
-    async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
+    async fn create_bls_cert(&self, promise: &PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         let claims = PaymentGuaranteeClaims {
             user_address: promise.user_address.clone(),
             recipient_address: promise.recipient_address.clone(),
