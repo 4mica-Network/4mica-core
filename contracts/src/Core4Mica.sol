@@ -170,6 +170,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit CollateralWithdrawn(msg.sender, withdrawal_amount);
     }
 
+    /// TODO(#20): compress signature
     function remunerate(
         Guarantee calldata g,
         BLS.G2Point calldata signature
