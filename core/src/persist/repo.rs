@@ -222,7 +222,9 @@ pub async fn finalize_withdrawal(
                 }
 
                 // update user balance
-                let new_collateral = current_collateral - executed_amount;
+                let new_collateral = current_collateral
+                    .checked_sub(executed_amount)
+                    .ok_or(PersistDbError::InsufficientCollateral)?;
                 let mut am_user = user.into_active_model();
                 am_user.collateral = Set(new_collateral.to_string());
                 am_user.updated_at = Set(now);
@@ -331,7 +333,9 @@ pub async fn fail_transaction(
                 if delta > current_collateral {
                     return Err(PersistDbError::InsufficientCollateral);
                 }
-                let new_collateral = current_collateral - delta;
+                let new_collateral = current_collateral
+                    .checked_sub(delta)
+                    .ok_or(PersistDbError::InsufficientCollateral)?;
 
                 let mut user_active_model = user_row.into_active_model();
                 user_active_model.collateral = Set(new_collateral.to_string());
@@ -472,7 +476,10 @@ pub async fn remunerate_recipient(
                 }
                 if amount > U256::ZERO {
                     let mut user_am = user_row.into_active_model();
-                    user_am.collateral = Set((current_collateral - amount).to_string());
+                    let new_collateral = current_collateral
+                        .checked_sub(amount)
+                        .ok_or(PersistDbError::InsufficientCollateral)?;
+                    user_am.collateral = Set(new_collateral.to_string());
                     user_am.updated_at = Set(now);
                     user_am.update(txn).await?;
                 }
