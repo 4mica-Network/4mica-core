@@ -10,10 +10,8 @@ use alloy::primitives::Address;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
-use entities::*;
 use futures_util::StreamExt;
 use log::{error, info, warn};
-use sea_orm::EntityTrait;
 use std::time::Duration;
 use tokio;
 use tokio::task::JoinHandle;
@@ -158,8 +156,6 @@ impl EthereumListener {
         info!("[EthereumListener] RecipientRemunerated: tab={tab_id}, amount={amount}");
 
         let tab_id_str = tab_id.to_string();
-        let _user_addr = Self::get_tab_user_address(persist_ctx, &tab_id_str).await?;
-
         repo::remunerate_recipient(persist_ctx, tab_id_str, amount).await?;
         Ok(())
     }
@@ -228,16 +224,5 @@ impl EthereumListener {
         } = *log.log_decode()?.data();
         info!("[EthereumListener] SynchronizationDelayUpdated: {newSynchronizationDelay}");
         Ok(())
-    }
-
-    async fn get_tab_user_address(
-        persist_ctx: &PersistCtx,
-        tab_id: &str,
-    ) -> Result<String, BlockchainListenerError> {
-        tabs::Entity::find_by_id(tab_id.to_owned())
-            .one(&*persist_ctx.db)
-            .await?
-            .map(|t| t.user_address)
-            .ok_or(BlockchainListenerError::UserNotFound(tab_id.to_owned()))
     }
 }
