@@ -4,7 +4,7 @@ pragma solidity ^0.8.29;
 import "forge-std/Script.sol";
 import "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import {BlsHelper} from "../test/BlsHelpers.sol";
+import {BlsHelper} from "../src/BlsHelpers.sol";
 
 contract Core4MicaScript is Script {
     AccessManager manager;
