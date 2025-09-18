@@ -234,11 +234,10 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         tab_id: &str,
     ) -> Result<String, BlockchainListenerError> {
-        let tab = tabs::Entity::find_by_id(tab_id.to_owned())
+        tabs::Entity::find_by_id(tab_id.to_owned())
             .one(&*persist_ctx.db)
-            .await?;
-        Ok(tab
+            .await?
             .map(|t| t.user_address)
-            .ok_or_else(|| BlockchainListenerError::UserNotFound(tab_id.to_owned()))?)
+            .ok_or(BlockchainListenerError::UserNotFound(tab_id.to_owned()))
     }
 }
