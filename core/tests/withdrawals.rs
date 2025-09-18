@@ -3,6 +3,8 @@ use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
+use entities::sea_orm_active_enums::WithdrawalStatus;
+use entities::withdrawal::*;
 use entities::{user, withdrawal};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -344,5 +346,64 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
         "executed amount persisted correctly"
     );
 
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    // ensure a user exists
+    let user_addr = Uuid::new_v4().to_string();
+    let now = Utc::now().naive_utc();
+    let user_am = user::ActiveModel {
+        address: Set(user_addr.clone()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("0".to_string()),
+        locked_collateral: Set("0".to_string()),
+        ..Default::default()
+    };
+    user::Entity::insert(user_am)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(&*ctx.db)
+        .await?;
+
+    // insert the first Pending withdrawal – should succeed
+    let w1 = ActiveModel {
+        id: Set(Uuid::new_v4().to_string()),
+        user_address: Set(user_addr.clone()),
+        requested_amount: Set(U256::from(5u64).to_string()),
+        executed_amount: Set("0".into()),
+        request_ts: Set(Utc::now().naive_utc()),
+        status: Set(WithdrawalStatus::Pending),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    Entity::insert(w1).exec(&*ctx.db).await?;
+
+    // insert a second Pending withdrawal for the same user – should violate the
+    // partial unique index and return a database error.
+    let w2 = ActiveModel {
+        id: Set(Uuid::new_v4().to_string()),
+        user_address: Set(user_addr.clone()),
+        requested_amount: Set(U256::from(5u64).to_string()),
+        executed_amount: Set("0".into()),
+        request_ts: Set(Utc::now().naive_utc()),
+        status: Set(WithdrawalStatus::Pending),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+
+    let res = Entity::insert(w2).exec(&*ctx.db).await;
+    assert!(
+        res.is_err(),
+        "Second pending withdrawal for same user should violate unique index"
+    );
     Ok(())
 }

@@ -308,6 +308,19 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // ----- Withdrawal Partial Constraints -----
+        // enforce: at most one PENDING withdrawal per user
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+            CREATE UNIQUE INDEX uniq_user_pending_withdrawal
+            ON "Withdrawal" (user_address)
+            WHERE status = 'PENDING';
+            "#,
+            )
+            .await?;
+
         // ----- CollateralEvent -----
         manager
             .create_table(
@@ -398,6 +411,14 @@ impl MigrationTrait for Migration {
                     .if_exists()
                     .name("withdrawal_status")
                     .to_owned(),
+            )
+            .await?;
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                DROP INDEX IF EXISTS uniq_user_pending_withdrawal;
+                "#,
             )
             .await?;
         manager
