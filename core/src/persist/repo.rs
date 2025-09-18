@@ -627,28 +627,6 @@ pub async fn get_tab_by_id_on<C: ConnectionTrait>(
         .ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_owned()))
 }
 
-/// Check if a Remunerate event already exists for a tab
-pub async fn ensure_remunerate_event_for_tab(
-    ctx: &PersistCtx,
-    tab_id: &str,
-) -> Result<(), PersistDbError> {
-    use sea_orm::QuerySelect;
-
-    let some_id = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id))
-        .filter(collateral_event::Column::EventType.eq(CollateralEventType::Remunerate))
-        .select_only()
-        .column(collateral_event::Column::Id)
-        .limit(1)
-        .into_tuple::<String>()
-        .one(ctx.db.as_ref())
-        .await?;
-
-    match some_id {
-        Some(_) => Ok(()),
-        None => Err(PersistDbError::RemunerateEventNotFound(tab_id.to_owned())),
-    }
-}
 /// Optimistic lock + version bump for `locked_collateral`.
 /// Atomically sets `LockedCollateral` to `new_locked` and bumps the user's version
 /// if `current_version` matches.
