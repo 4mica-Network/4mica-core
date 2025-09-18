@@ -168,26 +168,20 @@ pub async fn cancel_withdrawal(
     ctx: &PersistCtx,
     user_address: String,
 ) -> Result<(), PersistDbError> {
-    let records = withdrawal::Entity::find()
+    match withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
-        .all(&*ctx.db)
-        .await?;
-
-    match records.len() {
-        0 => Ok(()),
-        1 => {
-            let rec = records.into_iter().next().unwrap();
+        .one(&*ctx.db)
+        .await?
+    {
+        Some(rec) => {
             let mut active_model = rec.into_active_model();
             active_model.status = Set(WithdrawalStatus::Cancelled);
             active_model.updated_at = Set(Utc::now().naive_utc());
             active_model.update(&*ctx.db).await?;
             Ok(())
         }
-        n => Err(PersistDbError::MultiplePendingWithdrawals {
-            user: user_address,
-            count: n,
-        }),
+        None => Ok(()),
     }
 }
 
