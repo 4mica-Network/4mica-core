@@ -110,8 +110,8 @@ pub enum ServiceError {
     #[error("promise timestamp is in the future")]
     FutureTimestamp,
 
-    #[error("req_id not incremented")]
-    ReqIdNotIncremented,
+    #[error("req_id not valid")]
+    InvalidRequestID,
 
     #[error("start timestamp modified")]
     ModifiedStartTs,
@@ -171,7 +171,7 @@ pub fn service_error_to_rpc(err: ServiceError) -> jsonrpsee::types::ErrorObjectO
         ServiceError::UserNotRegistered => rpc::invalid_params_error("User not registered"),
         ServiceError::TabClosed => rpc::invalid_params_error("Tab is closed"),
         ServiceError::FutureTimestamp => rpc::invalid_params_error("Timestamp is in the future"),
-        ServiceError::ReqIdNotIncremented => rpc::invalid_params_error("req_id not incremented"),
+        ServiceError::InvalidRequestID => rpc::invalid_params_error("req_id not valid"),
         ServiceError::ModifiedStartTs => rpc::invalid_params_error("start timestamp modified"),
         ServiceError::OptimisticLockConflict => {
             rpc::invalid_params_error("Optimistic lock conflict")
