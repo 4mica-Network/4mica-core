@@ -33,7 +33,7 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*ctx.db)
+        .exec_without_returning(ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -168,7 +168,7 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
 
     let u0 = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     let v0 = u0.version;
@@ -180,7 +180,7 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
     // Version incremented by 1
     let u1 = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u1.version, v0 + 1);
@@ -192,7 +192,7 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
     // Version unchanged after failed attempt
     let u2 = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u2.version, v0 + 1);
@@ -243,7 +243,9 @@ async fn ensure_remunerate_event_for_tab_errors_for_unknown_and_ok_when_present(
         tx_id: Set(None),
         created_at: Set(Utc::now().naive_utc()),
     };
-    collateral_event::Entity::insert(ev).exec(&*ctx.db).await?;
+    collateral_event::Entity::insert(ev)
+        .exec(ctx.db.as_ref())
+        .await?;
 
     repo::ensure_remunerate_event_for_tab(&ctx, tab_id).await?; // now Ok(())
 

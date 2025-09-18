@@ -69,7 +69,7 @@ async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()>
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*persist_ctx.db)
+        .exec_without_returning(persist_ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -100,19 +100,23 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     };
     let persist_ctx = PersistCtx::new().await?;
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // start listener in the background
     let listener = start_listener(eth_config, persist_ctx.clone());
@@ -133,7 +137,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     loop {
         if let Some(u) = user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             assert_eq!(parse_collateral(&u.collateral), deposit_amount);
@@ -181,19 +185,23 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
 
     // clean DB
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
@@ -227,7 +235,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     loop {
         if let Some(u) = user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             let current = parse_collateral(&u.collateral);
@@ -277,19 +285,23 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     };
     let persist_ctx = PersistCtx::new().await?;
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
@@ -318,7 +330,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     loop {
         if let Some(w) = withdrawal::Entity::find()
             .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             assert_eq!(w.requested_amount, withdraw_amount.to_string());
@@ -338,7 +350,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     loop {
         if let Some(w) = withdrawal::Entity::find()
             .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             assert_eq!(w.status, WithdrawalStatus::Cancelled);
@@ -380,19 +392,23 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
 
     // clean DB
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
@@ -428,7 +444,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     loop {
         if let Some(u) = user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             if parse_collateral(&u.collateral) == deposit_amount - withdraw_amount {
@@ -467,19 +483,23 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     // Clean DB
     let persist_ctx = PersistCtx::new().await?;
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     //  Start listener
     let eth_config = EthereumConfig {
@@ -511,7 +531,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     let mut tries = 0;
     while let Some(u) = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*persist_ctx.db)
+        .one(persist_ctx.db.as_ref())
         .await?
     {
         if parse_collateral(&u.collateral) > U256::ZERO {
@@ -538,7 +558,9 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         ttl: Set(300),
         ..Default::default()
     };
-    tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;
+    tabs::Entity::insert(t_am)
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // Move chain time well beyond any default grace period.
     let expiration_secs: u64 = 21 * 24 * 60 * 60;
@@ -583,7 +605,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     loop {
         let events = collateral_event::Entity::find()
             .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
-            .all(&*persist_ctx.db)
+            .all(persist_ctx.db.as_ref())
             .await?;
         if !events.is_empty() {
             assert_eq!(events[0].amount, "1000");
@@ -696,19 +718,23 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     let persist_ctx = PersistCtx::new().await?;
     // clean DB
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
@@ -729,7 +755,7 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     let mut tries = 0;
     while let Some(u) = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*persist_ctx.db)
+        .one(persist_ctx.db.as_ref())
         .await?
     {
         if parse_collateral(&u.collateral) == ten_eth {
@@ -780,7 +806,9 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         ttl: Set(300),
         ..Default::default()
     };
-    tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;
+    tabs::Entity::insert(t_am)
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // Advance time so the tab is OVERDUE but NOT EXPIRED relative to tab_ts.
     let jump = sync_delay + grace + 3600; // +1h safety margin
@@ -814,13 +842,13 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     loop {
         if let Some(w) = withdrawal::Entity::find()
             .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             if w.status == WithdrawalStatus::Executed {
                 let u = user::Entity::find()
                     .filter(user::Column::Address.eq(user_addr.clone()))
-                    .one(&*persist_ctx.db)
+                    .one(persist_ctx.db.as_ref())
                     .await?
                     .unwrap();
 
@@ -882,19 +910,23 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     let persist_ctx = PersistCtx::new().await?;
     // Clean DB
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // Start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
@@ -914,7 +946,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     let mut tries = 0;
     while let Some(u) = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*persist_ctx.db)
+        .one(persist_ctx.db.as_ref())
         .await?
     {
         if U256::from_str(&u.collateral)? > U256::ZERO {
@@ -943,7 +975,9 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
         ttl: Set(300),
         ..Default::default()
     };
-    tabs::Entity::insert(t_am).exec(&*persist_ctx.db).await?;
+    tabs::Entity::insert(t_am)
+        .exec(persist_ctx.db.as_ref())
+        .await?;
 
     // Make the tab overdue but not expired
     let latest = provider
@@ -972,7 +1006,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     // Snapshot rows for this tab
     let before = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
-        .all(&*persist_ctx.db)
+        .all(persist_ctx.db.as_ref())
         .await?
         .len();
 
@@ -1008,7 +1042,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     sleep(Duration::from_millis(300)).await;
     let after = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
-        .all(&*persist_ctx.db)
+        .all(persist_ctx.db.as_ref())
         .await?
         .len();
     assert_eq!(
@@ -1054,19 +1088,23 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
 
     // Clean DB and ensure user exists with 0 balance
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
     ensure_user(&persist_ctx, &user_addr).await?;
 
     // Start listener
@@ -1087,7 +1125,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     sleep(Duration::from_millis(500)).await;
     if let Some(u) = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*persist_ctx.db)
+        .one(persist_ctx.db.as_ref())
         .await?
     {
         assert_eq!(
@@ -1112,7 +1150,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     loop {
         if let Some(u) = user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             if parse_collateral(&u.collateral) == tracked_amount {
@@ -1156,19 +1194,23 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
 
     // Clean DB and ensure user exists
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
     ensure_user(&persist_ctx, &user_addr).await?;
 
     let listener = start_listener(eth_config, persist_ctx.clone());
@@ -1189,7 +1231,7 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
     loop {
         if let Some(u) = user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             if U256::from_str(&u.collateral)? == deposit1 {
@@ -1233,7 +1275,7 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
     sleep(Duration::from_millis(400)).await;
     let bad_tab_count = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq("999999".to_string()))
-        .count(&*persist_ctx.db)
+        .count(persist_ctx.db.as_ref())
         .await?;
     assert_eq!(
         bad_tab_count, 0,
@@ -1255,7 +1297,7 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
     loop {
         if let Some(u) = user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             if U256::from_str(&u.collateral)? == expected_total {
@@ -1300,19 +1342,23 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
 
     // Clean DB and ensure user
     user_transaction::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     guarantee::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     collateral_event::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
     withdrawal::Entity::delete_many()
-        .exec(&*persist_ctx.db)
+        .exec(persist_ctx.db.as_ref())
         .await?;
-    tabs::Entity::delete_many().exec(&*persist_ctx.db).await?;
-    user::Entity::delete_many().exec(&*persist_ctx.db).await?;
+    tabs::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
+    user::Entity::delete_many()
+        .exec(persist_ctx.db.as_ref())
+        .await?;
     ensure_user(&persist_ctx, &user_addr).await?;
 
     // Start and immediately stop the listener
@@ -1338,7 +1384,7 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
     loop {
         if let Some(u) = user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(&*persist_ctx.db)
+            .one(persist_ctx.db.as_ref())
             .await?
         {
             if parse_collateral(&u.collateral) == amount {
