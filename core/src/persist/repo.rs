@@ -547,25 +547,6 @@ pub async fn get_tab_ttl_seconds(ctx: &PersistCtx, tab_id: &str) -> Result<u64, 
     Ok(ttl)
 }
 
-/// Fetch unfinalized transactions for a user
-pub async fn get_unfinalized_transactions_for_user(
-    ctx: &PersistCtx,
-    user_address: &str,
-    exclude_tx_id: Option<&str>,
-) -> Result<Vec<user_transaction::Model>, PersistDbError> {
-    let exclude =
-        exclude_tx_id.ok_or_else(|| PersistDbError::TransactionNotFound("None".to_string()))?;
-
-    let rows = user_transaction::Entity::find()
-        .filter(user_transaction::Column::UserAddress.eq(user_address))
-        .filter(user_transaction::Column::Finalized.eq(false))
-        .filter(user_transaction::Column::TxId.ne(exclude))
-        .all(ctx.db.as_ref())
-        .await?;
-
-    Ok(rows)
-}
-
 /// Fetch pending withdrawals for a user
 pub async fn get_pending_withdrawals_for_user(
     ctx: &PersistCtx,

@@ -1,10 +1,11 @@
 use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::AppConfig;
+use core_service::error::PersistDbError;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use entities::sea_orm_active_enums::WithdrawalStatus;
-use entities::user;
+use entities::{user, user_transaction};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
@@ -13,6 +14,25 @@ use uuid::Uuid;
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
     Ok(AppConfig::fetch())
+}
+
+/// Fetch unfinalized transactions for a user
+pub async fn get_unfinalized_transactions_for_user(
+    ctx: &PersistCtx,
+    user_address: &str,
+    exclude_tx_id: Option<&str>,
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
+    let exclude =
+        exclude_tx_id.ok_or_else(|| PersistDbError::TransactionNotFound("None".to_string()))?;
+
+    let rows = user_transaction::Entity::find()
+        .filter(user_transaction::Column::UserAddress.eq(user_address))
+        .filter(user_transaction::Column::Finalized.eq(false))
+        .filter(user_transaction::Column::TxId.ne(exclude))
+        .all(ctx.db.as_ref())
+        .await?;
+
+    Ok(rows)
 }
 
 // Ensure a user row exists (idempotent)
@@ -115,13 +135,12 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
     assert_eq!(all.len(), 2);
 
     // Excluding tx_id_1 should yield only tx_id_2
-    let filtered =
-        repo::get_unfinalized_transactions_for_user(&ctx, &user_addr, Some(&tx_id_1)).await?;
+    let filtered = get_unfinalized_transactions_for_user(&ctx, &user_addr, Some(&tx_id_1)).await?;
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].tx_id, tx_id_2);
 
     // Calling with None should now error
-    let none_res = repo::get_unfinalized_transactions_for_user(&ctx, &user_addr, None).await;
+    let none_res = get_unfinalized_transactions_for_user(&ctx, &user_addr, None).await;
     assert!(
         none_res.is_err(),
         "expected error when exclude_tx_id is None"
