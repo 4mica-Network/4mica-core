@@ -24,7 +24,8 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let now = Utc::now().naive_utc();
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set(U256::ZERO.to_string()),
@@ -105,7 +106,8 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let now = Utc::now().naive_utc();
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),
@@ -171,7 +173,8 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let now = Utc::now().naive_utc();
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),
@@ -241,7 +244,8 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
     let ctx = PersistCtx::new().await?;
     let now = Utc::now().naive_utc();
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),
@@ -306,7 +310,8 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let now = Utc::now().naive_utc();
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),

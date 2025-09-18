@@ -45,7 +45,8 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
 
     // Tab & primary user
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let tab_id = Uuid::new_v4().to_string();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
@@ -191,7 +192,8 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     let now = Utc::now().naive_utc();
 
     // base user + tab
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),
@@ -248,7 +250,8 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
 
     // insert a tab with ttl = 123
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),
@@ -298,7 +301,8 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
 
     // Create a user and a tab
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),

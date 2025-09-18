@@ -4,12 +4,13 @@ use core_service::config::AppConfig;
 use core_service::error::PersistDbError;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
+use entities::collateral_event;
+use entities::sea_orm_active_enums::CollateralEventType;
 use entities::sea_orm_active_enums::WithdrawalStatus;
 use entities::{user, user_transaction};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
-use uuid::Uuid;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
@@ -63,9 +64,10 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
 async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-    let other_user = Uuid::new_v4().to_string();
-    let recipient = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    let other_user = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     ensure_user(&ctx, &other_user).await?;
@@ -73,8 +75,8 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
     repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
     repo::deposit(&ctx, other_user.clone(), U256::from(10)).await?;
 
-    let tx_id_1 = Uuid::new_v4().to_string();
-    let tx_id_2 = Uuid::new_v4().to_string();
+    let tx_id_1 = format!("0x{:040x}", rand::random::<u128>());
+    let tx_id_2 = format!("0x{:040x}", rand::random::<u128>());
 
     repo::submit_payment_transaction(
         &ctx,
@@ -104,14 +106,15 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
 async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-    let recipient = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
 
-    let tx_id_1 = Uuid::new_v4().to_string();
-    let tx_id_2 = Uuid::new_v4().to_string();
+    let tx_id_1 = format!("0x{:040x}", rand::random::<u128>());
+    let tx_id_2 = format!("0x{:040x}", rand::random::<u128>());
 
     repo::submit_payment_transaction(
         &ctx,
@@ -154,7 +157,7 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
 async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(20)).await?;
@@ -180,7 +183,7 @@ async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()
 async fn bump_user_version_increments_once() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(1)).await?;
@@ -233,13 +236,6 @@ async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
 #[test(tokio::test)]
 async fn ensure_remunerate_event_for_tab_errors_for_unknown_and_ok_when_present()
 -> anyhow::Result<()> {
-    use alloy::primitives::U256;
-    use chrono::Utc;
-    use entities::collateral_event;
-    use entities::sea_orm_active_enums::CollateralEventType;
-    use sea_orm::{EntityTrait, Set};
-    use uuid::Uuid;
-
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let res = repo::ensure_remunerate_event_for_tab(&ctx, "non-existent-id").await;
@@ -248,12 +244,13 @@ async fn ensure_remunerate_event_for_tab_errors_for_unknown_and_ok_when_present(
         "ensure_* must error when no remunerate event exists"
     );
 
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = "tab-foo";
     let ev = collateral_event::ActiveModel {
-        id: Set(Uuid::new_v4().to_string()),
+        id: Set(format!("0x{:040x}", rand::random::<u128>())),
         user_address: Set(user_addr),
         amount: Set(U256::from(1u64).to_string()),
         event_type: Set(CollateralEventType::Remunerate),
