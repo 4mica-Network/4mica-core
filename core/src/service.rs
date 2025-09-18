@@ -105,7 +105,11 @@ impl CoreService {
             .map_err(|_| ServiceError::InvalidParams("Invalid req_id".into()))?;
 
         match last_opt {
-            None => {}
+            None => {
+                if promise.req_id != "0" {
+                    return Err(ServiceError::InvalidRequestID);
+                }
+            }
             Some(ref last) => {
                 let prev_req_id = last
                     .req_id
@@ -114,7 +118,7 @@ impl CoreService {
 
                 let expected = prev_req_id.saturating_add(1);
                 if cur_req_id != expected {
-                    return Err(ServiceError::ReqIdNotIncremented);
+                    return Err(ServiceError::InvalidRequestID);
                 }
 
                 let prev_ts_i64 = last.start_ts.and_utc().timestamp();
