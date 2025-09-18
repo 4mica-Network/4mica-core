@@ -31,6 +31,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     uint256 public tabExpirationTime = 21 days;
     uint256 public synchronizationDelay = 6 hours;
 
+    /// TODO(#22): move key to registry
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY = BLS.G1Point(
         bytes32(0x000000000000000000000000000000000fffffffffffffffffffffffffffffff),
         bytes32(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff),
