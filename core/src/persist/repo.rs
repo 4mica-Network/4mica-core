@@ -82,7 +82,7 @@ pub async fn deposit(
         .transaction(|txn| {
             Box::pin(async move {
                 // 🔒 Must exist
-                let mut u = get_user_on(txn, &user_address).await?;
+                let u = get_user_on(txn, &user_address).await?;
 
                 let current_collateral = U256::from_str(&u.collateral)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
@@ -90,9 +90,6 @@ pub async fn deposit(
                 let new_collateral = current_collateral.checked_add(amount).ok_or_else(|| {
                     PersistDbError::DatabaseFailure(sea_orm::DbErr::Custom("overflow".to_string()))
                 })?;
-
-                u.collateral = new_collateral.to_string();
-                u.updated_at = now;
 
                 let mut active_model = u.into_active_model();
                 active_model.collateral = AvSet(new_collateral.to_string());
