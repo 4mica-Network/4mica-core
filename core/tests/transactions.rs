@@ -33,7 +33,7 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*ctx.db)
+        .exec_without_returning(ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -69,7 +69,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
 
     let txs = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.eq(tx_id))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
     assert_eq!(txs.len(), 1);
     Ok(())
@@ -100,7 +100,7 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(7u64).to_string());
@@ -132,7 +132,7 @@ async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
 
     let txs = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.eq(tx_id))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
     assert_eq!(txs.len(), 1);
     Ok(())
@@ -193,7 +193,7 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
 
     // Transaction should remain untouched
     let row = user_transaction::Entity::find_by_id(tx_id.clone())
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert!(!row.failed, "tx should not be marked failed");
@@ -201,13 +201,13 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
 
     // Collateral should be unchanged for both users
     let owner = user::Entity::find_by_id(owner_addr.clone())
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(owner.collateral, U256::from(10u64).to_string());
 
     let other = user::Entity::find_by_id(other_addr.clone())
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(other.collateral, U256::from(10u64).to_string());

@@ -34,7 +34,7 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*ctx.db)
+        .exec_without_returning(ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -53,7 +53,7 @@ async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(5u64).to_string());
@@ -83,7 +83,7 @@ async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     // State remains Executed
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w.status, WithdrawalStatus::Executed);
@@ -106,7 +106,7 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
     repo::request_withdrawal(&ctx, user_addr.clone(), 12345, U256::from(2u64)).await?;
     let w1 = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w1.status, WithdrawalStatus::Pending);
@@ -114,7 +114,7 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
     // Cancel it
     repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
     let w2 = withdrawal::Entity::find_by_id(w1.id.clone())
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w2.status, WithdrawalStatus::Cancelled);
@@ -125,14 +125,14 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
 
     // Status remains Cancelled and collateral unchanged (5)
     let w3 = withdrawal::Entity::find_by_id(w1.id.clone())
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w3.status, WithdrawalStatus::Cancelled);
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(5u64).to_string());
@@ -154,7 +154,7 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(2u64).to_string());
@@ -180,7 +180,7 @@ async fn finalize_without_any_request_errors_and_preserves_collateral() -> anyho
     // Collateral unchanged
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(10u64).to_string());
@@ -205,7 +205,7 @@ async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> 
 
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w.status, WithdrawalStatus::Executed);
@@ -229,7 +229,7 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
 
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w.status, WithdrawalStatus::Cancelled);
@@ -251,7 +251,7 @@ async fn finalize_withdrawal_underflow_errors() -> anyhow::Result<()> {
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(3u64).to_string());
@@ -280,7 +280,7 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
     // user collateral must now be 10 – 5 = 5
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(5u64).to_string());
@@ -288,7 +288,7 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
     // withdrawal row must be Executed and executed_amount = 5, requested amount still 8
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w.status, WithdrawalStatus::Executed);
@@ -324,14 +324,14 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(6u64).to_string());
 
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(w.status, WithdrawalStatus::Executed);
@@ -371,7 +371,7 @@ async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> 
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*ctx.db)
+        .exec_without_returning(ctx.db.as_ref())
         .await?;
 
     // insert the first Pending withdrawal – should succeed
@@ -385,7 +385,7 @@ async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> 
         created_at: Set(now),
         updated_at: Set(now),
     };
-    Entity::insert(w1).exec(&*ctx.db).await?;
+    Entity::insert(w1).exec(ctx.db.as_ref()).await?;
 
     // insert a second Pending withdrawal for the same user – should violate the
     // partial unique index and return a database error.
@@ -400,7 +400,7 @@ async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> 
         updated_at: Set(now),
     };
 
-    let res = Entity::insert(w2).exec(&*ctx.db).await;
+    let res = Entity::insert(w2).exec(ctx.db.as_ref()).await;
     assert!(
         res.is_err(),
         "Second pending withdrawal for same user should violate unique index"

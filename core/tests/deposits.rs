@@ -33,7 +33,7 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*ctx.db)
+        .exec_without_returning(ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -41,7 +41,7 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
 async fn load_user(ctx: &PersistCtx, addr: &str) -> user::Model {
     user::Entity::find()
         .filter(user::Column::Address.eq(addr.to_string()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await
         .unwrap()
         .unwrap()
@@ -57,7 +57,7 @@ async fn deposit_zero_does_not_crash() -> anyhow::Result<()> {
     repo::deposit(&ctx, user_addr.clone(), U256::ZERO).await?;
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::ZERO.to_string());
@@ -75,7 +75,7 @@ async fn deposit_large_value() -> anyhow::Result<()> {
     repo::deposit(&ctx, user_addr.clone(), big).await?;
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, big.to_string());
@@ -94,14 +94,14 @@ async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
 
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::from(15u64).to_string());
 
     let events = collateral_event::Entity::find()
         .filter(collateral_event::Column::UserAddress.eq(user_addr))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
     assert_eq!(events.len(), 2);
     assert!(
@@ -127,7 +127,7 @@ async fn deposit_overflow_protection() -> anyhow::Result<()> {
     // value should remain U256::MAX
     let u = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
     assert_eq!(u.collateral, U256::MAX.to_string());
@@ -151,7 +151,9 @@ async fn deposit_fails_on_invalid_collateral_in_db() -> anyhow::Result<()> {
         updated_at: Set(now),
         ..Default::default()
     };
-    entities::user::Entity::insert(am).exec(&*ctx.db).await?;
+    entities::user::Entity::insert(am)
+        .exec(ctx.db.as_ref())
+        .await?;
 
     // Any deposit should now fail when parsing collateral
     let res = repo::deposit(&ctx, user_addr.clone(), U256::from(1u64)).await;
