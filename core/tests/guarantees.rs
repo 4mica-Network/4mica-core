@@ -33,7 +33,7 @@ async fn insert_test_tab(
         ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
-        .exec(&*ctx.db)
+        .exec(ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -56,7 +56,9 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
         updated_at: Set(now),
         ..Default::default()
     };
-    entities::user::Entity::insert(u_am).exec(&*ctx.db).await?;
+    entities::user::Entity::insert(u_am)
+        .exec(ctx.db.as_ref())
+        .await?;
     insert_test_tab(&ctx, tab_id.clone(), user_addr.clone(), now).await?;
 
     // Unknown addresses that should be auto-created
@@ -78,11 +80,11 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     // from & to must exist now
     let from = user::Entity::find()
         .filter(user::Column::Address.eq(from_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?;
     let to = user::Entity::find()
         .filter(user::Column::Address.eq(to_addr))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?;
     assert!(from.is_some() && to.is_some());
     Ok(())
@@ -111,7 +113,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         ..Default::default()
     };
     entities::user::Entity::insert(from_user)
-        .exec(&*ctx.db)
+        .exec(ctx.db.as_ref())
         .await?;
 
     // (kept explicit here in case you want to vary fields)
@@ -128,7 +130,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
-        .exec(&*ctx.db)
+        .exec(ctx.db.as_ref())
         .await?;
 
     // ── First insert of the guarantee ──
@@ -161,7 +163,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     let g = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
         .filter(guarantee::Column::ReqId.eq(req_id))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .unwrap();
 
@@ -199,7 +201,9 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
         updated_at: Set(now),
         ..Default::default()
     };
-    entities::user::Entity::insert(u_am).exec(&*ctx.db).await?;
+    entities::user::Entity::insert(u_am)
+        .exec(ctx.db.as_ref())
+        .await?;
     let tab_id = Uuid::new_v4().to_string();
     insert_test_tab(&ctx, tab_id.clone(), user_addr.clone(), now).await?;
 
@@ -254,7 +258,9 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         updated_at: Set(now),
         ..Default::default()
     };
-    entities::user::Entity::insert(u_am).exec(&*ctx.db).await?;
+    entities::user::Entity::insert(u_am)
+        .exec(ctx.db.as_ref())
+        .await?;
     let tab_id = Uuid::new_v4().to_string();
 
     // direct insert to control ttl value
@@ -271,7 +277,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
-        .exec(&*ctx.db)
+        .exec(ctx.db.as_ref())
         .await?;
 
     // happy path
