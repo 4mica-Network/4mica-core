@@ -84,10 +84,10 @@ pub async fn deposit(
                 // 🔒 Must exist
                 let mut u = get_user_on(txn, &user_address).await?;
 
-                let current = U256::from_str(&u.collateral)
+                let current_collateral = U256::from_str(&u.collateral)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
-                let new_collateral = current.checked_add(amount).ok_or_else(|| {
+                let new_collateral = current_collateral.checked_add(amount).ok_or_else(|| {
                     PersistDbError::DatabaseFailure(sea_orm::DbErr::Custom("overflow".to_string()))
                 })?;
 
@@ -197,7 +197,7 @@ pub async fn finalize_withdrawal(
 
                 // strict user fetch
                 let user = get_user_on(txn, &user_address).await?;
-                let current = U256::from_str(&user.collateral)
+                let current_collateral = U256::from_str(&user.collateral)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
                 // most recent Pending withdrawal; if none => error
@@ -220,12 +220,12 @@ pub async fn finalize_withdrawal(
                     ));
                 }
 
-                if executed_amount > current {
+                if executed_amount > current_collateral {
                     return Err(PersistDbError::InsufficientCollateral);
                 }
 
                 // update user balance
-                let new_collateral = current - executed_amount;
+                let new_collateral = current_collateral - executed_amount;
                 let mut am_user = user.into_active_model();
                 am_user.collateral = Set(new_collateral.to_string());
                 am_user.updated_at = Set(now);
@@ -325,15 +325,15 @@ pub async fn fail_transaction(
                 // subtract collateral only once (strict fetch)
                 let user_row = get_user_on(txn, &user_address).await?;
 
-                let current = U256::from_str(&user_row.collateral)
+                let current_collateral = U256::from_str(&user_row.collateral)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
                 let delta = U256::from_str(&tx_row.amount)
                     .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
 
-                if delta > current {
+                if delta > current_collateral {
                     return Err(PersistDbError::InsufficientCollateral);
                 }
-                let new_collateral = current - delta;
+                let new_collateral = current_collateral - delta;
 
                 let mut user_active_model = user_row.into_active_model();
                 user_active_model.collateral = Set(new_collateral.to_string());
@@ -465,16 +465,16 @@ pub async fn remunerate_recipient(
 
                 // debit if needed
                 let user_row = get_user_on(txn, &tab.user_address).await?;
-                let current = U256::from_str(&user_row.collateral)
+                let current_collateral = U256::from_str(&user_row.collateral)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
-                if current < amount {
+                if current_collateral < amount {
                     // whole txn rolls back (CAS included)
                     return Err(PersistDbError::InsufficientCollateral);
                 }
                 if amount > U256::ZERO {
                     let mut user_am = user_row.into_active_model();
-                    user_am.collateral = Set((current - amount).to_string());
+                    user_am.collateral = Set((current_collateral - amount).to_string());
                     user_am.updated_at = Set(now);
                     user_am.update(txn).await?;
                 }
