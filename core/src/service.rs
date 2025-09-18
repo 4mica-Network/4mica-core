@@ -95,7 +95,7 @@ impl CoreService {
             return Err(ServiceError::InvalidParams("Invalid signature".into()));
         }
 
-        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id)
+        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.req_id)
             .await
             .map_err(|e| ServiceError::from(e))?;
 
