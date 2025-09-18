@@ -22,7 +22,7 @@ use sea_orm::{
 
 pub async fn get_user(ctx: &PersistCtx, user_address: &str) -> Result<user::Model, PersistDbError> {
     user::Entity::find_by_id(user_address)
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
 }
@@ -133,7 +133,7 @@ pub async fn request_withdrawal(
     amount: U256,
 ) -> Result<(), PersistDbError> {
     // Ensure user exists and has enough collateral
-    let u = get_user_on(&*ctx.db, &user_address).await?;
+    let u = get_user_on(ctx.db.as_ref(), &user_address).await?;
 
     let user_collateral = U256::from_str(&u.collateral)
         .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
@@ -159,7 +159,7 @@ pub async fn request_withdrawal(
         updated_at: Set(now),
     };
     withdrawal::Entity::insert(withdrawal_model)
-        .exec(&*ctx.db)
+        .exec(ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -171,14 +171,14 @@ pub async fn cancel_withdrawal(
     match withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
     {
         Some(rec) => {
             let mut active_model = rec.into_active_model();
             active_model.status = Set(WithdrawalStatus::Cancelled);
             active_model.updated_at = Set(Utc::now().naive_utc());
-            active_model.update(&*ctx.db).await?;
+            active_model.update(ctx.db.as_ref()).await?;
             Ok(())
         }
         None => Ok(()),
@@ -259,7 +259,7 @@ pub async fn submit_payment_transaction(
     let now = Utc::now().naive_utc();
 
     // Ensure user row exists (strict)
-    let _ = get_user_on(&*ctx.db, &user_address).await?;
+    let _ = get_user_on(ctx.db.as_ref(), &user_address).await?;
 
     let tx = user_transaction::ActiveModel {
         tx_id: Set(transaction_id),
@@ -280,7 +280,7 @@ pub async fn submit_payment_transaction(
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*ctx.db)
+        .exec_without_returning(ctx.db.as_ref())
         .await?;
 
     Ok(())
@@ -358,7 +358,7 @@ pub async fn get_transactions_by_hash(
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.is_in(hashes))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
 }
@@ -368,7 +368,7 @@ pub async fn get_unfinalized_transactions(
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::Finalized.eq(false))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
 }
@@ -390,8 +390,8 @@ pub async fn store_guarantee(
     let now = Utc::now().naive_utc();
 
     // Ensure foreign keys exist (idempotent, race-safe)
-    ensure_user_exists_on(&*ctx.db, &from_addr).await?;
-    ensure_user_exists_on(&*ctx.db, &to_addr).await?;
+    ensure_user_exists_on(ctx.db.as_ref(), &from_addr).await?;
+    ensure_user_exists_on(ctx.db.as_ref(), &to_addr).await?;
 
     let active_model = guarantee::ActiveModel {
         tab_id: Set(tab_id.clone()),
@@ -411,7 +411,7 @@ pub async fn store_guarantee(
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(&*ctx.db)
+        .exec_without_returning(ctx.db.as_ref())
         .await?;
     Ok(())
 }
@@ -424,7 +424,7 @@ pub async fn get_guarantee(
     let res = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
         .filter(guarantee::Column::ReqId.eq(req_id))
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?;
     Ok(res)
 }
@@ -509,7 +509,7 @@ pub async fn get_user_transactions(
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::UserAddress.eq(user_address))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
 }
@@ -522,7 +522,7 @@ pub async fn get_last_guarantee_for_tab(
     let row = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
         .order_by_desc(guarantee::Column::CreatedAt)
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?;
     Ok(row)
 }
@@ -530,7 +530,7 @@ pub async fn get_last_guarantee_for_tab(
 /// Read TTL (in seconds) from `tabs.ttl`. Returns Err(TabNotFound) if the tab doesn't exist.
 pub async fn get_tab_ttl_seconds(ctx: &PersistCtx, tab_id: &str) -> Result<u64, PersistDbError> {
     let tab = entities::tabs::Entity::find_by_id(tab_id.to_string())
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?
         .ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_owned()))?;
 
@@ -551,7 +551,7 @@ pub async fn get_unfinalized_transactions_for_user(
         .filter(user_transaction::Column::UserAddress.eq(user_address))
         .filter(user_transaction::Column::Finalized.eq(false))
         .filter(user_transaction::Column::TxId.ne(exclude))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
 
     Ok(rows)
@@ -565,7 +565,7 @@ pub async fn get_pending_withdrawals_for_user(
     let rows = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_address))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
-        .all(&*ctx.db)
+        .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
 }
@@ -593,7 +593,7 @@ pub async fn bump_user_version(
             Expr::col(user::Column::Version).add(1),
         )
         .col_expr(user::Column::UpdatedAt, Expr::value(now))
-        .exec(&*ctx.db)
+        .exec(ctx.db.as_ref())
         .await?;
 
     match res.rows_affected {
@@ -615,7 +615,7 @@ pub async fn get_tab_by_id(
     tab_id: &str,
 ) -> Result<Option<entities::tabs::Model>, PersistDbError> {
     let res = entities::tabs::Entity::find_by_id(tab_id.to_string())
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?;
     Ok(res)
 }
@@ -644,7 +644,7 @@ pub async fn ensure_remunerate_event_for_tab(
         .column(collateral_event::Column::Id)
         .limit(1)
         .into_tuple::<String>()
-        .one(&*ctx.db)
+        .one(ctx.db.as_ref())
         .await?;
 
     match some_id {
@@ -681,7 +681,7 @@ pub async fn update_user_lock_and_version(
             Expr::value(new_locked.to_string()),
         )
         .col_expr(user::Column::UpdatedAt, Expr::value(now))
-        .exec(&*ctx.db)
+        .exec(ctx.db.as_ref())
         .await?;
 
     match res.rows_affected {
