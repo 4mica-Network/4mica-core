@@ -1,5 +1,3 @@
-// service.rs
-
 use crate::{
     config::AppConfig,
     error::{PersistDbError, ServiceError, ServiceResult, service_error_to_rpc},
@@ -45,7 +43,6 @@ impl CoreService {
         info!("BLS Public Key: {}", hex::encode(&public_key));
 
         let persist_ctx = PersistCtx::new().await?;
-
         EthereumListener::new(config.ethereum_config.clone(), persist_ctx.clone())
             .run()
             .await?;
@@ -90,123 +87,69 @@ impl CoreService {
             .map_err(|e| ServiceError::InvalidParams(e.to_string()))
     }
 
-    /// Perform validations for promises.
     async fn preflight_promise_checks(
         &self,
         promise: &PaymentGuaranteeClaims,
     ) -> ServiceResult<()> {
-        // small helper for brevity
-        let invalid =
-            |msg: &str| -> ServiceResult<()> { Err(ServiceError::InvalidParams(msg.to_string())) };
-
-        // 1) signature
         if !self.verify_promise_signature(promise) {
-            error!(
-                "preflight: invalid signature tab_id={} user={} req_id={}",
-                promise.tab_id, promise.user_address, promise.req_id
-            );
-            return invalid("invalid signature");
+            return Err(ServiceError::InvalidParams("Invalid signature".into()));
         }
 
-        // 2) req_id & start_ts checks against the most recent guarantee for this tab
         let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id)
             .await
-            .map_err(|e| {
-                error!(
-                    "preflight: get_last_guarantee_for_tab failed: tab_id={} err={}",
-                    promise.tab_id, e
-                );
-                ServiceError::from(e)
-            })?;
+            .map_err(|e| ServiceError::from(e))?;
 
-        let cur_req_id = promise.req_id.parse::<u64>().map_err(|e| {
-            error!(
-                "preflight: invalid req_id: tab_id={} req_id='{}' err={}",
-                promise.tab_id, promise.req_id, e
-            );
-            ServiceError::InvalidParams("invalid req_id".into())
-        })?;
+        let cur_req_id = promise
+            .req_id
+            .parse::<u64>()
+            .map_err(|_| ServiceError::InvalidParams("Invalid req_id".into()))?;
 
-        if let Some(last) = last_opt.as_ref() {
-            let prev_req_id = last.req_id.parse::<u64>().map_err(|e| {
-                error!(
-                    "preflight: invalid previous req_id in DB: tab_id={} prev_req_id='{}' err={}",
-                    promise.tab_id, last.req_id, e
-                );
-                ServiceError::Other(anyhow!("invalid previous req_id"))
-            })?;
+        match last_opt {
+            None => {}
+            Some(ref last) => {
+                let prev_req_id = last
+                    .req_id
+                    .parse::<u64>()
+                    .map_err(|_| ServiceError::Other(anyhow!("Invalid previous req_id")))?;
 
-            let expected = prev_req_id.saturating_add(1);
-            if cur_req_id != expected {
-                error!(
-                    "preflight: req_id not incremented: tab_id={} prev_req_id={} expected={} got={}",
-                    promise.tab_id, prev_req_id, expected, cur_req_id
-                );
-                return invalid("req_id not incremented");
-            }
+                let expected = prev_req_id.saturating_add(1);
+                if cur_req_id != expected {
+                    return Err(ServiceError::ReqIdNotIncremented);
+                }
 
-            // DB has NaiveDateTime; guard against negatives before casting to u64
-            let prev_ts_i64 = last.start_ts.and_utc().timestamp();
-            if prev_ts_i64 < 0 {
-                error!(
-                    "preflight: negative previous start_ts in DB: tab_id={} prev_ts_i64={}",
-                    promise.tab_id, prev_ts_i64
-                );
-                return Err(ServiceError::Other(anyhow!("negative previous start_ts")));
-            }
-            let prev_start_ts = prev_ts_i64 as u64;
+                let prev_ts_i64 = last.start_ts.and_utc().timestamp();
+                if prev_ts_i64 < 0 {
+                    return Err(ServiceError::Other(anyhow!("Negative previous start_ts")));
+                }
 
-            if promise.timestamp != prev_start_ts {
-                error!(
-                    "preflight: modified start_ts: tab_id={} expected={} got={}",
-                    promise.tab_id, prev_start_ts, promise.timestamp
-                );
-                return invalid("modified start_ts");
+                let prev_start_ts = prev_ts_i64 as u64;
+                if promise.timestamp != prev_start_ts {
+                    return Err(ServiceError::ModifiedStartTs);
+                }
             }
         }
 
-        // 3) time-based validations (using client-provided start_ts)
         let now_i64 = Utc::now().timestamp();
         if now_i64 < 0 {
-            error!("preflight: system time before epoch: now_i64={}", now_i64);
-            return Err(ServiceError::Other(anyhow!("system time before epoch")));
+            return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
         let now_secs = now_i64 as u64;
 
         if now_secs < promise.timestamp {
-            error!(
-                "preflight: future timestamp: tab_id={} now={} start_ts={}",
-                promise.tab_id, now_secs, promise.timestamp
-            );
-            return invalid("future timestamp");
+            return Err(ServiceError::FutureTimestamp);
         }
 
-        // 4) TTL from repo::tabs::ttl — require positive TTL
-        let ttl_secs = match repo::get_tab_ttl_seconds(&self.persist_ctx, &promise.tab_id).await {
-            Ok(ttl) if ttl > 0 => ttl as u64,
-            Ok(ttl) => {
-                error!(
-                    "preflight: invalid tab TTL (<=0): tab_id={} ttl={}",
-                    promise.tab_id, ttl
-                );
-                return invalid("invalid tab TTL");
-            }
-            Err(e) => {
-                error!(
-                    "preflight: failed to read tab TTL: tab_id={} err={}",
-                    promise.tab_id, e
-                );
-                return Err(ServiceError::from(e));
-            }
-        };
+        let ttl_secs = repo::get_tab_ttl_seconds(&self.persist_ctx, &promise.tab_id)
+            .await
+            .map_err(|e| ServiceError::from(e))?;
 
-        let expiry = promise.timestamp.saturating_add(ttl_secs);
+        if ttl_secs <= 0 {
+            return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
+        }
+
+        let expiry = promise.timestamp.saturating_add(ttl_secs as u64);
         if expiry < now_secs {
-            error!(
-                "preflight: tab closed: tab_id={} start_ts={} ttl={} expiry={} now={}",
-                promise.tab_id, promise.timestamp, ttl_secs, expiry, now_secs
-            );
-            return invalid("tab closed");
+            return Err(ServiceError::TabClosed);
         }
 
         Ok(())
@@ -232,11 +175,11 @@ impl CoreService {
             ServiceError::Other(anyhow!(err))
         })?;
 
-        // store the *claim’s* start_ts, not “now”
-        let start_dt = match Utc.timestamp_opt(promise.timestamp as i64, 0).single() {
-            Some(dt) => dt.naive_utc(),
-            None => return Err(ServiceError::InvalidParams("invalid timestamp".into())),
-        };
+        let start_dt = Utc
+            .timestamp_opt(promise.timestamp as i64, 0)
+            .single()
+            .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
+            .naive_utc();
 
         repo::store_guarantee(
             &self.persist_ctx,
@@ -255,18 +198,16 @@ impl CoreService {
         })
     }
 
-    /// Check user free collateral & optimistic lock using repo helpers only.
     async fn lock_collateral(&self, user_address: &str, amount: U256) -> ServiceResult<()> {
-        let user = match repo::get_user(&self.persist_ctx, user_address).await {
-            Ok(u) => u,
-            Err(PersistDbError::UserNotFound(_)) => {
-                return Err(ServiceError::InvalidParams("User not registered".into()));
-            }
-            Err(e) => {
-                error!("DB error: {e}");
-                return Err(ServiceError::from(e));
-            }
-        };
+        let user = repo::get_user(&self.persist_ctx, user_address)
+            .await
+            .map_err(|e| match e {
+                PersistDbError::UserNotFound(_) => ServiceError::UserNotRegistered,
+                other => {
+                    error!("DB error: {other}");
+                    ServiceError::from(other)
+                }
+            })?;
 
         let total_collateral = U256::from_str(&user.collateral)
             .map_err(|_| ServiceError::InvalidParams("invalid collateral value".into()))?;
@@ -283,24 +224,17 @@ impl CoreService {
             .checked_add(amount)
             .ok_or_else(|| ServiceError::InvalidParams("overflow on locked collateral".into()))?;
 
-        // Use new Result<(), PersistDbError> signature.
-        match repo::update_user_lock_and_version(
+        repo::update_user_lock_and_version(
             &self.persist_ctx,
             user_address,
             user.version,
             new_locked,
         )
         .await
-        {
-            Ok(()) => Ok(()),
-            Err(PersistDbError::OptimisticLockConflict { .. }) => {
-                Err(ServiceError::OptimisticLockConflict)
-            }
-            Err(e) => {
-                error!("DB error: {e}");
-                Err(ServiceError::from(e))
-            }
-        }
+        .map_err(|e| match e {
+            PersistDbError::OptimisticLockConflict { .. } => ServiceError::OptimisticLockConflict,
+            other => ServiceError::from(other),
+        })
     }
 
     async fn create_guarantee(&self, promise: &PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
@@ -312,10 +246,8 @@ impl CoreService {
             amount: promise.amount,
             timestamp: promise.timestamp,
         };
-        BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
-            error!("Failed to issue the payment guarantee cert: {err}");
-            ServiceError::Other(anyhow!(err))
-        })
+        BLSCert::new(&self.config.secrets.bls_private_key, claims)
+            .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 }
 
