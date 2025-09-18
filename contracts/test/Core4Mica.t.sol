@@ -6,7 +6,7 @@ import "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
-import {BlsHelper} from "./BlsHelpers.sol";
+import {BlsHelper} from "../src/BlsHelpers.sol";
 
 contract Core4MicaTest is Test {
     Core4Mica core4Mica;
