@@ -5,7 +5,6 @@ use thiserror::Error;
 
 // ---------- SeaORM transaction error conversions ----------
 
-/// Convert transaction-layer errors into PersistDbError
 impl From<SeaTransactionError<PersistDbError>> for PersistDbError {
     fn from(err: SeaTransactionError<PersistDbError>) -> Self {
         match err {
@@ -30,38 +29,30 @@ impl From<SeaTransactionError<BlockchainListenerError>> for BlockchainListenerEr
 
 #[derive(Debug, Error)]
 pub enum BlockchainListenerError {
-    /// Errors while decoding on-chain data/logs.
     #[error("Failed to decode blockchain logs: {0}")]
     DecodingFailure(#[from] alloy::sol_types::Error),
 
-    /// Transparently wrap any PersistDbError from the repo layer.
-    /// This enables `?` on repo calls without extra glue code.
     #[error(transparent)]
     Db(#[from] PersistDbError),
 
-    /// Direct DB errors raised in this layer (if any).
     #[error("Database operation failed: {0}")]
     DatabaseFailure(#[from] sea_orm::DbErr),
 
-    /// Optional domain errors that may be raised directly in the listener layer.
     #[error("Tab not found: {0}")]
     TabNotFound(String),
 
     #[error("User not found: {0}")]
     UserNotFound(String),
 
-    /// Catch-all for unexpected errors.
     #[error("Unexpected error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
 #[derive(Debug, Error)]
 pub enum PersistDbError {
-    /// Low-level database failure.
     #[error("Database operation failed: {0}")]
     DatabaseFailure(#[from] sea_orm::DbErr),
 
-    /// Domain errors from the persistence layer.
     #[error("User not found: {0}")]
     UserNotFound(String),
 
@@ -104,13 +95,27 @@ pub enum ServiceError {
     #[error("invalid parameters: {0}")]
     InvalidParams(String),
 
-    #[error("not found: {0}")]
+    #[error("resource not found: {0}")]
     NotFound(String),
 
     #[error("optimistic lock conflict")]
     OptimisticLockConflict,
 
-    /// For unclassified DB errors; prefer mapping to a higher-level variant when possible.
+    #[error("user not registered")]
+    UserNotRegistered,
+
+    #[error("tab already closed")]
+    TabClosed,
+
+    #[error("promise timestamp is in the future")]
+    FutureTimestamp,
+
+    #[error("req_id not incremented")]
+    ReqIdNotIncremented,
+
+    #[error("start timestamp modified")]
+    ModifiedStartTs,
+
     #[error("database error: {0}")]
     Db(PersistDbError),
 
@@ -120,22 +125,18 @@ pub enum ServiceError {
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
-// Provide a *semantic* mapping from persistence-layer errors to service-layer errors.
-// This lets call sites use `?` and still get nice outward-facing errors.
 impl From<PersistDbError> for ServiceError {
     fn from(e: PersistDbError) -> Self {
         match e {
-            PersistDbError::UserNotFound(_) => {
-                ServiceError::InvalidParams("User not registered".into())
-            }
+            PersistDbError::UserNotFound(_) => ServiceError::UserNotRegistered,
             PersistDbError::TabNotFound(tab) => {
-                ServiceError::InvalidParams(format!("Tab not found: {tab}"))
+                ServiceError::NotFound(format!("Tab {tab} not found"))
             }
             PersistDbError::RemunerateEventNotFound(tab) => {
                 ServiceError::NotFound(format!("No remunerate event found for tab {tab}"))
             }
             PersistDbError::TransactionNotFound(tx) => {
-                ServiceError::NotFound(format!("Transaction not found: {tx}"))
+                ServiceError::NotFound(format!("Transaction {tx} not found"))
             }
             PersistDbError::InvalidTimestamp(_) => {
                 ServiceError::InvalidParams("invalid timestamp".into())
@@ -162,12 +163,19 @@ impl From<PersistDbError> for ServiceError {
     }
 }
 
-// ---------- Transport adapter(s) ----------
+// ---------- Transport adapter ----------
 pub fn service_error_to_rpc(err: ServiceError) -> jsonrpsee::types::ErrorObjectOwned {
     match err {
         ServiceError::InvalidParams(msg) => rpc::invalid_params_error(&msg),
         ServiceError::NotFound(msg) => rpc::invalid_params_error(&msg),
-        ServiceError::OptimisticLockConflict => rpc::invalid_params_error("Invalid parameters"),
+        ServiceError::UserNotRegistered => rpc::invalid_params_error("User not registered"),
+        ServiceError::TabClosed => rpc::invalid_params_error("Tab is closed"),
+        ServiceError::FutureTimestamp => rpc::invalid_params_error("Timestamp is in the future"),
+        ServiceError::ReqIdNotIncremented => rpc::invalid_params_error("req_id not incremented"),
+        ServiceError::ModifiedStartTs => rpc::invalid_params_error("start timestamp modified"),
+        ServiceError::OptimisticLockConflict => {
+            rpc::invalid_params_error("Optimistic lock conflict")
+        }
         ServiceError::Db(e) => {
             log::error!("DB error: {e}");
             rpc::internal_error()
