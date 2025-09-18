@@ -290,3 +290,60 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test(tokio::test)]
+async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let now = Utc::now().naive_utc();
+
+    // Create a user and a tab
+    let user_addr = Uuid::new_v4().to_string();
+    let u_am = entities::user::ActiveModel {
+        address: Set(user_addr.clone()),
+        collateral: Set("0".into()),
+        locked_collateral: Set("0".into()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    entities::user::Entity::insert(u_am)
+        .exec(ctx.db.as_ref())
+        .await?;
+    let tab_id = Uuid::new_v4().to_string();
+    insert_test_tab(&ctx, tab_id.clone(), user_addr.clone(), now).await?;
+
+    // Insert two guarantees with different req_ids
+    repo::store_guarantee(
+        &ctx,
+        tab_id.clone(),
+        "A".into(),
+        user_addr.clone(),
+        Uuid::new_v4().to_string(),
+        U256::from(10u64),
+        now,
+        "cert-A".into(),
+    )
+    .await?;
+    repo::store_guarantee(
+        &ctx,
+        tab_id.clone(),
+        "B".into(),
+        user_addr,
+        Uuid::new_v4().to_string(),
+        U256::from(20u64),
+        now,
+        "cert-B".into(),
+    )
+    .await?;
+
+    // The function should return the row with req_id = "B"
+    let last = repo::get_last_guarantee_for_tab(&ctx, &tab_id).await?;
+    assert!(last.is_some());
+    let last = last.unwrap();
+    assert_eq!(last.req_id, "B");
+    assert_eq!(last.value, U256::from(20u64).to_string());
+
+    Ok(())
+}

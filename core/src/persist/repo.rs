@@ -435,6 +435,10 @@ pub async fn get_guarantee(
 // ────────────────────── REMUNERATION / PAYMENTS ──────────────────────
 //
 
+/// The CAS and the balance check run inside the same SQL transaction (ctx.db.transaction).
+/// If the balance check fails and an error is returned, the whole transaction, including the CAS, rolls back automatically.
+/// It also avoids race condition.
+/// If we check the user balance before the CAS, there’s a small window where another concurrent transaction could settle the tab first.
 pub async fn remunerate_recipient(
     ctx: &PersistCtx,
     tab_id: String,
@@ -526,7 +530,7 @@ pub async fn get_last_guarantee_for_tab(
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
     let row = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
-        .order_by_desc(guarantee::Column::CreatedAt)
+        .order_by_desc(guarantee::Column::ReqId)
         .one(ctx.db.as_ref())
         .await?;
     Ok(row)
