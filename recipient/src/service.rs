@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use crypto::bls::BLSCert;
 use log::{debug, error};
+use rpc::RpcResult;
 use rpc::common::{
     PaymentGuaranteeClaims, PaymentVerificationResult, TransactionVerificationResult,
 };
 use rpc::core::{CoreApiClient, CorePublicParameters};
 use rpc::proxy::RpcProxy;
 use rpc::recipient::RecipientApiServer;
-use rpc::RpcResult;
 
 use crate::config::AppConfig;
 
