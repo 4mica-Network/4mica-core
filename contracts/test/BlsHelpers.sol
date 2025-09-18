@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.10;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.29;
 
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
