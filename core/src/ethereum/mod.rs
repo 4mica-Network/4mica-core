@@ -144,10 +144,9 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<CollateralDeposited>()?;
-        let CollateralDeposited { user, amount } = decoded.data();
+        let CollateralDeposited { user, amount } = *log.log_decode()?.data();
         info!("[EthereumListener] CollateralDeposited: user={user:?}, amount={amount}");
-        repo::deposit(persist_ctx, user.to_string(), *amount).await?;
+        repo::deposit(persist_ctx, user.to_string(), amount).await?;
         Ok(())
     }
 
@@ -155,14 +154,13 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<RecipientRemunerated>()?;
-        let RecipientRemunerated { tab_id, amount } = decoded.data();
+        let RecipientRemunerated { tab_id, amount } = *log.log_decode()?.data();
         info!("[EthereumListener] RecipientRemunerated: tab={tab_id}, amount={amount}");
 
         let tab_id_str = tab_id.to_string();
         let _user_addr = Self::find_user_address(persist_ctx, &tab_id_str).await?;
 
-        repo::remunerate_recipient(persist_ctx, tab_id_str, *amount).await?;
+        repo::remunerate_recipient(persist_ctx, tab_id_str, amount).await?;
         Ok(())
     }
 
@@ -170,10 +168,9 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<CollateralWithdrawn>()?;
-        let CollateralWithdrawn { user, amount } = decoded.data();
+        let CollateralWithdrawn { user, amount } = *log.log_decode()?.data();
         info!("[EthereumListener] CollateralWithdrawn: user={user:?}, amount={amount}");
-        repo::finalize_withdrawal(persist_ctx, user.to_string(), *amount).await?;
+        repo::finalize_withdrawal(persist_ctx, user.to_string(), amount).await?;
         Ok(())
     }
 
@@ -181,12 +178,11 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<WithdrawalRequested>()?;
-        let WithdrawalRequested { user, when, amount } = decoded.data();
+        let WithdrawalRequested { user, when, amount } = *log.log_decode()?.data();
         info!(
             "[EthereumListener] WithdrawalRequested: user={user:?}, when={when}, amount={amount}"
         );
-        repo::request_withdrawal(persist_ctx, user.to_string(), when.to(), *amount).await?;
+        repo::request_withdrawal(persist_ctx, user.to_string(), when.to(), amount).await?;
         Ok(())
     }
 
@@ -194,8 +190,7 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<WithdrawalCanceled>()?;
-        let WithdrawalCanceled { user } = decoded.data();
+        let WithdrawalCanceled { user } = *log.log_decode()?.data();
         info!("[EthereumListener] WithdrawalCanceled: user={user:?}");
         repo::cancel_withdrawal(persist_ctx, user.to_string()).await?;
         Ok(())
@@ -204,8 +199,7 @@ impl EthereumListener {
     async fn handle_withdrawal_grace_period_updated(
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<WithdrawalGracePeriodUpdated>()?;
-        let WithdrawalGracePeriodUpdated { newGracePeriod } = decoded.data();
+        let WithdrawalGracePeriodUpdated { newGracePeriod } = *log.log_decode()?.data();
         info!("[EthereumListener] WithdrawalGracePeriodUpdated: {newGracePeriod}");
         Ok(())
     }
@@ -213,8 +207,7 @@ impl EthereumListener {
     async fn handle_remuneration_grace_period_updated(
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<RemunerationGracePeriodUpdated>()?;
-        let RemunerationGracePeriodUpdated { newGracePeriod } = decoded.data();
+        let RemunerationGracePeriodUpdated { newGracePeriod } = *log.log_decode()?.data();
         info!("[EthereumListener] RemunerationGracePeriodUpdated: {newGracePeriod}");
         Ok(())
     }
@@ -222,8 +215,7 @@ impl EthereumListener {
     async fn handle_tab_expiration_time_updated(
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<TabExpirationTimeUpdated>()?;
-        let TabExpirationTimeUpdated { newExpirationTime } = decoded.data();
+        let TabExpirationTimeUpdated { newExpirationTime } = *log.log_decode()?.data();
         info!("[EthereumListener] TabExpirationTimeUpdated: {newExpirationTime}");
         Ok(())
     }
@@ -231,10 +223,9 @@ impl EthereumListener {
     async fn handle_synchronization_delay_updated(
         log: alloy::rpc::types::Log,
     ) -> Result<(), BlockchainListenerError> {
-        let decoded = log.log_decode::<SynchronizationDelayUpdated>()?;
         let SynchronizationDelayUpdated {
             newSynchronizationDelay,
-        } = decoded.data();
+        } = *log.log_decode()?.data();
         info!("[EthereumListener] SynchronizationDelayUpdated: {newSynchronizationDelay}");
         Ok(())
     }
