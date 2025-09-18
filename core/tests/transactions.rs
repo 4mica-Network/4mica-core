@@ -42,13 +42,13 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
 async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     let tx_id = Uuid::new_v4().to_string();
-    let recipient = Uuid::new_v4().to_string();
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
 
     repo::submit_payment_transaction(
         &ctx,
@@ -79,8 +79,9 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
 async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-    let recipient = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
@@ -111,9 +112,8 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
 async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
-    let recipient = Uuid::new_v4().to_string();
-
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(9u64)).await?;
 
@@ -143,7 +143,7 @@ async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
 async fn fail_transaction_missing_tx_returns_err() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
 
@@ -165,9 +165,9 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
 
-    let owner_addr = Uuid::new_v4().to_string();
-    let other_addr = Uuid::new_v4().to_string();
-    let recipient = Uuid::new_v4().to_string();
+    let owner_addr = format!("0x{:040x}", rand::random::<u128>());
+    let other_addr = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &owner_addr).await?;
     ensure_user(&ctx, &other_addr).await?;

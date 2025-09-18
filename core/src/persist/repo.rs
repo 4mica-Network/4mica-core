@@ -65,6 +65,13 @@ async fn ensure_user_exists_on<C: ConnectionTrait>(
     Ok(())
 }
 
+fn validate_user_address(addr: &str) -> Result<(), PersistDbError> {
+    if !addr.starts_with("0x") || addr.len() != 42 {
+        return Err(PersistDbError::UserNotFound(addr.to_owned()));
+    }
+    Ok(())
+}
+
 //
 // ────────────────────── COLLATERAL EVENTS ──────────────────────
 //
@@ -77,7 +84,7 @@ pub async fn deposit(
 ) -> Result<(), PersistDbError> {
     use sea_orm::ActiveValue::Set as AvSet;
     let now = Utc::now().naive_utc();
-
+    validate_user_address(&user_address)?;
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
@@ -258,8 +265,8 @@ pub async fn submit_payment_transaction(
     let now = Utc::now().naive_utc();
 
     // Ensure user row exists (strict)
-    let _ = get_user_on(ctx.db.as_ref(), &user_address).await?;
-
+    validate_user_address(&user_address)?;
+    ensure_user_exists_on(ctx.db.as_ref(), &user_address).await?;
     let tx = user_transaction::ActiveModel {
         tx_id: Set(transaction_id),
         user_address: Set(user_address),

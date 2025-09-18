@@ -68,9 +68,9 @@ impl CoreService {
             })
     }
 
-    fn verify_promise_signature(&self, _p: &PaymentGuaranteeClaims) -> bool {
+    fn verify_promise_signature(&self, _p: &PaymentGuaranteeClaims) -> ServiceResult<bool> {
         // TODO(#24): implement real signature verification
-        true
+        Ok(true)
     }
 
     pub fn validate_transaction(
@@ -91,9 +91,8 @@ impl CoreService {
         &self,
         promise: &PaymentGuaranteeClaims,
     ) -> ServiceResult<()> {
-        if !self.verify_promise_signature(promise) {
-            return Err(ServiceError::InvalidParams("Invalid signature".into()));
-        }
+        self.verify_promise_signature(promise)
+            .map_err(|_| ServiceError::InvalidParams("Invalid signature".into()))?;
 
         let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.req_id)
             .await

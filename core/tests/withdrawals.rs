@@ -43,7 +43,7 @@ async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
 async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
@@ -67,7 +67,7 @@ async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
 
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
@@ -97,7 +97,7 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
 
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
@@ -144,7 +144,7 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
 async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
@@ -165,7 +165,7 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
 async fn finalize_without_any_request_errors_and_preserves_collateral() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
@@ -193,7 +193,7 @@ async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> 
 
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(6u64)).await?;
@@ -218,7 +218,7 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
 
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(8u64)).await?;
@@ -240,7 +240,7 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
 async fn finalize_withdrawal_underflow_errors() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(3u64)).await?;
@@ -265,7 +265,7 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
 
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     // user starts with 10
     ensure_user(&ctx, &user_addr).await?;
@@ -313,7 +313,7 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
 
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
@@ -354,7 +354,8 @@ async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> 
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     // ensure a user exists
-    let user_addr = Uuid::new_v4().to_string();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
     let now = Utc::now().naive_utc();
     let user_am = user::ActiveModel {
         address: Set(user_addr.clone()),
