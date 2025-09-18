@@ -4,6 +4,7 @@ pragma solidity ^0.8.29;
 import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 /// @title Core4Mica
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
@@ -30,6 +31,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     uint256 public tabExpirationTime = 21 days;
     uint256 public synchronizationDelay = 6 hours;
 
+    /// TODO(#22): move key to registry
+    BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
+
+    /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
+    BLS.G1Point internal NEGATED_G1_GENERATOR = BLS.G1Point(
+        bytes32(0x0000000000000000000000000000000017F1D3A73197D7942695638C4FA9AC0F),
+        bytes32(0xC3688C4F9774B905A14E3A3F171BAC586C55E83FF97A1AEFFB3AF00ADB22C6BB),
+        bytes32(0x00000000000000000000000000000000114D1D6855D545A8AA7D76C8CF2E21F2),
+        bytes32(0x67816AEF1DB507C96655B9D5CAAC42364E6F38BA0ECB751BAD54DCD6B939C2CA)
+    );
+
     struct WithdrawalRequest {
         uint256 timestamp;
         uint256 amount;
@@ -54,6 +66,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event SynchronizationDelayUpdated(uint256 newExpirationTime);
+    event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
 
     // ========= Helper structs =========
     struct Guarantee {
@@ -66,7 +79,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Constructor =========
-    constructor(address manager) AccessManaged(manager) {}
+    constructor(address manager, BLS.G1Point memory verificationKey) AccessManaged(manager) {
+        GUARANTEE_VERIFICATION_KEY = verificationKey;
+    }
 
     // ========= Modifiers =========
     modifier nonZero(uint256 amount) {
@@ -106,6 +121,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert IllegalValue();
         synchronizationDelay = _synchronizationDelay;
         emit SynchronizationDelayUpdated(_synchronizationDelay);
+    }
+
+    function setGuaranteeVerificationKey(BLS.G1Point calldata verificationKey) external restricted {
+        GUARANTEE_VERIFICATION_KEY = verificationKey;
+        emit VerificationKeyUpdated(verificationKey);
     }
 
     // ========= User flows =========
@@ -148,9 +168,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit CollateralWithdrawn(msg.sender, withdrawal_amount);
     }
 
+    /// TODO(#20): compress signature
+    /// TODO(#21): permit batch verification
     function remunerate(
         Guarantee calldata g,
-        bytes32[3] calldata signature
+        BLS.G2Point calldata signature
     )
         external
         nonReentrant
@@ -174,8 +196,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert TabAlreadyPaid();
 
         // 5. Verify signature
-        // TODO(#16): verify signature
-        if (signature[0] != 0 || signature[1] != 0 || signature[2] != 0)
+        if (!verifyGuaranteeSignature(g, signature))
             revert InvalidSignature();
 
         // 6. Client must have sufficient funds
@@ -242,6 +263,27 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     {
         paid = payments[tab_id].paid;
         remunerated = payments[tab_id].remunerated;
+    }
+
+    // === Signature verification ===
+    function encodeGuarantee(Guarantee memory g) public pure returns (bytes memory) {
+        return abi.encodePacked(g.tab_id, g.req_id, g.client, g.recipient, g.amount, g.tab_timestamp);
+    }
+
+    function verifyGuaranteeSignature(Guarantee memory guarantee, BLS.G2Point memory signature)
+        public
+        view
+        returns (bool)
+    {
+        BLS.G1Point[] memory g1Points = new BLS.G1Point[](2);
+        g1Points[0] = NEGATED_G1_GENERATOR;
+        g1Points[1] = GUARANTEE_VERIFICATION_KEY;
+
+        BLS.G2Point[] memory g2Points = new BLS.G2Point[](2);
+        g2Points[0] = signature;
+        g2Points[1] = BLS.hashToG2(encodeGuarantee(guarantee));
+
+        return BLS.pairing(g1Points, g2Points);
     }
 
     // ========= Fallbacks =========
