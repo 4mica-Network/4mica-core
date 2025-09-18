@@ -4,6 +4,7 @@ pragma solidity ^0.8.29;
 import "forge-std/Script.sol";
 import "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
+import {BlsHelper} from "../test/BlsHelpers.sol";
 
 contract Core4MicaScript is Script {
     AccessManager manager;
@@ -40,11 +41,14 @@ contract Core4MicaScript is Script {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
 
+        bytes32 guaranteeSigningKey = vm.envBytes32("GUARANTEE_SIGNING_KEY");
+        BLS.G1Point memory guaranteeVerificationKey = BlsHelper.getPublicKey(guaranteeSigningKey);
+
         vm.startBroadcast(deployerPrivateKey);
 
         // 1. Deploy AccessManager and Core4Mica
         manager = new AccessManager(deployer);
-        Core4Mica core4Mica = new Core4Mica(address(manager));
+        Core4Mica core4Mica = new Core4Mica(address(manager), guaranteeVerificationKey);
 
         // 2. Map Core4Mica functions to roles
         // Operator functions → OPERATOR_ROLE

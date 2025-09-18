@@ -32,12 +32,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     uint256 public synchronizationDelay = 6 hours;
 
     /// TODO(#22): move key to registry
-    BLS.G1Point public GUARANTEE_VERIFICATION_KEY = BLS.G1Point(
-        bytes32(0x000000000000000000000000000000000fffffffffffffffffffffffffffffff),
-        bytes32(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff),
-        bytes32(0x000000000000000000000000000000000fffffffffffffffffffffffffffffff),
-        bytes32(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
-    );
+    BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
 
     /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
     BLS.G1Point internal NEGATED_G1_GENERATOR = BLS.G1Point(
@@ -84,7 +79,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Constructor =========
-    constructor(address manager) AccessManaged(manager) {}
+    constructor(address manager, BLS.G1Point memory verificationKey) AccessManaged(manager) {
+        GUARANTEE_VERIFICATION_KEY = verificationKey;
+    }
 
     // ========= Modifiers =========
     modifier nonZero(uint256 amount) {
