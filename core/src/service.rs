@@ -1,23 +1,27 @@
-use crate::config::AppConfig;
-use crate::ethereum::EthereumListener;
-use crate::persist::repo::{self, SubmitPaymentTxnError};
-use crate::persist::PersistCtx;
-
-use alloy::primitives::B256;
+use crate::{
+    config::AppConfig,
+    error::{PersistDbError, ServiceError, ServiceResult, service_error_to_rpc},
+    ethereum::EthereumListener,
+    persist::{PersistCtx, repo},
+};
 use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
 };
 use alloy::providers::{Identity, ProviderBuilder, RootProvider, WsConnect};
 use alloy::rpc::types::Transaction;
+use alloy_primitives::U256;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
+use chrono::{TimeZone, Utc};
 use crypto::bls::BLSCert;
 use log::{error, info};
-use rpc::common::{
-    PaymentGuaranteeClaims, TransactionVerificationResult, UserInfo, UserTransactionInfo,
+use rpc::{
+    RpcResult,
+    common::*,
+    core::{CoreApiServer, CorePublicParameters},
 };
-use rpc::core::{CoreApiServer, CorePublicParameters};
-use rpc::RpcResult;
+use std::str::FromStr;
 
 type EthereumProvider = FillProvider<
     JoinFill<
@@ -39,7 +43,6 @@ impl CoreService {
         info!("BLS Public Key: {}", hex::encode(&public_key));
 
         let persist_ctx = PersistCtx::new().await?;
-
         EthereumListener::new(config.ethereum_config.clone(), persist_ctx.clone())
             .run()
             .await?;
@@ -51,33 +54,194 @@ impl CoreService {
         })
     }
 
-    /// Get the details for the websocket connection
     pub fn ws_connection_details(&self) -> WsConnect {
         WsConnect::new(&self.config.ethereum_config.ws_rpc_url)
     }
 
-    /// Obtain an [`EthereumProvider`], given the connection details in `self.config`.
-    pub async fn get_ethereum_provider(&self) -> RpcResult<EthereumProvider> {
+    pub async fn get_ethereum_provider(&self) -> ServiceResult<EthereumProvider> {
         ProviderBuilder::new()
             .connect_ws(self.ws_connection_details())
             .await
             .map_err(|err| {
                 error!("Failed to connect to Ethereum provider: {err}");
-                rpc::internal_error()
+                ServiceError::Other(anyhow!(err))
             })
     }
 
-    /// Validate that a given [`Transaction`] has a given `sender`, `recipient` and `amount`.
+    fn verify_promise_signature(&self, _p: &PaymentGuaranteeClaims) -> ServiceResult<bool> {
+        // TODO(#24): implement real signature verification
+        Ok(true)
+    }
+
     pub fn validate_transaction(
         tx: &Transaction,
         sender_address: &str,
         recipient_address: &str,
-        amount: f64,
-    ) -> RpcResult<()> {
-        let user = txtools::parse_eth_address(sender_address, "user")?;
-        let recipient = txtools::parse_eth_address(recipient_address, "recipient")?;
-        let expected = txtools::convert_amount_to_u256(amount)?;
-        txtools::validate_transaction(tx, user, recipient, expected)
+        amount: U256,
+    ) -> ServiceResult<()> {
+        let user = txtools::parse_eth_address(sender_address, "user")
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))?;
+        let recipient = txtools::parse_eth_address(recipient_address, "recipient")
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))?;
+        txtools::validate_transaction(tx, user, recipient, amount)
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))
+    }
+
+    async fn preflight_promise_checks(
+        &self,
+        promise: &PaymentGuaranteeClaims,
+    ) -> ServiceResult<()> {
+        self.verify_promise_signature(promise)
+            .map_err(|_| ServiceError::InvalidParams("Invalid signature".into()))?;
+
+        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id)
+            .await
+            .map_err(|e| ServiceError::from(e))?;
+
+        let cur_req_id = promise
+            .req_id
+            .parse::<u64>()
+            .map_err(|_| ServiceError::InvalidParams("Invalid req_id".into()))?;
+
+        match last_opt {
+            None => {
+                if promise.req_id != "0" {
+                    return Err(ServiceError::InvalidRequestID);
+                }
+            }
+            Some(ref last) => {
+                let prev_req_id = last
+                    .req_id
+                    .parse::<u64>()
+                    .map_err(|_| ServiceError::Other(anyhow!("Invalid previous req_id")))?;
+
+                if cur_req_id.wrapping_sub(prev_req_id) != 1 {
+                    return Err(ServiceError::InvalidRequestID);
+                }
+
+                let prev_ts_i64 = last.start_ts.and_utc().timestamp();
+                if prev_ts_i64 < 0 {
+                    return Err(ServiceError::Other(anyhow!("Negative previous start_ts")));
+                }
+
+                let prev_start_ts = prev_ts_i64 as u64;
+                if promise.timestamp != prev_start_ts {
+                    return Err(ServiceError::ModifiedStartTs);
+                }
+            }
+        }
+
+        let now_i64 = Utc::now().timestamp();
+        if now_i64 < 0 {
+            return Err(ServiceError::Other(anyhow!("System time before epoch")));
+        }
+        let now_secs = now_i64 as u64;
+
+        if now_secs < promise.timestamp {
+            return Err(ServiceError::FutureTimestamp);
+        }
+
+        let ttl_secs = repo::get_tab_ttl_seconds(&self.persist_ctx, &promise.tab_id)
+            .await
+            .map_err(|e| ServiceError::from(e))?;
+
+        if ttl_secs <= 0 {
+            return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
+        }
+
+        let expiry = promise.timestamp.saturating_add(ttl_secs as u64);
+        if expiry < now_secs {
+            return Err(ServiceError::TabClosed);
+        }
+
+        Ok(())
+    }
+
+    async fn handle_promise(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
+        info!("Received guarantee request for promise: {:?}", promise);
+        self.preflight_promise_checks(&promise).await?;
+        self.lock_collateral(&promise.user_address, promise.amount)
+            .await?;
+        let guarantee = self.create_bls_cert(promise.clone()).await?;
+        self.persist_guarantee(&promise, &guarantee).await?;
+        Ok(guarantee)
+    }
+
+    async fn persist_guarantee(
+        &self,
+        promise: &PaymentGuaranteeClaims,
+        cert: &BLSCert,
+    ) -> ServiceResult<()> {
+        let cert_str = serde_json::to_string(cert).map_err(|err| {
+            error!("Failed to serialize the payment guarantee cert: {err}");
+            ServiceError::Other(anyhow!(err))
+        })?;
+
+        let start_dt = Utc
+            .timestamp_opt(promise.timestamp as i64, 0)
+            .single()
+            .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
+            .naive_utc();
+
+        repo::store_guarantee(
+            &self.persist_ctx,
+            promise.tab_id.clone(),
+            promise.req_id.clone(),
+            promise.user_address.clone(),
+            promise.recipient_address.clone(),
+            promise.amount,
+            start_dt,
+            cert_str,
+        )
+        .await
+        .map_err(|err| {
+            error!("Failed to store guarantee: {err}");
+            ServiceError::from(err)
+        })
+    }
+
+    async fn lock_collateral(&self, user_address: &str, amount: U256) -> ServiceResult<()> {
+        let user = repo::get_user(&self.persist_ctx, user_address)
+            .await
+            .map_err(|e| match e {
+                PersistDbError::UserNotFound(_) => ServiceError::UserNotRegistered,
+                other => {
+                    error!("DB error: {other}");
+                    ServiceError::from(other)
+                }
+            })?;
+
+        let total_collateral = U256::from_str(&user.collateral)
+            .map_err(|_| ServiceError::InvalidParams("invalid collateral value".into()))?;
+        let current_locked = U256::from_str(&user.locked_collateral)
+            .map_err(|_| ServiceError::InvalidParams("invalid locked collateral value".into()))?;
+
+        let free_collateral = total_collateral.saturating_sub(current_locked);
+        if free_collateral < amount {
+            return Err(ServiceError::InvalidParams(
+                "Not enough free collateral".into(),
+            ));
+        }
+        let new_locked = current_locked
+            .checked_add(amount)
+            .ok_or_else(|| ServiceError::InvalidParams("overflow on locked collateral".into()))?;
+
+        repo::update_user_lock_and_version(
+            &self.persist_ctx,
+            user_address,
+            user.version,
+            new_locked,
+        )
+        .await
+        .map_err(|e| match e {
+            PersistDbError::OptimisticLockConflict { .. } => ServiceError::OptimisticLockConflict,
+            other => ServiceError::from(other),
+        })
+    }
+
+    async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
+        BLSCert::new(&self.config.secrets.bls_private_key, promise)
+            .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 }
 
@@ -87,129 +251,24 @@ impl CoreApiServer for CoreService {
         Ok(self.public_params.clone())
     }
 
-    async fn register_user(&self, user_addr: String) -> RpcResult<()> {
-        repo::register_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to register user {err}");
-                rpc::internal_error()
-            })?;
-        Ok(())
-    }
-
-    async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
-        let Some(user) = repo::get_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to get user {err}");
-                rpc::internal_error()
-            })?
-        else {
-            return Ok(None);
-        };
-
-        let transactions = user.transactions.unwrap();
-        let not_usable_deposit = transactions
-            .iter()
-            .filter_map(|tx| if !tx.finalized { Some(tx.amount) } else { None })
-            .sum::<f64>();
-
-        Ok(Some(UserInfo {
-            deposit: user.deposit,
-            available_deposit: user.deposit - not_usable_deposit,
-            transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
-        }))
-    }
-
-    async fn issue_payment_cert(
+    async fn issue_guarantee(
         &self,
-        user_addr: String,
+        user_address: String,
         recipient_addr: String,
-        transaction_id: String,
-        amount: f64,
+        tab_id: String,
+        req_id: String,
+        amount: U256,
     ) -> RpcResult<BLSCert> {
-        info!("Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
-
-        let provider = self.get_ethereum_provider().await?;
-
-        let tx_hash = transaction_id
-            .as_bytes()
-            .try_into()
-            .map_err(|err| {
-                error!("Invalid transaction hash: {err}");
-                rpc::invalid_params_error("Invalid transaction hash")
-            })
-            .map(B256::new)?;
-        let tx = txtools::fetch_transaction(&provider, tx_hash).await?;
-        Self::validate_transaction(&tx, &user_addr, &recipient_addr, amount)?;
-
-        let claims = PaymentGuaranteeClaims {
-            user_addr: user_addr.clone(),
-            recipient_addr: recipient_addr.clone(),
-            tx_hash: transaction_id.clone(),
+        let promise = PaymentGuaranteeClaims {
+            user_address,
+            recipient_address: recipient_addr,
+            tab_id,
+            req_id,
             amount,
+            timestamp: Utc::now().timestamp() as u64,
         };
-        let cert = BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
-            error!("Failed to issue the payment guarantee cert: {err}");
-            rpc::internal_error()
-        })?;
-
-        let cert_str = serde_json::to_string(&cert).map_err(|err| {
-            error!("Failed to serialize the payment guarantee cert: {err}");
-            rpc::internal_error()
-        })?;
-        repo::submit_payment_transaction(
-            &self.persist_ctx,
-            user_addr.clone(),
-            recipient_addr.clone(),
-            transaction_id.clone(),
-            amount,
-            cert_str,
-        )
-        .await
-        .map_err(|err| {
-            match err {
-                SubmitPaymentTxnError::QueryError(query_error) => {
-                    error!("{query_error}");
-                    rpc::internal_error()
-                }
-                SubmitPaymentTxnError::UserNotRegistered
-                | SubmitPaymentTxnError::NotEnoughDeposit
-                // We should retry it ourselves if there was a conflict!
-                | SubmitPaymentTxnError::ConflictingTransactions => {
-                    rpc::invalid_params_error(&format!("{err}"))
-                }
-            }
-        })?;
-
-        Ok(cert)
-    }
-
-    async fn get_transactions_by_hash(
-        &self,
-        hashes: Vec<String>,
-    ) -> RpcResult<Vec<UserTransactionInfo>> {
-        let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
+        self.handle_promise(promise)
             .await
-            .map_err(|err| {
-                error!("Failed to get user {err}");
-                rpc::internal_error()
-            })?;
-
-        Ok(transactions.into_iter().map(|tx| tx.into()).collect())
-    }
-
-    async fn verify_transaction(
-        &self,
-        tx_hash: String,
-    ) -> RpcResult<TransactionVerificationResult> {
-        let verified = repo::verify_transaction(&self.persist_ctx, tx_hash)
-            .await
-            .map_err(|err| {
-                error!("Failed to verify transaction {err}");
-                rpc::internal_error()
-            })?;
-
-        Ok(verified)
+            .map_err(service_error_to_rpc)
     }
 }

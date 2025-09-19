@@ -1,0 +1,18 @@
+[package]
+name = "migration"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[lib]
+name = "migration"
+path = "src/lib.rs"
+
+[dependencies]
+async-std = { version = "1", features = ["attributes", "tokio1"] }
+sea-orm = { workspace = true }
+entities = { workspace = true }
+sea-orm-migration = { version = "1.1.15", features = [
+  "sqlx-postgres",
+  "runtime-async-std-native-tls",
+] }
