@@ -61,9 +61,3 @@ pub fn parse_eth_address(addr: &str, field: &str) -> RpcResult<Address> {
         rpc::invalid_params_error(&format!("Invalid {field} address"))
     })
 }
-
-// --- Helper to convert amount to U256 ---
-pub fn convert_amount_to_u256(amount: f64) -> RpcResult<U256> {
-    let wei = amount as u128;
-    Ok(U256::from(wei))
-}

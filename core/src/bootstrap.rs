@@ -2,10 +2,10 @@ use core_service::{
     config::{AppConfig, ServerConfig},
     service::CoreService,
 };
+use env_logger::Env;
 use jsonrpsee::server::Server;
 use log::info;
 use rpc::core::CoreApiServer;
-use std::env;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -29,8 +29,7 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         log_level,
     } = &app_config.server_config;
 
-    env::set_var("RUST_LOG", log_level.as_str());
-    env_logger::init();
+    env_logger::Builder::from_env(Env::default().default_filter_or(log_level.as_str())).init();
 
     let cors = CorsLayer::new()
         .allow_methods(Any)

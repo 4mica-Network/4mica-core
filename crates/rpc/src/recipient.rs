@@ -7,5 +7,5 @@ use jsonrpsee::proc_macros::rpc;
 pub trait RecipientApi {
     #[method(name = "verifyPaymentGuarantee")]
     async fn verify_payment_guarantee(&self, cert: BLSCert)
-        -> RpcResult<PaymentVerificationResult>;
+    -> RpcResult<PaymentVerificationResult>;
 }

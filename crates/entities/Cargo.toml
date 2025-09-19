@@ -1,0 +1,15 @@
+[package]
+name = "entities"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[lib]
+name = "entities"
+path = "src/mod.rs"
+
+[dependencies]
+serde = { version = "1.0.160", features = ["derive"] }
+async-std = { version = "1", features = ["attributes", "tokio1"] }
+sea-orm = { workspace = true }
+alloy-primitives = { workspace = true }
