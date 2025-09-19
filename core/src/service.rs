@@ -163,7 +163,7 @@ impl CoreService {
         self.preflight_promise_checks(&promise).await?;
         self.lock_collateral(&promise.user_address, promise.amount)
             .await?;
-        let guarantee = self.create_bls_cert(&promise).await?;
+        let guarantee = self.create_bls_cert(promise.clone()).await?;
         self.persist_guarantee(&promise, &guarantee).await?;
         Ok(guarantee)
     }
@@ -240,16 +240,8 @@ impl CoreService {
         })
     }
 
-    async fn create_bls_cert(&self, promise: &PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        let claims = PaymentGuaranteeClaims {
-            user_address: promise.user_address.clone(),
-            recipient_address: promise.recipient_address.clone(),
-            tab_id: promise.tab_id.clone(),
-            req_id: promise.req_id.clone(),
-            amount: promise.amount,
-            timestamp: promise.timestamp,
-        };
-        BLSCert::new(&self.config.secrets.bls_private_key, claims)
+    async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
+        BLSCert::new(&self.config.secrets.bls_private_key, promise)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 }

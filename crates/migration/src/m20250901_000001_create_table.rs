@@ -67,7 +67,16 @@ impl MigrationTrait for Migration {
                     .to_owned(),
             )
             .await?;
-
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+        ALTER TABLE "User"
+        ADD CONSTRAINT user_locked_not_greater_than_total
+        CHECK ((locked_collateral::numeric) <= (collateral::numeric));
+        "#,
+            )
+            .await?;
         // ----- Tabs -----
         manager
             .create_table(
@@ -414,6 +423,15 @@ impl MigrationTrait for Migration {
             .await?;
         manager
             .drop_table(Table::drop().table(user::Entity).to_owned())
+            .await?;
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+        ALTER TABLE "User"
+        DROP CONSTRAINT IF EXISTS user_locked_not_greater_than_total;
+        "#,
+            )
             .await?;
         manager
             .drop_type(
