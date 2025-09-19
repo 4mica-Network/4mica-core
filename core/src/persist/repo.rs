@@ -223,11 +223,6 @@ pub async fn finalize_withdrawal(
                         "executed_amount exceeds requested_amount".into(),
                     ));
                 }
-
-                if executed_amount > current_collateral {
-                    return Err(PersistDbError::InsufficientCollateral);
-                }
-
                 // update user balance
                 let new_collateral = current_collateral
                     .checked_sub(executed_amount)
@@ -337,9 +332,6 @@ pub async fn fail_transaction(
                 let delta = U256::from_str(&tx_row.amount)
                     .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
 
-                if delta > current_collateral {
-                    return Err(PersistDbError::InsufficientCollateral);
-                }
                 let new_collateral = current_collateral
                     .checked_sub(delta)
                     .ok_or(PersistDbError::InsufficientCollateral)?;
