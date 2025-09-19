@@ -115,8 +115,7 @@ impl CoreService {
                     .parse::<u64>()
                     .map_err(|_| ServiceError::Other(anyhow!("Invalid previous req_id")))?;
 
-                let expected = prev_req_id.saturating_add(1);
-                if expected.wrapping_sub(cur_req_id) != 1 {
+                if cur_req_id.wrapping_sub(prev_req_id) != 1 {
                     return Err(ServiceError::InvalidRequestID);
                 }
 
