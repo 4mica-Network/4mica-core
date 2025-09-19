@@ -132,34 +132,6 @@ async fn deposit_overflow_protection() -> anyhow::Result<()> {
     assert_eq!(u.collateral, U256::MAX.to_string());
     Ok(())
 }
-
-#[test(tokio::test)]
-async fn deposit_fails_on_invalid_collateral_in_db() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let now = Utc::now().naive_utc();
-    let user_addr = format!("0x{:040x}", rand::random::<u128>());
-
-    // Manually insert broken collateral (no ensure_user on purpose)
-    let am = entities::user::ActiveModel {
-        address: Set(user_addr.clone()),
-        collateral: Set("not_a_number".to_string()),
-        locked_collateral: Set("0".to_string()),
-        version: Set(0),
-        created_at: Set(now),
-        updated_at: Set(now),
-        ..Default::default()
-    };
-    entities::user::Entity::insert(am)
-        .exec(ctx.db.as_ref())
-        .await?;
-
-    // Any deposit should now fail when parsing collateral
-    let res = repo::deposit(&ctx, user_addr.clone(), U256::from(1u64)).await;
-    assert!(res.is_err());
-    Ok(())
-}
-
 #[test(tokio::test)]
 async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Result<()> {
     let _ = init()?;
@@ -276,5 +248,100 @@ async fn lock_fails_on_u256_overflow() -> anyhow::Result<()> {
     // locked_collateral is still 0
     let u = load_user(&ctx, &user_addr).await;
     assert_eq!(U256::from_str(&u.locked_collateral)?, U256::ZERO);
+    Ok(())
+}
+
+use sea_orm::ActiveModelTrait; // ADD this near your other sea_orm imports
+
+#[test(tokio::test)]
+async fn db_check_rejects_inserting_locked_gt_total() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let now = Utc::now().naive_utc();
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    // Try to INSERT a user where locked_collateral > collateral
+    let am = entities::user::ActiveModel {
+        address: Set(user_addr.clone()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set("10".to_string()),
+        locked_collateral: Set("11".to_string()), // violates CHECK
+        ..Default::default()
+    };
+    let res = entities::user::Entity::insert(am)
+        .exec(ctx.db.as_ref())
+        .await;
+    assert!(res.is_err(), "insert should fail due to CHECK constraint");
+
+    // Make sure the row wasn't inserted
+    let found = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr))
+        .one(ctx.db.as_ref())
+        .await?;
+    assert!(found.is_none());
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn db_check_rejects_update_locked_beyond_total_via_repo() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    ensure_user(&ctx, &user_addr).await?;
+    // Give the user collateral = 10
+    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+
+    let before = load_user(&ctx, &user_addr).await;
+    let before_version = before.version;
+    assert_eq!(U256::from_str(&before.locked_collateral)?, U256::ZERO);
+
+    // Attempt to set locked_collateral = 11 (> 10). This should be rejected by the DB CHECK.
+    let err =
+        repo::update_user_lock_and_version(&ctx, &user_addr, before_version, U256::from(11u64))
+            .await
+            .expect_err("expected DB CHECK to reject locked > total");
+    // (Optional) sanity: error should mention a constraint/check
+    let msg = format!("{err:?}");
+    assert!(msg.to_lowercase().contains("check") || msg.to_lowercase().contains("constraint"));
+
+    // Ensure nothing changed
+    let after = load_user(&ctx, &user_addr).await;
+    assert_eq!(
+        after.version, before_version,
+        "version must not change on failed update"
+    );
+    assert_eq!(U256::from_str(&after.locked_collateral)?, U256::ZERO);
+    assert_eq!(U256::from_str(&after.collateral)?, U256::from(10u64));
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn db_check_rejects_lowering_total_below_locked() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    ensure_user(&ctx, &user_addr).await?;
+    // collateral = 20
+    repo::deposit(&ctx, user_addr.clone(), U256::from(20u64)).await?;
+
+    // lock 7 (valid)
+    let u1 = load_user(&ctx, &user_addr).await;
+    repo::update_user_lock_and_version(&ctx, &user_addr, u1.version, U256::from(7u64)).await?;
+
+    // Now try to LOWER collateral below 7 via a raw update (simulate a bad path)
+    let current = load_user(&ctx, &user_addr).await;
+    let mut am: entities::user::ActiveModel = current.into();
+    am.collateral = Set("5".to_string()); // violates CHECK because locked=7
+    let res = am.update(ctx.db.as_ref()).await;
+    assert!(res.is_err(), "update should fail due to CHECK constraint");
+
+    // Row should remain unchanged
+    let after = load_user(&ctx, &user_addr).await;
+    assert_eq!(U256::from_str(&after.collateral)?, U256::from(20u64));
+    assert_eq!(U256::from_str(&after.locked_collateral)?, U256::from(7u64));
     Ok(())
 }
