@@ -1,10 +1,11 @@
 mod contract;
 
-use crate::config::EthereumConfig;
-use crate::error::BlockchainListenerError;
-use crate::ethereum::contract::*;
-use crate::persist::{PersistCtx, repo};
-
+use crate::{
+    config::EthereumConfig,
+    error::BlockchainListenerError,
+    ethereum::contract::*,
+    persist::{PersistCtx, repo},
+};
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::Address;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
@@ -30,14 +31,21 @@ impl EthereumListener {
     }
 
     /// Public entry point. Keeps the listener alive with automatic reconnect.
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(&self) -> Result<(), BlockchainListenerError> {
         let ws = WsConnect::new(&self.config.ws_rpc_url);
-        let provider = ProviderBuilder::new().connect_ws(ws).await?;
+        let provider = ProviderBuilder::new()
+            .connect_ws(ws)
+            .await
+            .map_err(anyhow::Error::from)?;
 
-        // Use the names exported by contract.rs (human-readable ABI signatures)
+        // human-readable ABI signatures from contract.rs
         let events_signatures = all_event_signatures();
 
-        let contract_address: Address = self.config.contract_address.parse()?;
+        let contract_address: Address = self
+            .config
+            .contract_address
+            .parse()
+            .map_err(anyhow::Error::from)?;
         let filter = Filter::new()
             .address(contract_address)
             .events(events_signatures)
@@ -50,17 +58,27 @@ impl EthereumListener {
             let mut delay = Duration::from_secs(5);
 
             loop {
-                match Self::run_once(
-                    provider.clone(),
-                    filter.clone(),
-                    contract_address,
-                    persist_ctx.clone(),
-                )
-                .await
-                {
-                    Ok(_) => warn!("Ethereum listener exited normally. Restarting in {delay:?}…"),
+                match provider.subscribe_logs(&filter).await {
+                    Ok(sub) => {
+                        let mut event_stream = sub.into_stream();
+
+                        match Self::address_core_contract_events(
+                            contract_address,
+                            persist_ctx.clone(),
+                            &mut event_stream,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                warn!("Ethereum listener exited normally. Restarting in {delay:?}…")
+                            }
+                            Err(err) => {
+                                error!("Ethereum listener crashed: {err}. Restarting in {delay:?}…")
+                            }
+                        }
+                    }
                     Err(err) => {
-                        error!("Ethereum listener crashed: {err}. Restarting in {delay:?}…")
+                        error!("Failed to subscribe to logs: {err}. Restarting in {delay:?}…");
                     }
                 }
 
@@ -72,25 +90,15 @@ impl EthereumListener {
         Ok(())
     }
 
-    /// Runs a single subscription session until the stream ends.
-    async fn run_once<P>(
-        provider: P,
-        filter: Filter,
+    /// Process core contract events from an already-established stream.
+    async fn address_core_contract_events(
         contract_address: Address,
         persist_ctx: PersistCtx,
-    ) -> anyhow::Result<()>
-    where
-        P: Provider + Clone + Send + Sync + 'static,
-    {
-        let sub = provider.subscribe_logs(&filter).await.map_err(|err| {
-            error!("Failed to subscribe to logs: {err}");
-            err
-        })?;
-        let mut stream = sub.into_stream();
-
+        event_stream: &mut (impl futures_util::Stream<Item = alloy::rpc::types::Log> + Unpin),
+    ) -> Result<(), BlockchainListenerError> {
         info!("[EthereumListener] Subscribed to contract \"{contract_address}\" events");
 
-        while let Some(log) = stream.next().await {
+        while let Some(log) = event_stream.next().await {
             let result = match log.topic0() {
                 Some(&CollateralDeposited::SIGNATURE_HASH) => {
                     Self::handle_collateral_deposited(&persist_ctx, log).await
@@ -154,9 +162,7 @@ impl EthereumListener {
     ) -> Result<(), BlockchainListenerError> {
         let RecipientRemunerated { tab_id, amount } = *log.log_decode()?.data();
         info!("[EthereumListener] RecipientRemunerated: tab={tab_id}, amount={amount}");
-
-        let tab_id_str = tab_id.to_string();
-        repo::remunerate_recipient(persist_ctx, tab_id_str, amount).await?;
+        repo::remunerate_recipient(persist_ctx, tab_id.to_string(), amount).await?;
         Ok(())
     }
 
