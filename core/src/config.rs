@@ -1,6 +1,9 @@
 use crypto::hex::HexBytes;
 use envconfig::Envconfig;
 
+pub const DEFAULT_LOG_LEVEL: &str = "info";
+pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
+
 #[derive(Debug, Clone, Envconfig)]
 pub struct ServerConfig {
     #[envconfig(from = "SERVER_HOST", default = "127.0.0.1")]
@@ -15,6 +18,8 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Envconfig)]
 pub struct EthereumConfig {
+    #[envconfig(from = "ETHEREUM_CHAIN_ID", default = "1")]
+    pub chain_id: u64,
     #[envconfig(from = "ETHEREUM_WS_RPC_URL")]
     pub ws_rpc_url: String,
     #[envconfig(from = "ETHEREUM_HTTP_RPC_URL")]

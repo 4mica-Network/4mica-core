@@ -2,11 +2,11 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
-use entities::sea_orm_active_enums::SettlementStatus;
+use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::{
     collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
-    user, user_transaction, withdrawal,
+    tabs, user, user_transaction, withdrawal,
 };
 use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
@@ -38,7 +38,7 @@ pub async fn get_user_on<C: ConnectionTrait>(
         .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
 }
 
-async fn ensure_user_exists_on<C: ConnectionTrait>(
+pub async fn ensure_user_exists_on<C: ConnectionTrait>(
     conn: &C,
     addr: &str,
 ) -> Result<(), PersistDbError> {
@@ -596,6 +596,34 @@ pub async fn bump_user_version(
             n, user_address
         ))),
     }
+}
+
+pub async fn create_tab(
+    ctx: &PersistCtx,
+    tab_id: &str,
+    user_address: &str,
+    server_address: &str,
+    start_ts: chrono::NaiveDateTime,
+    ttl: i64,
+) -> Result<(), PersistDbError> {
+    use sea_orm::ActiveValue::Set;
+    let now = Utc::now().naive_utc();
+    let new_tab = tabs::ActiveModel {
+        id: Set(tab_id.to_owned()),
+        user_address: Set(user_address.to_owned()),
+        server_address: Set(server_address.to_owned()),
+        start_ts: Set(start_ts),
+        ttl: Set(ttl),
+        status: Set(TabStatus::Open),
+        settlement_status: Set(SettlementStatus::Pending),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+
+    tabs::Entity::insert(new_tab).exec(ctx.db.as_ref()).await?;
+
+    Ok(())
 }
 
 /// Get a single tab by id

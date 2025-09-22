@@ -28,6 +28,21 @@ impl TryFrom<Vec<u8>> for PaymentGuaranteeClaims {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningScheme {
+    Eip712,
+    Eip191, // optional fallback (personal_sign)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentGuaranteeRequest {
+    pub claims: PaymentGuaranteeClaims,
+    /// 65-byte signature as 0x-prefixed hex
+    pub signature: String,
+    pub scheme: SigningScheme,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTransactionInfo {
     pub user_address: String,
     pub recipient_address: String,
