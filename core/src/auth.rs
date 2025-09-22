@@ -20,9 +20,9 @@ pub fn verify_promise_signature(
         &req.signature[..std::cmp::min(req.signature.len(), 34)], // "0x" + first 16 bytes of hex
         req.signature.len()
     );
-    let user_addr = Address::from_str(&claims.user_address.to_lowercase())
+    let user_addr = Address::from_str(&claims.user_address)
         .map_err(|_| ServiceError::InvalidParams("invalid user address".into()))?;
-    let recipient_addr = Address::from_str(&claims.recipient_address.to_lowercase())
+    let recipient_addr = Address::from_str(&claims.recipient_address)
         .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?;
 
     let sig_bytes = hex::decode(req.signature.trim_start_matches("0x"))
