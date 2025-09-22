@@ -1,14 +1,17 @@
 use crate::{
-    config::AppConfig,
+    auth::verify_promise_signature,
+    config::{AppConfig, DEFAULT_TTL_SECS},
     error::{PersistDbError, ServiceError, ServiceResult, service_error_to_rpc},
     ethereum::EthereumListener,
     persist::{PersistCtx, repo},
 };
-use alloy::providers::fillers::{
-    BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+use alloy::{
+    providers::{
+        Identity, ProviderBuilder, RootProvider, WsConnect,
+        fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller},
+    },
+    rpc::types::Transaction,
 };
-use alloy::providers::{Identity, ProviderBuilder, RootProvider, WsConnect};
-use alloy::rpc::types::Transaction;
 use alloy_primitives::U256;
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -41,15 +44,19 @@ impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
         let public_key = crypto::bls::pub_key_from_priv_key(&config.secrets.bls_private_key)?;
         info!("BLS Public Key: {}", hex::encode(&public_key));
-
+        let chain_id = config.ethereum_config.chain_id;
         let persist_ctx = PersistCtx::new().await?;
         EthereumListener::new(config.ethereum_config.clone(), persist_ctx.clone())
             .run()
             .await?;
-
         Ok(Self {
             config,
-            public_params: CorePublicParameters { public_key },
+            public_params: CorePublicParameters {
+                public_key,
+                eip712_name: "4mica".to_string(),
+                eip712_version: "1".to_string(),
+                chain_id,
+            },
             persist_ctx,
         })
     }
@@ -68,11 +75,6 @@ impl CoreService {
             })
     }
 
-    fn verify_promise_signature(&self, _p: &PaymentGuaranteeClaims) -> ServiceResult<bool> {
-        // TODO(#24): implement real signature verification
-        Ok(true)
-    }
-
     pub fn validate_transaction(
         tx: &Transaction,
         sender_address: &str,
@@ -87,13 +89,13 @@ impl CoreService {
             .map_err(|e| ServiceError::InvalidParams(e.to_string()))
     }
 
-    async fn preflight_promise_checks(
-        &self,
-        promise: &PaymentGuaranteeClaims,
-    ) -> ServiceResult<()> {
-        self.verify_promise_signature(promise)
-            .map_err(|_| ServiceError::InvalidParams("Invalid signature".into()))?;
+    async fn preflight_promise_checks(&self, req: &PaymentGuaranteeRequest) -> ServiceResult<()> {
+        // Verify signature first
+        verify_promise_signature(&self.public_params, req)?;
 
+        let promise = &req.claims;
+
+        // Existing checks unchanged, but now run against `promise` from the client (with timestamp supplied by user)
         let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id)
             .await
             .map_err(|e| ServiceError::from(e))?;
@@ -131,7 +133,7 @@ impl CoreService {
             }
         }
 
-        let now_i64 = Utc::now().timestamp();
+        let now_i64 = chrono::Utc::now().timestamp();
         if now_i64 < 0 {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
@@ -141,9 +143,30 @@ impl CoreService {
             return Err(ServiceError::FutureTimestamp);
         }
 
-        let ttl_secs = repo::get_tab_ttl_seconds(&self.persist_ctx, &promise.tab_id)
-            .await
-            .map_err(|e| ServiceError::from(e))?;
+        let ttl_secs = match repo::get_tab_ttl_seconds(&self.persist_ctx, &promise.tab_id).await {
+            Ok(ttl) => ttl,
+            Err(PersistDbError::TabNotFound(_)) if promise.req_id == "0" => {
+                // create new tab with default ttl (e.g. from config)
+                let default_ttl: u64 = DEFAULT_TTL_SECS; // or some constant
+                let start_ts = chrono::Utc
+                    .timestamp_opt(promise.timestamp as i64, 0)
+                    .single()
+                    .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
+                    .naive_utc();
+                repo::create_tab(
+                    &self.persist_ctx,
+                    &promise.tab_id,
+                    &promise.user_address,
+                    &promise.recipient_address,
+                    start_ts,
+                    default_ttl as i64,
+                )
+                .await
+                .map_err(|e| ServiceError::from(e))?;
+                default_ttl
+            }
+            Err(e) => return Err(ServiceError::from(e)),
+        };
 
         if ttl_secs <= 0 {
             return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
@@ -157,16 +180,19 @@ impl CoreService {
         Ok(())
     }
 
-    async fn handle_promise(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
+    async fn handle_promise(&self, req: PaymentGuaranteeRequest) -> ServiceResult<BLSCert> {
+        let promise = req.claims.clone();
+
         info!("Received guarantee request for promise: {:?}", promise);
-        self.preflight_promise_checks(&promise).await?;
+        self.preflight_promise_checks(&req).await?;
+
         self.lock_collateral(&promise.user_address, promise.amount)
             .await?;
+
         let guarantee = self.create_bls_cert(promise.clone()).await?;
         self.persist_guarantee(&promise, &guarantee).await?;
         Ok(guarantee)
     }
-
     async fn persist_guarantee(
         &self,
         promise: &PaymentGuaranteeClaims,
@@ -251,24 +277,7 @@ impl CoreApiServer for CoreService {
         Ok(self.public_params.clone())
     }
 
-    async fn issue_guarantee(
-        &self,
-        user_address: String,
-        recipient_addr: String,
-        tab_id: String,
-        req_id: String,
-        amount: U256,
-    ) -> RpcResult<BLSCert> {
-        let promise = PaymentGuaranteeClaims {
-            user_address,
-            recipient_address: recipient_addr,
-            tab_id,
-            req_id,
-            amount,
-            timestamp: Utc::now().timestamp() as u64,
-        };
-        self.handle_promise(promise)
-            .await
-            .map_err(service_error_to_rpc)
+    async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert> {
+        self.handle_promise(req).await.map_err(service_error_to_rpc)
     }
 }
