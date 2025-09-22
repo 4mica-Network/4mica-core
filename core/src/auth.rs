@@ -1,12 +1,10 @@
+use crate::error::{ServiceError, ServiceResult};
 use alloy_primitives::{Address, B256, Signature, keccak256};
 use alloy_sol_types::{SolStruct, SolValue, eip712_domain, sol};
 use hex;
-use jsonrpsee::tracing::info;
-use std::str::FromStr;
-
-use crate::error::{ServiceError, ServiceResult};
 use rpc::common::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme};
 use rpc::core::CorePublicParameters;
+use std::str::FromStr;
 
 /// Verify that the request was signed by `claims.user_address`
 pub fn verify_promise_signature(
@@ -14,12 +12,6 @@ pub fn verify_promise_signature(
     req: &PaymentGuaranteeRequest,
 ) -> ServiceResult<()> {
     let claims = &req.claims;
-    info!(
-        "Verifying promise signature\n  claims: {:?}\n  signature: {}… (len: {} bytes)",
-        claims,
-        &req.signature[..std::cmp::min(req.signature.len(), 34)], // "0x" + first 16 bytes of hex
-        req.signature.len()
-    );
     let user_addr = Address::from_str(&claims.user_address)
         .map_err(|_| ServiceError::InvalidParams("invalid user address".into()))?;
     let recipient_addr = Address::from_str(&claims.recipient_address)
@@ -29,22 +21,38 @@ pub fn verify_promise_signature(
         .map_err(|_| ServiceError::InvalidParams("invalid hex signature".into()))?;
     let sig = Signature::try_from(&sig_bytes[..])
         .map_err(|_| ServiceError::InvalidParams("invalid signature length".into()))?;
-    info!("Parsed signature: {:?}", sig);
+
+    // TODO: do we need something like this?
+    // if !is_low_s(&sig) {
+    //     warn!("High-S signature rejected");
+    //     return Err(ServiceError::InvalidParams("Invalid signature".into()));
+    // }
+
     let digest: B256 = match req.scheme {
         SigningScheme::Eip712 => eip712_digest(params, claims)?,
         SigningScheme::Eip191 => eip191_digest(claims, user_addr, recipient_addr)?,
     };
-    info!("Computed digest: 0x{}", hex::encode(digest));
     let recovered = sig
         .recover_address_from_prehash(&digest)
         .map_err(|_| ServiceError::InvalidParams("signature recovery failed".into()))?;
 
     if recovered != user_addr {
-        info!("Recovered address: {recovered:?}, expected: {user_addr:?}");
         return Err(ServiceError::InvalidParams("Invalid signature".into()));
     }
     Ok(())
 }
+
+// /// Reject high-S signatures (secp256k1 malleability)
+// fn is_low_s(sig: &Signature) -> bool {
+//     // secp256k1 curve order:
+//     // n = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141
+//     // n/2:
+//     const N_OVER_2_HEX: &str = "7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0";
+//     // Alloy Signature exposes s() as U256 (in newer versions). If not, adapt accordingly.
+//     let s: U256 = sig.s();
+//     let n_over_2 = U256::from_str(N_OVER_2_HEX).unwrap();
+//     s <= n_over_2
+// }
 
 /// EIP-712 digest using the new `alloy_sol_types` API
 fn eip712_digest(
