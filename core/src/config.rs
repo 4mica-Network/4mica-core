@@ -1,7 +1,6 @@
 use crypto::hex::HexBytes;
 use envconfig::Envconfig;
 
-pub const DEFAULT_LOG_LEVEL: &str = "info";
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
 #[derive(Debug, Clone, Envconfig)]
