@@ -32,6 +32,15 @@ pub struct EthereumConfig {
 }
 
 #[derive(Debug, Clone, Envconfig)]
+pub struct Eip712Config {
+    #[envconfig(from = "EIP712_NAME", default = "4mica")]
+    pub name: String,
+
+    #[envconfig(from = "EIP712_VERSION", default = "1")]
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Envconfig)]
 pub struct Secrets {
     #[envconfig(from = "BLS_PRIVATE_KEY")]
     pub bls_private_key: HexBytes,
@@ -42,6 +51,7 @@ pub struct AppConfig {
     pub server_config: ServerConfig,
     pub ethereum_config: EthereumConfig,
     pub secrets: Secrets,
+    pub eip712: Eip712Config,
 }
 
 impl AppConfig {
@@ -50,11 +60,12 @@ impl AppConfig {
         let ethereum_config =
             EthereumConfig::init_from_env().expect("Failed to load ethereum config");
         let secrets = Secrets::init_from_env().expect("Failed to load secrets");
-
+        let eip712 = Eip712Config::init_from_env().expect("Failed to load EIP712 config");
         Self {
             server_config,
             ethereum_config,
             secrets,
+            eip712,
         }
     }
 }
