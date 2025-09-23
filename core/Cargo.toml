@@ -22,6 +22,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 jsonrpsee = { workspace = true, features = ["server"] }
 hex = { workspace = true }
 alloy = { workspace = true, features = ["provider-ws"] }
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }
 hyper = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
@@ -30,7 +32,7 @@ sea-orm = { workspace = true }
 entities = { workspace = true }
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-alloy-primitives = { workspace = true }
+
 [dev-dependencies]
 serial_test = { workspace = true }
 test-log = { workspace = true }

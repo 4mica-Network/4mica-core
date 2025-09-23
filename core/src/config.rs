@@ -1,6 +1,8 @@
 use crypto::hex::HexBytes;
 use envconfig::Envconfig;
 
+pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
+
 #[derive(Debug, Clone, Envconfig)]
 pub struct ServerConfig {
     #[envconfig(from = "SERVER_HOST", default = "127.0.0.1")]
@@ -15,6 +17,8 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Envconfig)]
 pub struct EthereumConfig {
+    #[envconfig(from = "ETHEREUM_CHAIN_ID", default = "1")]
+    pub chain_id: u64,
     #[envconfig(from = "ETHEREUM_WS_RPC_URL")]
     pub ws_rpc_url: String,
     #[envconfig(from = "ETHEREUM_HTTP_RPC_URL")]
@@ -28,6 +32,15 @@ pub struct EthereumConfig {
 }
 
 #[derive(Debug, Clone, Envconfig)]
+pub struct Eip712Config {
+    #[envconfig(from = "EIP712_NAME", default = "4mica")]
+    pub name: String,
+
+    #[envconfig(from = "EIP712_VERSION", default = "1")]
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Envconfig)]
 pub struct Secrets {
     #[envconfig(from = "BLS_PRIVATE_KEY")]
     pub bls_private_key: HexBytes,
@@ -38,6 +51,7 @@ pub struct AppConfig {
     pub server_config: ServerConfig,
     pub ethereum_config: EthereumConfig,
     pub secrets: Secrets,
+    pub eip712: Eip712Config,
 }
 
 impl AppConfig {
@@ -46,11 +60,12 @@ impl AppConfig {
         let ethereum_config =
             EthereumConfig::init_from_env().expect("Failed to load ethereum config");
         let secrets = Secrets::init_from_env().expect("Failed to load secrets");
-
+        let eip712 = Eip712Config::init_from_env().expect("Failed to load EIP712 config");
         Self {
             server_config,
             ethereum_config,
             secrets,
+            eip712,
         }
     }
 }
