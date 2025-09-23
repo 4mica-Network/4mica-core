@@ -1,9 +1,12 @@
 use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::AppConfig;
+use core_service::error::PersistDbError;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
+use crypto::bls::BLSCert;
 use entities::{guarantee, user};
+use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
 use uuid::Uuid;
@@ -72,8 +75,8 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let from_addr = random_eth_address();
     let to_addr = random_eth_address();
 
-    repo::store_guarantee(
-        &ctx,
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
         tab_id.clone(),
         Uuid::new_v4().to_string(),
         from_addr.clone(),
@@ -141,8 +144,8 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         .await?;
 
     // ── First insert of the guarantee ──
-    repo::store_guarantee(
-        &ctx,
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
         tab_id.clone(),
         req_id.clone(),
         from_addr.clone(),
@@ -154,8 +157,8 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     .await?;
 
     // ── Second insert with same (tab_id, req_id) must be a no-op ──
-    repo::store_guarantee(
-        &ctx,
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
         tab_id.clone(),
         req_id.clone(),
         from_addr,
@@ -220,8 +223,8 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     .await?;
 
     // two guarantees with increasing req_id and later created_at
-    repo::store_guarantee(
-        &ctx,
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
         tab_id.clone(),
         "1".into(),
         user_addr.clone(),
@@ -233,8 +236,8 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     .await?;
     // ensure created_at differs
     sleep(Duration::from_millis(10)).await;
-    repo::store_guarantee(
-        &ctx,
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
         tab_id.clone(),
         "2".into(),
         user_addr,
@@ -335,8 +338,8 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     .await?;
 
     // Insert two guarantees with different req_ids
-    repo::store_guarantee(
-        &ctx,
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
         tab_id.clone(),
         "A".into(),
         user_addr.clone(),
@@ -346,8 +349,8 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
         "cert-A".into(),
     )
     .await?;
-    repo::store_guarantee(
-        &ctx,
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
         tab_id.clone(),
         "B".into(),
         user_addr,
@@ -365,5 +368,111 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     assert_eq!(last.req_id, "B");
     assert_eq!(last.value, U256::from(20u64).to_string());
 
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    // create a user with some collateral
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(100u64)).await?;
+
+    // recipient + tab
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = Uuid::new_v4().to_string();
+    repo::create_tab(
+        &ctx,
+        &tab_id,
+        &user_addr,
+        &recipient_addr,
+        Utc::now().naive_utc(),
+        300,
+    )
+    .await?;
+
+    // build a minimal PaymentGuaranteeClaims and dummy cert
+    let promise = PaymentGuaranteeClaims {
+        tab_id: tab_id.clone(),
+        req_id: "0".into(),
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        amount: U256::from(40u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
+    let cert = BLSCert::new(&config.secrets.bls_private_key, promise.clone())?;
+
+    // --- call the new atomic repo method ---
+    repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
+
+    // check locked collateral updated
+    let u = user::Entity::find_by_id(&user_addr)
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(u.locked_collateral.parse::<U256>()?, U256::from(40u64));
+
+    // check guarantee row inserted
+    let g = entities::guarantee::Entity::find()
+        .filter(entities::guarantee::Column::TabId.eq(&tab_id))
+        .filter(entities::guarantee::Column::ReqId.eq("0"))
+        .one(ctx.db.as_ref())
+        .await?;
+    assert!(g.is_some());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(&ctx, user_addr.clone(), U256::from(50u64)).await?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = Uuid::new_v4().to_string();
+    repo::create_tab(
+        &ctx,
+        &tab_id,
+        &user_addr,
+        &recipient_addr,
+        Utc::now().naive_utc(),
+        300,
+    )
+    .await?;
+
+    let promise = PaymentGuaranteeClaims {
+        tab_id: tab_id.clone(),
+        req_id: "bad-ts".into(),
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        amount: U256::from(10u64),
+        // deliberately invalid: chrono cannot represent this
+        timestamp: i64::MAX as u64,
+    };
+    let cert = BLSCert::new(&config.secrets.bls_private_key, promise.clone())?;
+
+    let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
+    assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));
+
+    // locked collateral unchanged
+    let u = user::Entity::find_by_id(&user_addr)
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(u.locked_collateral.parse::<U256>()?, U256::ZERO);
+
+    // no guarantee row inserted
+    let g = entities::guarantee::Entity::find()
+        .filter(entities::guarantee::Column::TabId.eq(&tab_id))
+        .filter(entities::guarantee::Column::ReqId.eq("bad-ts"))
+        .one(ctx.db.as_ref())
+        .await?;
+    assert!(g.is_none());
     Ok(())
 }

@@ -16,7 +16,7 @@ use alloy_primitives::U256;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
-use chrono::{TimeZone, Utc};
+use chrono::TimeZone;
 use crypto::bls::BLSCert;
 use log::{error, info};
 use rpc::{
@@ -24,7 +24,7 @@ use rpc::{
     common::*,
     core::{CoreApiServer, CorePublicParameters},
 };
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 use tokio::{
     spawn,
     sync::RwLock,
@@ -49,7 +49,10 @@ pub struct CoreService {
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
         let public_key = crypto::bls::pub_key_from_priv_key(&config.secrets.bls_private_key)?;
-        info!("BLS Public Key: {}", hex::encode(&public_key));
+        info!(
+            "Operator started with BLS Public Key: {}",
+            hex::encode(&public_key)
+        );
         let chain_id = config.ethereum_config.chain_id;
         let persist_ctx = PersistCtx::new().await?;
         let persist_ctx_clone = persist_ctx.clone();
@@ -213,88 +216,18 @@ impl CoreService {
     async fn handle_promise(&self, req: PaymentGuaranteeRequest) -> ServiceResult<BLSCert> {
         let promise = req.claims.clone();
 
-        info!("Received guarantee request for promise: {:?}", promise);
+        info!(
+            "Received guarantee request; tab_id={}, req_id={}, amount={}",
+            promise.tab_id, promise.req_id, promise.amount
+        );
         self.preflight_promise_checks(&req).await?;
+        let cert = self.create_bls_cert(promise.clone()).await?;
 
-        self.lock_collateral(&promise.user_address, promise.amount)
-            .await?;
-
-        let guarantee = self.create_bls_cert(promise.clone()).await?;
-        self.persist_guarantee(&promise, &guarantee).await?;
-        Ok(guarantee)
-    }
-    async fn persist_guarantee(
-        &self,
-        promise: &PaymentGuaranteeClaims,
-        cert: &BLSCert,
-    ) -> ServiceResult<()> {
-        let cert_str = serde_json::to_string(cert).map_err(|err| {
-            error!("Failed to serialize the payment guarantee cert: {err}");
-            ServiceError::Other(anyhow!(err))
-        })?;
-
-        let start_dt = Utc
-            .timestamp_opt(promise.timestamp as i64, 0)
-            .single()
-            .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
-            .naive_utc();
-
-        repo::store_guarantee(
-            &self.persist_ctx,
-            promise.tab_id.clone(),
-            promise.req_id.clone(),
-            promise.user_address.clone(),
-            promise.recipient_address.clone(),
-            promise.amount,
-            start_dt,
-            cert_str,
-        )
-        .await
-        .map_err(|err| {
-            error!("Failed to store guarantee: {err}");
-            ServiceError::from(err)
-        })
-    }
-
-    async fn lock_collateral(&self, user_address: &str, amount: U256) -> ServiceResult<()> {
-        let user = repo::get_user(&self.persist_ctx, user_address)
+        repo::lock_and_store_guarantee(&self.persist_ctx, &promise, &cert)
             .await
-            .map_err(|e| match e {
-                PersistDbError::UserNotFound(_) => ServiceError::UserNotRegistered,
-                other => {
-                    error!("DB error: {other}");
-                    ServiceError::from(other)
-                }
-            })?;
-
-        let total_collateral = U256::from_str(&user.collateral)
-            .map_err(|_| ServiceError::InvalidParams("invalid collateral value".into()))?;
-        let current_locked = U256::from_str(&user.locked_collateral)
-            .map_err(|_| ServiceError::InvalidParams("invalid locked collateral value".into()))?;
-
-        let free_collateral = total_collateral.saturating_sub(current_locked);
-        if free_collateral < amount {
-            return Err(ServiceError::InvalidParams(
-                "Not enough free collateral".into(),
-            ));
-        }
-        let new_locked = current_locked
-            .checked_add(amount)
-            .ok_or_else(|| ServiceError::InvalidParams("overflow on locked collateral".into()))?;
-
-        repo::update_user_lock_and_version(
-            &self.persist_ctx,
-            user_address,
-            user.version,
-            new_locked,
-        )
-        .await
-        .map_err(|e| match e {
-            PersistDbError::OptimisticLockConflict { .. } => ServiceError::OptimisticLockConflict,
-            other => ServiceError::from(other),
-        })
+            .map_err(ServiceError::from)?;
+        Ok(cert)
     }
-
     async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         BLSCert::new(&self.config.secrets.bls_private_key, promise)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
