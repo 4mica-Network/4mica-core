@@ -24,7 +24,12 @@ use rpc::{
     common::*,
     core::{CoreApiServer, CorePublicParameters},
 };
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
+use tokio::{
+    spawn,
+    sync::RwLock,
+    time::{Duration, sleep},
+};
 
 type EthereumProvider = FillProvider<
     JoinFill<
@@ -38,6 +43,7 @@ pub struct CoreService {
     config: AppConfig,
     public_params: CorePublicParameters,
     persist_ctx: PersistCtx,
+    provider: Arc<RwLock<Option<EthereumProvider>>>,
 }
 
 impl CoreService {
@@ -46,9 +52,27 @@ impl CoreService {
         info!("BLS Public Key: {}", hex::encode(&public_key));
         let chain_id = config.ethereum_config.chain_id;
         let persist_ctx = PersistCtx::new().await?;
-        EthereumListener::new(config.ethereum_config.clone(), persist_ctx.clone())
-            .run()
-            .await?;
+        let persist_ctx_clone = persist_ctx.clone();
+        let eth_cfg = config.ethereum_config.clone();
+        spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                match EthereumListener::new(eth_cfg.clone(), persist_ctx_clone.clone())
+                    .run()
+                    .await
+                {
+                    Ok(_) => {
+                        info!("EthereumListener exited gracefully");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("EthereumListener error: {e}. Restarting in {delay:?}…");
+                        sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(60));
+                    }
+                }
+            }
+        });
         Ok(Self {
             config,
             public_params: CorePublicParameters {
@@ -58,6 +82,7 @@ impl CoreService {
                 chain_id,
             },
             persist_ctx,
+            provider: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -66,13 +91,18 @@ impl CoreService {
     }
 
     pub async fn get_ethereum_provider(&self) -> ServiceResult<EthereumProvider> {
-        ProviderBuilder::new()
+        if let Some(p) = self.provider.read().await.as_ref() {
+            return Ok(p.clone());
+        }
+        let p = ProviderBuilder::new()
             .connect_ws(self.ws_connection_details())
             .await
             .map_err(|err| {
                 error!("Failed to connect to Ethereum provider: {err}");
                 ServiceError::Other(anyhow!(err))
-            })
+            })?;
+        *self.provider.write().await = Some(p.clone());
+        Ok(p)
     }
 
     pub fn validate_transaction(
