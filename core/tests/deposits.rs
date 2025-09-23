@@ -147,7 +147,13 @@ async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Re
     assert_eq!(U256::from_str(&before.locked_collateral)?, U256::ZERO);
 
     // lock 40 units
-    repo::update_user_lock_and_version(&ctx, &user_addr, before_version, U256::from(40u64)).await?;
+    repo::update_user_lock_and_version_on(
+        ctx.db.as_ref(),
+        &user_addr,
+        before_version,
+        U256::from(40u64),
+    )
+    .await?;
 
     let after = load_user(&ctx, &user_addr).await;
     assert_eq!(after.version, before_version + 1);
@@ -167,8 +173,8 @@ async fn lock_fails_if_not_enough_free_collateral() -> anyhow::Result<()> {
 
     // Pre-lock 8 units
     let u = load_user(&ctx, &user_addr).await;
-    repo::update_user_lock_and_version(&ctx, &user_addr, u.version, U256::from(8u64)).await?;
-
+    repo::update_user_lock_and_version_on(ctx.db.as_ref(), &user_addr, u.version, U256::from(8u64))
+        .await?;
     // free collateral is only 2; trying to lock 5 more must be rejected in our own check
     let u2 = load_user(&ctx, &user_addr).await;
     let total = U256::from_str(&u2.collateral)?;
@@ -192,12 +198,18 @@ async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
     let version = u.version;
 
     // first update bumps version to version + 1
-    repo::update_user_lock_and_version(&ctx, &user_addr, version, U256::from(5u64)).await?;
+    repo::update_user_lock_and_version_on(ctx.db.as_ref(), &user_addr, version, U256::from(5u64))
+        .await?;
 
     // second update tries with old version -> must error with OptimisticLockConflict
-    let err = repo::update_user_lock_and_version(&ctx, &user_addr, version, U256::from(10u64))
-        .await
-        .expect_err("expected optimistic lock conflict");
+    let err = repo::update_user_lock_and_version_on(
+        ctx.db.as_ref(),
+        &user_addr,
+        version,
+        U256::from(10u64),
+    )
+    .await
+    .expect_err("expected optimistic lock conflict");
     match err {
         PersistDbError::OptimisticLockConflict { .. } => { /* expected */ }
         other => panic!("unexpected error: {other:?}"),
@@ -219,12 +231,22 @@ async fn multiple_locks_accumulate_locked_collateral() -> anyhow::Result<()> {
 
     // first lock of 10
     let u1 = load_user(&ctx, &user_addr).await;
-    repo::update_user_lock_and_version(&ctx, &user_addr, u1.version, U256::from(10u64)).await?;
-
+    repo::update_user_lock_and_version_on(
+        ctx.db.as_ref(),
+        &user_addr,
+        u1.version,
+        U256::from(10u64),
+    )
+    .await?;
     // second lock to total 25 (fresh version)
     let u2 = load_user(&ctx, &user_addr).await;
-    repo::update_user_lock_and_version(&ctx, &user_addr, u2.version, U256::from(25u64)).await?;
-
+    repo::update_user_lock_and_version_on(
+        ctx.db.as_ref(),
+        &user_addr,
+        u2.version,
+        U256::from(25u64),
+    )
+    .await?;
     let after = load_user(&ctx, &user_addr).await;
     assert_eq!(U256::from_str(&after.locked_collateral)?, U256::from(25u64));
     Ok(())
@@ -299,10 +321,14 @@ async fn db_check_rejects_update_locked_beyond_total_via_repo() -> anyhow::Resul
     assert_eq!(U256::from_str(&before.locked_collateral)?, U256::ZERO);
 
     // Attempt to set locked_collateral = 11 (> 10). This should be rejected by the DB CHECK.
-    let err =
-        repo::update_user_lock_and_version(&ctx, &user_addr, before_version, U256::from(11u64))
-            .await
-            .expect_err("expected DB CHECK to reject locked > total");
+    let err = repo::update_user_lock_and_version_on(
+        ctx.db.as_ref(),
+        &user_addr,
+        before_version,
+        U256::from(11u64),
+    )
+    .await
+    .expect_err("expected DB CHECK to reject locked > total");
     // (Optional) sanity: error should mention a constraint/check
     let msg = format!("{err:?}");
     assert!(msg.to_lowercase().contains("check") || msg.to_lowercase().contains("constraint"));
@@ -330,8 +356,13 @@ async fn db_check_rejects_lowering_total_below_locked() -> anyhow::Result<()> {
 
     // lock 7 (valid)
     let u1 = load_user(&ctx, &user_addr).await;
-    repo::update_user_lock_and_version(&ctx, &user_addr, u1.version, U256::from(7u64)).await?;
-
+    repo::update_user_lock_and_version_on(
+        ctx.db.as_ref(),
+        &user_addr,
+        u1.version,
+        U256::from(7u64),
+    )
+    .await?;
     // Now try to LOWER collateral below 7 via a raw update (simulate a bad path)
     let current = load_user(&ctx, &user_addr).await;
     let mut am: entities::user::ActiveModel = current.into();

@@ -92,6 +92,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -174,6 +175,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -277,6 +279,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -382,6 +385,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -503,6 +507,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
 
     //  Start listener
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -709,6 +714,7 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
 
     // Start the EthereumListener
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -888,6 +894,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
     use tokio::time::{Duration, sleep};
 
+    // Load config (env) and connect local chain
     init()?;
     let anvil_port = 40132u16;
     let provider = ProviderBuilder::new()
@@ -901,6 +908,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
 
     // Listener config + DB
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -908,6 +916,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
         number_of_pending_blocks: 1,
     };
     let persist_ctx = PersistCtx::new().await?;
+
     // Clean DB
     user_transaction::Entity::delete_many()
         .exec(persist_ctx.db.as_ref())
@@ -930,6 +939,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
 
     // Start listener
     let listener = start_listener(eth_config, persist_ctx.clone());
+    // Give it a brief moment to subscribe
     sleep(Duration::from_millis(150)).await;
 
     // Ensure user + initial deposit
@@ -942,7 +952,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
         .watch()
         .await?;
 
-    // Wait until collateral > 0
+    // Wait until collateral > 0 in DB (listener ingested deposit)
     let mut tries = 0;
     while let Some(u) = user::Entity::find()
         .filter(user::Column::Address.eq(user_addr.clone()))
@@ -1003,12 +1013,35 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     };
     contract.remunerate(g1, sig).send().await?.watch().await?;
 
-    // Snapshot rows for this tab
+    // ⏳ Wait until the listener has persisted the first event for this tab
+    let mut waited = 0u32;
+    loop {
+        let count = collateral_event::Entity::find()
+            .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
+            .all(persist_ctx.db.as_ref())
+            .await?
+            .len();
+        if count >= 1 {
+            break;
+        }
+        if waited > 100 {
+            listener.abort();
+            anyhow::bail!("listener did not persist first remuneration in time");
+        }
+        waited += 1;
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    // Snapshot after the first event is surely ingested
     let before = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
         .all(persist_ctx.db.as_ref())
         .await?
         .len();
+    assert_eq!(
+        before, 1,
+        "first remuneration should be persisted exactly once"
+    );
 
     // Prepare the second remuneration (same tab, different req_id)
     let g2 = Core4Mica::Guarantee {
@@ -1020,26 +1053,26 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
         amount: U256::from(300u64),
     };
 
-    // Submit → expect REVERT when mined; assert custom error selector 0x77f5e8ba
-    let pending = contract.remunerate(g2, sig).send().await;
-    match pending {
-        Ok(rcpt) => panic!("expected revert, but tx succeeded: {:?}", rcpt),
-        Err(e) => {
-            // Compute selector for TabPreviouslyRemunerated()
-            let sel = &keccak256("TabPreviouslyRemunerated()".as_bytes())[0..4];
-            let expected = format!("0x{:02x}{:02x}{:02x}{:02x}", sel[0], sel[1], sel[2], sel[3]);
-            let msg = e.to_string();
-            assert!(
-                msg.contains(&expected),
-                "expected custom error selector {} in provider error: {}",
-                expected,
-                msg
-            );
-        }
-    }
+    // ✅ Simulate (staticcall) the second remuneration to capture the custom error
+    let err = match contract.remunerate(g2, sig).call().await {
+        Ok(_) => panic!("expected revert, but call succeeded"),
+        Err(e) => e,
+    };
+    // Verify custom error selector 0x77f5e8ba (TabPreviouslyRemunerated())
+    let sel = &keccak256("TabPreviouslyRemunerated()".as_bytes())[0..4];
+    let expected = format!("0x{:02x}{:02x}{:02x}{:02x}", sel[0], sel[1], sel[2], sel[3]);
+    let msg = err.to_string();
+    assert!(
+        msg.contains(&expected),
+        "expected custom error selector {} in call revert: {}",
+        expected,
+        msg
+    );
 
-    // No extra DB row should be written
+    // Small grace to ensure no spurious writes happen
     sleep(Duration::from_millis(300)).await;
+
+    // Assert no additional DB row was written
     let after = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
         .all(persist_ctx.db.as_ref())
@@ -1077,6 +1110,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
 
     // Listener configured to only watch contract A.
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract_a.address().to_string(),
@@ -1184,6 +1218,7 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
 
     // Listener
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
@@ -1332,6 +1367,7 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
+        chain_id: 1,
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
