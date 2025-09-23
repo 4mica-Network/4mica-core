@@ -2,12 +2,14 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
+use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::{
     collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     tabs, user, user_transaction, withdrawal,
 };
+use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
 use std::str::FromStr;
@@ -378,8 +380,85 @@ pub async fn get_unfinalized_transactions(
 // ────────────────────── GUARANTEES / CERTIFICATES ──────────────────────
 //
 
-pub async fn store_guarantee(
+/// Atomically:
+///   1. Check the user has enough *free* collateral
+///   2. Increment `locked_collateral` and bump version
+///   3. Insert the guarantee row
+/// Returns the serialized BLS cert string you passed in on success.
+pub async fn lock_and_store_guarantee(
     ctx: &PersistCtx,
+    promise: &PaymentGuaranteeClaims,
+    cert: &BLSCert,
+) -> Result<(), PersistDbError> {
+    use chrono::Utc;
+    use std::str::FromStr;
+
+    let cert_str = serde_json::to_string(cert)
+        .map_err(|e| PersistDbError::InvariantViolation(e.to_string()))?;
+
+    let start_dt = Utc
+        .timestamp_opt(promise.timestamp as i64, 0)
+        .single()
+        .ok_or_else(|| PersistDbError::InvalidTimestamp(promise.timestamp as i64))?
+        .naive_utc();
+
+    ctx.db
+        .transaction(|txn| {
+            let promise = promise.clone();
+            let cert_str = cert_str.clone();
+            Box::pin(async move {
+                // --- 1. strict fetch + collateral math
+                let user = get_user_on(txn, &promise.user_address).await?;
+                let total = U256::from_str(&user.collateral)
+                    .map_err(|_| PersistDbError::InvalidCollateral("invalid collateral".into()))?;
+                let locked = U256::from_str(&user.locked_collateral).map_err(|_| {
+                    PersistDbError::InvalidCollateral("invalid locked collateral".into())
+                })?;
+                let free = total.saturating_sub(locked);
+                if free < promise.amount {
+                    return Err(PersistDbError::InsufficientCollateral);
+                }
+                let new_locked = locked
+                    .checked_add(promise.amount)
+                    .ok_or_else(|| PersistDbError::InvariantViolation("locked overflow".into()))?;
+
+                // --- 2. bump version + write locked_collateral
+                update_user_lock_and_version_on(
+                    txn,
+                    &promise.user_address,
+                    user.version,
+                    new_locked,
+                )
+                .await?;
+
+                // --- 3. insert guarantee
+                store_guarantee_on(
+                    txn,
+                    promise.tab_id.clone(),
+                    promise.req_id.clone(),
+                    promise.user_address.clone(),
+                    promise.recipient_address.clone(),
+                    promise.amount,
+                    start_dt,
+                    cert_str,
+                )
+                .await?;
+
+                Ok::<_, PersistDbError>(())
+            })
+        })
+        .await
+        .map_err(|e| match e {
+            sea_orm::TransactionError::Transaction(inner) => inner,
+            sea_orm::TransactionError::Connection(err) => PersistDbError::DatabaseFailure(err),
+        })
+}
+
+/// Insert a guarantee row using the given transaction/connection.
+/// Ensures the from/to user rows exist (idempotently) inside the same txn.
+/// If a (tab_id, req_id) row already exists → no-op.
+pub async fn store_guarantee_on<C: ConnectionTrait>(
+    conn: &C,
     tab_id: String,
     req_id: String,
     from_addr: String,
@@ -388,11 +467,11 @@ pub async fn store_guarantee(
     start_ts: chrono::NaiveDateTime,
     cert: String,
 ) -> Result<(), PersistDbError> {
-    let now = Utc::now().naive_utc();
+    let now = chrono::Utc::now().naive_utc();
 
-    // Ensure foreign keys exist (idempotent, race-safe)
-    ensure_user_exists_on(ctx.db.as_ref(), &from_addr).await?;
-    ensure_user_exists_on(ctx.db.as_ref(), &to_addr).await?;
+    // Make sure both user records exist in the same transaction.
+    ensure_user_exists_on(conn, &from_addr).await?;
+    ensure_user_exists_on(conn, &to_addr).await?;
 
     let active_model = guarantee::ActiveModel {
         tab_id: Set(tab_id.clone()),
@@ -412,8 +491,9 @@ pub async fn store_guarantee(
                 .do_nothing()
                 .to_owned(),
         )
-        .exec_without_returning(ctx.db.as_ref())
+        .exec_without_returning(conn)
         .await?;
+
     Ok(())
 }
 
@@ -647,12 +727,15 @@ pub async fn get_tab_by_id_on<C: ConnectionTrait>(
         .ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_owned()))
 }
 
-/// Optimistic lock + version bump for `locked_collateral`.
-/// Atomically sets `LockedCollateral` to `new_locked` and bumps the user's version
-/// if `current_version` matches.
-/// Returns `Ok(())` on success; `Err(PersistDbError::OptimisticLockConflict{..})` if stale.
-pub async fn update_user_lock_and_version(
-    ctx: &PersistCtx,
+/// Optimistic-lock update:
+///   • Bumps the user's `version` by 1
+///   • Sets `locked_collateral` to `new_locked`
+///   • Updates `updated_at`
+/// Succeeds only if `current_version` matches (classic CAS).
+///
+/// Pass in any `ConnectionTrait` (a Transaction or DatabaseConnection).
+pub async fn update_user_lock_and_version_on<C: ConnectionTrait>(
+    conn: &C,
     user_address: &str,
     current_version: i32,
     new_locked: U256,
@@ -663,10 +746,10 @@ pub async fn update_user_lock_and_version(
     let now = Utc::now().naive_utc();
 
     let res = user::Entity::update_many()
-        // Prefer filters first for readability; SQL is identical
+        // filter on address + current version for optimistic locking
         .filter(user::Column::Address.eq(user_address))
         .filter(user::Column::Version.eq(current_version))
-        // Atomic increment + field write + timestamp
+        // atomic: bump version, set locked_collateral and updated_at
         .col_expr(
             user::Column::Version,
             Expr::col(user::Column::Version).add(1),
@@ -676,7 +759,7 @@ pub async fn update_user_lock_and_version(
             Expr::value(new_locked.to_string()),
         )
         .col_expr(user::Column::UpdatedAt, Expr::value(now))
-        .exec(ctx.db.as_ref())
+        .exec(conn)
         .await?;
 
     match res.rows_affected {
@@ -686,7 +769,7 @@ pub async fn update_user_lock_and_version(
             expected_version: current_version,
         }),
         n => Err(PersistDbError::InvariantViolation(format!(
-            "update_user_lock_and_version updated {} rows for address {}",
+            "update_user_lock_and_version_on updated {} rows for address {}",
             n, user_address
         ))),
     }
