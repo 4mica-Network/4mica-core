@@ -76,12 +76,14 @@ impl CoreService {
                 }
             }
         });
+        let eip712_name = config.eip712.name.clone();
+        let eip712_version = config.eip712.version.clone();
         Ok(Self {
             config,
             public_params: CorePublicParameters {
                 public_key,
-                eip712_name: "4mica".to_string(),
-                eip712_version: "1".to_string(),
+                eip712_name,
+                eip712_version,
                 chain_id,
             },
             persist_ctx,
