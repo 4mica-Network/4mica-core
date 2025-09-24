@@ -30,6 +30,7 @@ use tokio::{
     sync::RwLock,
     time::{Duration, sleep},
 };
+use tokio_cron_scheduler::{Job, JobScheduler};
 
 type EthereumProvider = FillProvider<
     JoinFill<
@@ -89,6 +90,58 @@ impl CoreService {
             persist_ctx,
             provider: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Periodically scan Ethereum for tab payments.
+    async fn scan_blockchain(self: Arc<Self>, lookback: u64) {
+        match self.get_ethereum_provider().await {
+            Ok(provider) => {
+                if let Err(e) =
+                    txtools::process_tab_payments(&provider, &self.persist_ctx, lookback).await
+                {
+                    error!("tab payment processor failed: {e}");
+                }
+            }
+            Err(e) => error!("get_ethereum_provider failed: {e}"),
+        }
+    }
+
+    /// Spawn a background cron scheduler that periodically
+    /// checks Ethereum and updates user collateral / tab status.
+    /// TODO: Each block in ETH takes around 12s, checking last 20 blocks means
+    /// we check transactions made in last 4 minutes. We do this every 1 minutes
+    /// so we should not miss any transactions. But, this should be seperated into
+    /// a microservice, and keep track of the blocks that is already checked. make sure nothing
+    /// is missed.
+    pub fn monitor_transactions(self: &Arc<Self>) {
+        let cron_expr = self.config.ethereum_config.cron_job_settings.clone();
+        let num_blocks = self.config.ethereum_config.lookback_blocks;
+        let service = Arc::clone(self);
+
+        tokio::spawn(async move {
+            if let Err(e) = Self::start_scheduler(service, &cron_expr, num_blocks).await {
+                error!("scheduler exited with error: {e}");
+            }
+        });
+    }
+
+    async fn start_scheduler(
+        service: Arc<Self>,
+        cron_expr: &str,
+        lookback: u64,
+    ) -> anyhow::Result<()> {
+        let sched = JobScheduler::new().await?;
+        let job_service = Arc::clone(&service);
+
+        let job = Job::new_async(cron_expr, move |_id, _lock| {
+            let s = Arc::clone(&job_service);
+            Box::pin(async move { s.scan_blockchain(lookback).await })
+        })?;
+
+        sched.add(job).await?;
+        sched.start().await?;
+        tokio::signal::ctrl_c().await?;
+        Ok(())
     }
 
     pub fn ws_connection_details(&self) -> WsConnect {
@@ -230,6 +283,7 @@ impl CoreService {
             .map_err(ServiceError::from)?;
         Ok(cert)
     }
+
     async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         BLSCert::new(&self.config.secrets.bls_private_key, promise)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
