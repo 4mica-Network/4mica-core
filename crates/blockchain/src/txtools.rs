@@ -1,25 +1,39 @@
-use crate::{
-    error,
-    persist::{PersistCtx, repo},
-};
+use crate::error::{Result, TxProcessingError};
+use alloy::consensus::{Transaction as AlloyTransaction, TxEnvelope};
 use alloy::{
-    consensus::TxEnvelope,
     primitives::{Address, B256, U256},
     providers::Provider,
-    rpc::types::{Block, BlockNumber, Transaction},
+    rpc::types::eth::{Block, BlockNumberOrTag, Transaction},
 };
-use log::{error, info};
-use rpc::RpcResult;
+use log::{debug, info};
 
-///  function to fetch a transaction
-pub async fn fetch_transaction<P: Provider>(provider: &P, tx_hash: B256) -> Result<Transaction> {
+/// Simple, structured representation of a tab payment discovered on-chain.
+/// No persistence or side-effects here.
+#[derive(Debug, Clone)]
+pub struct PaymentTx {
+    pub block_number: u64,
+    pub tx_hash: B256,
+    pub from: Address,
+    pub to: Address,
+    pub amount: U256,
+    pub tab_id: String,
+    pub req_id: String,
+}
+
+/// Fetch a transaction by hash.
+pub async fn fetch_transaction<P: Provider>(
+    provider: &P,
+    tx_hash: impl Into<B256>,
+) -> Result<Transaction> {
+    let hash: B256 = tx_hash.into();
     provider
-        .get_transaction_by_hash(tx_hash)
-        .await?
+        .get_transaction_by_hash(hash)
+        .await
+        .map_err(|e| TxProcessingError::Rpc(e.into()))?
         .ok_or(TxProcessingError::NotFound)
 }
 
-/// Validate basic transaction fields
+/// Validate basic transaction fields.
 pub fn validate_transaction(
     tx: &Transaction,
     user_address: Address,
@@ -27,7 +41,7 @@ pub fn validate_transaction(
     expected_amount: U256,
 ) -> Result<()> {
     if tx.inner.signer() != user_address {
-        return Err(rpc::invalid_params_error("sender mismatch").into());
+        return Err(TxProcessingError::InvalidParams("sender mismatch".into()));
     }
 
     let (to, value) = match tx.inner.inner() {
@@ -36,63 +50,97 @@ pub fn validate_transaction(
     };
 
     if to != recipient_address {
-        return Err(rpc::invalid_params_error("recipient mismatch").into());
+        return Err(TxProcessingError::InvalidParams(
+            "recipient mismatch".into(),
+        ));
     }
 
     if value != expected_amount {
-        return Err(rpc::invalid_params_error("amount mismatch").into());
+        return Err(TxProcessingError::InvalidParams("amount mismatch".into()));
     }
 
     Ok(())
 }
 
-/// Helper to parse Ethereum address
+/// Helper to parse Ethereum address.
 pub fn parse_eth_address(addr: &str, field: &str) -> Result<Address> {
     addr.parse()
-        .map_err(|_| rpc::invalid_params_error(&format!("Invalid {field} address")).into())
+        .map_err(|_| TxProcessingError::InvalidParams(format!("Invalid {field} address")))
 }
 
-/// Placeholder – to be implemented with real smart-contract call
-async fn register_payment_on_chain(tab_id: &str, req_id: &str) -> rpc::RpcResult<()> {
-    info!(
-        "(placeholder) register_payment called on-chain for tab_id={} req_id={}",
-        tab_id, req_id
-    );
-    Ok(())
-}
-
-/// Scan the last `lookback` blocks and process all matching payment transactions.
-pub async fn process_tab_payments<P: Provider>(
-    provider: &P,
-    ctx: &PersistCtx,
-    lookback: u64,
-) -> Result<()> {
-    let latest = provider.get_block_number().await?;
+/// Scan the last `lookback` blocks and return all matching payment transactions,
+/// parsed into `PaymentTx`. No DB writes, no on-chain calls.
+pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Result<Vec<PaymentTx>> {
+    let latest = provider
+        .get_block_number()
+        .await
+        .map_err(|e| TxProcessingError::Rpc(e.into()))?;
     let start = latest.saturating_sub(lookback);
 
+    let mut found = Vec::new();
+
     for num in start..=latest {
-        process_block(provider, ctx, num).await?;
-    }
-    Ok(())
-}
+        // fetch the block
+        let block_opt = get_block(provider, num).await?;
+        if block_opt.is_none() {
+            continue;
+        }
+        let block = block_opt.unwrap();
 
-async fn process_block<P: Provider>(provider: &P, ctx: &PersistCtx, num: u64) -> Result<()> {
-    let block: Option<Block<Transaction>> = provider
-        .get_block_by_number(BlockNumber::Number(num.into()))
-        .await?;
+        // iterate over tx hashes
+        for tx_hash_bytes in block.transactions.hashes() {
+            // &[u8; 32] -> B256
+            let tx_hash: B256 = B256::from(*tx_hash_bytes);
 
-    if let Some(block) = block {
-        for tx in block.transactions {
-            if let Some((tab_id, req_id)) = extract_tab_req(&tx)? {
-                process_payment_tx(ctx, &tx, &tab_id, &req_id).await?;
-            }
+            let tx = match fetch_transaction(provider, tx_hash).await {
+                Ok(t) => t,
+                Err(err) => {
+                    debug!(
+                        "block {}: skip tx {:?}, fetch failed: {err}",
+                        num, tx_hash_bytes
+                    );
+                    continue;
+                }
+            };
+
+            // look for tab_id / req_id
+            let (tab_id, req_id) = match extract_tab_req(&tx)? {
+                Some(ids) => ids,
+                None => continue,
+            };
+
+            // convert to our PaymentTx type
+            let rec = match to_payment_tx(&tx, num, tab_id, req_id)? {
+                Some(r) => r,
+                None => continue, // not an EIP-7702 tx
+            };
+
+            info!(
+                "Discovered payment tx block={} hash={:?} from={:?} to={:?} \
+                 amount={} tab_id={} req_id={}",
+                num, rec.tx_hash, rec.from, rec.to, rec.amount, rec.tab_id, rec.req_id
+            );
+
+            found.push(rec);
         }
     }
-    Ok(())
+
+    Ok(found)
+}
+
+async fn get_block<P: Provider>(provider: &P, num: u64) -> Result<Option<Block<Transaction>>> {
+    provider
+        .get_block_by_number(BlockNumberOrTag::Number(num.into()))
+        .await
+        .map_err(|e| TxProcessingError::Rpc(e.into()))
 }
 
 fn extract_tab_req(tx: &Transaction) -> Result<Option<(String, String)>> {
-    let s = std::str::from_utf8(tx.inner.input())?;
+    // Skip if input is not valid UTF-8 instead of failing the whole scan.
+    let s = match std::str::from_utf8(tx.inner.input()) {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
     let tab = s.split(';').find_map(|p| p.strip_prefix("tab_id:"));
     let req = s.split(';').find_map(|p| p.strip_prefix("req_id:"));
     Ok(match (tab, req) {
@@ -101,56 +149,25 @@ fn extract_tab_req(tx: &Transaction) -> Result<Option<(String, String)>> {
     })
 }
 
-/// Record the payment, settle the tab and call the on-chain placeholder.
-async fn process_payment_tx(
-    ctx: &PersistCtx,
+fn to_payment_tx(
     tx: &Transaction,
-    tab_id: &str,
-    req_id: &str,
-) -> Result<()> {
-    let from = format!("{:?}", tx.inner.signer());
-    let to = match tx.inner.inner() {
-        TxEnvelope::Eip7702(inner) => inner.tx().to,
-        _ => return Err(TxProcessingError::InvalidTxType),
-    };
-    let to = format!("{:?}", to);
-    let amount = match tx.inner.inner() {
-        TxEnvelope::Eip7702(inner) => inner.tx().value,
-        _ => U256::ZERO,
+    block_number: u64,
+    tab_id: String,
+    req_id: String,
+) -> Result<Option<PaymentTx>> {
+    let from = tx.inner.signer();
+    let (to, amount) = match tx.inner.inner() {
+        TxEnvelope::Eip7702(inner) => (inner.tx().to, inner.tx().value),
+        _ => return Ok(None), // skip non-7702 transactions
     };
 
-    info!(
-        "Processing payment tx: from={} to={} tab_id={} req_id={} amount={}",
-        from, to, tab_id, req_id, amount
-    );
-
-    repo::submit_payment_transaction(
-        ctx,
-        from.clone(),
-        to.clone(),
-        format!("{:?}", tx.hash),
+    Ok(Some(PaymentTx {
+        block_number,
+        tx_hash: *tx.inner.hash(),
+        from,
+        to,
         amount,
-    )
-    .await?;
-
-    repo::remunerate_recipient(ctx, tab_id.to_string(), amount).await?;
-
-    register_payment_on_chain(tab_id, req_id).await
-}
-
-async fn register_payment_on_chain(tab_id: &str, req_id: &str) -> Result<()> {
-    info!(
-        "(placeholder) register_payment on-chain: tab_id={} req_id={}",
-        tab_id, req_id
-    );
-    Ok(())
-}
-
-/// Placeholder for the actual smart-contract call.
-async fn register_payment_on_chain(tab_id: &str, req_id: &str) -> RpcResult<()> {
-    info!(
-        "(placeholder) register_payment called on-chain for tab_id={} req_id={}",
-        tab_id, req_id
-    );
-    Ok(())
+        tab_id,
+        req_id,
+    }))
 }
