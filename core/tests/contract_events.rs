@@ -96,6 +96,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
         number_of_pending_blocks: 1,
     };
@@ -179,6 +180,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -283,6 +285,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -389,6 +392,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -511,6 +515,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -718,6 +723,7 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -912,6 +918,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -1114,6 +1121,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract_a.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -1222,6 +1230,7 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };
@@ -1371,6 +1380,7 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         contract_address: contract.address().to_string(),
+        cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
     };

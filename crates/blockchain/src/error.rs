@@ -1,23 +1,26 @@
 use thiserror::Error;
 
+pub type Result<T> = std::result::Result<T, TxProcessingError>;
+
 #[derive(Debug, Error)]
 pub enum TxProcessingError {
-    #[error("RPC error: {0}")]
-    Rpc(#[from] rpc::RpcError),
+    /// Generic RPC or provider error
+    #[error("RPC/provider error: {0}")]
+    Rpc(#[from] anyhow::Error),
 
-    #[error("Ethereum provider error: {0}")]
-    Provider(#[from] alloy::providers::ProviderError),
-
-    #[error("Persist DB error: {0}")]
-    Persist(#[from] crate::persist::error::PersistDbError),
-
-    #[error("UTF-8 decode error in tx input: {0}")]
+    /// Invalid UTF-8 in transaction input data
+    #[error("UTF-8 decode error: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 
+    /// Transaction not found on chain
     #[error("Transaction not found")]
     NotFound,
 
+    /// Transaction type is not supported (e.g. not EIP-7702)
     #[error("Invalid transaction type")]
     InvalidTxType,
+
+    /// Invalid user-supplied parameters
+    #[error("{0}")]
+    InvalidParams(String),
 }
-pub type Result<T> = std::result::Result<T, TxProcessingError>;

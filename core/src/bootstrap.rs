@@ -1,11 +1,12 @@
 use core_service::{
     config::{AppConfig, ServerConfig},
-    service::CoreService,
+    service::{CoreService, CoreServiceRpc},
 };
 use env_logger::Env;
 use jsonrpsee::server::Server;
 use log::info;
 use rpc::core::CoreApiServer;
+use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -42,10 +43,11 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         .build(format!("{host}:{port}"))
         .await?;
 
-    let service = CoreService::new(app_config).await?;
+    let service = Arc::new(CoreService::new(app_config).await?);
     service.monitor_transactions();
+
     info!("Running server on {}...", server.local_addr()?);
-    let handle = server.start(service.into_rpc());
+    let handle = server.start(CoreServiceRpc(service).into_rpc());
     handle.stopped().await;
 
     Ok(())
