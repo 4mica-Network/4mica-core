@@ -25,10 +25,10 @@ pub struct EthereumConfig {
     pub http_rpc_url: String,
     #[envconfig(from = "ETHEREUM_CONTRACT_ADDRESS")]
     pub contract_address: String,
-    #[envconfig(from = "NUMBER_OF_BLOCKS_TO_CONFIRM", default = "20")]
-    pub number_of_blocks_to_confirm: u64,
-    #[envconfig(from = "NUMBER_OF_PENDING_BLOCKS", default = "5")]
-    pub number_of_pending_blocks: u64,
+    #[envconfig(from = "CRON_JOB_SETTINGS", default = "0 */1 * * * *")]
+    pub cron_job_settings: String,
+    #[envconfig(from = "LOOKBACK_BLOCKS", default = "20")]
+    pub lookback_blocks: u64,
 }
 
 #[derive(Debug, Clone, Envconfig)]

@@ -43,7 +43,7 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         .await?;
 
     let service = CoreService::new(app_config).await?;
-
+    service.monitor_transactions();
     info!("Running server on {}...", server.local_addr()?);
     let handle = server.start(service.into_rpc());
     handle.stopped().await;
