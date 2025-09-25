@@ -132,7 +132,7 @@ impl CoreService {
             )
             .await?;
 
-            repo::remunerate_recipient(&self.persist_ctx, ev.tab_id.clone(), amount).await?;
+            repo::unlock_user_collateral(&self.persist_ctx, ev.tab_id.clone(), amount).await?;
         }
         Ok(())
     }

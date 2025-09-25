@@ -128,6 +128,82 @@ pub async fn deposit(
     Ok(())
 }
 
+pub async fn unlock_user_collateral(
+    ctx: &PersistCtx,
+    tab_id: String,
+    amount: U256,
+) -> Result<(), PersistDbError> {
+    use sea_orm::ActiveValue::Set;
+    let now = Utc::now().naive_utc();
+
+    ctx.db
+        .transaction(|txn| {
+            Box::pin(async move {
+                // strict fetch (same txn)
+                let tab = get_tab_by_id_on(txn, &tab_id).await?;
+
+                // CAS: mark tab as Settled once (idempotent)
+                let cas = entities::tabs::Entity::update_many()
+                    .filter(entities::tabs::Column::Id.eq(tab_id.clone()))
+                    .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
+                    .set(entities::tabs::ActiveModel {
+                        settlement_status: Set(SettlementStatus::Settled),
+                        updated_at: Set(now),
+                        ..Default::default()
+                    })
+                    .exec(txn)
+                    .await?;
+
+                // If already settled, do nothing (idempotent)
+                if cas.rows_affected == 0 {
+                    return Ok::<_, PersistDbError>(());
+                }
+
+                // Decrease user's locked_collateral (does not touch total collateral)
+                let user_row = get_user_on(txn, &tab.user_address).await?;
+                let locked = U256::from_str(&user_row.locked_collateral)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+                if amount > locked {
+                    return Err(PersistDbError::InvariantViolation(
+                        "unlock amount exceeds locked collateral".into(),
+                    ));
+                }
+
+                let new_locked = locked
+                    .checked_sub(amount)
+                    .ok_or_else(|| PersistDbError::InvariantViolation("locked underflow".into()))?;
+
+                // optimistic lock bump + write new locked value
+                update_user_lock_and_version_on(
+                    txn,
+                    &user_row.address,
+                    user_row.version,
+                    new_locked,
+                )
+                .await?;
+
+                // Audit trail: Unlock event (see NOTE below if enum variant differs)
+                let ev = collateral_event::ActiveModel {
+                    id: Set(uuid::Uuid::new_v4().to_string()),
+                    user_address: Set(user_row.address.clone()),
+                    amount: Set(amount.to_string()),
+                    event_type: Set(CollateralEventType::Unlock),
+                    tab_id: Set(Some(tab_id)),
+                    req_id: Set(None),
+                    tx_id: Set(None),
+                    created_at: Set(now),
+                };
+                collateral_event::Entity::insert(ev).exec(txn).await?;
+
+                Ok::<_, PersistDbError>(())
+            })
+        })
+        .await?;
+
+    Ok(())
+}
+
 //
 // ────────────────────── WITHDRAWALS ──────────────────────
 //

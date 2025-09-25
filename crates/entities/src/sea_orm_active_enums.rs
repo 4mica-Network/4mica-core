@@ -17,6 +17,8 @@ pub enum CollateralEventType {
     Reserve,
     #[sea_orm(string_value = "CANCEL_RESERVE")]
     CancelReserve,
+    #[sea_orm(string_value = "UNLOCK")]
+    Unlock,
     #[sea_orm(string_value = "REMUNERATE")]
     Remunerate,
 }
