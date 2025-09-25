@@ -97,20 +97,26 @@ impl CoreService {
     }
 
     /// Periodically scan Ethereum for tab payments.
-    async fn scan_blockchain(&self, lookback: u64) {
-        match self.get_ethereum_provider().await {
-            Ok(provider) => match txtools::scan_tab_payments(&provider, lookback).await {
-                Ok(events) => match self.handle_discovered_payments(events).await {
-                    Ok(_) => {}
-                    Err(e) => error!("failed to persist discovered payments: {e}"),
-                },
-                Err(e) => error!("scan_tab_payments failed: {e}"),
-            },
-            Err(e) => error!("get_ethereum_provider failed: {e}"),
-        }
+    async fn scan_blockchain(&self, lookback: u64) -> anyhow::Result<()> {
+        let provider = self.get_ethereum_provider().await.inspect_err(|e| {
+            error!("get_ethereum_provider failed: {e}");
+        })?;
+        let events = txtools::scan_tab_payments(&provider, lookback)
+            .await
+            .inspect_err(|e| {
+                error!("scan_tab_payments failed: {e}");
+            })?;
+
+        self.handle_discovered_payments(events)
+            .await
+            .inspect_err(|e| {
+                error!("failed to persist discovered payments: {e}");
+            })?;
+
+        Ok(())
     }
 
-    /// Persist and remunerate for each discovered on-chain payment.
+    /// Persist and unlock user collateral for each discovered on-chain payment.
     async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
         for ev in events {
             let from = format!("{:?}", ev.from);
@@ -164,7 +170,9 @@ impl CoreService {
 
         let job = Job::new_async(cron_expr, move |_id, _lock| {
             let s = Arc::clone(&job_service);
-            Box::pin(async move { s.scan_blockchain(lookback).await })
+            Box::pin(async move {
+                s.scan_blockchain(lookback).await.ok();
+            })
         })?;
 
         sched.add(job).await?;

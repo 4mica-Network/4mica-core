@@ -82,11 +82,9 @@ pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Resu
 
     for num in start..=latest {
         // fetch the block
-        let block_opt = get_block(provider, num).await?;
-        if block_opt.is_none() {
+        let Some(block) = get_block(provider, num).await? else {
             continue;
-        }
-        let block = block_opt.unwrap();
+        };
 
         // iterate over tx hashes
         for tx_hash_bytes in block.transactions.hashes() {
@@ -105,15 +103,13 @@ pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Resu
             };
 
             // look for tab_id / req_id
-            let (tab_id, req_id) = match extract_tab_req(&tx)? {
-                Some(ids) => ids,
-                None => continue,
+            let Some((tab_id, req_id)) = extract_tab_req(&tx)? else {
+                continue;
             };
 
             // convert to our PaymentTx type
-            let rec = match to_payment_tx(&tx, num, tab_id, req_id)? {
-                Some(r) => r,
-                None => continue, // not an EIP-7702 tx
+            let Some(rec) = to_payment_tx(&tx, num, tab_id, req_id)? else {
+                continue; // not an EIP-7702 tx
             };
 
             info!(
