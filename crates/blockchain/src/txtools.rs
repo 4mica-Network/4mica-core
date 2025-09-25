@@ -1,11 +1,15 @@
-use crate::error::{Result, TxProcessingError};
-use alloy::consensus::{Transaction as AlloyTransaction, TxEnvelope};
+use std::str;
+
+use log::{debug, info};
+
 use alloy::{
-    primitives::{Address, B256, U256},
+    consensus::{Transaction as AlloyTransaction, TxEnvelope},
+    primitives::{Address, B256, TxKind, U256},
     providers::Provider,
     rpc::types::eth::{Block, BlockNumberOrTag, Transaction},
 };
-use log::{debug, info};
+
+use crate::error::{Result, TxProcessingError};
 
 /// Simple, structured representation of a tab payment discovered on-chain.
 /// No persistence or side-effects here.
@@ -44,10 +48,7 @@ pub fn validate_transaction(
         return Err(TxProcessingError::InvalidParams("sender mismatch".into()));
     }
 
-    let (to, value) = match tx.inner.inner() {
-        TxEnvelope::Eip7702(inner) => (inner.tx().to, inner.tx().value),
-        _ => return Err(TxProcessingError::InvalidTxType),
-    };
+    let (to, value) = extract_to_value(tx.inner.inner()).ok_or(TxProcessingError::InvalidTxType)?;
 
     if to != recipient_address {
         return Err(TxProcessingError::InvalidParams(
@@ -135,6 +136,25 @@ async fn get_block<P: Provider>(provider: &P, num: u64) -> Result<Option<Block<T
         .map_err(|e| TxProcessingError::Rpc(e.into()))
 }
 
+fn extract_to_value(env: &TxEnvelope) -> Option<(Address, U256)> {
+    match env {
+        TxEnvelope::Legacy(inner) => match inner.tx().to {
+            TxKind::Call(to) => Some((to, inner.tx().value)),
+            TxKind::Create => None,
+        },
+        TxEnvelope::Eip2930(inner) => match inner.tx().to {
+            TxKind::Call(to) => Some((to, inner.tx().value)),
+            TxKind::Create => None,
+        },
+        TxEnvelope::Eip1559(inner) => match inner.tx().to {
+            TxKind::Call(to) => Some((to, inner.tx().value)),
+            TxKind::Create => None,
+        },
+        TxEnvelope::Eip4844(inner) => inner.tx().tx().to().map(|to| (to, inner.tx().tx().value())),
+        TxEnvelope::Eip7702(inner) => inner.tx().to().map(|to| (to, inner.tx().value())),
+    }
+}
+
 fn extract_tab_req(tx: &Transaction) -> Result<Option<(String, String)>> {
     // Skip if input is not valid UTF-8 instead of failing the whole scan.
     let s = match std::str::from_utf8(tx.inner.input()) {
@@ -156,9 +176,10 @@ fn to_payment_tx(
     req_id: String,
 ) -> Result<Option<PaymentTx>> {
     let from = tx.inner.signer();
-    let (to, amount) = match tx.inner.inner() {
-        TxEnvelope::Eip7702(inner) => (inner.tx().to, inner.tx().value),
-        _ => return Ok(None), // skip non-7702 transactions
+
+    let (to, amount) = match extract_to_value(tx.inner.inner()) {
+        Some(tv) => tv,
+        None => return Ok(None), // skip unknown types
     };
 
     Ok(Some(PaymentTx {
