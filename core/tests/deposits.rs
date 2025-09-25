@@ -4,7 +4,7 @@ use core_service::config::AppConfig;
 use core_service::error::PersistDbError;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
-use entities::{collateral_event, sea_orm_active_enums::CollateralEventType, user};
+use entities::{collateral_event, sea_orm_active_enums::*, tabs, user};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::str::FromStr;
@@ -374,5 +374,154 @@ async fn db_check_rejects_lowering_total_below_locked() -> anyhow::Result<()> {
     let after = load_user(&ctx, &user_addr).await;
     assert_eq!(U256::from_str(&after.collateral)?, U256::from(20u64));
     assert_eq!(U256::from_str(&after.locked_collateral)?, U256::from(7u64));
+    Ok(())
+}
+
+async fn make_user_with_locked(
+    ctx: &PersistCtx,
+    addr: &str,
+    total: U256,
+    locked: U256,
+) -> anyhow::Result<()> {
+    let now = Utc::now().naive_utc();
+    let am = user::ActiveModel {
+        address: Set(addr.to_string()),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+        collateral: Set(total.to_string()),
+        locked_collateral: Set(locked.to_string()),
+        ..Default::default()
+    };
+    user::Entity::insert(am)
+        .on_conflict(
+            OnConflict::column(user::Column::Address)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(ctx.db.as_ref())
+        .await?;
+    Ok(())
+}
+
+async fn make_tab(ctx: &PersistCtx, tab_id: &str, user_addr: &str) -> anyhow::Result<()> {
+    let now = Utc::now().naive_utc();
+    let am = tabs::ActiveModel {
+        id: Set(tab_id.to_string()),
+        user_address: Set(user_addr.to_string()),
+        server_address: Set("0xserver0000000000000000000000000000000000".to_string()),
+        start_ts: Set(now),
+        ttl: Set(60),
+        status: Set(entities::sea_orm_active_enums::TabStatus::Open),
+        settlement_status: Set(SettlementStatus::Pending),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    tabs::Entity::insert(am).exec(ctx.db.as_ref()).await?;
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = uuid::Uuid::new_v4().to_string();
+
+    // user: total 100, locked 40
+    make_user_with_locked(&ctx, &user_addr, U256::from(100u64), U256::from(40u64)).await?;
+    make_tab(&ctx, &tab_id, &user_addr).await?;
+
+    // unlock 25
+    repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(25u64)).await?;
+
+    // locked should now be 15
+    let u = user::Entity::find_by_id(&user_addr)
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(U256::from_str(&u.locked_collateral)?, U256::from(15u64));
+    // total collateral unchanged
+    assert_eq!(U256::from_str(&u.collateral)?, U256::from(100u64));
+
+    // tab should be Settled
+    let t = tabs::Entity::find_by_id(&tab_id)
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(t.settlement_status, SettlementStatus::Settled);
+
+    // an Unlock collateral event is recorded
+    let evs = collateral_event::Entity::find()
+        .filter(collateral_event::Column::UserAddress.eq(user_addr.clone()))
+        .all(ctx.db.as_ref())
+        .await?;
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].event_type, CollateralEventType::Unlock);
+    assert_eq!(U256::from_str(&evs[0].amount)?, U256::from(25u64));
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = uuid::Uuid::new_v4().to_string();
+
+    // start: 50 total, 20 locked
+    make_user_with_locked(&ctx, &user_addr, U256::from(50u64), U256::from(20u64)).await?;
+    make_tab(&ctx, &tab_id, &user_addr).await?;
+
+    // first unlock of 10
+    repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(10u64)).await?;
+    // second unlock of 10 should be a no-op (tab already Settled)
+    repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(10u64)).await?;
+
+    let u = user::Entity::find_by_id(&user_addr)
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    // locked should only be decreased once (20-10)
+    assert_eq!(U256::from_str(&u.locked_collateral)?, U256::from(10u64));
+
+    let evs = collateral_event::Entity::find()
+        .filter(collateral_event::Column::UserAddress.eq(user_addr.clone()))
+        .all(ctx.db.as_ref())
+        .await?;
+    // only one Unlock event was written
+    assert_eq!(evs.len(), 1);
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = uuid::Uuid::new_v4().to_string();
+
+    make_user_with_locked(&ctx, &user_addr, U256::from(30u64), U256::from(5u64)).await?;
+    make_tab(&ctx, &tab_id, &user_addr).await?;
+
+    // trying to unlock 10 when only 5 are locked must error
+    let err = repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(10u64))
+        .await
+        .expect_err("should fail unlocking more than locked");
+    match err {
+        PersistDbError::InvariantViolation(_) => { /* expected */ }
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    // locked collateral unchanged
+    let u = user::Entity::find_by_id(&user_addr)
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(U256::from_str(&u.locked_collateral)?, U256::from(5u64));
     Ok(())
 }
