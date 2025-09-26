@@ -1,0 +1,135 @@
+import json
+import os
+from pathlib import Path
+from web3 import Web3
+from web3.types import TxReceipt
+from dotenv import load_dotenv   # <-- NEW
+
+# ---------- Load environment variables ----------
+load_dotenv()  # reads .env file and loads variables into environment
+RPC_URL = os.getenv("RPC_URL")
+CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
+
+if not RPC_URL or not CONTRACT_ADDRESS:
+    raise EnvironmentError("RPC_URL and CONTRACT_ADDRESS must be set in .env")
+
+# ---------- Configuration ----------
+# Path to Forge artifact JSON
+artifact_path = (
+    Path(__file__).resolve().parent.parent
+    / "contracts"
+    / "out"
+    / "Core4Mica.sol"
+    / "Core4Mica.json"
+)
+print("artifact_path:", artifact_path)
+
+# ---------- Load ABI & bytecode ----------
+with open(artifact_path, "r", encoding="utf-8") as f:
+    artifact = json.load(f)
+ABI = artifact["abi"]
+print("ABI", ABI)
+
+# ---------- Web3 provider ----------
+w3 = Web3(Web3.HTTPProvider(RPC_URL))
+if not w3.is_connected():
+    raise ConnectionError(f"Cannot connect to RPC at {RPC_URL}")
+
+# Contract instance for interacting with a deployed Core4Mica
+Core4Mica = w3.eth.contract(
+    address=Web3.to_checksum_address(CONTRACT_ADDRESS),
+    abi=ABI
+)
+
+collateral, ts, amt = Core4Mica.functions.getUser(
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+).call()
+
+print("collateral:", collateral)
+print("withdrawal_request_timestamp:", ts)
+print("withdrawal_request_amount:", amt)
+
+# ---------- Helpers ----------
+def _send_tx(acct, tx):
+    signed = acct.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt: TxReceipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    return receipt
+
+def _build_base_tx(acct) -> dict:
+    latest_block = w3.eth.get_block("latest")
+    base_fee = latest_block.baseFeePerGas
+    priority_fee = w3.to_wei("2", "gwei")  # tip to validators
+    return {
+        "from": acct.address,
+        "nonce": w3.eth.get_transaction_count(acct.address),
+        "gas": 300_000,
+        "maxPriorityFeePerGas": priority_fee,
+        "maxFeePerGas": base_fee + priority_fee,
+    }
+
+# ---------- Core4Mica user-flow wrappers ----------
+def deposit(private_key: str, amount_eth: float) -> TxReceipt:
+    acct = w3.eth.account.from_key(private_key)
+    base_tx = _build_base_tx(acct)
+    base_tx["value"] = w3.to_wei(amount_eth, "ether")
+    tx = Core4Mica.functions.deposit().build_transaction(base_tx)
+    return _send_tx(acct, tx)
+
+def request_withdrawal(private_key: str, amount_eth: float) -> TxReceipt:
+    acct = w3.eth.account.from_key(private_key)
+    base_tx = _build_base_tx(acct)
+    tx = Core4Mica.functions.requestWithdrawal(
+        w3.to_wei(amount_eth, "ether")
+    ).build_transaction(base_tx)
+    return _send_tx(acct, tx)
+
+def cancel_withdrawal(private_key: str) -> TxReceipt:
+    acct = w3.eth.account.from_key(private_key)
+    base_tx = _build_base_tx(acct)
+    tx = Core4Mica.functions.cancelWithdrawal().build_transaction(base_tx)
+    return _send_tx(acct, tx)
+
+def finalize_withdrawal(private_key: str) -> TxReceipt:
+    acct = w3.eth.account.from_key(private_key)
+    base_tx = _build_base_tx(acct)
+    tx = Core4Mica.functions.finalizeWithdrawal().build_transaction(base_tx)
+    return _send_tx(acct, tx)
+
+from typing import Dict, Tuple
+from eth_typing import HexStr
+
+def remunerate(
+    private_key: str,
+    guarantee: Dict,
+    signature: Tuple[Tuple[HexStr, HexStr], Tuple[HexStr, HexStr]]
+) -> TxReceipt:
+    acct = w3.eth.account.from_key(private_key)
+    base_tx = _build_base_tx(acct)
+
+    # Guarantee struct as tuple, in the correct order
+    g_tuple = (
+        guarantee["tab_id"],
+        guarantee["tab_timestamp"],
+        guarantee["client"],
+        guarantee["recipient"],
+        guarantee["req_id"],
+        guarantee["amount"],
+    )
+
+    # Signature as required by BLS.G2Point: (X[2], Y[2])
+    sig_tuple = (
+        (signature[0][0], signature[0][1]),  # X
+        (signature[1][0], signature[1][1]),  # Y
+    )
+
+    tx = Core4Mica.functions.remunerate(g_tuple, sig_tuple).build_transaction(base_tx)
+    return _send_tx(acct, tx)
+
+
+def record_payment(private_key: str, tab_id: int, amount_wei: int) -> TxReceipt:
+    acct = w3.eth.account.from_key(private_key)
+    base_tx = _build_base_tx(acct)
+
+    tx = Core4Mica.functions.recordPayment(tab_id, amount_wei).build_transaction(base_tx)
+    return _send_tx(acct, tx)
