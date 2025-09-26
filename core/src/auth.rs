@@ -63,33 +63,26 @@ fn eip712_digest(
         struct PaymentGuarantee {
             address user;
             address recipient;
-            string  tabId;
-            uint64  reqId;
+            uint256  tabId;
+            uint256  reqId;
             uint256 amount;
             uint64  timestamp;
         }
     }
 
-    let req_id_u64 = claims
-        .req_id
-        .parse::<u64>()
-        .map_err(|_| ServiceError::InvalidParams("Invalid req_id".into()))?;
-
-    // Build the EIP-712 domain that matches what the service advertises
     let domain = eip712_domain!(
         name:     params.eip712_name.clone(),
         version:  params.eip712_version.clone(),
         chain_id: params.chain_id,
     );
 
-    // Fill the Solidity struct from the client-supplied claims
     let message = PaymentGuarantee {
         user: Address::from_str(&claims.user_address)
             .map_err(|_| ServiceError::InvalidParams("invalid user address".into()))?,
         recipient: Address::from_str(&claims.recipient_address)
             .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?,
-        tabId: claims.tab_id.clone(),
-        reqId: req_id_u64,
+        tabId: claims.tab_id,
+        reqId: claims.req_id,
         amount: claims.amount,
         timestamp: claims.timestamp,
     };
@@ -107,23 +100,18 @@ fn eip191_digest(
         struct PaymentGuarantee {
             address user;
             address recipient;
-            string tabId;
-            uint64 reqId;
+            uint256 tabId;
+            uint256 reqId;
             uint256 amount;
             uint64 timestamp;
         }
     }
 
-    let req_id_u64 = claims
-        .req_id
-        .parse::<u64>()
-        .map_err(|_| ServiceError::InvalidParams("Invalid req_id".into()))?;
-
     let data = PaymentGuarantee {
         user,
         recipient,
-        tabId: claims.tab_id.clone(),
-        reqId: req_id_u64,
+        tabId: claims.tab_id,
+        reqId: claims.req_id,
         amount: claims.amount,
         timestamp: claims.timestamp,
     }

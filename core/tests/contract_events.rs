@@ -33,6 +33,20 @@ fn fn_selector(sig: &str) -> FixedBytes<4> {
     FixedBytes::<4>::from([h[0], h[1], h[2], h[3]])
 }
 
+fn dummy_verification_key() -> (
+    FixedBytes<32>,
+    FixedBytes<32>,
+    FixedBytes<32>,
+    FixedBytes<32>,
+) {
+    (
+        FixedBytes::<32>::from([0u8; 32]),
+        FixedBytes::<32>::from([0u8; 32]),
+        FixedBytes::<32>::from([0u8; 32]),
+        FixedBytes::<32>::from([0u8; 32]),
+    )
+}
+
 //
 // ────────────────────── ENV INIT ──────────────────────
 //
@@ -88,7 +102,12 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
@@ -172,7 +191,12 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
@@ -277,7 +301,12 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
@@ -384,7 +413,12 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {
@@ -486,7 +520,12 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
 
     // Clean DB
     let persist_ctx = PersistCtx::new().await?;
@@ -521,7 +560,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     };
     let listener = start_listener(eth_config, persist_ctx.clone());
 
-    let tab_id = "1".to_string();
+    let tab_id = U256::ONE;
     let now = Utc::now().naive_utc();
     let user_addr = provider.default_signer_address().to_string();
 
@@ -557,7 +596,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
 
     // Insert only the tab
     let t_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.clone()),
+        id: Set(tab_id.to_string()),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
         start_ts: Set(now),
@@ -598,15 +637,28 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     let tab_ts = current_ts - overdue_delta;
 
     let g = Core4Mica::Guarantee {
-        tab_id: U256::from_str(&tab_id)?,
+        tab_id: tab_id,
         tab_timestamp: U256::from(tab_ts),
         client: user_addr.parse()?,
         recipient: user_addr.parse()?,
         req_id: U256::from(1u64),
         amount: U256::from(1000u64),
     };
-    let sig = [[0u8; 32].into(), [0u8; 32].into(), [0u8; 32].into()];
-
+    let sig: (
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+    ) = (
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+    );
     // Call remunerate
     contract.remunerate(g, sig).send().await?.watch().await?;
 
@@ -614,7 +666,7 @@ async fn recipient_remunerated_event_is_persisted() -> anyhow::Result<()> {
     let mut tries = 0;
     loop {
         let events = collateral_event::Entity::find()
-            .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
+            .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
             .all(persist_ctx.db.as_ref())
             .await?;
         if !events.is_empty() {
@@ -647,7 +699,12 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let me = provider.default_signer_address();
 
     // Map Core4Mica config functions to USER_ADMIN_ROLE = 4
@@ -672,7 +729,7 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
         .watch()
         .await?;
 
-    // Should now succeed and emit events
+    // Should now succeed and emit eSome(chrono::Utc::now().timestamp() as u64),vents
     contract
         .setWithdrawalGracePeriod(U256::from(30 * 24 * 60 * 60))
         .send()
@@ -714,7 +771,12 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
     // Deploy contracts
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     // Start the EthereumListener
@@ -837,7 +899,21 @@ async fn withdrawal_requested_vs_executed_amount_differs() -> anyhow::Result<()>
         req_id: U256::from(1u64),
         amount: U256::from(4_000_000_000_000_000_000u128), // 4 ETH
     };
-    let sig = [[0u8; 32].into(), [0u8; 32].into(), [0u8; 32].into()];
+    let sig: (
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+    ) = (
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+    );
     contract.remunerate(g, sig).send().await?.watch().await?;
 
     // Ensure we pass wr.timestamp + withdrawalGracePeriod.
@@ -909,7 +985,12 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     // Deploy contracts
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     // Listener config + DB
@@ -978,10 +1059,10 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     }
 
     // Insert the tab we’ll remunerate
-    let tab_id = "4242".to_string();
+    let tab_id = U256::from(4242u64);
     let now = chrono::Utc::now().naive_utc();
     let t_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.clone()),
+        id: Set(tab_id.to_string()),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
         start_ts: Set(now),
@@ -1009,7 +1090,21 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     let tab_ts = current_ts - overdue_delta;
 
     // First remuneration succeeds
-    let sig = [[0u8; 32].into(), [0u8; 32].into(), [0u8; 32].into()];
+    let sig: (
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+    ) = (
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+    );
     let g1 = Core4Mica::Guarantee {
         tab_id: U256::from(4242u64),
         tab_timestamp: U256::from(tab_ts),
@@ -1024,7 +1119,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
     let mut waited = 0u32;
     loop {
         let count = collateral_event::Entity::find()
-            .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
+            .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
             .all(persist_ctx.db.as_ref())
             .await?
             .len();
@@ -1041,7 +1136,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
 
     // Snapshot after the first event is surely ingested
     let before = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
+        .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
         .all(persist_ctx.db.as_ref())
         .await?
         .len();
@@ -1081,7 +1176,7 @@ async fn second_remuneration_for_same_tab_reverts_with_custom_error() -> anyhow:
 
     // Assert no additional DB row was written
     let after = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id.clone()))
+        .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
         .all(persist_ctx.db.as_ref())
         .await?
         .len();
@@ -1111,8 +1206,18 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     // Deploy two Core4Mica contracts
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract_a = Core4Mica::deploy(&provider, *access_manager.address()).await?;
-    let contract_b = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract_a = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
+    let contract_b = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     // Listener configured to only watch contract A.
@@ -1221,7 +1326,12 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     // Listener
@@ -1310,8 +1420,21 @@ async fn listener_survives_handler_error_and_keeps_processing() -> anyhow::Resul
         req_id: U256::from(1u64),
         amount: U256::from(123u64),
     };
-    let sig = [[0u8; 32].into(), [0u8; 32].into(), [0u8; 32].into()];
-
+    let sig: (
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+        FixedBytes<32>,
+    ) = (
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+        [0u8; 32].into(),
+    );
     // Submit + wait; contract emits event, our handler logs an error and should not persist anything for this tab
     contract.remunerate(g, sig).send().await?.watch().await?;
 
@@ -1372,7 +1495,12 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
-    let contract = Core4Mica::deploy(&provider, *access_manager.address()).await?;
+    let contract = Core4Mica::deploy(
+        &provider,
+        *access_manager.address(),
+        dummy_verification_key(),
+    )
+    .await?;
     let user_addr = provider.default_signer_address().to_string();
 
     let eth_config = EthereumConfig {

@@ -404,7 +404,7 @@ async fn make_user_with_locked(
     Ok(())
 }
 
-async fn make_tab(ctx: &PersistCtx, tab_id: &str, user_addr: &str) -> anyhow::Result<()> {
+async fn make_tab(ctx: &PersistCtx, tab_id: U256, user_addr: &str) -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
     let am = tabs::ActiveModel {
         id: Set(tab_id.to_string()),
@@ -428,14 +428,14 @@ async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> an
     let ctx = PersistCtx::new().await?;
 
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = uuid::Uuid::new_v4().to_string();
+    let tab_id = U256::from(0x7461622d6c6f77636f6c6c6174656eu128); // "tab-lowcoll" as bytes
 
     // user: total 100, locked 40
     make_user_with_locked(&ctx, &user_addr, U256::from(100u64), U256::from(40u64)).await?;
-    make_tab(&ctx, &tab_id, &user_addr).await?;
+    make_tab(&ctx, tab_id, &user_addr).await?;
 
     // unlock 25
-    repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(25u64)).await?;
+    repo::unlock_user_collateral(&ctx, tab_id, U256::from(25u64)).await?;
 
     // locked should now be 15
     let u = user::Entity::find_by_id(&user_addr)
@@ -447,7 +447,7 @@ async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> an
     assert_eq!(U256::from_str(&u.collateral)?, U256::from(100u64));
 
     // tab should be Settled
-    let t = tabs::Entity::find_by_id(&tab_id)
+    let t = tabs::Entity::find_by_id(tab_id.to_string())
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
@@ -470,16 +470,16 @@ async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::
     let ctx = PersistCtx::new().await?;
 
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = uuid::Uuid::new_v4().to_string();
+    let tab_id = U256::from(0x7461622d6c6f77636f6c6c6174656eu128); // "tab-lowcoll" as bytes
 
     // start: 50 total, 20 locked
     make_user_with_locked(&ctx, &user_addr, U256::from(50u64), U256::from(20u64)).await?;
-    make_tab(&ctx, &tab_id, &user_addr).await?;
+    make_tab(&ctx, tab_id, &user_addr).await?;
 
     // first unlock of 10
-    repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(10u64)).await?;
+    repo::unlock_user_collateral(&ctx, tab_id, U256::from(10u64)).await?;
     // second unlock of 10 should be a no-op (tab already Settled)
-    repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(10u64)).await?;
+    repo::unlock_user_collateral(&ctx, tab_id, U256::from(10u64)).await?;
 
     let u = user::Entity::find_by_id(&user_addr)
         .one(ctx.db.as_ref())
@@ -503,13 +503,13 @@ async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyho
     let ctx = PersistCtx::new().await?;
 
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = uuid::Uuid::new_v4().to_string();
+    let tab_id = U256::from(0x7461622d6c6f77636f6c6c6174656eu128);
 
     make_user_with_locked(&ctx, &user_addr, U256::from(30u64), U256::from(5u64)).await?;
-    make_tab(&ctx, &tab_id, &user_addr).await?;
+    make_tab(&ctx, tab_id, &user_addr).await?;
 
     // trying to unlock 10 when only 5 are locked must error
-    let err = repo::unlock_user_collateral(&ctx, tab_id.clone(), U256::from(10u64))
+    let err = repo::unlock_user_collateral(&ctx, tab_id, U256::from(10u64))
         .await
         .expect_err("should fail unlocking more than locked");
     match err {
