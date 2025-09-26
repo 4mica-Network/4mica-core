@@ -34,10 +34,11 @@ entities = { workspace = true }
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 bls-signatures = { workspace = true }
+sha2 = { workspace = true }
+
 [dev-dependencies]
 serial_test = { workspace = true }
 test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }
 chrono = { workspace = true }
 once_cell = "1.21.3"
-blstrs = "0.7.1"
