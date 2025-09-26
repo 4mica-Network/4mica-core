@@ -55,6 +55,21 @@ pub struct UserTransactionInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePaymentTabRequest {
+    pub user_address: String,
+    pub recipient_address: String,
+    // ttl in seconds
+    pub ttl: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePaymentTabResult {
+    pub id: String,
+    pub user_address: String,
+    pub recipient_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInfo {
     pub collateral: U256,
     pub available_collateral: U256,
