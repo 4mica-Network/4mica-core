@@ -25,7 +25,7 @@ use rpc::{
     common::*,
     core::{CoreApiServer, CorePublicParameters},
 };
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 use tokio::sync::RwLock;
 use tokio::{
     spawn,
@@ -138,15 +138,14 @@ impl CoreService {
             )
             .await?;
 
-            repo::unlock_user_collateral(&self.persist_ctx, ev.tab_id.clone(), amount).await?;
+            // tab_id is already U256 in PaymentTx
+            repo::unlock_user_collateral(&self.persist_ctx, ev.tab_id, amount).await?;
         }
         Ok(())
     }
 
     /// Spawn a background cron scheduler that periodically
     /// checks Ethereum and updates user collateral / tab status.
-    ///
-    /// Now takes &Arc<Self> directly, so we don't need clone_for_task anymore.
     pub fn monitor_transactions(self: &Arc<Self>) {
         let cron_expr = self.config.ethereum_config.cron_job_settings.clone();
         let num_blocks = self.config.ethereum_config.number_of_blocks_to_confirm;
@@ -220,23 +219,23 @@ impl CoreService {
         verify_promise_signature(&self.public_params, req)?;
 
         let promise = &req.claims;
-        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id)
+        // tab_id is now U256 in PaymentGuaranteeClaims
+        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, promise.tab_id)
             .await
             .map_err(ServiceError::from)?;
 
-        let cur_req_id = promise
-            .req_id
-            .parse::<u64>()
-            .map_err(|_| ServiceError::InvalidParams("Invalid req_id".into()))?;
-
+        let cur_req_id = promise.req_id;
         match last_opt {
             Some(ref last) => {
-                let prev_req_id = last
-                    .req_id
-                    .parse::<u64>()
-                    .map_err(|_| ServiceError::Other(anyhow!("Invalid previous req_id")))?;
+                let prev_req_id = U256::from_str(&last.req_id).map_err(|e| {
+                    ServiceError::InvalidParams(format!("Invalid prev_req_id: {}", e))
+                })?;
 
-                if cur_req_id.wrapping_sub(prev_req_id) != 1 {
+                if cur_req_id.wrapping_sub(prev_req_id) != U256::from(1u8) {
+                    info!(
+                        "Invalid req_id: current={}, previous={}",
+                        cur_req_id, prev_req_id
+                    );
                     return Err(ServiceError::InvalidRequestID);
                 }
 
@@ -251,7 +250,11 @@ impl CoreService {
                 }
             }
             None => {
-                if promise.req_id != "0" {
+                info!(
+                    "No previous guarantee found for tab_id={}. This must be the first request. req_id = {}",
+                    promise.tab_id, promise.req_id
+                );
+                if promise.req_id != U256::ZERO {
                     return Err(ServiceError::InvalidRequestID);
                 }
             }
@@ -267,9 +270,9 @@ impl CoreService {
             return Err(ServiceError::FutureTimestamp);
         }
 
-        let ttl_secs = match repo::get_tab_ttl_seconds(&self.persist_ctx, &promise.tab_id).await {
+        let ttl_secs = match repo::get_tab_ttl_seconds(&self.persist_ctx, promise.tab_id).await {
             Ok(ttl) => ttl,
-            Err(PersistDbError::TabNotFound(_)) if promise.req_id == "0" => {
+            Err(PersistDbError::TabNotFound(_)) if promise.req_id == U256::ZERO => {
                 let default_ttl: u64 = DEFAULT_TTL_SECS;
                 let start_ts = chrono::Utc
                     .timestamp_opt(promise.timestamp as i64, 0)
@@ -278,7 +281,7 @@ impl CoreService {
                     .naive_utc();
                 repo::create_tab(
                     &self.persist_ctx,
-                    &promise.tab_id,
+                    promise.tab_id,
                     &promise.user_address,
                     &promise.recipient_address,
                     start_ts,
@@ -291,7 +294,7 @@ impl CoreService {
             Err(e) => return Err(ServiceError::from(e)),
         };
 
-        if ttl_secs <= 0 {
+        if ttl_secs == 0 {
             return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
         }
 
@@ -335,6 +338,7 @@ impl CoreApiServer for CoreService {
         self.handle_promise(req).await.map_err(service_error_to_rpc)
     }
 }
+
 #[derive(Clone)]
 pub struct CoreServiceRpc(pub Arc<CoreService>);
 #[async_trait]

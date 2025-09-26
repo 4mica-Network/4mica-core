@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct PaymentGuaranteeClaims {
     pub user_address: String,
     pub recipient_address: String,
-    pub tab_id: String,
-    pub req_id: String,
+    pub tab_id: U256,
+    pub req_id: U256,
     pub amount: U256,
     pub timestamp: u64,
 }
