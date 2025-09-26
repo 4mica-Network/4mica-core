@@ -754,7 +754,7 @@ pub async fn bump_user_version(
     }
 }
 
-pub async fn create_tab(
+pub async fn create_pending_tab(
     ctx: &PersistCtx,
     tab_id: &str,
     user_address: &str,
@@ -770,7 +770,7 @@ pub async fn create_tab(
         server_address: Set(server_address.to_owned()),
         start_ts: Set(start_ts),
         ttl: Set(ttl),
-        status: Set(TabStatus::Open),
+        status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
@@ -778,6 +778,29 @@ pub async fn create_tab(
     };
 
     tabs::Entity::insert(new_tab).exec(ctx.db.as_ref()).await?;
+
+    Ok(())
+}
+
+pub async fn open_tab(
+    ctx: &PersistCtx,
+    tab_id: &str,
+    start_ts: chrono::NaiveDateTime,
+) -> Result<(), PersistDbError> {
+    let now = Utc::now().naive_utc();
+
+    // Idempotent update
+    tabs::Entity::update_many()
+        .filter(tabs::Column::Id.eq(tab_id.to_owned()))
+        .filter(tabs::Column::Status.eq(TabStatus::Pending))
+        .set(tabs::ActiveModel {
+            status: Set(TabStatus::Open),
+            start_ts: Set(start_ts),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(ctx.db.as_ref())
+        .await?;
 
     Ok(())
 }

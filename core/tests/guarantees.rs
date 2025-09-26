@@ -28,16 +28,25 @@ async fn insert_test_tab(
     user_address: String,
     recipient_address: String,
 ) -> anyhow::Result<()> {
-    // give a small default ttl (e.g. 300s) for tests
-    repo::create_tab(
-        ctx,
-        &id,
-        &user_address,
-        &recipient_address,
-        Utc::now().naive_utc(),
-        300,
-    )
-    .await?;
+    use sea_orm::ActiveValue::Set;
+    let now = Utc::now().naive_utc();
+    let new_tab = entities::tabs::ActiveModel {
+        id: Set(id.to_owned()),
+        user_address: Set(user_address.to_owned()),
+        server_address: Set(recipient_address.to_owned()),
+        start_ts: Set(now),
+        ttl: Set(300),
+        status: Set(entities::sea_orm_active_enums::TabStatus::Open),
+        settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+
+    entities::tabs::Entity::insert(new_tab)
+        .exec(ctx.db.as_ref())
+        .await?;
+
     Ok(())
 }
 
@@ -384,13 +393,11 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
     // recipient + tab
     let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
     let tab_id = Uuid::new_v4().to_string();
-    repo::create_tab(
+    insert_test_tab(
         &ctx,
-        &tab_id,
-        &user_addr,
-        &recipient_addr,
-        Utc::now().naive_utc(),
-        300,
+        tab_id.clone(),
+        user_addr.clone(),
+        recipient_addr.clone(),
     )
     .await?;
 
@@ -436,13 +443,11 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
 
     let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
     let tab_id = Uuid::new_v4().to_string();
-    repo::create_tab(
+    insert_test_tab(
         &ctx,
-        &tab_id,
-        &user_addr,
-        &recipient_addr,
-        Utc::now().naive_utc(),
-        300,
+        tab_id.clone(),
+        user_addr.clone(),
+        recipient_addr.clone(),
     )
     .await?;
 

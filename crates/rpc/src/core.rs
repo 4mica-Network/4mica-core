@@ -1,4 +1,7 @@
-use crate::{RpcResult, common::PaymentGuaranteeRequest};
+use crate::{
+    RpcResult,
+    common::{CreatePaymentTabRequest, CreatePaymentTabResult, PaymentGuaranteeRequest},
+};
 use crypto::bls::BLSCert;
 use jsonrpsee::proc_macros::rpc;
 use serde::{Deserialize, Serialize};
@@ -18,4 +21,10 @@ pub trait CoreApi {
 
     #[method(name = "issueGuarantee")]
     async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert>;
+
+    #[method(name = "createPaymentTab")]
+    async fn create_payment_tab(
+        &self,
+        req: CreatePaymentTabRequest,
+    ) -> RpcResult<CreatePaymentTabResult>;
 }
