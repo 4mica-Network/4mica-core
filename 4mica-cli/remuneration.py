@@ -1,16 +1,16 @@
 import json
 import os
 from dotenv import load_dotenv
-from core_4mica_client import w3, Core4Mica, remunerate  
 from eth_utils import to_checksum_address
-from py_ecc.bls import G2Basic as bls                    
 from web3 import Web3
+from py_ecc.bls.point_compression import decompress_G2
+
+from core_4mica_client import w3, Core4Mica, remunerate
 
 # =========================================================
 # Load environment variables
 # =========================================================
 load_dotenv()
-
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 RECIPIENT_ADDRESS = os.getenv("RECIPIENT_ADDRESS")
 if not PRIVATE_KEY or not RECIPIENT_ADDRESS:
@@ -24,11 +24,9 @@ RECIPIENT_ADDRESS = to_checksum_address(RECIPIENT_ADDRESS)
 # Helpers
 # =========================================================
 def eth_balance(addr):
-    """Return native ETH balance (in Ether)."""
     return w3.from_wei(w3.eth.get_balance(addr), "ether")
 
 def user_collateral(addr):
-    """Return the collateral locked in Core4Mica for a given address (in Ether)."""
     collateral, _, _ = Core4Mica.functions.getUser(addr).call()
     return w3.from_wei(collateral, "ether")
 
@@ -41,37 +39,51 @@ def print_info(title: str):
     print(f"Recipient ETH balance    : {eth_balance(RECIPIENT_ADDRESS)} ETH")
     print("=========================================")
 
-def decompress_g2_signature(sig_hex: str):
+def _fq_to_two_bytes32(val: int) -> tuple[str, str]:
     """
-    Decompress a 96-byte compressed BLS12-381 G2 signature into the
-    8 x bytes32 limbs expected by the Solidity contract.
-    Returns a tuple formatted exactly for core_4mica_client.remunerate():
-        ((x_c0_a, x_c0_b), (y_c0_a, y_c0_b))
+    Split a 381-bit FQ element into two bytes32 words:
+    - high 24 bytes (MSB) left-padded to 32 bytes
+    - low  24 bytes (LSB) left-padded to 32 bytes
+    """
+    b = val.to_bytes(48, "big")
+    hi = b[:24]
+    lo = b[24:]
+    return (
+        Web3.to_hex(hi.rjust(32, b"\x00")),
+        Web3.to_hex(lo.rjust(32, b"\x00")),
+    )
+
+def signature_bytes32x8_from_compressed(sig_hex: str):
+    """
+    Input: 96-byte compressed G2 signature as hex string
+    Output: flat tuple of 8×bytes32 (ABI-ready):
+      (x.c0_hi, x.c0_lo, x.c1_hi, x.c1_lo, y.c0_hi, y.c0_lo, y.c1_hi, y.c1_lo)
     """
     sig_bytes = bytes.fromhex(sig_hex)
+    if len(sig_bytes) != 96:
+        raise ValueError("BLS signature must be exactly 96 bytes (G2 compressed)")
 
-    # G2Basic._deserialize_g2 returns:
-    # ((x_c0, x_c1), (y_c0, y_c1)) where each is an Fq element (python int)
-    (x_c0, x_c1), (y_c0, y_c1) = bls._deserialize_g2(sig_bytes)
+    z1 = int.from_bytes(sig_bytes[:48], "big")
+    z2 = int.from_bytes(sig_bytes[48:], "big")
 
-    def fq_to_hex(val: int) -> str:
-        # Convert field element integer to 32-byte big-endian hex string
-        return Web3.to_hex(val.to_bytes(32, "big"))
+    x, y, _ = decompress_G2((z1, z2))  # x,y are FQ2; .coeffs = [c0, c1] as FQ (ints)
 
     return (
-        (fq_to_hex(x_c0), fq_to_hex(x_c1)),   # X coordinates
-        (fq_to_hex(y_c0), fq_to_hex(y_c1)),   # Y coordinates
+        *_fq_to_two_bytes32(x.coeffs[0]),
+        *_fq_to_two_bytes32(x.coeffs[1]),
+        *_fq_to_two_bytes32(y.coeffs[0]),
+        *_fq_to_two_bytes32(y.coeffs[1]),
     )
 
 # =========================================================
-# Load guarantee and decompress signature
+# Load guarantee and build ABI-ready signature
 # =========================================================
 with open("guarantee.json", "r", encoding="utf-8") as f:
     data = json.load(f)
 
-guarantee = data["guarantee"]
-sig_hex   = data["signature"]      # 96-byte compressed signature as hex string
-signature = decompress_g2_signature(sig_hex)
+guarantee = data["claims"]                   # expects keys: tab_id,timestamp,user_address,recipient_address,req_id,amount
+sig_hex   = data["bls_signature"]            # 96-byte compressed signature hex
+sig_tuple = signature_bytes32x8_from_compressed(sig_hex)  # -> 8×bytes32
 
 # =========================================================
 # Show info BEFORE remuneration
@@ -82,7 +94,7 @@ print_info("Balances BEFORE remuneration")
 # Execute remuneration transaction
 # =========================================================
 print("\n➡️  Sending remuneration transaction …")
-receipt = remunerate(PRIVATE_KEY, guarantee, signature)
+receipt = remunerate(PRIVATE_KEY, guarantee, sig_tuple)
 
 print("\n==== Remunerate confirmed ====")
 print("Tx hash :", receipt.transactionHash.hex())

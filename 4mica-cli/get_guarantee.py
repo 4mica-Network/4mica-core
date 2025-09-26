@@ -14,6 +14,7 @@ load_dotenv()
 
 PRIVATE_KEY       = os.getenv("PRIVATE_KEY")
 RPC_URL           = os.getenv("RPC_URL")
+API_URL           = os.getenv("API_URL", "http://localhost:3000")
 RECIPIENT_ADDRESS = os.getenv("RECIPIENT_ADDRESS") 
 
 if not PRIVATE_KEY or not RPC_URL or not RECIPIENT_ADDRESS:
@@ -35,14 +36,14 @@ timestamp = int(dt.timestamp())
 # =========================================================
 #  JSON-RPC helper
 # =========================================================
-def rpc_call(method: str, params=None):
+def api_call(method: str, params=None):
     payload = {
         "jsonrpc": "2.0",
         "id": str(uuid.uuid4()),
         "method": method,
         "params": params or []
     }
-    r = httpx.post(RPC_URL, json=payload)
+    r = httpx.post(API_URL, json=payload)
     r.raise_for_status()
     data = r.json()
     if "error" in data:
@@ -91,7 +92,7 @@ else:
 print("\n=======================================================")
 
 # 2️⃣ Off-chain API: get Core public params
-public_params = rpc_call("core_getPublicParams")
+public_params = api_call("core_getPublicParams")
 print("\n=== Core Public Parameters ===")
 print(json.dumps(public_params, indent=2))
 
@@ -147,7 +148,7 @@ payment_request = {
 }
 
 # 4️⃣ Request a BLS guarantee
-bls_cert = rpc_call("core_issueGuarantee", [payment_request])
+bls_cert = api_call("core_issueGuarantee", [payment_request])
 print("\n=== BLS Certificate ===")
 print(json.dumps(bls_cert, indent=2))
 
