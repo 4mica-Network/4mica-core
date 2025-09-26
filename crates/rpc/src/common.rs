@@ -58,6 +58,8 @@ pub struct UserTransactionInfo {
 pub struct CreatePaymentTabRequest {
     pub user_address: String,
     pub recipient_address: String,
+    // ttl in seconds
+    pub ttl: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

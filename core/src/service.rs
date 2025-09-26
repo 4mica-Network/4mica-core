@@ -330,13 +330,14 @@ impl CoreService {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
 
+        let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
         repo::create_pending_tab(
             &self.persist_ctx,
             &tab_id,
             &req.user_address,
             &req.recipient_address,
             now,
-            DEFAULT_TTL_SECS as i64,
+            ttl as i64,
         )
         .await?;
 
