@@ -18,7 +18,8 @@ log = { workspace = true }
 env_logger = { workspace = true }
 dotenv = { workspace = true }
 envconfig = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tokio-cron-scheduler = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server"] }
 hex = { workspace = true }
 alloy = { workspace = true, features = ["provider-ws"] }
