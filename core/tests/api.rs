@@ -12,7 +12,9 @@ use entities::guarantee;
 use hex;
 use rand::random;
 use rpc::{
-    common::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme},
+    common::{
+        CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme,
+    },
     core::{CoreApiClient, CorePublicParameters},
     proxy::RpcProxy,
 };
@@ -156,8 +158,8 @@ async fn issue_guarantee_rejects_insufficient_collateral() {
         &public_params,
         &user_addr,
         &recipient_addr,
-        U256::from(0x7461622d6c6f77636f6c6c6174656eu128), // "tab-lowcoll" as bytes
-        U256::from(0u64),
+        U256::from(0x7461622d6e6f636f6c6c61746572616cu128), // "tab-nocollateral" as bytes
+        U256::ZERO,
         U256::from(10u64), // request more than deposited
         &wallet,
         None,
@@ -184,16 +186,22 @@ async fn issue_guarantee_rejects_wrong_req_id_sequence() {
     let public_params = core_client.get_public_params().await.unwrap();
 
     // use a unique tab id so we never collide with data left by another test
-    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
-
+    let tab = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            ttl: None,
+        })
+        .await
+        .expect("create tab");
     // First request req_id=0 is OK
     let req0 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab_id,
-        U256::from(0u64),
-        U256::from(1u64),
+        tab.id,
+        U256::ZERO,
+        U256::ONE,
         &wallet,
         None,
     )
@@ -205,7 +213,7 @@ async fn issue_guarantee_rejects_wrong_req_id_sequence() {
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab_id,
+        tab.id,
         U256::from(2u64),
         U256::from(1u64),
         &wallet,
@@ -226,16 +234,22 @@ async fn issue_guarantee_rejects_modified_start_ts() {
     let user_addr = wallet.address().to_string();
     let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
-
     let public_params = core_client.get_public_params().await.unwrap();
-    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
+    let tab = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            ttl: None,
+        })
+        .await
+        .expect("create tab");
     // First request is OK
     let req0 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab_id,
-        U256::from(0u64),
+        tab.id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,
@@ -249,7 +263,7 @@ async fn issue_guarantee_rejects_modified_start_ts() {
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab_id,
+        tab.id,
         U256::from(1u64),
         U256::from(1u64),
         &wallet,
@@ -276,8 +290,8 @@ async fn issue_guarantee_rejects_unregistered_user() {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::from(0u64),
-        U256::from(1u64),
+        U256::ZERO,
+        U256::ONE,
         &wallet,
         None,
     )
@@ -298,14 +312,22 @@ async fn issue_two_sequential_guarantees_ok() {
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let public_params = core_client.get_public_params().await.unwrap();
-
+    let tab = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            ttl: Some(3600),
+        })
+        .await
+        .expect("create tab");
+    let tab_id = tab.id;
     // First req
     let req0 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
-        U256::from(0x7461622d6f6b32u128),
-        U256::from(0u64),
+        tab_id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         Some(chrono::Utc::now().timestamp() as u64),
@@ -318,23 +340,158 @@ async fn issue_two_sequential_guarantees_ok() {
         &public_params,
         &user_addr,
         &recipient_addr,
-        U256::from(0x7461622d6f6b32u128),
+        tab_id,
         U256::from(1u64),
         U256::from(1u64),
         &wallet,
         Some(chrono::Utc::now().timestamp() as u64),
     )
     .await;
-    core_client
-        .issue_guarantee(req1.clone())
-        .await
-        .expect("second ok");
+    let cert2 = core_client.issue_guarantee(req1).await.expect("second ok");
+
+    assert!(cert2.verify(&public_params.public_key).unwrap());
     let rows = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(req1.claims.tab_id.to_string()))
+        .filter(guarantee::Column::TabId.eq(tab.id.to_string()))
         .all(&*ctx.db)
         .await
         .unwrap();
     assert_eq!(rows.len(), 2);
+}
+
+/// Invalid: Tab not found
+#[test(tokio::test)]
+async fn issue_guarantee_rejects_when_tab_not_found() {
+    let (_, core_client, ctx) = setup_clean_db().await;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_id,
+        U256::ZERO,
+        U256::from(1u64),
+        &wallet,
+        None,
+    )
+    .await;
+
+    let result = core_client.issue_guarantee(req).await;
+    assert!(result.is_err(), "must reject if tab is not found");
+}
+
+/// Valid: Issue guarantee should open tab
+#[test(tokio::test)]
+async fn issue_guarantee_should_open_tab() {
+    let (_, core_client, ctx) = setup_clean_db().await;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
+
+    let tab_result = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            ttl: Some(3600),
+        })
+        .await
+        .expect("create tab");
+
+    let tab = repo::get_tab_by_id(&ctx, tab_result.id)
+        .await
+        .expect("get tab")
+        .expect("tab exists");
+    assert_eq!(
+        tab.status,
+        entities::sea_orm_active_enums::TabStatus::Pending
+    );
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_result.id,
+        U256::ZERO,
+        U256::ONE,
+        &wallet,
+        None,
+    )
+    .await;
+
+    core_client
+        .issue_guarantee(req)
+        .await
+        .expect("issue guarantee");
+
+    let tab = repo::get_tab_by_id(&ctx, tab_result.id)
+        .await
+        .expect("get tab")
+        .expect("tab exists");
+    assert_eq!(tab.status, entities::sea_orm_active_enums::TabStatus::Open);
+}
+
+/// Invalid: Invalid req_id when tab is still pending
+#[test(tokio::test)]
+async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() {
+    let (_, core_client, ctx) = setup_clean_db().await;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
+
+    let tab_result = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            ttl: None,
+        })
+        .await
+        .expect("create tab");
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_result.id,
+        U256::from(1u64), // invalid req_id, should be 0
+        U256::from(1u64),
+        &wallet,
+        None,
+    )
+    .await;
+
+    let result = core_client.issue_guarantee(req).await;
+    assert!(result.is_err(), "must reject if tab is pending");
+}
+
+/// Invalid: User not registered in DB
+#[test(tokio::test)]
+async fn create_tab_rejects_unregistered_user() {
+    let (_, core_client, _) = setup_clean_db().await;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+
+    let tab_result = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            ttl: None,
+        })
+        .await;
+    assert!(tab_result.is_err(), "must reject if user is not registered");
 }
 
 /// Build a valid EIP-712 signed request
@@ -473,7 +630,7 @@ async fn verify_eip191_signature_ok() {
         claims: PaymentGuaranteeClaims {
             user_address: user.to_string(),
             recipient_address: recipient.to_string(),
-            tab_id: tab, // <-- fixed
+            tab_id: tab,
             req_id: U256::from(0u64),
             amount: U256::from(1u64),
             timestamp,

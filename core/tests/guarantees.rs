@@ -9,7 +9,6 @@ use entities::{guarantee, user};
 use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
-
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
     Ok(AppConfig::fetch())
@@ -20,6 +19,11 @@ fn random_eth_address() -> String {
     format!("0x{:040x}", rand::random::<u128>())
 }
 
+// helper to build a random U256 id
+fn random_u256() -> U256 {
+    U256::from_be_bytes(rand::random::<[u8; 32]>())
+}
+
 // --- helper to insert a test tab using new repo::create_tab ---
 async fn insert_test_tab(
     ctx: &PersistCtx,
@@ -27,16 +31,25 @@ async fn insert_test_tab(
     user_address: String,
     recipient_address: String,
 ) -> anyhow::Result<()> {
-    // give a small default ttl (e.g. 300s) for tests
-    repo::create_tab(
-        ctx,
-        id,
-        &user_address,
-        &recipient_address,
-        Utc::now().naive_utc(),
-        300,
-    )
-    .await?;
+    use sea_orm::ActiveValue::Set;
+    let now = Utc::now().naive_utc();
+    let new_tab = entities::tabs::ActiveModel {
+        id: Set(id.to_string()),
+        user_address: Set(user_address.to_owned()),
+        server_address: Set(recipient_address.to_owned()),
+        start_ts: Set(now),
+        ttl: Set(300),
+        status: Set(entities::sea_orm_active_enums::TabStatus::Open),
+        settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+
+    entities::tabs::Entity::insert(new_tab)
+        .exec(ctx.db.as_ref())
+        .await?;
+
     Ok(())
 }
 
@@ -49,7 +62,7 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     // Tab & primary user
     let user_addr = random_eth_address();
     let recipient_addr = random_eth_address();
-    let tab_id = U256::from(rand::random::<u128>());
+    let tab_id = random_u256();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         collateral: Set("0".into()),
@@ -67,11 +80,12 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     // Unknown addresses that should be auto-created
     let from_addr = random_eth_address();
     let to_addr = random_eth_address();
+    let req_id = random_u256();
 
     repo::store_guarantee_on(
         ctx.db.as_ref(),
         tab_id,
-        U256::from(42u64),
+        req_id,
         from_addr.clone(),
         to_addr.clone(),
         U256::from(42u64),
@@ -101,8 +115,8 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     let now = Utc::now().naive_utc();
 
-    let tab_id = U256::from(rand::random::<u128>());
-    let req_id = U256::from(1u64);
+    let tab_id = random_u256();
+    let req_id = random_u256();
     let from_addr = random_eth_address();
     let to_addr = random_eth_address();
 
@@ -178,7 +192,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let cert = repo::get_guarantee(&ctx, U256::from(0u64), U256::from(0u64)).await?;
+    let cert = repo::get_guarantee(&ctx, random_u256(), random_u256()).await?;
     assert!(cert.is_none());
     Ok(())
 }
@@ -206,7 +220,7 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
         .await?;
-    let tab_id = U256::from(rand::random::<u128>());
+    let tab_id = random_u256();
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     // two guarantees with increasing req_id and later created_at
@@ -238,7 +252,7 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
     let last = last.unwrap();
-    assert_eq!(last.req_id, "2");
+    assert_eq!(last.req_id, U256::from(2u64).to_string());
     assert_eq!(last.value, U256::from(20u64).to_string());
     Ok(())
 }
@@ -264,7 +278,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
         .await?;
-    let tab_id = U256::from(rand::random::<u128>());
+    let tab_id = random_u256();
 
     // direct insert to control ttl value
     let tab_am = entities::tabs::ActiveModel {
@@ -288,7 +302,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     assert_eq!(ttl, 123);
 
     // missing tab → Err
-    let missing = repo::get_tab_ttl_seconds(&ctx, U256::from(999u64)).await;
+    let missing = repo::get_tab_ttl_seconds(&ctx, random_u256()).await;
     assert!(missing.is_err());
 
     Ok(())
@@ -315,14 +329,14 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
         .await?;
-    let tab_id = U256::from(rand::random::<u128>());
+    let tab_id = random_u256();
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     // Insert two guarantees with different req_ids
     repo::store_guarantee_on(
         ctx.db.as_ref(),
         tab_id,
-        U256::from(1u64),
+        U256::from(0xA),
         user_addr.clone(),
         random_eth_address(),
         U256::from(10u64),
@@ -333,7 +347,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     repo::store_guarantee_on(
         ctx.db.as_ref(),
         tab_id,
-        U256::from(2u64),
+        U256::from(0xB),
         user_addr,
         random_eth_address(),
         U256::from(20u64),
@@ -342,11 +356,11 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     )
     .await?;
 
-    // The function should return the row with req_id = "B"
+    // The function should return the row with req_id = 0xB
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
     let last = last.unwrap();
-    assert_eq!(last.req_id, "2");
+    assert_eq!(last.req_id, U256::from(0xB).to_string());
     assert_eq!(last.value, U256::from(20u64).to_string());
 
     Ok(())
@@ -364,20 +378,12 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
 
     // recipient + tab
     let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = U256::from(rand::random::<u128>());
-    repo::create_tab(
-        &ctx,
-        tab_id,
-        &user_addr,
-        &recipient_addr,
-        Utc::now().naive_utc(),
-        300,
-    )
-    .await?;
+    let tab_id = random_u256();
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     // build a minimal PaymentGuaranteeClaims and dummy cert
     let promise = PaymentGuaranteeClaims {
-        tab_id: tab_id,
+        tab_id,
         req_id: U256::from(0u64),
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
@@ -416,20 +422,12 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     repo::deposit(&ctx, user_addr.clone(), U256::from(50u64)).await?;
 
     let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = U256::from(rand::random::<u128>());
-    repo::create_tab(
-        &ctx,
-        tab_id,
-        &user_addr,
-        &recipient_addr,
-        Utc::now().naive_utc(),
-        300,
-    )
-    .await?;
+    let tab_id = random_u256();
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     let promise = PaymentGuaranteeClaims {
-        tab_id: tab_id,
-        req_id: U256::from(1u64),
+        tab_id,
+        req_id: random_u256(),
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         amount: U256::from(10u64),
@@ -451,7 +449,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     // no guarantee row inserted
     let g = entities::guarantee::Entity::find()
         .filter(entities::guarantee::Column::TabId.eq(tab_id.to_string()))
-        .filter(entities::guarantee::Column::ReqId.eq("bad-ts"))
+        .filter(entities::guarantee::Column::ReqId.eq(promise.req_id.to_string()))
         .one(ctx.db.as_ref())
         .await?;
     assert!(g.is_none());
