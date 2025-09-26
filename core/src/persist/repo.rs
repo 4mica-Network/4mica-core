@@ -90,9 +90,9 @@ pub async fn deposit(
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                // 🔒 Must exist
+                // Must exist
+                ensure_user_exists_on(txn, &user_address).await?;
                 let u = get_user_on(txn, &user_address).await?;
-
                 let current_collateral = U256::from_str(&u.collateral)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
