@@ -762,6 +762,8 @@ pub async fn create_pending_tab(
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
 ) -> Result<(), PersistDbError> {
+    get_user(ctx, user_address).await?;
+
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();
     let new_tab = tabs::ActiveModel {
