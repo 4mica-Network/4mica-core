@@ -346,7 +346,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
     let last = last.unwrap();
-    assert_eq!(last.req_id, "B");
+    assert_eq!(last.req_id, "2");
     assert_eq!(last.value, U256::from(20u64).to_string());
 
     Ok(())

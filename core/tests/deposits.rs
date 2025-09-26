@@ -428,7 +428,7 @@ async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> an
     let ctx = PersistCtx::new().await?;
 
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = U256::from(0x7461622d6c6f77636f6c6c6174656eu128); // "tab-lowcoll" as bytes
+    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>()); // "tab-lowcoll" as bytes
 
     // user: total 100, locked 40
     make_user_with_locked(&ctx, &user_addr, U256::from(100u64), U256::from(40u64)).await?;
@@ -470,7 +470,7 @@ async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::
     let ctx = PersistCtx::new().await?;
 
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = U256::from(0x7461622d6c6f77636f6c6c6174656eu128); // "tab-lowcoll" as bytes
+    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>()); // "tab-lowcoll" as bytes
 
     // start: 50 total, 20 locked
     make_user_with_locked(&ctx, &user_addr, U256::from(50u64), U256::from(20u64)).await?;
@@ -503,7 +503,7 @@ async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyho
     let ctx = PersistCtx::new().await?;
 
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
-    let tab_id = U256::from(0x7461622d6c6f77636f6c6c6174656eu128);
+    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
 
     make_user_with_locked(&ctx, &user_addr, U256::from(30u64), U256::from(5u64)).await?;
     make_tab(&ctx, tab_id, &user_addr).await?;
