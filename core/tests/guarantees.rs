@@ -34,7 +34,7 @@ async fn insert_test_tab(
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();
     let new_tab = entities::tabs::ActiveModel {
-        id: Set(id.to_string()),
+        id: Set(format!("{:#x}", id)),
         user_address: Set(user_address.to_owned()),
         server_address: Set(recipient_address.to_owned()),
         start_ts: Set(now),
@@ -135,7 +135,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 
     // manual insert to control TTL etc.
     let tab_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.to_string()),
+        id: Set(format!("{:#x}", tab_id)),
         user_address: Set(from_addr.clone()),
         server_address: Set(from_addr.clone()),
         start_ts: Set(now),
@@ -178,8 +178,8 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 
     // ── Verify only the first value persisted ──
     let g = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(tab_id.to_string()))
-        .filter(guarantee::Column::ReqId.eq(req_id.to_string()))
+        .filter(guarantee::Column::TabId.eq(format!("{:#x}", tab_id)))
+        .filter(guarantee::Column::ReqId.eq(format!("{:#x}", req_id)))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
@@ -252,7 +252,7 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
     let last = last.unwrap();
-    assert_eq!(last.req_id, U256::from(2u64).to_string());
+    assert_eq!(last.req_id, "0x2");
     assert_eq!(last.value, U256::from(20u64).to_string());
     Ok(())
 }
@@ -282,7 +282,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
 
     // direct insert to control ttl value
     let tab_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.to_string()),
+        id: Set(format!("{:#x}", tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr),
         start_ts: Set(now),
@@ -360,7 +360,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
     let last = last.unwrap();
-    assert_eq!(last.req_id, U256::from(0xB).to_string());
+    assert_eq!(last.req_id, "0xb");
     assert_eq!(last.value, U256::from(20u64).to_string());
 
     Ok(())
@@ -404,8 +404,8 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
 
     // check guarantee row inserted
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(tab_id.to_string()))
-        .filter(entities::guarantee::Column::ReqId.eq(U256::from(0u64).to_string()))
+        .filter(entities::guarantee::Column::TabId.eq(format!("{:#x}", tab_id)))
+        .filter(entities::guarantee::Column::ReqId.eq(format!("{:#x}", promise.req_id)))
         .one(ctx.db.as_ref())
         .await?;
     assert!(g.is_some());
@@ -448,8 +448,8 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
 
     // no guarantee row inserted
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(tab_id.to_string()))
-        .filter(entities::guarantee::Column::ReqId.eq(promise.req_id.to_string()))
+        .filter(entities::guarantee::Column::TabId.eq(format!("{:#x}", tab_id)))
+        .filter(entities::guarantee::Column::ReqId.eq(format!("{:#x}", promise.req_id)))
         .one(ctx.db.as_ref())
         .await?;
     assert!(g.is_none());

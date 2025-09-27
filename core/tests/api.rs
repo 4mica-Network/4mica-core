@@ -327,7 +327,7 @@ async fn issue_two_sequential_guarantees_ok() {
 
     assert!(cert2.verify(&public_params.public_key).unwrap());
     let rows = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(tab.id.to_string()))
+        .filter(guarantee::Column::TabId.eq(format!("{:#x}", tab_id)))
         .all(&*ctx.db)
         .await
         .unwrap();

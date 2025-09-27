@@ -40,7 +40,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
 
     let tab_id = U256::from(rand::random::<u128>());
     let tab_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.to_string()),
+        id: Set(format!("{:#x}", tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
         start_ts: Set(now),
@@ -62,7 +62,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
 
     // Event recorded once
     let events = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
+        .filter(collateral_event::Column::TabId.eq(format!("{:#x}", tab_id)))
         .all(ctx.db.as_ref())
         .await?;
     assert_eq!(events.len(), 1);
@@ -73,7 +73,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     );
 
     // Status flipped to Settled
-    let tab = tabs::Entity::find_by_id(tab_id.to_string())
+    let tab = tabs::Entity::find_by_id(format!("{:#x}", tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
@@ -122,7 +122,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
 
     let tab_id = U256::from(rand::random::<u128>());
     let tab_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.to_string()),
+        id: Set(format!("{:#x}", tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
         start_ts: Set(now),
@@ -144,7 +144,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
 
     // Event recorded exactly once with amount 0
     let events = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
+        .filter(collateral_event::Column::TabId.eq(format!("{:#x}", tab_id)))
         .all(ctx.db.as_ref())
         .await?;
     assert_eq!(events.len(), 1);
@@ -152,7 +152,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
     assert_eq!(events[0].amount, U256::ZERO.to_string());
 
     // Status is Settled; collateral unchanged (still 0)
-    let tab = tabs::Entity::find_by_id(tab_id.to_string())
+    let tab = tabs::Entity::find_by_id(format!("{:#x}", tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
@@ -189,7 +189,7 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
 
     let tab_id = U256::from(rand::random::<u128>());
     let tab_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.to_string()),
+        id: Set(format!("{:#x}", tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
         start_ts: Set(now),
@@ -212,14 +212,14 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
     repo::remunerate_recipient(&ctx, tab_id, U256::from(20u64)).await?;
 
     let events = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
+        .filter(collateral_event::Column::TabId.eq(format!("{:#x}", tab_id)))
         .all(ctx.db.as_ref())
         .await?;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].amount, U256::from(10u64).to_string());
 
     // Status is Settled and collateral was debited once (to 0)
-    let tab = tabs::Entity::find_by_id(tab_id.to_string())
+    let tab = tabs::Entity::find_by_id(format!("{:#x}", tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
@@ -260,7 +260,7 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
 
     let tab_id = U256::from(rand::random::<u128>());
     let tab_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.to_string()),
+        id: Set(format!("{:#x}", tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
         start_ts: Set(now),
@@ -282,13 +282,13 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
 
     // No event
     let events = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
+        .filter(collateral_event::Column::TabId.eq(format!("{:#x}", tab_id)))
         .all(ctx.db.as_ref())
         .await?;
     assert_eq!(events.len(), 0);
 
     // Status still Pending and collateral still 5
-    let tab = tabs::Entity::find_by_id(tab_id.to_string())
+    let tab = tabs::Entity::find_by_id(format!("{:#x}", tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
@@ -326,7 +326,7 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
 
     let tab_id = U256::from(rand::random::<u128>());
     let tab_am = entities::tabs::ActiveModel {
-        id: Set(tab_id.to_string()),
+        id: Set(format!("{:#x}", tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
         start_ts: Set(now),
@@ -356,13 +356,13 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
 
     // Exactly one event
     let events = collateral_event::Entity::find()
-        .filter(collateral_event::Column::TabId.eq(tab_id.to_string()))
+        .filter(collateral_event::Column::TabId.eq(format!("{:#x}", tab_id)))
         .all(ctx.db.as_ref())
         .await?;
     assert_eq!(events.len(), 1);
 
     // Status is Settled and collateral debited once
-    let tab = tabs::Entity::find_by_id(tab_id.to_string())
+    let tab = tabs::Entity::find_by_id(format!("{:#x}", tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
