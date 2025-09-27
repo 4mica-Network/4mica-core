@@ -314,7 +314,7 @@ impl CoreService {
             promise.tab_id, promise.req_id, promise.amount
         );
         self.preflight_promise_checks(&req).await?;
-        let cert = self.create_bls_cert(promise.clone()).await?;
+        let cert: BLSCert = self.create_bls_cert(promise.clone()).await?;
 
         repo::lock_and_store_guarantee(&self.persist_ctx, &promise, &cert)
             .await

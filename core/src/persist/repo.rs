@@ -9,15 +9,15 @@ use entities::{
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     tabs, user, user_transaction, withdrawal,
 };
+use log::info;
 use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
-use std::str::FromStr;
-
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
 };
+use std::str::FromStr;
 //
 // ────────────────────── USER FUNCTIONS ──────────────────────
 //
@@ -682,6 +682,7 @@ pub async fn get_last_guarantee_for_tab(
     ctx: &PersistCtx,
     tab_id: U256,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
+    info!("Fetching last guarantee for tab {:#x}", tab_id);
     let row = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(format!("{:#x}", tab_id)))
         .order_by_desc(guarantee::Column::ReqId)
@@ -777,6 +778,7 @@ pub async fn create_pending_tab(
         updated_at: Set(now),
         ..Default::default()
     };
+    info!("Creating new pending tab {}", new_tab.id.as_ref());
 
     tabs::Entity::insert(new_tab).exec(ctx.db.as_ref()).await?;
 
