@@ -1,10 +1,11 @@
+#!/usr/bin/env python3
 import time, json, uuid, httpx, os, binascii
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
 from py_ecc.bls import G2Basic as bls
-from datetime import datetime, timezone
 from core_4mica_client import w3, Core4Mica
 
 # =========================================================
@@ -14,8 +15,8 @@ load_dotenv()
 
 PRIVATE_KEY       = os.getenv("PRIVATE_KEY")
 RPC_URL           = os.getenv("RPC_URL")
-OPERATOR_URL           = os.getenv("OPERATOR_URL", "http://localhost:3000")
-RECIPIENT_ADDRESS = os.getenv("RECIPIENT_ADDRESS") 
+OPERATOR_URL      = os.getenv("OPERATOR_URL", "http://localhost:3000")
+RECIPIENT_ADDRESS = os.getenv("RECIPIENT_ADDRESS")
 
 if not PRIVATE_KEY or not RPC_URL or not RECIPIENT_ADDRESS:
     raise EnvironmentError(
@@ -24,14 +25,8 @@ if not PRIVATE_KEY or not RPC_URL or not RECIPIENT_ADDRESS:
 
 acct = w3.eth.account.from_key(PRIVATE_KEY)
 USER_ADDR = acct.address
-print(f"Using USER_ADDR: {USER_ADDR}")
-# Convert to checksummed address (EIP-55)
 RECIPIENT_ADDRESS = to_checksum_address(RECIPIENT_ADDRESS)
-
-# Your date/time string
-dt_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-timestamp = int(dt.timestamp())
+print(f"Using USER_ADDR: {USER_ADDR}")
 
 # =========================================================
 #  JSON-RPC helper
@@ -50,13 +45,11 @@ def api_call(method: str, params=None):
         raise RuntimeError(data["error"])
     return data["result"]
 
-
 # =========================================================
 #  Helper functions
 # =========================================================
 def eth_balance(addr):
     return w3.from_wei(w3.eth.get_balance(addr), "ether")
-
 
 def log_receipt(action: str, receipt):
     print(f"\n==== {action} confirmed ====")
@@ -69,7 +62,6 @@ def log_receipt(action: str, receipt):
     print(f"Etherscan link   : https://holesky.etherscan.io/tx/{receipt.transactionHash.hex()}")
     print("================================\n")
 
-
 # =========================================================
 #  Main flow
 # =========================================================
@@ -81,35 +73,40 @@ print("=======================================================\n")
 # 1️⃣ Query on-chain user data
 print("➡️  Reading on-chain user data via getUser() …")
 collateral, w_timestamp, w_amount = Core4Mica.functions.getUser(USER_ADDR).call()
-
 print(f"Collateral locked  : {w3.from_wei(collateral, 'ether')} ETH")
 if w_timestamp > 0:
-    print("Withdrawal request : YES")
-    print(f"  • request time   : {w_timestamp}")
-    print(f"  • amount         : {w3.from_wei(w_amount, 'ether')} ETH")
+    print(f"Withdrawal request : YES ({w3.from_wei(w_amount, 'ether')} ETH)")
 else:
     print("Withdrawal request : NO")
 print("\n=======================================================")
 
-# 2️⃣ Off-chain API: get Core public params
+# 2️⃣ Get public params from the operator
 public_params = api_call("core_getPublicParams")
 print("\n=== Core Public Parameters ===")
 print(json.dumps(public_params, indent=2))
 
-# 3️⃣ Build & sign a PaymentGuaranteeRequest (EIP-712)
+# 3️⃣ Create a payment tab FIRST (important!)
+print("\n➡️  Creating a new payment tab …")
+create_req = {
+    "user_address": USER_ADDR,
+    "recipient_address": RECIPIENT_ADDRESS,
+}
+new_tab = api_call("core_createPaymentTab", [create_req])
+tab_id = new_tab["id"]
+print(f"✅ New tab created with id: {tab_id}")
 
-# 👉 Use the tab_id returned by createPaymentTab (decimal string or int).  
-REQ_ID_INT = 0             # first request for a new tab must be 0 (U256 zero)
-AMOUNT_WEI_INT = 2_000_000_000_000_000  # 0.002 ETH example
+# 4️⃣ Build & sign a PaymentGuaranteeRequest (EIP-712)
+timestamp = int(datetime.now(timezone.utc).timestamp())
+REQ_ID_INT      = 0                      # first request for a new tab is 0
+AMOUNT_WEI_INT  = 200_000_000_000_000_000 # 0.2 ETH
 
-# Claims you send to the server (U256 often serialized as decimal strings is OK)
 claims = {
     "user_address": USER_ADDR,
     "recipient_address": RECIPIENT_ADDRESS,
-    "tab_id": "0xb19cf82e73878321fd058799b65b71e2ebd63e31be330c88f52ab746b6ba4a9b",   # server accepts U256 as decimal string
-    "req_id": str(REQ_ID_INT),   # U256 as decimal string
+    "tab_id": tab_id,
+    "req_id": str(REQ_ID_INT),
     "amount": str(AMOUNT_WEI_INT),
-    "timestamp": timestamp,      # u64
+    "timestamp": timestamp,
 }
 
 typed_data = {
@@ -119,7 +116,7 @@ typed_data = {
             {"name": "version", "type": "string"},
             {"name": "chainId", "type": "uint256"},
         ],
-        "PaymentGuarantee": [    # ← must match `sol! { struct PaymentGuarantee { ... } }`
+        "PaymentGuarantee": [
             {"name": "user", "type": "address"},
             {"name": "recipient", "type": "address"},
             {"name": "tabId", "type": "uint256"},
@@ -128,7 +125,7 @@ typed_data = {
             {"name": "timestamp", "type": "uint64"},
         ],
     },
-    "primaryType": "PaymentGuarantee",   # ← same here
+    "primaryType": "PaymentGuarantee",
     "domain": {
         "name": public_params["eip712_name"],
         "version": public_params["eip712_version"],
@@ -137,50 +134,49 @@ typed_data = {
     "message": {
         "user": USER_ADDR,
         "recipient": RECIPIENT_ADDRESS,
-        "tabId": "0xb19cf82e73878321fd058799b65b71e2ebd63e31be330c88f52ab746b6ba4a9b",
+        "tabId": tab_id,
         "reqId": REQ_ID_INT,
         "amount": AMOUNT_WEI_INT,
         "timestamp": timestamp,
     },
 }
 
-
 msg = encode_typed_data(full_message=typed_data)
 signed = Account.sign_message(msg, private_key=PRIVATE_KEY)
 
 payment_request = {
-    "claims": claims,                 # the same dict above (strings for U256 are fine)
+    "claims": claims,
     "signature": signed.signature.hex(),
     "scheme": "eip712"
 }
 
-
-# 4️⃣ Request a BLS guarantee
+# 5️⃣ Request a BLS guarantee
+print("\n➡️  Requesting BLS guarantee …")
 bls_cert = api_call("core_issueGuarantee", [payment_request])
 print("\n=== BLS Certificate ===")
 print(json.dumps(bls_cert, indent=2))
 
-# 5️⃣ Verify the BLS certificate with the public key
+# 6️⃣ Verify the BLS certificate off-chain
+# 6️⃣ Verify the BLS certificate off-chain
 print("\n➡️  Verifying BLS certificate …")
-pubkey = bytes(public_params["public_key"])
-sig = bytes.fromhex(bls_cert["signature"])
+
+# public_params["public_key"] is a hex string (e.g. "aabbcc…")
+pubkey = bytes.fromhex(public_params["public_key"])   # <-- FIXED
+sig    = bytes.fromhex(bls_cert["signature"])         # already hex
 message_bytes = binascii.unhexlify(bls_cert["claims"])
+
 if bls.Verify(pubkey, message_bytes, sig):
     print("✅  BLS signature is VALID")
 else:
     print("❌  BLS signature is INVALID")
 
-print("\n=======================================================")
-# 6️⃣ Save the guarantee (claims + BLS signature) to a JSON file
-guarantee_file = f"guarantee.json"
-
+# 7️⃣ Save the guarantee for later remuneration
+guarantee_file = "guarantee.json"
 guarantee_payload = {
-    "claims": claims,                    # the same claims dict
-    "tab_timestamp": claims["timestamp"],# for convenience in remuneration
-    "bls_signature": bls_cert["signature"]  # hex string of BLS signature
+    "claims": claims,
+    "tab_timestamp": claims["timestamp"],
+    "bls_signature": bls_cert["signature"],
 }
-
 with open(guarantee_file, "w", encoding="utf-8") as f:
     json.dump(guarantee_payload, f, indent=2)
-
 print(f"\n✅ Guarantee saved to {guarantee_file}")

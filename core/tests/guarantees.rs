@@ -391,7 +391,16 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
         amount: U256::from(40u64),
         timestamp: Utc::now().timestamp() as u64,
     };
-    let cert = BLSCert::new(&config.secrets.bls_private_key, promise.clone())?;
+
+    let cert = BLSCert::new(
+        config.secrets.bls_private_key.as_ref(),
+        promise.tab_id,
+        promise.req_id,
+        &promise.user_address,
+        &promise.recipient_address,
+        promise.amount,
+        promise.timestamp,
+    )?;
 
     // --- call the new atomic repo method ---
     repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
@@ -435,7 +444,16 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
         // deliberately invalid: chrono cannot represent this
         timestamp: i64::MAX as u64,
     };
-    let cert = BLSCert::new(&config.secrets.bls_private_key, promise.clone())?;
+
+    let cert = BLSCert::new(
+        config.secrets.bls_private_key.as_ref(),
+        promise.tab_id,
+        promise.req_id,
+        &promise.user_address,
+        &promise.recipient_address,
+        promise.amount,
+        promise.timestamp,
+    )?;
 
     let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));
