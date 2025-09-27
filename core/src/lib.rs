@@ -4,4 +4,4 @@ pub mod error;
 pub mod ethereum;
 pub mod persist;
 pub mod service;
-mod util;
+pub mod util;

@@ -1,4 +1,4 @@
-use std::str;
+use std::str::FromStr;
 
 use log::{debug, info};
 
@@ -20,8 +20,8 @@ pub struct PaymentTx {
     pub from: Address,
     pub to: Address,
     pub amount: U256,
-    pub tab_id: String,
-    pub req_id: String,
+    pub tab_id: U256,
+    pub req_id: U256,
 }
 
 /// Fetch a transaction by hash.
@@ -151,16 +151,23 @@ fn extract_to_value(env: &TxEnvelope) -> Option<(Address, U256)> {
     }
 }
 
-fn extract_tab_req(tx: &Transaction) -> Result<Option<(String, String)>> {
+fn extract_tab_req(tx: &Transaction) -> Result<Option<(U256, U256)>> {
     // Skip if input is not valid UTF-8 instead of failing the whole scan.
     let s = match std::str::from_utf8(tx.inner.input()) {
         Ok(s) => s,
         Err(_) => return Ok(None),
     };
+
     let tab = s.split(';').find_map(|p| p.strip_prefix("tab_id:"));
     let req = s.split(';').find_map(|p| p.strip_prefix("req_id:"));
+
     Ok(match (tab, req) {
-        (Some(t), Some(r)) => Some((t.to_string(), r.to_string())),
+        (Some(t), Some(r)) => {
+            // parse both as 256-bit integers
+            let t_u256 = U256::from_str(t).map_err(|_| anyhow::anyhow!("invalid tab_id: {t}"))?;
+            let r_u256 = U256::from_str(r).map_err(|_| anyhow::anyhow!("invalid req_id: {r}"))?;
+            Some((t_u256, r_u256))
+        }
         _ => None,
     })
 }
@@ -168,8 +175,8 @@ fn extract_tab_req(tx: &Transaction) -> Result<Option<(String, String)>> {
 fn to_payment_tx(
     tx: &Transaction,
     block_number: u64,
-    tab_id: String,
-    req_id: String,
+    tab_id: U256,
+    req_id: U256,
 ) -> Result<Option<PaymentTx>> {
     let from = tx.inner.signer();
 
