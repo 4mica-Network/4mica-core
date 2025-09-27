@@ -52,7 +52,8 @@ pub struct CoreService {
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        let public_key = crypto::bls::pub_key_from_priv_key(&config.secrets.bls_private_key)?;
+        let ikm: &[u8] = config.secrets.bls_private_key.as_ref();
+        let public_key = crypto::bls::pub_key_from_priv_key(ikm)?;
         info!(
             "Operator started with BLS Public Key: {}",
             hex::encode(&public_key)
@@ -303,8 +304,17 @@ impl CoreService {
     }
 
     async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        BLSCert::new(&self.config.secrets.bls_private_key, promise)
-            .map_err(|err| ServiceError::Other(anyhow!(err)))
+        let ikm: &[u8] = self.config.secrets.bls_private_key.as_ref();
+        BLSCert::new(
+            ikm,
+            promise.tab_id,
+            promise.req_id,
+            &promise.user_address,
+            &promise.recipient_address,
+            promise.amount,
+            promise.timestamp,
+        )
+        .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 
     async fn handle_promise(&self, req: PaymentGuaranteeRequest) -> ServiceResult<BLSCert> {

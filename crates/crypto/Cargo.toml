@@ -8,3 +8,5 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 bls-signatures = { workspace = true }
 hex = { workspace = true }
+alloy = { workspace = true }
+blst = { workspace = true }
