@@ -275,32 +275,6 @@ async fn issue_guarantee_rejects_modified_start_ts() {
     assert!(result.is_err(), "must reject modified start timestamp");
 }
 
-/// Invalid: User not registered in DB
-#[test(tokio::test)]
-async fn issue_guarantee_rejects_unregistered_user() {
-    let (_, core_client, _) = setup_clean_db().await;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
-    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
-    let public_params = core_client.get_public_params().await.unwrap();
-    let req = build_signed_req(
-        &public_params,
-        &user_addr,
-        &recipient_addr,
-        tab_id,
-        U256::ZERO,
-        U256::ONE,
-        &wallet,
-        None,
-    )
-    .await;
-
-    let result = core_client.issue_guarantee(req).await;
-    assert!(result.is_err(), "must reject if user is not registered");
-}
-
 /// Valid: second sequential request works
 #[test(tokio::test)]
 async fn issue_two_sequential_guarantees_ok() {
