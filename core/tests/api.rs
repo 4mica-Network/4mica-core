@@ -5,9 +5,9 @@ use alloy::{
 };
 use alloy_sol_types::SolValue;
 use chrono::{Duration, Utc};
-use core_service::auth::verify_promise_signature;
 use core_service::config::AppConfig;
 use core_service::persist::{PersistCtx, repo};
+use core_service::{auth::verify_promise_signature, util::u256_to_string};
 use entities::guarantee;
 use hex;
 use rand::random;
@@ -234,6 +234,7 @@ async fn issue_guarantee_rejects_modified_start_ts() {
     let user_addr = wallet.address().to_string();
     let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
+
     let public_params = core_client.get_public_params().await.unwrap();
     let tab = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -327,7 +328,7 @@ async fn issue_two_sequential_guarantees_ok() {
 
     assert!(cert2.verify(&public_params.public_key).unwrap());
     let rows = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(format!("{:#x}", tab_id)))
+        .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
         .all(&*ctx.db)
         .await
         .unwrap();

@@ -4,6 +4,7 @@ use crate::{
     error::{ServiceError, ServiceResult, service_error_to_rpc},
     ethereum::EthereumListener,
     persist::{PersistCtx, repo},
+    util::u256_to_string,
 };
 use alloy::{
     providers::{
@@ -272,7 +273,7 @@ impl CoreService {
         }
 
         let Some(tab) = repo::get_tab_by_id(&self.persist_ctx, promise.tab_id).await? else {
-            return Err(ServiceError::NotFound(format!("{:#x}", promise.tab_id)));
+            return Err(ServiceError::NotFound(u256_to_string(promise.tab_id)));
         };
 
         // Either the tab is pending and the req_id is 0, or the tab is not pending and the req_id is non-zero.
