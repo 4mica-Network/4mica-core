@@ -162,7 +162,7 @@ impl EthereumListener {
     ) -> Result<(), BlockchainListenerError> {
         let RecipientRemunerated { tab_id, amount } = *log.log_decode()?.data();
         info!("[EthereumListener] RecipientRemunerated: tab={tab_id}, amount={amount}");
-        repo::remunerate_recipient(persist_ctx, tab_id.to_string(), amount).await?;
+        repo::remunerate_recipient(persist_ctx, tab_id, amount).await?;
         Ok(())
     }
 

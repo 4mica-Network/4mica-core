@@ -227,7 +227,7 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
 async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
-    let res = repo::get_tab_by_id(&ctx, "non-existent-id").await?;
+    let res = repo::get_tab_by_id(&ctx, U256::from(12345u64)).await?;
     assert!(res.is_none());
     Ok(())
 }
@@ -239,7 +239,7 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
     ensure_user(&ctx, &user_addr).await?;
 
-    let tab_id = "tab-foo";
+    let tab_id = U256::from(rand::random::<u128>());
     let now = Utc::now().naive_utc();
 
     let ev1 = collateral_event::ActiveModel {
