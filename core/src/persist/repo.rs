@@ -1,5 +1,6 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use crate::util::u256_to_string;
 use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
 use crypto::bls::BLSCert;
@@ -9,15 +10,15 @@ use entities::{
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     tabs, user, user_transaction, withdrawal,
 };
+use log::info;
 use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
-use std::str::FromStr;
-
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
 };
+use std::str::FromStr;
 //
 // ────────────────────── USER FUNCTIONS ──────────────────────
 //
@@ -90,7 +91,6 @@ pub async fn deposit(
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                // Must exist
                 ensure_user_exists_on(txn, &user_address).await?;
                 let u = get_user_on(txn, &user_address).await?;
                 let current_collateral = U256::from_str(&u.collateral)
@@ -130,7 +130,7 @@ pub async fn deposit(
 
 pub async fn unlock_user_collateral(
     ctx: &PersistCtx,
-    tab_id: String,
+    tab_id: U256,
     amount: U256,
 ) -> Result<(), PersistDbError> {
     use sea_orm::ActiveValue::Set;
@@ -140,11 +140,12 @@ pub async fn unlock_user_collateral(
         .transaction(|txn| {
             Box::pin(async move {
                 // strict fetch (same txn)
-                let tab = get_tab_by_id_on(txn, &tab_id).await?;
+                let tab = get_tab_by_id_on(txn, tab_id).await?;
 
+                let tab_id = u256_to_string(tab_id);
                 // CAS: mark tab as Settled once (idempotent)
                 let cas = entities::tabs::Entity::update_many()
-                    .filter(entities::tabs::Column::Id.eq(tab_id.clone()))
+                    .filter(entities::tabs::Column::Id.eq(&tab_id))
                     .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
                     .set(entities::tabs::ActiveModel {
                         settlement_status: Set(SettlementStatus::Settled),
@@ -510,8 +511,8 @@ pub async fn lock_and_store_guarantee(
                 // --- 3. insert guarantee
                 store_guarantee_on(
                     txn,
-                    promise.tab_id.clone(),
-                    promise.req_id.clone(),
+                    promise.tab_id,
+                    promise.req_id,
                     promise.user_address.clone(),
                     promise.recipient_address.clone(),
                     promise.amount,
@@ -535,8 +536,8 @@ pub async fn lock_and_store_guarantee(
 /// If a (tab_id, req_id) row already exists → no-op.
 pub async fn store_guarantee_on<C: ConnectionTrait>(
     conn: &C,
-    tab_id: String,
-    req_id: String,
+    tab_id: U256,
+    req_id: U256,
     from_addr: String,
     to_addr: String,
     value: U256,
@@ -550,8 +551,8 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
     ensure_user_exists_on(conn, &to_addr).await?;
 
     let active_model = guarantee::ActiveModel {
-        tab_id: Set(tab_id.clone()),
-        req_id: Set(req_id),
+        tab_id: Set(u256_to_string(tab_id)),
+        req_id: Set(u256_to_string(req_id)),
         from_address: Set(from_addr),
         to_address: Set(to_addr),
         value: Set(value.to_string()),
@@ -575,12 +576,12 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
 
 pub async fn get_guarantee(
     ctx: &PersistCtx,
-    tab_id: String,
-    req_id: String,
+    tab_id: U256,
+    req_id: U256,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
     let res = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(tab_id))
-        .filter(guarantee::Column::ReqId.eq(req_id))
+        .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(guarantee::Column::ReqId.eq(u256_to_string(req_id)))
         .one(ctx.db.as_ref())
         .await?;
     Ok(res)
@@ -596,7 +597,7 @@ pub async fn get_guarantee(
 /// If we check the user balance before the CAS, there’s a small window where another concurrent transaction could settle the tab first.
 pub async fn remunerate_recipient(
     ctx: &PersistCtx,
-    tab_id: String,
+    tab_id: U256,
     amount: U256,
 ) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
@@ -605,11 +606,13 @@ pub async fn remunerate_recipient(
         .transaction(|txn| {
             Box::pin(async move {
                 // strict fetch (same txn)
-                let tab = get_tab_by_id_on(txn, &tab_id).await?;
+                let tab = get_tab_by_id_on(txn, tab_id).await?;
+
+                let tab_id = u256_to_string(tab_id);
 
                 // Compare-and-set using typed `.set(ActiveModel { ... })`
                 let cas = entities::tabs::Entity::update_many()
-                    .filter(entities::tabs::Column::Id.eq(tab_id.clone()))
+                    .filter(entities::tabs::Column::Id.eq(&tab_id))
                     .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
                     .set(entities::tabs::ActiveModel {
                         settlement_status: Set(SettlementStatus::Settled),
@@ -681,8 +684,10 @@ pub async fn get_user_transactions(
 /// Return the most recent guarantee for a tab (by created_at DESC)
 pub async fn get_last_guarantee_for_tab(
     ctx: &PersistCtx,
-    tab_id: &str,
+    tab_id: U256,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
+    let tab_id = u256_to_string(tab_id);
+    info!("Fetching last guarantee for tab {}", tab_id);
     let row = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
         .order_by_desc(guarantee::Column::ReqId)
@@ -692,11 +697,12 @@ pub async fn get_last_guarantee_for_tab(
 }
 
 /// Read TTL (in seconds) from `tabs.ttl`. Returns Err(TabNotFound) if the tab doesn't exist.
-pub async fn get_tab_ttl_seconds(ctx: &PersistCtx, tab_id: &str) -> Result<u64, PersistDbError> {
-    let tab = entities::tabs::Entity::find_by_id(tab_id.to_string())
+pub async fn get_tab_ttl_seconds(ctx: &PersistCtx, tab_id: U256) -> Result<u64, PersistDbError> {
+    let tab_id = u256_to_string(tab_id);
+    let tab = entities::tabs::Entity::find_by_id(&tab_id)
         .one(ctx.db.as_ref())
         .await?
-        .ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_owned()))?;
+        .ok_or_else(|| PersistDbError::TabNotFound(tab_id))?;
 
     let ttl = tab.ttl as u64;
     Ok(ttl)
@@ -754,30 +760,56 @@ pub async fn bump_user_version(
     }
 }
 
-pub async fn create_tab(
+pub async fn create_pending_tab(
     ctx: &PersistCtx,
-    tab_id: &str,
+    tab_id: U256,
     user_address: &str,
     server_address: &str,
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
 ) -> Result<(), PersistDbError> {
+    get_user(ctx, user_address).await?;
+
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();
     let new_tab = tabs::ActiveModel {
-        id: Set(tab_id.to_owned()),
+        id: Set(u256_to_string(tab_id)),
         user_address: Set(user_address.to_owned()),
         server_address: Set(server_address.to_owned()),
         start_ts: Set(start_ts),
         ttl: Set(ttl),
-        status: Set(TabStatus::Open),
+        status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
         ..Default::default()
     };
+    info!("Creating new pending tab {}", new_tab.id.as_ref());
 
     tabs::Entity::insert(new_tab).exec(ctx.db.as_ref()).await?;
+
+    Ok(())
+}
+
+pub async fn open_tab(
+    ctx: &PersistCtx,
+    tab_id: U256,
+    start_ts: chrono::NaiveDateTime,
+) -> Result<(), PersistDbError> {
+    let now = Utc::now().naive_utc();
+
+    // Idempotent update
+    tabs::Entity::update_many()
+        .filter(tabs::Column::Id.eq(u256_to_string(tab_id)))
+        .filter(tabs::Column::Status.eq(TabStatus::Pending))
+        .set(tabs::ActiveModel {
+            status: Set(TabStatus::Open),
+            start_ts: Set(start_ts),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(ctx.db.as_ref())
+        .await?;
 
     Ok(())
 }
@@ -785,9 +817,9 @@ pub async fn create_tab(
 /// Get a single tab by id
 pub async fn get_tab_by_id(
     ctx: &PersistCtx,
-    tab_id: &str,
+    tab_id: U256,
 ) -> Result<Option<entities::tabs::Model>, PersistDbError> {
-    let res = entities::tabs::Entity::find_by_id(tab_id.to_string())
+    let res = entities::tabs::Entity::find_by_id(u256_to_string(tab_id))
         .one(ctx.db.as_ref())
         .await?;
     Ok(res)
@@ -795,12 +827,13 @@ pub async fn get_tab_by_id(
 
 pub async fn get_tab_by_id_on<C: ConnectionTrait>(
     conn: &C,
-    tab_id: &str,
+    tab_id: U256,
 ) -> Result<entities::tabs::Model, PersistDbError> {
-    entities::tabs::Entity::find_by_id(tab_id.to_string())
+    let tab_id = u256_to_string(tab_id);
+    entities::tabs::Entity::find_by_id(&tab_id)
         .one(conn)
         .await?
-        .ok_or_else(|| PersistDbError::TabNotFound(tab_id.to_owned()))
+        .ok_or_else(|| PersistDbError::TabNotFound(tab_id))
 }
 
 /// Optimistic-lock update:

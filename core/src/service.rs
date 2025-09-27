@@ -1,9 +1,10 @@
 use crate::{
     auth::verify_promise_signature,
     config::{AppConfig, DEFAULT_TTL_SECS},
-    error::{PersistDbError, ServiceError, ServiceResult, service_error_to_rpc},
+    error::{ServiceError, ServiceResult, service_error_to_rpc},
     ethereum::EthereumListener,
     persist::{PersistCtx, repo},
+    util::u256_to_string,
 };
 use alloy::{
     providers::{
@@ -19,13 +20,14 @@ use blockchain::txtools;
 use blockchain::txtools::PaymentTx;
 use chrono::TimeZone;
 use crypto::bls::BLSCert;
+use entities::sea_orm_active_enums::TabStatus;
 use log::{error, info};
 use rpc::{
     RpcResult,
     common::*,
     core::{CoreApiServer, CorePublicParameters},
 };
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 use tokio::sync::RwLock;
 use tokio::{
     spawn,
@@ -138,15 +140,14 @@ impl CoreService {
             )
             .await?;
 
-            repo::unlock_user_collateral(&self.persist_ctx, ev.tab_id.clone(), amount).await?;
+            // tab_id is already U256 in PaymentTx
+            repo::unlock_user_collateral(&self.persist_ctx, ev.tab_id, amount).await?;
         }
         Ok(())
     }
 
     /// Spawn a background cron scheduler that periodically
     /// checks Ethereum and updates user collateral / tab status.
-    ///
-    /// Now takes &Arc<Self> directly, so we don't need clone_for_task anymore.
     pub fn monitor_transactions(self: &Arc<Self>) {
         let cron_expr = self.config.ethereum_config.cron_job_settings.clone();
         let num_blocks = self.config.ethereum_config.number_of_blocks_to_confirm;
@@ -220,23 +221,23 @@ impl CoreService {
         verify_promise_signature(&self.public_params, req)?;
 
         let promise = &req.claims;
-        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, &promise.tab_id)
+        // tab_id is now U256 in PaymentGuaranteeClaims
+        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, promise.tab_id)
             .await
             .map_err(ServiceError::from)?;
 
-        let cur_req_id = promise
-            .req_id
-            .parse::<u64>()
-            .map_err(|_| ServiceError::InvalidParams("Invalid req_id".into()))?;
-
+        let cur_req_id = promise.req_id;
         match last_opt {
             Some(ref last) => {
-                let prev_req_id = last
-                    .req_id
-                    .parse::<u64>()
-                    .map_err(|_| ServiceError::Other(anyhow!("Invalid previous req_id")))?;
+                let prev_req_id = U256::from_str(&last.req_id).map_err(|e| {
+                    ServiceError::InvalidParams(format!("Invalid prev_req_id: {}", e))
+                })?;
 
-                if cur_req_id.wrapping_sub(prev_req_id) != 1 {
+                if cur_req_id.wrapping_sub(prev_req_id) != U256::from(1u8) {
+                    info!(
+                        "Invalid req_id: current={}, previous={}",
+                        cur_req_id, prev_req_id
+                    );
                     return Err(ServiceError::InvalidRequestID);
                 }
 
@@ -251,7 +252,11 @@ impl CoreService {
                 }
             }
             None => {
-                if promise.req_id != "0" {
+                info!(
+                    "No previous guarantee found for tab_id={}. This must be the first request. req_id = {}",
+                    promise.tab_id, promise.req_id
+                );
+                if promise.req_id != U256::ZERO {
                     return Err(ServiceError::InvalidRequestID);
                 }
             }
@@ -267,40 +272,39 @@ impl CoreService {
             return Err(ServiceError::FutureTimestamp);
         }
 
-        let ttl_secs = match repo::get_tab_ttl_seconds(&self.persist_ctx, &promise.tab_id).await {
-            Ok(ttl) => ttl,
-            Err(PersistDbError::TabNotFound(_)) if promise.req_id == "0" => {
-                let default_ttl: u64 = DEFAULT_TTL_SECS;
-                let start_ts = chrono::Utc
-                    .timestamp_opt(promise.timestamp as i64, 0)
-                    .single()
-                    .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
-                    .naive_utc();
-                repo::create_tab(
-                    &self.persist_ctx,
-                    &promise.tab_id,
-                    &promise.user_address,
-                    &promise.recipient_address,
-                    start_ts,
-                    default_ttl as i64,
-                )
-                .await
-                .map_err(ServiceError::from)?;
-                default_ttl
-            }
-            Err(e) => return Err(ServiceError::from(e)),
+        let Some(tab) = repo::get_tab_by_id(&self.persist_ctx, promise.tab_id).await? else {
+            return Err(ServiceError::NotFound(u256_to_string(promise.tab_id)));
         };
 
-        if ttl_secs <= 0 {
+        // Either the tab is pending and the req_id is 0, or the tab is not pending and the req_id is non-zero.
+        if (tab.status == TabStatus::Pending) != (promise.req_id == U256::ZERO) {
+            return Err(ServiceError::InvalidRequestID);
+        }
+
+        if tab.status == TabStatus::Pending {
+            let start_ts = chrono::Utc
+                .timestamp_opt(promise.timestamp as i64, 0)
+                .single()
+                .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
+                .naive_utc();
+            repo::open_tab(&self.persist_ctx, promise.tab_id, start_ts).await?;
+        }
+
+        if tab.ttl <= 0 {
             return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
         }
 
-        let expiry = promise.timestamp.saturating_add(ttl_secs as u64);
+        let expiry = promise.timestamp.saturating_add(tab.ttl as u64);
         if expiry < now_secs {
             return Err(ServiceError::TabClosed);
         }
 
         Ok(())
+    }
+
+    async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
+        BLSCert::new(&self.config.secrets.bls_private_key, promise)
+            .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 
     async fn handle_promise(&self, req: PaymentGuaranteeRequest) -> ServiceResult<BLSCert> {
@@ -311,7 +315,7 @@ impl CoreService {
             promise.tab_id, promise.req_id, promise.amount
         );
         self.preflight_promise_checks(&req).await?;
-        let cert = self.create_bls_cert(promise.clone()).await?;
+        let cert: BLSCert = self.create_bls_cert(promise.clone()).await?;
 
         repo::lock_and_store_guarantee(&self.persist_ctx, &promise, &cert)
             .await
@@ -319,9 +323,33 @@ impl CoreService {
         Ok(cert)
     }
 
-    async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        BLSCert::new(&self.config.secrets.bls_private_key, promise)
-            .map_err(|err| ServiceError::Other(anyhow!(err)))
+    async fn create_payment_tab(
+        &self,
+        req: CreatePaymentTabRequest,
+    ) -> ServiceResult<CreatePaymentTabResult> {
+        let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
+        let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
+
+        let now = crate::util::now_naive();
+        if now.and_utc().timestamp() < 0 {
+            return Err(ServiceError::Other(anyhow!("System time before epoch")));
+        }
+
+        repo::create_pending_tab(
+            &self.persist_ctx,
+            tab_id,
+            &req.user_address,
+            &req.recipient_address,
+            now,
+            ttl as i64,
+        )
+        .await?;
+
+        Ok(CreatePaymentTabResult {
+            id: tab_id,
+            user_address: req.user_address,
+            recipient_address: req.recipient_address,
+        })
     }
 }
 
@@ -334,7 +362,17 @@ impl CoreApiServer for CoreService {
     async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert> {
         self.handle_promise(req).await.map_err(service_error_to_rpc)
     }
+
+    async fn create_payment_tab(
+        &self,
+        req: CreatePaymentTabRequest,
+    ) -> RpcResult<CreatePaymentTabResult> {
+        self.create_payment_tab(req)
+            .await
+            .map_err(service_error_to_rpc)
+    }
 }
+
 #[derive(Clone)]
 pub struct CoreServiceRpc(pub Arc<CoreService>);
 #[async_trait]
@@ -346,6 +384,16 @@ impl CoreApiServer for CoreServiceRpc {
     async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert> {
         self.0
             .handle_promise(req)
+            .await
+            .map_err(service_error_to_rpc)
+    }
+
+    async fn create_payment_tab(
+        &self,
+        req: CreatePaymentTabRequest,
+    ) -> RpcResult<CreatePaymentTabResult> {
+        self.0
+            .create_payment_tab(req)
             .await
             .map_err(service_error_to_rpc)
     }
