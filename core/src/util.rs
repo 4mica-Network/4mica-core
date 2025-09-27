@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Create a unique tab id by hashing the user address, recipient address,
 /// ttl and a random UUID with SHA-256.
-pub fn generate_unique_id(user: &str, recipient: &str, ttl: u64) -> U256 {
+pub fn generate_tab_id(user: &str, recipient: &str, ttl: u64) -> U256 {
     // Random component to avoid collisions
     let random = Uuid::new_v4().to_string();
 
