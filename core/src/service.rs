@@ -272,7 +272,7 @@ impl CoreService {
         }
 
         let Some(tab) = repo::get_tab_by_id(&self.persist_ctx, promise.tab_id).await? else {
-            return Err(ServiceError::NotFound(promise.tab_id.to_string()));
+            return Err(ServiceError::NotFound(format!("{:#x}", promise.tab_id)));
         };
 
         // Either the tab is pending and the req_id is 0, or the tab is not pending and the req_id is non-zero.
