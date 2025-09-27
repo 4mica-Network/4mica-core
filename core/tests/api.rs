@@ -295,6 +295,8 @@ async fn issue_two_sequential_guarantees_ok() {
         .await
         .expect("create tab");
     let tab_id = tab.id;
+
+    let start_ts = chrono::Utc::now().timestamp() as u64;
     // First req
     let req0 = build_signed_req(
         &public_params,
@@ -304,7 +306,7 @@ async fn issue_two_sequential_guarantees_ok() {
         U256::ZERO,
         U256::from(1u64),
         &wallet,
-        Some(chrono::Utc::now().timestamp() as u64),
+        Some(start_ts),
     )
     .await;
     core_client.issue_guarantee(req0).await.expect("first ok");
@@ -318,7 +320,7 @@ async fn issue_two_sequential_guarantees_ok() {
         U256::from(1u64),
         U256::from(1u64),
         &wallet,
-        Some(chrono::Utc::now().timestamp() as u64),
+        Some(start_ts),
     )
     .await;
     let cert2 = core_client.issue_guarantee(req1).await.expect("second ok");
