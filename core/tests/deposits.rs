@@ -4,6 +4,7 @@ use core_service::config::AppConfig;
 use core_service::error::PersistDbError;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
+use core_service::util::u256_to_string;
 use entities::{collateral_event, sea_orm_active_enums::*, tabs, user};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -407,7 +408,7 @@ async fn make_user_with_locked(
 async fn make_tab(ctx: &PersistCtx, tab_id: U256, user_addr: &str) -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
     let am = tabs::ActiveModel {
-        id: Set(format!("{:#x}", tab_id)),
+        id: Set(u256_to_string(tab_id)),
         user_address: Set(user_addr.to_string()),
         server_address: Set("0xserver0000000000000000000000000000000000".to_string()),
         start_ts: Set(now),
@@ -447,7 +448,7 @@ async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> an
     assert_eq!(U256::from_str(&u.collateral)?, U256::from(100u64));
 
     // tab should be Settled
-    let t = tabs::Entity::find_by_id(format!("{:#x}", tab_id))
+    let t = tabs::Entity::find_by_id(u256_to_string(tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();

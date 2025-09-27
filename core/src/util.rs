@@ -21,6 +21,10 @@ pub fn generate_tab_id(user: &str, recipient: &str, ttl: u64) -> U256 {
     U256::from_be_bytes(hash.into())
 }
 
+pub fn u256_to_string(val: U256) -> String {
+    format!("{:#x}", val)
+}
+
 pub fn now_naive() -> chrono::NaiveDateTime {
     Utc::now().naive_utc()
 }
