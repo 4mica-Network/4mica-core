@@ -29,7 +29,6 @@ print("artifact_path:", artifact_path)
 with open(artifact_path, "r", encoding="utf-8") as f:
     artifact = json.load(f)
 ABI = artifact["abi"]
-print("ABI", ABI)
 
 # ---------- Web3 provider ----------
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
@@ -109,11 +108,11 @@ def remunerate(
     # Map your JSON schema -> ABI struct
     # (uint256 tab_id, uint256 tab_timestamp, address client, address recipient, uint256 req_id, uint256 amount)
     g_tuple = (
-        int(guarantee["tab_id"]),
+        int(guarantee["tab_id"], 16),
         int(guarantee["timestamp"]),
         to_checksum_address(guarantee["user_address"]),
         to_checksum_address(guarantee["recipient_address"]),
-        int(guarantee["req_id"]),
+        int(guarantee["req_id"], 16),
         int(guarantee["amount"]),
     )
 
