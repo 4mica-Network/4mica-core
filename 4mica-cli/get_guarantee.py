@@ -14,7 +14,7 @@ load_dotenv()
 
 PRIVATE_KEY       = os.getenv("PRIVATE_KEY")
 RPC_URL           = os.getenv("RPC_URL")
-API_URL           = os.getenv("API_URL", "http://localhost:3000")
+OPERATOR_URL           = os.getenv("OPERATOR_URL", "http://localhost:3000")
 RECIPIENT_ADDRESS = os.getenv("RECIPIENT_ADDRESS") 
 
 if not PRIVATE_KEY or not RPC_URL or not RECIPIENT_ADDRESS:
@@ -24,7 +24,7 @@ if not PRIVATE_KEY or not RPC_URL or not RECIPIENT_ADDRESS:
 
 acct = w3.eth.account.from_key(PRIVATE_KEY)
 USER_ADDR = acct.address
-
+print(f"Using USER_ADDR: {USER_ADDR}")
 # Convert to checksummed address (EIP-55)
 RECIPIENT_ADDRESS = to_checksum_address(RECIPIENT_ADDRESS)
 
@@ -43,7 +43,7 @@ def api_call(method: str, params=None):
         "method": method,
         "params": params or []
     }
-    r = httpx.post(API_URL, json=payload)
+    r = httpx.post(OPERATOR_URL, json=payload)
     r.raise_for_status()
     data = r.json()
     if "error" in data:
@@ -96,14 +96,20 @@ public_params = api_call("core_getPublicParams")
 print("\n=== Core Public Parameters ===")
 print(json.dumps(public_params, indent=2))
 
-# 3️⃣ Build & sign a PaymentGuaranteeRequest
+# 3️⃣ Build & sign a PaymentGuaranteeRequest (EIP-712)
+
+# 👉 Use the tab_id returned by createPaymentTab (decimal string or int).  
+REQ_ID_INT = 0             # first request for a new tab must be 0 (U256 zero)
+AMOUNT_WEI_INT = 2_000_000_000_000_000  # 0.002 ETH example
+
+# Claims you send to the server (U256 often serialized as decimal strings is OK)
 claims = {
     "user_address": USER_ADDR,
-    "recipient_address": RECIPIENT_ADDRESS, 
-    "tab_id": "12345",
-    "req_id": "0",
-    "amount": "2000000000000000",
-    "timestamp": timestamp,
+    "recipient_address": RECIPIENT_ADDRESS,
+    "tab_id": "0xb19cf82e73878321fd058799b65b71e2ebd63e31be330c88f52ab746b6ba4a9b",   # server accepts U256 as decimal string
+    "req_id": str(REQ_ID_INT),   # U256 as decimal string
+    "amount": str(AMOUNT_WEI_INT),
+    "timestamp": timestamp,      # u64
 }
 
 typed_data = {
@@ -113,16 +119,16 @@ typed_data = {
             {"name": "version", "type": "string"},
             {"name": "chainId", "type": "uint256"},
         ],
-        "PaymentGuarantee": [
+        "PaymentGuarantee": [    # ← must match `sol! { struct PaymentGuarantee { ... } }`
             {"name": "user", "type": "address"},
             {"name": "recipient", "type": "address"},
-            {"name": "tabId", "type": "string"},
-            {"name": "reqId", "type": "uint64"},
+            {"name": "tabId", "type": "uint256"},
+            {"name": "reqId", "type": "uint256"},
             {"name": "amount", "type": "uint256"},
             {"name": "timestamp", "type": "uint64"},
         ],
     },
-    "primaryType": "PaymentGuarantee",
+    "primaryType": "PaymentGuarantee",   # ← same here
     "domain": {
         "name": public_params["eip712_name"],
         "version": public_params["eip712_version"],
@@ -131,21 +137,23 @@ typed_data = {
     "message": {
         "user": USER_ADDR,
         "recipient": RECIPIENT_ADDRESS,
-        "tabId": claims["tab_id"],
-        "reqId": int(claims["req_id"]),
-        "amount": int(claims["amount"]),
-        "timestamp": claims["timestamp"],
+        "tabId": "0xb19cf82e73878321fd058799b65b71e2ebd63e31be330c88f52ab746b6ba4a9b",
+        "reqId": REQ_ID_INT,
+        "amount": AMOUNT_WEI_INT,
+        "timestamp": timestamp,
     },
 }
+
 
 msg = encode_typed_data(full_message=typed_data)
 signed = Account.sign_message(msg, private_key=PRIVATE_KEY)
 
 payment_request = {
-    "claims": claims,
+    "claims": claims,                 # the same dict above (strings for U256 are fine)
     "signature": signed.signature.hex(),
     "scheme": "eip712"
 }
+
 
 # 4️⃣ Request a BLS guarantee
 bls_cert = api_call("core_issueGuarantee", [payment_request])
