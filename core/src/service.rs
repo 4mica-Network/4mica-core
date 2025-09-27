@@ -327,15 +327,13 @@ impl CoreService {
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
         let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
-        let tab_id =
-            crate::util::generate_unique_id(&req.user_address, &req.recipient_address, ttl);
+        let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
 
         let now = crate::util::now_naive();
         if now.and_utc().timestamp() < 0 {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
 
-        let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
         repo::create_pending_tab(
             &self.persist_ctx,
             tab_id,
