@@ -10,6 +10,7 @@ use entities::{guarantee, user};
 use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
+
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
     Ok(AppConfig::fetch())
@@ -391,7 +392,11 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
         amount: U256::from(40u64),
         timestamp: Utc::now().timestamp() as u64,
     };
-    let cert = BLSCert::new(&config.secrets.bls_private_key, promise.clone())?;
+
+    // BLSCert::new requires an exact 32-byte scalar
+    let mut sk_be32 = [0u8; 32];
+    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
 
     // --- call the new atomic repo method ---
     repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
@@ -435,7 +440,11 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
         // deliberately invalid: chrono cannot represent this
         timestamp: i64::MAX as u64,
     };
-    let cert = BLSCert::new(&config.secrets.bls_private_key, promise.clone())?;
+
+    // BLSCert::new requires an exact 32-byte scalar
+    let mut sk_be32 = [0u8; 32];
+    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
 
     let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));

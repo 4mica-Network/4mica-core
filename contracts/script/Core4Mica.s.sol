@@ -42,13 +42,18 @@ contract Core4MicaScript is Script {
         address deployer = vm.addr(deployerPrivateKey);
 
         bytes32 guaranteeSigningKey = vm.envBytes32("GUARANTEE_SIGNING_KEY");
-        BLS.G1Point memory guaranteeVerificationKey = BlsHelper.getPublicKey(guaranteeSigningKey);
+        BLS.G1Point memory guaranteeVerificationKey = BlsHelper.getPublicKey(
+            guaranteeSigningKey
+        );
 
         vm.startBroadcast(deployerPrivateKey);
 
         // 1. Deploy AccessManager and Core4Mica
         manager = new AccessManager(deployer);
-        Core4Mica core4Mica = new Core4Mica(address(manager), guaranteeVerificationKey);
+        Core4Mica core4Mica = new Core4Mica(
+            address(manager),
+            guaranteeVerificationKey
+        );
 
         // 2. Map Core4Mica functions to roles
         // Operator functions → OPERATOR_ROLE
@@ -74,7 +79,7 @@ contract Core4MicaScript is Script {
 
         // 3. Grant roles (immediate in local/test: 0 delay)
         manager.grantRole(OPERATOR_ROLE, deployer, 0); // deployer can act as OPERATOR
-
+        manager.grantRole(USER_ADMIN_ROLE, deployer, 0); // deployer can manage OPERATORs
         vm.stopBroadcast();
 
         console.log("AccessManager deployed at:", address(manager));

@@ -7,13 +7,13 @@ use crate::{
     util::u256_to_string,
 };
 use alloy::{
+    primitives::U256,
     providers::{
         Identity, ProviderBuilder, RootProvider, WsConnect,
         fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller},
     },
     rpc::types::Transaction,
 };
-use alloy_primitives::U256;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
@@ -52,7 +52,12 @@ pub struct CoreService {
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        let public_key = crypto::bls::pub_key_from_priv_key(&config.secrets.bls_private_key)?;
+        let bls_private_key = config.secrets.bls_private_key.bytes();
+        if bls_private_key.len() != 32 {
+            anyhow::bail!("BLS private key must be 32 bytes");
+        }
+
+        let public_key = crypto::bls::pub_key_from_scalar(bls_private_key.try_into()?)?;
         info!(
             "Operator started with BLS Public Key: {}",
             hex::encode(&public_key)
@@ -96,6 +101,15 @@ impl CoreService {
             persist_ctx,
             provider: RwLock::new(None),
         })
+    }
+
+    fn bls_private_key(&self) -> [u8; 32] {
+        self.config
+            .secrets
+            .bls_private_key
+            .bytes()
+            .try_into()
+            .expect("BLS private key must be 32 bytes")
     }
 
     /// Periodically scan Ethereum for tab payments.
@@ -221,7 +235,6 @@ impl CoreService {
         verify_promise_signature(&self.public_params, req)?;
 
         let promise = &req.claims;
-        // tab_id is now U256 in PaymentGuaranteeClaims
         let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, promise.tab_id)
             .await
             .map_err(ServiceError::from)?;
@@ -276,7 +289,6 @@ impl CoreService {
             return Err(ServiceError::NotFound(u256_to_string(promise.tab_id)));
         };
 
-        // Either the tab is pending and the req_id is 0, or the tab is not pending and the req_id is non-zero.
         if (tab.status == TabStatus::Pending) != (promise.req_id == U256::ZERO) {
             return Err(ServiceError::InvalidRequestID);
         }
@@ -303,7 +315,7 @@ impl CoreService {
     }
 
     async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        BLSCert::new(&self.config.secrets.bls_private_key, promise)
+        BLSCert::new(&self.bls_private_key(), promise)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 

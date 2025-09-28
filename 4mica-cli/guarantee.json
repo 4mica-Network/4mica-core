@@ -1,0 +1,12 @@
+{
+  "claims": {
+    "user_address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "recipient_address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "tab_id": "0x3b154861161da1176e32e9b6c997a6b70c257d94144a4880a16a35b5d26e8d17",
+    "req_id": "0",
+    "amount": "200000000000000000",
+    "timestamp": 1759059238
+  },
+  "tab_timestamp": 1759059238,
+  "bls_signature": "ad73f596011b9469d4e8560f337633da979acc23831f7d5df5eff535c4b91f75c3ca8ea3a79e8a611644d50cf3640803064c9fce70b41f1ef56a8658eef252a6dcc53d7c82cff6af3bf438dc5534c1e811370e3c8a72de0898748add64da3324"
+}

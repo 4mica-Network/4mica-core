@@ -32,3 +32,11 @@ bin/
 #Prisma
 core/src/persist/prisma.rs
 
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+

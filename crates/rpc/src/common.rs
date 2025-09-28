@@ -12,18 +12,18 @@ pub struct PaymentGuaranteeClaims {
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
-    type Error = serde_json::Error;
+    type Error = anyhow::Error;
 
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        serde_json::to_vec(&self)
-    }
-}
-
-impl TryFrom<Vec<u8>> for PaymentGuaranteeClaims {
-    type Error = serde_json::Error;
-
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        serde_json::from_slice(&value)
+        crypto::guarantee::encode_guarantee_bytes(
+            self.tab_id,
+            self.req_id,
+            &self.user_address,
+            &self.recipient_address,
+            self.amount,
+            self.timestamp,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to encode guarantee bytes: {}", e))
     }
 }
 
