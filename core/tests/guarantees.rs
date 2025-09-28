@@ -396,15 +396,7 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
     // BLSCert::new requires an exact 32-byte scalar
     let mut sk_be32 = [0u8; 32];
     sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
-    let cert = BLSCert::new(
-        &sk_be32,
-        promise.tab_id,
-        promise.req_id,
-        &promise.user_address,
-        &promise.recipient_address,
-        promise.amount,
-        promise.timestamp,
-    )?;
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
 
     // --- call the new atomic repo method ---
     repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
@@ -452,15 +444,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     // BLSCert::new requires an exact 32-byte scalar
     let mut sk_be32 = [0u8; 32];
     sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
-    let cert = BLSCert::new(
-        &sk_be32,
-        promise.tab_id,
-        promise.req_id,
-        &promise.user_address,
-        &promise.recipient_address,
-        promise.amount,
-        promise.timestamp,
-    )?;
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
 
     let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));

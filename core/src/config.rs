@@ -63,6 +63,7 @@ impl AppConfig {
             EthereumConfig::init_from_env().expect("Failed to load ethereum config");
         let secrets = Secrets::init_from_env().expect("Failed to load secrets");
         let eip712 = Eip712Config::init_from_env().expect("Failed to load EIP712 config");
+
         Self {
             server_config,
             ethereum_config,
