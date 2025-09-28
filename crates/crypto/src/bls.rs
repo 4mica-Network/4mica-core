@@ -26,6 +26,8 @@ fn make_sk(km: KeyMaterial) -> anyhow::Result<SecretKey> {
     }
 }
 
+/// EXACTLY mirrors Solidity:
+/// abi.encodePacked(tab_id, req_id, client, recipient, amount, uint256(tab_timestamp))
 pub fn encode_guarantee_bytes(
     tab_id: U256,
     req_id: U256,
@@ -34,20 +36,55 @@ pub fn encode_guarantee_bytes(
     amount: U256,
     tab_timestamp: u64,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(32 + 32 + 20 + 20 + 32 + 8);
+    // 32 + 32 + 20 + 20 + 32 + 32 = 168
+    let mut out = Vec::with_capacity(32 + 32 + 20 + 20 + 32 + 32);
+
     let addr_client = Address::from_str(client)?;
     let addr_recipient = Address::from_str(recipient)?;
+
+    // uint256 fields (big-endian 32 bytes)
     out.extend_from_slice(&tab_id.to_be_bytes::<32>());
     out.extend_from_slice(&req_id.to_be_bytes::<32>());
+
+    // address fields (20 bytes)
     out.extend_from_slice(addr_client.as_slice());
     out.extend_from_slice(addr_recipient.as_slice());
+
+    // uint256 amount (32 bytes)
     out.extend_from_slice(&amount.to_be_bytes::<32>());
-    out.extend_from_slice(&tab_timestamp.to_be_bytes());
+
+    // uint256 timestamp (must be 32 bytes, big-endian)
+    let mut ts32 = [0u8; 32];
+    ts32[24..].copy_from_slice(&tab_timestamp.to_be_bytes()); // right-most 8 bytes
+    out.extend_from_slice(&ts32);
+
+    // Hard length assertion to catch silent mistakes
+    debug_assert_eq!(
+        out.len(),
+        168,
+        "encode_guarantee_bytes(): wrong length (expected 168)"
+    );
+    assert_eq!(
+        out.len(),
+        168,
+        "encode_guarantee_bytes(): wrong length (expected 168)"
+    );
+    // Optional sanity in debug: verify the last 32 bytes match ts32
+    #[cfg(debug_assertions)]
+    {
+        let tail = &out[out.len() - 32..];
+        assert_eq!(
+            tail, &ts32,
+            "Timestamp tail != expected 32-byte padded timestamp"
+        );
+        // Uncomment if you want to see it
+        // eprintln!("packed msg: {}", hex::encode(&out));
+    }
+
     Ok(out)
 }
 
 impl BLSCert {
-    /// Create and sign using a **raw scalar** (matches Python `SkToPk(sk_int)`).
     pub fn new(
         sk_be32: &[u8; 32],
         tab_id: U256,
@@ -82,15 +119,7 @@ impl BLSCert {
     }
 }
 
-/// === Public key helpers ===
-
-/// Get pubkey from **raw scalar** (48-byte compressed G1) — matches Python `SkToPk`.
-pub fn pub_key_from_scalar(sk_be32: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
-    let sk = make_sk(KeyMaterial::Scalar(sk_be32))?;
-    Ok(sk.sk_to_pk().compress().to_vec())
-}
-
-// ================== helpers for Solidity limb layout ==================
+// ======= (unchanged) limb helpers for Solidity =======
 
 fn split_fp_be48_into_hi_lo32(be48: &[u8; 48]) -> ([u8; 32], [u8; 32]) {
     let mut hi = [0u8; 32];
@@ -98,6 +127,11 @@ fn split_fp_be48_into_hi_lo32(be48: &[u8; 48]) -> ([u8; 32], [u8; 32]) {
     hi[16..].copy_from_slice(&be48[..16]);
     lo.copy_from_slice(&be48[16..]);
     (hi, lo)
+}
+
+pub fn pub_key_from_scalar(sk_be32: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
+    let sk = make_sk(KeyMaterial::Scalar(sk_be32))?;
+    Ok(sk.sk_to_pk().compress().to_vec())
 }
 
 pub fn g1_words_from_pubkey(
