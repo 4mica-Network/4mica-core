@@ -7,13 +7,13 @@ use crate::{
     util::u256_to_string,
 };
 use alloy::{
+    primitives::U256,
     providers::{
         Identity, ProviderBuilder, RootProvider, WsConnect,
         fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller},
     },
     rpc::types::Transaction,
 };
-use alloy_primitives::U256;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
@@ -52,8 +52,9 @@ pub struct CoreService {
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        let ikm: &[u8] = config.secrets.bls_private_key.as_ref();
-        let public_key = crypto::bls::pub_key_from_priv_key(ikm)?;
+        let mut sk_be32 = [0u8; 32];
+        sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+        let public_key = crypto::bls::pub_key_from_scalar(&sk_be32)?;
         info!(
             "Operator started with BLS Public Key: {}",
             hex::encode(&public_key)
@@ -222,7 +223,6 @@ impl CoreService {
         verify_promise_signature(&self.public_params, req)?;
 
         let promise = &req.claims;
-        // tab_id is now U256 in PaymentGuaranteeClaims
         let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, promise.tab_id)
             .await
             .map_err(ServiceError::from)?;
@@ -277,7 +277,6 @@ impl CoreService {
             return Err(ServiceError::NotFound(u256_to_string(promise.tab_id)));
         };
 
-        // Either the tab is pending and the req_id is 0, or the tab is not pending and the req_id is non-zero.
         if (tab.status == TabStatus::Pending) != (promise.req_id == U256::ZERO) {
             return Err(ServiceError::InvalidRequestID);
         }
@@ -304,9 +303,11 @@ impl CoreService {
     }
 
     async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        let ikm: &[u8] = self.config.secrets.bls_private_key.as_ref();
+        // Ensure we pass an exact 32-byte scalar to BLSCert::new
+        let mut sk_be32 = [0u8; 32];
+        sk_be32.copy_from_slice(self.config.secrets.bls_private_key.as_ref());
         BLSCert::new(
-            ikm,
+            &sk_be32,
             promise.tab_id,
             promise.req_id,
             &promise.user_address,

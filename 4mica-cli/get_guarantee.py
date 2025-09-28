@@ -161,8 +161,8 @@ print(json.dumps(bls_cert, indent=2))
 print("\n➡️  Verifying BLS certificate …")
 
 # public_params["public_key"] is a hex string (e.g. "aabbcc…")
-pubkey = bytes.fromhex(public_params["public_key"])   # <-- FIXED
-sig    = bytes.fromhex(bls_cert["signature"])         # already hex
+pubkey = bytes(public_params["public_key"])   
+sig    = bytes.fromhex(bls_cert["signature"])        
 message_bytes = binascii.unhexlify(bls_cert["claims"])
 
 if bls.Verify(pubkey, message_bytes, sig):
