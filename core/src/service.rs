@@ -52,9 +52,12 @@ pub struct CoreService {
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        let mut sk_be32 = [0u8; 32];
-        sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
-        let public_key = crypto::bls::pub_key_from_scalar(&sk_be32)?;
+        let bls_private_key = config.secrets.bls_private_key.bytes();
+        if bls_private_key.len() != 32 {
+            anyhow::bail!("BLS private key must be 32 bytes");
+        }
+
+        let public_key = crypto::bls::pub_key_from_scalar(bls_private_key.try_into()?)?;
         info!(
             "Operator started with BLS Public Key: {}",
             hex::encode(&public_key)
@@ -98,6 +101,15 @@ impl CoreService {
             persist_ctx,
             provider: RwLock::new(None),
         })
+    }
+
+    fn bls_private_key(&self) -> [u8; 32] {
+        self.config
+            .secrets
+            .bls_private_key
+            .bytes()
+            .try_into()
+            .expect("BLS private key must be 32 bytes")
     }
 
     /// Periodically scan Ethereum for tab payments.
@@ -303,19 +315,8 @@ impl CoreService {
     }
 
     async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        // Ensure we pass an exact 32-byte scalar to BLSCert::new
-        let mut sk_be32 = [0u8; 32];
-        sk_be32.copy_from_slice(self.config.secrets.bls_private_key.as_ref());
-        BLSCert::new(
-            &sk_be32,
-            promise.tab_id,
-            promise.req_id,
-            &promise.user_address,
-            &promise.recipient_address,
-            promise.amount,
-            promise.timestamp,
-        )
-        .map_err(|err| ServiceError::Other(anyhow!(err)))
+        BLSCert::new(&self.bls_private_key(), promise)
+            .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 
     async fn handle_promise(&self, req: PaymentGuaranteeRequest) -> ServiceResult<BLSCert> {
