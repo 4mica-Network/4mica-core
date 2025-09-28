@@ -1,7 +1,6 @@
 use alloy::primitives::{Address, U256};
 use std::str::FromStr;
 
-// === low-level imports from blst for signing and coordinate extraction ===
 use blst::{
     self, blst_p1_affine, blst_p2_affine,
     min_pk::{PublicKey as BlstPublicKey, SecretKey, Signature as BlstSignature},
@@ -14,6 +13,18 @@ pub struct BLSCert {
 }
 
 const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+
+pub enum KeyMaterial<'a> {
+    Scalar(&'a [u8; 32]), // exact scalar < r, big-endian
+}
+
+fn make_sk(km: KeyMaterial) -> anyhow::Result<SecretKey> {
+    match km {
+        KeyMaterial::Scalar(sk_be32) => SecretKey::from_bytes(sk_be32).map_err(|e| {
+            anyhow::anyhow!("invalid secret scalar (<r, 32 bytes big-endian): {:?}", e)
+        }),
+    }
+}
 
 pub fn encode_guarantee_bytes(
     tab_id: U256,
@@ -36,10 +47,9 @@ pub fn encode_guarantee_bytes(
 }
 
 impl BLSCert {
-    /// Create and sign using IKM (seed) via `SecretKey::key_gen(ikm, info)`.
-    /// `ikm` can be any bytes >= 32 (your HexBytes is perfect).
+    /// Create and sign using a **raw scalar** (matches Python `SkToPk(sk_int)`).
     pub fn new(
-        ikm: &[u8],
+        sk_be32: &[u8; 32],
         tab_id: U256,
         req_id: U256,
         client: &str,
@@ -49,14 +59,11 @@ impl BLSCert {
     ) -> anyhow::Result<Self> {
         let claims_bytes =
             encode_guarantee_bytes(tab_id, req_id, client, recipient, amount, tab_timestamp)?;
-
-        let sk = SecretKey::key_gen(ikm, &[]).map_err(|e| anyhow::anyhow!("key_gen: {:?}", e))?;
-        let sig = sk.sign(&claims_bytes, DST, &[]); // BASIC / RO
-        let signature = sig.compress();
-
+        let sk = make_sk(KeyMaterial::Scalar(sk_be32))?;
+        let sig = sk.sign(&claims_bytes, DST, &[]);
         Ok(BLSCert {
             claims: hex::encode(claims_bytes),
-            signature: hex::encode(signature),
+            signature: hex::encode(sig.compress()),
         })
     }
 
@@ -75,17 +82,16 @@ impl BLSCert {
     }
 }
 
-/// Get BLS public key bytes from a private key – same as BlsHelper.getPublicKey
-pub fn pub_key_from_priv_key(ikm: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let sk = SecretKey::key_gen(ikm, &[]).map_err(|e| anyhow::anyhow!("key_gen: {:?}", e))?;
+/// === Public key helpers ===
+
+/// Get pubkey from **raw scalar** (48-byte compressed G1) — matches Python `SkToPk`.
+pub fn pub_key_from_scalar(sk_be32: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
+    let sk = make_sk(KeyMaterial::Scalar(sk_be32))?;
     Ok(sk.sk_to_pk().compress().to_vec())
 }
 
 // ================== helpers for Solidity limb layout ==================
 
-/// Split a 48-byte big-endian field element into two 32-byte words:
-/// - hi: left-padded with zeros to 32 bytes (top 16 bytes)
-/// - lo: bottom 32 bytes
 fn split_fp_be48_into_hi_lo32(be48: &[u8; 48]) -> ([u8; 32], [u8; 32]) {
     let mut hi = [0u8; 32];
     let mut lo = [0u8; 32];
@@ -94,15 +100,12 @@ fn split_fp_be48_into_hi_lo32(be48: &[u8; 48]) -> ([u8; 32], [u8; 32]) {
     (hi, lo)
 }
 
-/// Convert a compressed min-pk public key (48 bytes) into the 4 * 32-byte words
-/// that Solidity BLS.G1Point expects: (x_hi, x_lo, y_hi, y_lo).
 pub fn g1_words_from_pubkey(
     pk_bytes: &[u8],
 ) -> anyhow::Result<([u8; 32], [u8; 32], [u8; 32], [u8; 32])> {
     let pk = BlstPublicKey::from_bytes(pk_bytes)
         .map_err(|e| anyhow::anyhow!("invalid BLS public key: {:?}", e))?;
     let aff: blst_p1_affine = pk.into();
-
     let mut x_be = [0u8; 48];
     let mut y_be = [0u8; 48];
     unsafe {
@@ -114,8 +117,6 @@ pub fn g1_words_from_pubkey(
     Ok((x_hi, x_lo, y_hi, y_lo))
 }
 
-/// Convert a compressed min-pk signature (96 bytes) into the 8 * 32-byte words
-/// Solidity BLS.G2Point uses: X.c0, X.c1, Y.c0, Y.c1; each split (hi, lo).
 pub fn g2_words_from_signature(sig_bytes: &[u8]) -> anyhow::Result<[[u8; 32]; 8]> {
     let sig = BlstSignature::from_bytes(sig_bytes)
         .map_err(|e| anyhow::anyhow!("invalid BLS signature: {:?}", e))?;
