@@ -526,3 +526,38 @@ async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyho
     assert_eq!(U256::from_str(&u.locked_collateral)?, U256::from(5u64));
     Ok(())
 }
+
+#[test(tokio::test)]
+async fn deposit_creates_user_if_missing() -> anyhow::Result<()> {
+    let _ = init()?; // load test .env etc
+    let ctx = PersistCtx::new().await?;
+
+    // Make a brand-new random address and DO NOT pre-insert the user.
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    // Perform a deposit directly – this should now create the user row automatically.
+    let amount = U256::from(42u64);
+    repo::deposit(&ctx, user_addr.clone(), amount).await?;
+
+    // User row must now exist
+    let u = user::Entity::find()
+        .filter(user::Column::Address.eq(user_addr.clone()))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("user row should be auto-created by deposit");
+
+    // Collateral must equal the deposited amount and locked collateral is still 0
+    assert_eq!(U256::from_str(&u.collateral)?, amount);
+    assert_eq!(U256::from_str(&u.locked_collateral)?, U256::ZERO);
+
+    // A CollateralEvent::Deposit must also be recorded
+    let events = collateral_event::Entity::find()
+        .filter(collateral_event::Column::UserAddress.eq(user_addr))
+        .all(ctx.db.as_ref())
+        .await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, CollateralEventType::Deposit);
+    assert_eq!(U256::from_str(&events[0].amount)?, amount);
+
+    Ok(())
+}

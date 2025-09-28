@@ -35,12 +35,21 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
 
     /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
-    BLS.G1Point internal NEGATED_G1_GENERATOR = BLS.G1Point(
-        bytes32(0x0000000000000000000000000000000017F1D3A73197D7942695638C4FA9AC0F),
-        bytes32(0xC3688C4F9774B905A14E3A3F171BAC586C55E83FF97A1AEFFB3AF00ADB22C6BB),
-        bytes32(0x00000000000000000000000000000000114D1D6855D545A8AA7D76C8CF2E21F2),
-        bytes32(0x67816AEF1DB507C96655B9D5CAAC42364E6F38BA0ECB751BAD54DCD6B939C2CA)
-    );
+    BLS.G1Point internal NEGATED_G1_GENERATOR =
+        BLS.G1Point(
+            bytes32(
+                0x0000000000000000000000000000000017F1D3A73197D7942695638C4FA9AC0F
+            ),
+            bytes32(
+                0xC3688C4F9774B905A14E3A3F171BAC586C55E83FF97A1AEFFB3AF00ADB22C6BB
+            ),
+            bytes32(
+                0x00000000000000000000000000000000114D1D6855D545A8AA7D76C8CF2E21F2
+            ),
+            bytes32(
+                0x67816AEF1DB507C96655B9D5CAAC42364E6F38BA0ECB751BAD54DCD6B939C2CA
+            )
+        );
 
     struct WithdrawalRequest {
         uint256 timestamp;
@@ -60,7 +69,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event CollateralDeposited(address indexed user, uint256 amount);
     event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
     event CollateralWithdrawn(address indexed user, uint256 amount);
-    event WithdrawalRequested(address indexed user, uint256 when, uint256 amount);
+    event WithdrawalRequested(
+        address indexed user,
+        uint256 when,
+        uint256 amount
+    );
     event WithdrawalCanceled(address indexed user);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
@@ -79,7 +92,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Constructor =========
-    constructor(address manager, BLS.G1Point memory verificationKey) AccessManaged(manager) {
+    constructor(
+        address manager,
+        BLS.G1Point memory verificationKey
+    ) AccessManaged(manager) {
         GUARANTEE_VERIFICATION_KEY = verificationKey;
     }
 
@@ -95,35 +111,46 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Admin / Manager configuration =========
-    function setRemunerationGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
-        if (_gracePeriod >= tabExpirationTime)
-            revert IllegalValue();
+    function setRemunerationGracePeriod(
+        uint256 _gracePeriod
+    ) external restricted nonZero(_gracePeriod) {
+        if (_gracePeriod >= tabExpirationTime) revert IllegalValue();
         remunerationGracePeriod = _gracePeriod;
         emit RemunerationGracePeriodUpdated(_gracePeriod);
     }
 
-    function setWithdrawalGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+    function setWithdrawalGracePeriod(
+        uint256 _gracePeriod
+    ) external restricted nonZero(_gracePeriod) {
         if (synchronizationDelay + tabExpirationTime >= _gracePeriod)
             revert IllegalValue();
         withdrawalGracePeriod = _gracePeriod;
         emit WithdrawalGracePeriodUpdated(_gracePeriod);
     }
 
-    function setTabExpirationTime(uint256 _expirationTime) external restricted nonZero(_expirationTime) {
-        if (synchronizationDelay + _expirationTime >= withdrawalGracePeriod || remunerationGracePeriod >= _expirationTime)
-            revert IllegalValue();
+    function setTabExpirationTime(
+        uint256 _expirationTime
+    ) external restricted nonZero(_expirationTime) {
+        if (
+            synchronizationDelay + _expirationTime >= withdrawalGracePeriod ||
+            remunerationGracePeriod >= _expirationTime
+        ) revert IllegalValue();
         tabExpirationTime = _expirationTime;
         emit TabExpirationTimeUpdated(_expirationTime);
     }
 
-    function setSynchronizationDelay(uint256 _synchronizationDelay) external restricted nonZero(_synchronizationDelay) {
+    function setSynchronizationDelay(
+        uint256 _synchronizationDelay
+    ) external restricted nonZero(_synchronizationDelay) {
         if (_synchronizationDelay + tabExpirationTime >= withdrawalGracePeriod)
             revert IllegalValue();
         synchronizationDelay = _synchronizationDelay;
         emit SynchronizationDelayUpdated(_synchronizationDelay);
     }
 
-    function setGuaranteeVerificationKey(BLS.G1Point calldata verificationKey) external restricted {
+    function setGuaranteeVerificationKey(
+        BLS.G1Point calldata verificationKey
+    ) external restricted {
         GUARANTEE_VERIFICATION_KEY = verificationKey;
         emit VerificationKeyUpdated(verificationKey);
     }
@@ -135,10 +162,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     function requestWithdrawal(uint256 amount) external nonZero(amount) {
-        if (amount > collateral[msg.sender])
-            revert InsufficientAvailable();
+        if (amount > collateral[msg.sender]) revert InsufficientAvailable();
 
-        withdrawalRequests[msg.sender] = WithdrawalRequest(block.timestamp, amount);
+        withdrawalRequests[msg.sender] = WithdrawalRequest(
+            block.timestamp,
+            amount
+        );
         emit WithdrawalRequested(msg.sender, block.timestamp, amount);
     }
 
@@ -157,7 +186,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
         /// The user's collateral may have been reduced since the withdrawal was requested.
         /// As such, take the minimum of the two, making sure we never overdraw the account.
-        uint256 withdrawal_amount = Math.min(collateral[msg.sender], request.amount);
+        uint256 withdrawal_amount = Math.min(
+            collateral[msg.sender],
+            request.amount
+        );
 
         collateral[msg.sender] -= withdrawal_amount;
         delete withdrawalRequests[msg.sender];
@@ -173,12 +205,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     function remunerate(
         Guarantee calldata g,
         BLS.G2Point calldata signature
-    )
-        external
-        nonReentrant
-        nonZero(g.amount)
-        validRecipient(g.recipient)
-    {
+    ) external nonReentrant nonZero(g.amount) validRecipient(g.recipient) {
         // 1. Tab must be overdue
         if (block.timestamp < g.tab_timestamp + remunerationGracePeriod)
             revert TabNotYetOverdue();
@@ -188,20 +215,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             revert TabExpired();
 
         // 3. Tab must not previously be remunerated
-        if (payments[g.tab_id].remunerated)
-            revert TabPreviouslyRemunerated();
+        if (payments[g.tab_id].remunerated) revert TabPreviouslyRemunerated();
 
         // 4. Tab must not be paid
-        if (payments[g.tab_id].paid >= g.amount)
-            revert TabAlreadyPaid();
+        if (payments[g.tab_id].paid >= g.amount) revert TabAlreadyPaid();
 
         // 5. Verify signature
-        if (!verifyGuaranteeSignature(g, signature))
-            revert InvalidSignature();
+        if (!verifyGuaranteeSignature(g, signature)) revert InvalidSignature();
 
         // 6. Client must have sufficient funds
-        if (collateral[g.client] < g.amount)
-            revert DoubleSpendingDetected();
+        if (collateral[g.client] < g.amount) revert DoubleSpendingDetected();
 
         collateral[g.client] -= g.amount;
         payments[g.tab_id].remunerated = true;
@@ -225,12 +248,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     function recordPayment(
         uint256 tab_id,
         uint256 amount
-    )
-        external
-        restricted
-        nonZero(amount)
-        nonReentrant
-    {
+    ) external restricted nonZero(amount) nonReentrant {
         payments[tab_id].paid += amount;
     }
 
@@ -253,28 +271,30 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     function getPaymentStatus(
         uint256 tab_id
-    )
-        external
-        view
-        returns (
-            uint256 paid,
-            bool remunerated
-        )
-    {
+    ) external view returns (uint256 paid, bool remunerated) {
         paid = payments[tab_id].paid;
         remunerated = payments[tab_id].remunerated;
     }
 
     // === Signature verification ===
-    function encodeGuarantee(Guarantee memory g) public pure returns (bytes memory) {
-        return abi.encodePacked(g.tab_id, g.req_id, g.client, g.recipient, g.amount, g.tab_timestamp);
+    function encodeGuarantee(
+        Guarantee memory g
+    ) public pure returns (bytes memory) {
+        return
+            abi.encodePacked(
+                g.tab_id,
+                g.req_id,
+                g.client,
+                g.recipient,
+                g.amount,
+                g.tab_timestamp
+            );
     }
 
-    function verifyGuaranteeSignature(Guarantee memory guarantee, BLS.G2Point memory signature)
-        public
-        view
-        returns (bool)
-    {
+    function verifyGuaranteeSignature(
+        Guarantee memory guarantee,
+        BLS.G2Point memory signature
+    ) public view returns (bool) {
         BLS.G1Point[] memory g1Points = new BLS.G1Point[](2);
         g1Points[0] = NEGATED_G1_GENERATOR;
         g1Points[1] = GUARANTEE_VERIFICATION_KEY;
