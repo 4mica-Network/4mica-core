@@ -51,6 +51,7 @@ jobs:
         run: |
           curl -L https://foundry.paradigm.xyz | bash
           export PATH="$HOME/.foundry/bin:$PATH"
+          source ~/.bashrc
           foundryup
 
       # ---- Launch anvil with Prague hard fork in background
