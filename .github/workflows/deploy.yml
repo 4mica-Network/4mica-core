@@ -2,12 +2,29 @@ name: CI/CD
 
 on:
   push:
-    branches: ["develop", "main"]
+    branches:
+      - "**"
+  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    services:
+      pg: # PostgreSQL service
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: qwerty123456
+          POSTGRES_DB: core
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,31 +46,35 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # TODO: this two should be uncommented while the postgre is removed. Now it requires a full setup for build that is not efficient.
-      # - name: Build workspace
-      #   run: cargo build --release --workspace
+      # ---- Install Foundry (forge + anvil)
+      - name: Install Foundry
+        run: |
+          curl -L https://foundry.paradigm.xyz | bash
+          foundryup
 
-      # - name: Run tests
-      #   run: cargo test --workspace
-  # clippy:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: stable
-  #         components: clippy
-  #     - run: cargo clippy --all-targets --all-features -- -D warnings
+      # ---- Launch anvil with Prague hard fork in background
+      - name: Start anvil (Prague)
+        run: |
+          nohup anvil --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
+          sleep 5
 
-  # rustfmt:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: stable
-  #         components: rustfmt
-  #     - run: cargo fmt --all -- --check
+      # ---- Deploy the smart contract
+      - name: Deploy smart contract
+        run: |
+          forge script script/Core4Mica.s.sol:Core4MicaScript \
+            --rpc-url http://0.0.0.0:8545 \
+            --broadcast \
+            --via-ir \
+            -vvvv
+
+      # ---- Build and test Rust project
+      - name: Build workspace
+        run: cargo build --release --workspace
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
+        run: cargo test --workspace
 
   deploy-develop:
     needs: build
