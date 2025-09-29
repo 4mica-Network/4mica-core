@@ -33,6 +33,7 @@ jobs:
         with:
           toolchain: stable
           override: true
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -50,7 +51,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: foundry-toolchain
-          uses: foundry-rs/foundry-toolchain@v1.4.0
+        uses: foundry-rs/foundry-toolchain@v1.4.0
 
       - name: Start anvil (Prague)
         run: |
@@ -90,7 +91,7 @@ jobs:
           cd /home/deploy/4mica-core
           git fetch origin develop
           git reset --hard origin/develop
-          git submodule update --init --recursive       
+          git submodule update --init --recursive
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
@@ -112,7 +113,7 @@ jobs:
           cd /home/deploy/4mica-core
           git fetch origin main
           git reset --hard origin/main
-          git submodule update --init --recursive       
+          git submodule update --init --recursive
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
