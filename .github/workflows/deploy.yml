@@ -60,7 +60,7 @@ jobs:
 
       - name: Deploy smart contract
         run: |
-          "$HOME/.foundry/bin/forge" script contracts/script/Core4Mica.s.sol:Core4MicaScript \
+          forge script contracts/script/Core4Mica.s.sol:Core4MicaScript \
             --rpc-url http://0.0.0.0:8545 \
             --broadcast \
             --via-ir \
