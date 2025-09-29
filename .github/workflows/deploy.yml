@@ -10,15 +10,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     services:
-      pg: # PostgreSQL service
+      pg:
         image: postgres:17-alpine
         env:
           POSTGRES_PASSWORD: qwerty123456
           POSTGRES_DB: core
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd="pg_isready -U postgres"
           --health-interval=10s
@@ -28,6 +25,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
@@ -46,36 +45,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # ---- Install Foundry (forge + anvil)
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          export PATH="$HOME/.foundry/bin:$PATH"
-          source ~/.bashrc
-          foundryup
+          "$HOME/.foundry/bin/foundryup"
+          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
 
-      # ---- Launch anvil with Prague hard fork in background
       - name: Start anvil (Prague)
         run: |
-          nohup anvil --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
+          nohup "$HOME/.foundry/bin/anvil" --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
           sleep 5
 
-      # ---- Deploy the smart contract
       - name: Deploy smart contract
         run: |
-          forge script script/Core4Mica.s.sol:Core4MicaScript \
+          "$HOME/.foundry/bin/forge" script contracts/script/Core4Mica.s.sol:Core4MicaScript \
             --rpc-url http://0.0.0.0:8545 \
             --broadcast \
             --via-ir \
             -vvvv
 
-      # ---- Build and test Rust project
       - name: Build workspace
         run: cargo build --release --workspace
 
       - name: Run tests
         env:
-          DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
+          DATABASE_URL: postgres://postgres:qwerty123456@pg:5432/core
         run: cargo test --workspace
 
   deploy-develop:
@@ -91,10 +85,11 @@ jobs:
       - name: Deploy to staging server
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           cd /home/deploy/4mica-core
           git fetch origin develop
           git reset --hard origin/develop
+          git submodule update --init --recursive       
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
@@ -112,10 +107,11 @@ jobs:
       - name: Deploy to production server
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           cd /home/deploy/4mica-core
           git fetch origin main
           git reset --hard origin/main
+          git submodule update --init --recursive       
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
