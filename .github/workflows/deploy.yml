@@ -33,6 +33,10 @@ jobs:
         with:
           toolchain: stable
           override: true
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Cache cargo
         uses: actions/cache@v3
@@ -48,8 +52,8 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
+          ls -ltrha "$HOME/.foundry/bin"
           "$HOME/.foundry/bin/foundryup"
-          echo "$HOME/.foundry/bin" >> $GITHUB_PATH
 
       - name: Start anvil (Prague)
         run: |
