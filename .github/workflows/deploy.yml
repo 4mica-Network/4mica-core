@@ -52,7 +52,8 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          ls -ltrha "$HOME/.foundry/bin"
+          ls -ltrha "$HOME"
+          ls -ltrha "$HOME/.foundry"
           "$HOME/.foundry/bin/foundryup"
 
       - name: Start anvil (Prague)
