@@ -56,12 +56,12 @@ jobs:
       - name: Start anvil (Prague)
         run: |
           nohup "$HOME/.foundry/bin/anvil" --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
-          sleep 5
+          sleep 60
 
       - name: Deploy smart contract
         run: |
           forge script contracts/script/Core4Mica.s.sol:Core4MicaScript \
-            --rpc-url http://0.0.0.0:8545 \
+            --rpc-url http://127.0.0.1:8545 \ 
             --broadcast \
             --via-ir \
             -vvvv
