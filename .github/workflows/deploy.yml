@@ -57,6 +57,7 @@ jobs:
         run: |
           nohup "$HOME/.foundry/bin/anvil" --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
           sleep 60
+          cat anvil.log
 
       - name: Deploy smart contract
         run: |
