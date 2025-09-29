@@ -50,7 +50,8 @@ jobs:
       - name: Install Foundry
         run: |
           curl -L https://foundry.paradigm.xyz | bash
-          foundryup
+          export PATH="$HOME/.foundry/bin:$PATH"
+          ~/.foundry/bin/foundryup
 
       # ---- Launch anvil with Prague hard fork in background
       - name: Start anvil (Prague)
