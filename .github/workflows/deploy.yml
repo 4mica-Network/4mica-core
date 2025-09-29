@@ -49,12 +49,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install Foundry
-        run: |
-          curl -L https://foundry.paradigm.xyz | bash
-          ls -ltrha "$HOME"
-          ls -ltrha "$HOME/.foundry"
-          "$HOME/.foundry/bin/foundryup"
+      - name: foundry-toolchain
+          uses: foundry-rs/foundry-toolchain@v1.4.0
 
       - name: Start anvil (Prague)
         run: |
