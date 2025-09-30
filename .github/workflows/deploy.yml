@@ -64,6 +64,8 @@ jobs:
         run: forge test -vvvv
 
       - name: Deploy smart contract
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
         working-directory: contracts
         run: |
           forge script script/Core4Mica.s.sol:Core4MicaScript \
