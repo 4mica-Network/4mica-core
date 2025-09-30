@@ -58,7 +58,7 @@ jobs:
       - name: Start anvil (Prague)
         run: |
           nohup anvil --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
-          sleep 60
+          sleep 10
           cat anvil.log
 
       - name: Run Solidity tests
@@ -84,22 +84,11 @@ jobs:
       - name: Build workspace
         run: cargo build --release --workspace
 
-      - name: Initializing Postgres
-        run: |
-          for i in {1..30}; do
-            if pg_isready -h localhost -U postgres; then
-              echo "Postgres is ready!"
-              break
-            fi
-            echo "Waiting for Postgres..."
-            sleep 2
-          done
-
       - name: Run migrations
-        working-directory: migration
+        working-directory: crates/migration
         env:
           DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
-        run: ./target/release/migration up
+        run: cargo run -- up
 
       - name: Start API service
         env:
@@ -121,7 +110,6 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
-          API_BASE_URL: http://127.0.0.1:3000
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
@@ -147,7 +135,6 @@ jobs:
           git reset --hard origin/develop
           git submodule update --init --recursive
           cargo build --release --workspace
-          ./target/release/migration up
           systemctl --user restart 4mica
           EOF
 
@@ -170,6 +157,5 @@ jobs:
           git reset --hard origin/main
           git submodule update --init --recursive
           cargo build --release --workspace
-          ./target/release/migration up
           systemctl --user restart 4mica
           EOF
