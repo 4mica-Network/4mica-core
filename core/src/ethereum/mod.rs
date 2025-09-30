@@ -15,7 +15,6 @@ use futures_util::StreamExt;
 use log::{error, info, warn};
 use std::time::Duration;
 use tokio;
-use tokio::task::JoinHandle;
 
 pub struct EthereumListener {
     config: EthereumConfig,
@@ -53,8 +52,8 @@ impl EthereumListener {
 
         let persist_ctx = self.persist_ctx.clone();
 
-        // 🔑 keep reconnecting with exponential backoff
-        let _: JoinHandle<()> = tokio::spawn(async move {
+        // keep reconnecting with exponential backoff
+        tokio::spawn(async move {
             let mut delay = Duration::from_secs(5);
 
             loop {

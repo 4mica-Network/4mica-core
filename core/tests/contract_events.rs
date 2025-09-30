@@ -387,8 +387,9 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
             .one(persist_ctx.db.as_ref())
             .await?
         {
-            assert_eq!(w.status, WithdrawalStatus::Cancelled);
-            break;
+            if w.status == WithdrawalStatus::Cancelled {
+                break;
+            }
         }
         if tries > NUMBER_OF_TRIALS {
             listener.abort();

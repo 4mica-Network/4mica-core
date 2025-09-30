@@ -41,10 +41,12 @@ contract Core4MicaScript is Script {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
 
-        bytes32 guaranteeSigningKey = vm.envBytes32("GUARANTEE_SIGNING_KEY");
-        BLS.G1Point memory guaranteeVerificationKey = BlsHelper.getPublicKey(
-            guaranteeSigningKey
-        );
+        BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
+            x_a: vm.envBytes32("VK_X0"),
+            x_b: vm.envBytes32("VK_X1"),
+            y_a: vm.envBytes32("VK_Y0"),
+            y_b: vm.envBytes32("VK_Y1")
+        });
 
         vm.startBroadcast(deployerPrivateKey);
 
