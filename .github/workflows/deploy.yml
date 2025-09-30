@@ -59,9 +59,14 @@ jobs:
           sleep 60
           cat anvil.log
 
+      - name: Run Solidity tests
+        working-directory: contracts
+        run: forge test -vvvv
+
       - name: Deploy smart contract
+        working-directory: contracts
         run: |
-          forge script contracts/script/Core4Mica.s.sol:Core4MicaScript \
+          forge script script/Core4Mica.s.sol:Core4MicaScript \
             --rpc-url http://127.0.0.1:8545 \ 
             --broadcast \
             --via-ir \
