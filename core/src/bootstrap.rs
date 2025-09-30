@@ -1,11 +1,12 @@
 use core_service::{
     config::{AppConfig, ServerConfig},
-    service::CoreService,
+    service::{CoreService, CoreServiceRpc},
 };
+use env_logger::Env;
 use jsonrpsee::server::Server;
 use log::info;
 use rpc::core::CoreApiServer;
-use std::env;
+use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -29,8 +30,7 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         log_level,
     } = &app_config.server_config;
 
-    env::set_var("RUST_LOG", log_level.as_str());
-    env_logger::init();
+    env_logger::Builder::from_env(Env::default().default_filter_or(log_level.as_str())).init();
 
     let cors = CorsLayer::new()
         .allow_methods(Any)
@@ -43,10 +43,11 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         .build(format!("{host}:{port}"))
         .await?;
 
-    let service = CoreService::new(app_config).await?;
+    let service = Arc::new(CoreService::new(app_config).await?);
+    service.monitor_transactions();
 
     info!("Running server on {}...", server.local_addr()?);
-    let handle = server.start(service.into_rpc());
+    let handle = server.start(CoreServiceRpc(service).into_rpc());
     handle.stopped().await;
 
     Ok(())

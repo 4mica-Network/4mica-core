@@ -1,46 +1,79 @@
+use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentGuaranteeClaims {
-    pub user_addr: String,
-    pub recipient_addr: String,
-    pub tx_hash: String,
-    pub amount: f64,
+    pub user_address: String,
+    pub recipient_address: String,
+    pub tab_id: U256,
+    pub req_id: U256,
+    pub amount: U256,
+    pub timestamp: u64,
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
-    type Error = serde_json::Error;
+    type Error = anyhow::Error;
 
     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        serde_json::to_vec(&self)
+        crypto::guarantee::encode_guarantee_bytes(
+            self.tab_id,
+            self.req_id,
+            &self.user_address,
+            &self.recipient_address,
+            self.amount,
+            self.timestamp,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to encode guarantee bytes: {}", e))
     }
 }
 
-impl TryFrom<Vec<u8>> for PaymentGuaranteeClaims {
-    type Error = serde_json::Error;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningScheme {
+    Eip712,
+    Eip191, // optional fallback (personal_sign)
+}
 
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        serde_json::from_slice(&value)
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentGuaranteeRequest {
+    pub claims: PaymentGuaranteeClaims,
+    /// 65-byte signature as 0x-prefixed hex
+    pub signature: String,
+    pub scheme: SigningScheme,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTransactionInfo {
-    pub user_addr: String,
-    pub recipient_addr: String,
+    pub user_address: String,
+    pub recipient_address: String,
     pub tx_hash: String,
-    pub amount: f64,
+    pub amount: U256,
     pub verified: bool,
     pub finalized: bool,
     pub failed: bool,
-    pub cert: Option<String>,
     pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePaymentTabRequest {
+    pub user_address: String,
+    pub recipient_address: String,
+    // ttl in seconds
+    pub ttl: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePaymentTabResult {
+    pub id: U256,
+    pub user_address: String,
+    pub recipient_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInfo {
-    pub deposit: f64,
-    pub available_deposit: f64,
+    pub collateral: U256,
+    pub available_collateral: U256,
+    pub guarantees: Vec<PaymentGuaranteeClaims>,
     pub transactions: Vec<UserTransactionInfo>,
 }
 
@@ -50,11 +83,4 @@ pub enum PaymentVerificationResult {
     Verified(PaymentGuaranteeClaims),
     AlreadyVerified(PaymentGuaranteeClaims),
     InvalidCertificate,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TransactionVerificationResult {
-    Verified,
-    AlreadyVerified,
-    NotFound,
 }

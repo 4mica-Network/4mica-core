@@ -1,23 +1,39 @@
-use crate::config::AppConfig;
-use crate::ethereum::EthereumListener;
-use crate::persist::repo::{self, SubmitPaymentTxnError};
-use crate::persist::PersistCtx;
-
-use alloy::primitives::B256;
-use alloy::providers::fillers::{
-    BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+use crate::{
+    auth::verify_promise_signature,
+    config::{AppConfig, DEFAULT_TTL_SECS},
+    error::{ServiceError, ServiceResult, service_error_to_rpc},
+    ethereum::EthereumListener,
+    persist::{PersistCtx, repo},
+    util::u256_to_string,
 };
-use alloy::providers::{Identity, ProviderBuilder, RootProvider, WsConnect};
-use alloy::rpc::types::Transaction;
+use alloy::{
+    primitives::U256,
+    providers::{
+        Identity, ProviderBuilder, RootProvider, WsConnect,
+        fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller},
+    },
+    rpc::types::Transaction,
+};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
+use blockchain::txtools::PaymentTx;
+use chrono::TimeZone;
 use crypto::bls::BLSCert;
+use entities::sea_orm_active_enums::TabStatus;
 use log::{error, info};
-use rpc::common::{
-    PaymentGuaranteeClaims, TransactionVerificationResult, UserInfo, UserTransactionInfo,
+use rpc::{
+    RpcResult,
+    common::*,
+    core::{CoreApiServer, CorePublicParameters},
 };
-use rpc::core::{CoreApiServer, CorePublicParameters};
-use rpc::RpcResult;
+use std::{str::FromStr, sync::Arc};
+use tokio::sync::RwLock;
+use tokio::{
+    spawn,
+    time::{Duration, sleep},
+};
+use tokio_cron_scheduler::{Job, JobScheduler};
 
 type EthereumProvider = FillProvider<
     JoinFill<
@@ -31,53 +47,321 @@ pub struct CoreService {
     config: AppConfig,
     public_params: CorePublicParameters,
     persist_ctx: PersistCtx,
+    provider: RwLock<Option<EthereumProvider>>,
 }
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        let public_key = crypto::bls::pub_key_from_priv_key(&config.secrets.bls_private_key)?;
-        info!("BLS Public Key: {}", hex::encode(&public_key));
+        let bls_private_key = config.secrets.bls_private_key.bytes();
+        if bls_private_key.len() != 32 {
+            anyhow::bail!("BLS private key must be 32 bytes");
+        }
 
+        let public_key = crypto::bls::pub_key_from_scalar(bls_private_key.try_into()?)?;
+        info!(
+            "Operator started with BLS Public Key: {}",
+            hex::encode(&public_key)
+        );
+
+        let chain_id = config.ethereum_config.chain_id;
         let persist_ctx = PersistCtx::new().await?;
+        let persist_ctx_clone = persist_ctx.clone();
+        let eth_cfg = config.ethereum_config.clone();
 
-        EthereumListener::new(config.ethereum_config.clone(), persist_ctx.clone())
-            .run()
-            .await?;
+        spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                match EthereumListener::new(eth_cfg.clone(), persist_ctx_clone.clone())
+                    .run()
+                    .await
+                {
+                    Ok(_) => {
+                        info!("EthereumListener exited gracefully");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("EthereumListener error: {e}. Restarting in {delay:?}…");
+                        sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(60));
+                    }
+                }
+            }
+        });
 
+        let eip712_name = config.eip712.name.clone();
+        let eip712_version = config.eip712.version.clone();
         Ok(Self {
             config,
-            public_params: CorePublicParameters { public_key },
+            public_params: CorePublicParameters {
+                public_key,
+                eip712_name,
+                eip712_version,
+                chain_id,
+            },
             persist_ctx,
+            provider: RwLock::new(None),
         })
     }
 
-    /// Get the details for the websocket connection
+    fn bls_private_key(&self) -> [u8; 32] {
+        self.config
+            .secrets
+            .bls_private_key
+            .bytes()
+            .try_into()
+            .expect("BLS private key must be 32 bytes")
+    }
+
+    /// Periodically scan Ethereum for tab payments.
+    async fn scan_blockchain(&self, lookback: u64) -> anyhow::Result<()> {
+        let provider = self.get_ethereum_provider().await.inspect_err(|e| {
+            error!("get_ethereum_provider failed: {e}");
+        })?;
+        let events = txtools::scan_tab_payments(&provider, lookback)
+            .await
+            .inspect_err(|e| {
+                error!("scan_tab_payments failed: {e}");
+            })?;
+
+        self.handle_discovered_payments(events)
+            .await
+            .inspect_err(|e| {
+                error!("failed to persist discovered payments: {e}");
+            })?;
+
+        Ok(())
+    }
+
+    /// Persist and unlock user collateral for each discovered on-chain payment.
+    async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
+        for ev in events {
+            let from = format!("{:?}", ev.from);
+            let to = format!("{:?}", ev.to);
+            let tx_hash = format!("{:?}", ev.tx_hash);
+            let amount = ev.amount;
+
+            info!(
+                "Persisting payment tx: block={} from={} to={} tab_id={} req_id={} amount={} hash={}",
+                ev.block_number, from, to, ev.tab_id, ev.req_id, amount, tx_hash
+            );
+
+            repo::submit_payment_transaction(
+                &self.persist_ctx,
+                from.clone(),
+                to.clone(),
+                tx_hash,
+                amount,
+            )
+            .await?;
+
+            // tab_id is already U256 in PaymentTx
+            repo::unlock_user_collateral(&self.persist_ctx, ev.tab_id, amount).await?;
+        }
+        Ok(())
+    }
+
+    /// Spawn a background cron scheduler that periodically
+    /// checks Ethereum and updates user collateral / tab status.
+    pub fn monitor_transactions(self: &Arc<Self>) {
+        let cron_expr = self.config.ethereum_config.cron_job_settings.clone();
+        let num_blocks = self.config.ethereum_config.number_of_blocks_to_confirm;
+
+        let service = Arc::clone(self);
+
+        tokio::spawn(async move {
+            if let Err(e) = CoreService::start_scheduler(service, &cron_expr, num_blocks).await {
+                error!("scheduler exited with error: {e}");
+            }
+        });
+    }
+
+    async fn start_scheduler(
+        service: Arc<Self>,
+        cron_expr: &str,
+        lookback: u64,
+    ) -> anyhow::Result<()> {
+        let sched = JobScheduler::new().await?;
+        let job_service = Arc::clone(&service);
+
+        let job = Job::new_async(cron_expr, move |_id, _lock| {
+            let s = Arc::clone(&job_service);
+            Box::pin(async move {
+                s.scan_blockchain(lookback).await.ok();
+            })
+        })?;
+
+        sched.add(job).await?;
+        sched.start().await?;
+        tokio::signal::ctrl_c().await?;
+        Ok(())
+    }
+
     pub fn ws_connection_details(&self) -> WsConnect {
         WsConnect::new(&self.config.ethereum_config.ws_rpc_url)
     }
 
-    /// Obtain an [`EthereumProvider`], given the connection details in `self.config`.
-    pub async fn get_ethereum_provider(&self) -> RpcResult<EthereumProvider> {
-        ProviderBuilder::new()
-            .connect_ws(self.ws_connection_details())
-            .await
-            .map_err(|err| {
-                error!("Failed to connect to Ethereum provider: {err}");
-                rpc::internal_error()
-            })
+    pub async fn get_ethereum_provider(&self) -> ServiceResult<EthereumProvider> {
+        match self.provider.read().await.as_ref() {
+            Some(p) => Ok(p.clone()),
+            None => {
+                let p = ProviderBuilder::new()
+                    .connect_ws(self.ws_connection_details())
+                    .await
+                    .map_err(|err| {
+                        error!("Failed to connect to Ethereum provider: {err}");
+                        ServiceError::Other(anyhow!(err))
+                    })?;
+                *self.provider.write().await = Some(p.clone());
+                Ok(p)
+            }
+        }
     }
 
-    /// Validate that a given [`Transaction`] has a given `sender`, `recipient` and `amount`.
     pub fn validate_transaction(
         tx: &Transaction,
         sender_address: &str,
         recipient_address: &str,
-        amount: f64,
-    ) -> RpcResult<()> {
-        let user = txtools::parse_eth_address(sender_address, "user")?;
-        let recipient = txtools::parse_eth_address(recipient_address, "recipient")?;
-        let expected = txtools::convert_amount_to_u256(amount)?;
-        txtools::validate_transaction(tx, user, recipient, expected)
+        amount: U256,
+    ) -> ServiceResult<()> {
+        let user = txtools::parse_eth_address(sender_address, "user")
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))?;
+        let recipient = txtools::parse_eth_address(recipient_address, "recipient")
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))?;
+        txtools::validate_transaction(tx, user, recipient, amount)
+            .map_err(|e| ServiceError::InvalidParams(e.to_string()))
+    }
+
+    async fn preflight_promise_checks(&self, req: &PaymentGuaranteeRequest) -> ServiceResult<()> {
+        verify_promise_signature(&self.public_params, req)?;
+
+        let promise = &req.claims;
+        let last_opt = repo::get_last_guarantee_for_tab(&self.persist_ctx, promise.tab_id)
+            .await
+            .map_err(ServiceError::from)?;
+
+        let cur_req_id = promise.req_id;
+        match last_opt {
+            Some(ref last) => {
+                let prev_req_id = U256::from_str(&last.req_id).map_err(|e| {
+                    ServiceError::InvalidParams(format!("Invalid prev_req_id: {}", e))
+                })?;
+
+                if cur_req_id.wrapping_sub(prev_req_id) != U256::from(1u8) {
+                    info!(
+                        "Invalid req_id: current={}, previous={}",
+                        cur_req_id, prev_req_id
+                    );
+                    return Err(ServiceError::InvalidRequestID);
+                }
+
+                let prev_ts_i64 = last.start_ts.and_utc().timestamp();
+                if prev_ts_i64 < 0 {
+                    return Err(ServiceError::Other(anyhow!("Negative previous start_ts")));
+                }
+
+                let prev_start_ts = prev_ts_i64 as u64;
+                if promise.timestamp != prev_start_ts {
+                    return Err(ServiceError::ModifiedStartTs);
+                }
+            }
+            None => {
+                info!(
+                    "No previous guarantee found for tab_id={}. This must be the first request. req_id = {}",
+                    promise.tab_id, promise.req_id
+                );
+                if promise.req_id != U256::ZERO {
+                    return Err(ServiceError::InvalidRequestID);
+                }
+            }
+        }
+
+        let now_i64 = chrono::Utc::now().timestamp();
+        if now_i64 < 0 {
+            return Err(ServiceError::Other(anyhow!("System time before epoch")));
+        }
+        let now_secs = now_i64 as u64;
+
+        if now_secs < promise.timestamp {
+            return Err(ServiceError::FutureTimestamp);
+        }
+
+        let Some(tab) = repo::get_tab_by_id(&self.persist_ctx, promise.tab_id).await? else {
+            return Err(ServiceError::NotFound(u256_to_string(promise.tab_id)));
+        };
+
+        if (tab.status == TabStatus::Pending) != (promise.req_id == U256::ZERO) {
+            return Err(ServiceError::InvalidRequestID);
+        }
+
+        if tab.status == TabStatus::Pending {
+            let start_ts = chrono::Utc
+                .timestamp_opt(promise.timestamp as i64, 0)
+                .single()
+                .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
+                .naive_utc();
+            repo::open_tab(&self.persist_ctx, promise.tab_id, start_ts).await?;
+        }
+
+        if tab.ttl <= 0 {
+            return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
+        }
+
+        let expiry = promise.timestamp.saturating_add(tab.ttl as u64);
+        if expiry < now_secs {
+            return Err(ServiceError::TabClosed);
+        }
+
+        Ok(())
+    }
+
+    async fn create_bls_cert(&self, promise: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
+        BLSCert::new(&self.bls_private_key(), promise)
+            .map_err(|err| ServiceError::Other(anyhow!(err)))
+    }
+
+    async fn handle_promise(&self, req: PaymentGuaranteeRequest) -> ServiceResult<BLSCert> {
+        let promise = req.claims.clone();
+
+        info!(
+            "Received guarantee request; tab_id={}, req_id={}, amount={}",
+            promise.tab_id, promise.req_id, promise.amount
+        );
+        self.preflight_promise_checks(&req).await?;
+        let cert: BLSCert = self.create_bls_cert(promise.clone()).await?;
+
+        repo::lock_and_store_guarantee(&self.persist_ctx, &promise, &cert)
+            .await
+            .map_err(ServiceError::from)?;
+        Ok(cert)
+    }
+
+    async fn create_payment_tab(
+        &self,
+        req: CreatePaymentTabRequest,
+    ) -> ServiceResult<CreatePaymentTabResult> {
+        let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
+        let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
+
+        let now = crate::util::now_naive();
+        if now.and_utc().timestamp() < 0 {
+            return Err(ServiceError::Other(anyhow!("System time before epoch")));
+        }
+
+        repo::create_pending_tab(
+            &self.persist_ctx,
+            tab_id,
+            &req.user_address,
+            &req.recipient_address,
+            now,
+            ttl as i64,
+        )
+        .await?;
+
+        Ok(CreatePaymentTabResult {
+            id: tab_id,
+            user_address: req.user_address,
+            recipient_address: req.recipient_address,
+        })
     }
 }
 
@@ -87,129 +371,42 @@ impl CoreApiServer for CoreService {
         Ok(self.public_params.clone())
     }
 
-    async fn register_user(&self, user_addr: String) -> RpcResult<()> {
-        repo::register_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to register user {err}");
-                rpc::internal_error()
-            })?;
-        Ok(())
+    async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert> {
+        self.handle_promise(req).await.map_err(service_error_to_rpc)
     }
 
-    async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>> {
-        let Some(user) = repo::get_user(&self.persist_ctx, user_addr)
-            .await
-            .map_err(|err| {
-                error!("Failed to get user {err}");
-                rpc::internal_error()
-            })?
-        else {
-            return Ok(None);
-        };
-
-        let transactions = user.transactions.unwrap();
-        let not_usable_deposit = transactions
-            .iter()
-            .filter_map(|tx| if !tx.finalized { Some(tx.amount) } else { None })
-            .sum::<f64>();
-
-        Ok(Some(UserInfo {
-            deposit: user.deposit,
-            available_deposit: user.deposit - not_usable_deposit,
-            transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
-        }))
-    }
-
-    async fn issue_payment_cert(
+    async fn create_payment_tab(
         &self,
-        user_addr: String,
-        recipient_addr: String,
-        transaction_id: String,
-        amount: f64,
-    ) -> RpcResult<BLSCert> {
-        info!("Issuing cert for user: {user_addr}, recipient: {recipient_addr}, tx_hash: {transaction_id}, amount: {amount}");
+        req: CreatePaymentTabRequest,
+    ) -> RpcResult<CreatePaymentTabResult> {
+        self.create_payment_tab(req)
+            .await
+            .map_err(service_error_to_rpc)
+    }
+}
 
-        let provider = self.get_ethereum_provider().await?;
-
-        let tx_hash = transaction_id
-            .as_bytes()
-            .try_into()
-            .map_err(|err| {
-                error!("Invalid transaction hash: {err}");
-                rpc::invalid_params_error("Invalid transaction hash")
-            })
-            .map(B256::new)?;
-        let tx = txtools::fetch_transaction(&provider, tx_hash).await?;
-        Self::validate_transaction(&tx, &user_addr, &recipient_addr, amount)?;
-
-        let claims = PaymentGuaranteeClaims {
-            user_addr: user_addr.clone(),
-            recipient_addr: recipient_addr.clone(),
-            tx_hash: transaction_id.clone(),
-            amount,
-        };
-        let cert = BLSCert::new(&self.config.secrets.bls_private_key, claims).map_err(|err| {
-            error!("Failed to issue the payment guarantee cert: {err}");
-            rpc::internal_error()
-        })?;
-
-        let cert_str = serde_json::to_string(&cert).map_err(|err| {
-            error!("Failed to serialize the payment guarantee cert: {err}");
-            rpc::internal_error()
-        })?;
-        repo::submit_payment_transaction(
-            &self.persist_ctx,
-            user_addr.clone(),
-            recipient_addr.clone(),
-            transaction_id.clone(),
-            amount,
-            cert_str,
-        )
-        .await
-        .map_err(|err| {
-            match err {
-                SubmitPaymentTxnError::QueryError(query_error) => {
-                    error!("{query_error}");
-                    rpc::internal_error()
-                }
-                SubmitPaymentTxnError::UserNotRegistered
-                | SubmitPaymentTxnError::NotEnoughDeposit
-                // We should retry it ourselves if there was a conflict!
-                | SubmitPaymentTxnError::ConflictingTransactions => {
-                    rpc::invalid_params_error(&format!("{err}"))
-                }
-            }
-        })?;
-
-        Ok(cert)
+#[derive(Clone)]
+pub struct CoreServiceRpc(pub Arc<CoreService>);
+#[async_trait]
+impl CoreApiServer for CoreServiceRpc {
+    async fn get_public_params(&self) -> RpcResult<CorePublicParameters> {
+        Ok(self.0.public_params.clone())
     }
 
-    async fn get_transactions_by_hash(
-        &self,
-        hashes: Vec<String>,
-    ) -> RpcResult<Vec<UserTransactionInfo>> {
-        let transactions = repo::get_transactions_by_hash(&self.persist_ctx, hashes)
+    async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert> {
+        self.0
+            .handle_promise(req)
             .await
-            .map_err(|err| {
-                error!("Failed to get user {err}");
-                rpc::internal_error()
-            })?;
-
-        Ok(transactions.into_iter().map(|tx| tx.into()).collect())
+            .map_err(service_error_to_rpc)
     }
 
-    async fn verify_transaction(
+    async fn create_payment_tab(
         &self,
-        tx_hash: String,
-    ) -> RpcResult<TransactionVerificationResult> {
-        let verified = repo::verify_transaction(&self.persist_ctx, tx_hash)
+        req: CreatePaymentTabRequest,
+    ) -> RpcResult<CreatePaymentTabResult> {
+        self.0
+            .create_payment_tab(req)
             .await
-            .map_err(|err| {
-                error!("Failed to verify transaction {err}");
-                rpc::internal_error()
-            })?;
-
-        Ok(verified)
+            .map_err(service_error_to_rpc)
     }
 }

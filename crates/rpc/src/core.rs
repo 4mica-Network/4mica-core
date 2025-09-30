@@ -1,41 +1,30 @@
-use crate::common::{TransactionVerificationResult, UserInfo, UserTransactionInfo};
-use crate::RpcResult;
+use crate::{
+    RpcResult,
+    common::{CreatePaymentTabRequest, CreatePaymentTabResult, PaymentGuaranteeRequest},
+};
 use crypto::bls::BLSCert;
 use jsonrpsee::proc_macros::rpc;
 use serde::{Deserialize, Serialize};
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CorePublicParameters {
-    pub public_key: Vec<u8>,
-}
 
+pub struct CorePublicParameters {
+    pub public_key: Vec<u8>, // existing BLS pubkey
+    // new (helps clients sign EIP-712 correctly)
+    pub eip712_name: String,    // e.g., "4mica"
+    pub eip712_version: String, // e.g., "1"
+    pub chain_id: u64,          // Ethereum chain id used for signing domain
+}
 #[rpc(server, client, namespace = "core")]
 pub trait CoreApi {
     #[method(name = "getPublicParams")]
     async fn get_public_params(&self) -> RpcResult<CorePublicParameters>;
 
-    #[method(name = "registerUser")]
-    async fn register_user(&self, user_addr: String) -> RpcResult<()>;
+    #[method(name = "issueGuarantee")]
+    async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert>;
 
-    #[method(name = "getUser")]
-    async fn get_user(&self, user_addr: String) -> RpcResult<Option<UserInfo>>;
-
-    #[method(name = "issuePaymentCert")]
-    async fn issue_payment_cert(
+    #[method(name = "createPaymentTab")]
+    async fn create_payment_tab(
         &self,
-        user_addr: String,
-        recipient_addr: String,
-        transaction_id: String,
-        amount: f64,
-    ) -> RpcResult<BLSCert>;
-
-    #[method(name = "getTransactionsByHash")]
-    async fn get_transactions_by_hash(
-        &self,
-        hashes: Vec<String>,
-    ) -> RpcResult<Vec<UserTransactionInfo>>;
-
-    #[method(name = "verifyTransaction")]
-    async fn verify_transaction(&self, tx_hash: String)
-        -> RpcResult<TransactionVerificationResult>;
+        req: CreatePaymentTabRequest,
+    ) -> RpcResult<CreatePaymentTabResult>;
 }

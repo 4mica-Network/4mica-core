@@ -2,21 +2,51 @@ name: CI/CD
 
 on:
   push:
-    branches: ["develop", "main"]
+    branches:
+      - "**"
+  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      pg:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: core
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Cache cargo
         uses: actions/cache@v3
@@ -29,31 +59,84 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # TODO: this two should be uncommented while the postgre is removed. Now it requires a full setup for build that is not efficient.
-      # - name: Build workspace
-      #   run: cargo build --release --workspace
+      - name: foundry-toolchain
+        uses: foundry-rs/foundry-toolchain@v1.4.0
 
-      # - name: Run tests
-      #   run: cargo test --workspace
-  # clippy:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: stable
-  #         components: clippy
-  #     - run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Start anvil (Prague)
+        run: |
+          nohup anvil --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
+          sleep 10
+          cat anvil.log
 
-  # rustfmt:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: stable
-  #         components: rustfmt
-  #     - run: cargo fmt --all -- --check
+      - name: Run Solidity tests
+        working-directory: contracts
+        run: forge test -vvvv
+
+      - name: Deploy smart contract
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          VK_X0: ${{ secrets.VK_X0 }}
+          VK_X1: ${{ secrets.VK_X1 }}
+          VK_Y0: ${{ secrets.VK_Y0 }}
+          VK_Y1: ${{ secrets.VK_Y1 }}
+          GUARANTEE_SIGNING_KEY: "${{ secrets.VK_X0 }} ${{ secrets.VK_X1 }} ${{ secrets.VK_Y0 }} ${{ secrets.VK_Y1 }}"
+        working-directory: contracts
+        run: |
+          forge script script/Core4Mica.s.sol:Core4MicaScript \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --via-ir \
+            -vvvv
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run cargo check
+        run: cargo check --workspace --all-targets --all-features
+
+      #TODO: Enable -D warnings
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features
+
+      - name: Build workspace
+        run: cargo build --release --workspace
+
+      - name: Run migrations
+        working-directory: crates/migration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: cargo run -- up
+
+      - name: Start API service
+        working-directory: core
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SERVER_HOST: 0.0.0.0
+          SERVER_PORT: 3000
+          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
+          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
+        run: |
+          nohup cargo run -p core-service > api.log 2>&1 &
+          for i in {1..30}; do
+            if nc -z 127.0.0.1 3000; then
+              echo "API is up!"
+              break
+            fi
+            echo "Waiting for API..."
+            sleep 20
+          done
+          cat api.log
+
+      - name: Run tests
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
+          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
+          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+        run: cargo test --workspace -- --test-threads=1
 
   deploy-develop:
     needs: build
@@ -68,10 +151,11 @@ jobs:
       - name: Deploy to staging server
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           cd /home/deploy/4mica-core
           git fetch origin develop
           git reset --hard origin/develop
+          git submodule update --init --recursive
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
@@ -89,10 +173,11 @@ jobs:
       - name: Deploy to production server
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           cd /home/deploy/4mica-core
           git fetch origin main
           git reset --hard origin/main
+          git submodule update --init --recursive
           cargo build --release --workspace
           systemctl --user restart 4mica
           EOF
