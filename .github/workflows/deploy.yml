@@ -36,6 +36,13 @@ jobs:
           toolchain: stable
           override: true
 
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
