@@ -84,7 +84,7 @@ jobs:
 
       - name: Run tests
         env:
-          DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
+          DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
