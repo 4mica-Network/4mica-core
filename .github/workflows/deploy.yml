@@ -119,7 +119,7 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           ETHEREUM_CONTRACT_ADDRESS: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
-        run: cargo test --workspace
+        run: cargo test --workspace -- --test-threads=1
 
   deploy-develop:
     needs: build
