@@ -1,5 +1,5 @@
 use crate::error::PersistDbError;
-use crate::persist::PersistCtx;
+use crate::persist::*;
 use crate::util::u256_to_string;
 use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
@@ -461,7 +461,7 @@ pub async fn get_unfinalized_transactions(
 ///   1. Check the user has enough *free* collateral
 ///   2. Increment `locked_collateral` and bump version
 ///   3. Insert the guarantee row
-/// Returns the serialized BLS cert string you passed in on success.
+///   4. Returns the serialized BLS cert string you passed in on success.
 pub async fn lock_and_store_guarantee(
     ctx: &PersistCtx,
     promise: &PaymentGuaranteeClaims,
@@ -509,17 +509,16 @@ pub async fn lock_and_store_guarantee(
                 .await?;
 
                 // --- 3. insert guarantee
-                store_guarantee_on(
-                    txn,
-                    promise.tab_id,
-                    promise.req_id,
-                    promise.user_address.clone(),
-                    promise.recipient_address.clone(),
-                    promise.amount,
-                    start_dt,
-                    cert_str,
-                )
-                .await?;
+                let data = GuaranteeData {
+                    tab_id: promise.tab_id,
+                    req_id: promise.req_id,
+                    from: promise.user_address.clone(),
+                    to: promise.recipient_address.clone(),
+                    value: promise.amount,
+                    start_ts: start_dt,
+                    cert: cert_str.clone(),
+                };
+                store_guarantee_on(txn, data).await?;
 
                 Ok::<_, PersistDbError>(())
             })
@@ -536,28 +535,22 @@ pub async fn lock_and_store_guarantee(
 /// If a (tab_id, req_id) row already exists → no-op.
 pub async fn store_guarantee_on<C: ConnectionTrait>(
     conn: &C,
-    tab_id: U256,
-    req_id: U256,
-    from_addr: String,
-    to_addr: String,
-    value: U256,
-    start_ts: chrono::NaiveDateTime,
-    cert: String,
+    data: GuaranteeData,
 ) -> Result<(), PersistDbError> {
     let now = chrono::Utc::now().naive_utc();
 
     // Make sure both user records exist in the same transaction.
-    ensure_user_exists_on(conn, &from_addr).await?;
-    ensure_user_exists_on(conn, &to_addr).await?;
+    ensure_user_exists_on(conn, &data.from).await?;
+    ensure_user_exists_on(conn, &data.to).await?;
 
     let active_model = guarantee::ActiveModel {
-        tab_id: Set(u256_to_string(tab_id)),
-        req_id: Set(u256_to_string(req_id)),
-        from_address: Set(from_addr),
-        to_address: Set(to_addr),
-        value: Set(value.to_string()),
-        start_ts: Set(start_ts),
-        cert: Set(cert),
+        tab_id: Set(u256_to_string(data.tab_id)),
+        req_id: Set(u256_to_string(data.req_id)),
+        from_address: Set(data.from),
+        to_address: Set(data.to),
+        value: Set(data.value.to_string()),
+        start_ts: Set(data.start_ts),
+        cert: Set(data.cert),
         created_at: Set(now),
         updated_at: Set(now),
     };

@@ -1,3 +1,4 @@
+use alloy::primitives::U256;
 use entities::user_transaction;
 use rpc::common::UserTransactionInfo;
 use sea_orm::{Database, DatabaseConnection};
@@ -8,6 +9,16 @@ pub mod repo;
 #[derive(Clone)]
 pub struct PersistCtx {
     pub db: Arc<DatabaseConnection>,
+}
+
+pub struct GuaranteeData {
+    pub tab_id: U256,
+    pub req_id: U256,
+    pub from: String,
+    pub to: String,
+    pub value: U256,
+    pub start_ts: chrono::NaiveDateTime,
+    pub cert: String,
 }
 
 impl PersistCtx {
