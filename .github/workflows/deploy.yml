@@ -58,7 +58,7 @@ jobs:
       - name: Start anvil (Prague)
         run: |
           nohup anvil --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
-          sleep 60
+          sleep 10
           cat anvil.log
 
       - name: Run Solidity tests
@@ -84,16 +84,18 @@ jobs:
       - name: Build workspace
         run: cargo build --release --workspace
 
-      - name: Initializing Postgres
+      - name: Run migrations
+        working-directory: crates/migration
+        env:
+          DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
+        run: cargo run -- up
+
+      - name: Start API service
+        working-directory: core
         run: |
-          for i in {1..30}; do
-            if pg_isready -h localhost -U postgres; then
-              echo "Postgres is ready!"
-              break
-            fi
-            echo "Waiting for Postgres..."
-            sleep 2
-          done
+          nohup cargo run -p core-service > api.log 2>&1 &
+          sleep 10
+          cat api.log
 
       - name: Run tests
         env:
