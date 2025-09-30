@@ -2,8 +2,7 @@ use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::error::PersistDbError;
-use core_service::persist::PersistCtx;
-use core_service::persist::repo;
+use core_service::persist::*;
 use core_service::util::u256_to_string;
 use crypto::bls::BLSCert;
 use entities::{guarantee, user};
@@ -84,17 +83,16 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let to_addr = random_eth_address();
     let req_id = random_u256();
 
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
+    let data = GuaranteeData {
         tab_id,
         req_id,
-        from_addr.clone(),
-        to_addr.clone(),
-        U256::from(42u64),
-        now,
-        "cert".into(),
-    )
-    .await?;
+        from: from_addr.clone(),
+        to: to_addr.clone(),
+        value: U256::from(42u64),
+        start_ts: now,
+        cert: "cert".into(),
+    };
+    repo::store_guarantee_on(ctx.db.as_ref(), data).await?;
 
     // from & to must exist now
     let from = user::Entity::find()
@@ -153,30 +151,28 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         .await?;
 
     // ── First insert of the guarantee ──
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
+    let data1 = GuaranteeData {
         tab_id,
         req_id,
-        from_addr.clone(),
-        to_addr.clone(),
-        U256::from(100u64),
-        now,
-        "cert".into(),
-    )
-    .await?;
+        from: from_addr.clone(),
+        to: to_addr.clone(),
+        value: U256::from(100u64),
+        start_ts: now,
+        cert: "cert".into(),
+    };
+    repo::store_guarantee_on(ctx.db.as_ref(), data1).await?;
 
     // ── Second insert with same (tab_id, req_id) must be a no-op ──
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
+    let data2 = GuaranteeData {
         tab_id,
         req_id,
-        from_addr,
-        to_addr,
-        U256::from(200u64),
-        now,
-        "cert2".into(),
-    )
-    .await?;
+        from: from_addr,
+        to: to_addr,
+        value: U256::from(200u64),
+        start_ts: now,
+        cert: "cert2".into(),
+    };
+    repo::store_guarantee_on(ctx.db.as_ref(), data2).await?;
 
     // ── Verify only the first value persisted ──
     let g = guarantee::Entity::find()
@@ -226,30 +222,28 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     // two guarantees with increasing req_id and later created_at
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
+    let g1 = GuaranteeData {
         tab_id,
-        U256::from(1u64),
-        user_addr.clone(),
-        random_eth_address(),
-        U256::from(10u64),
-        now,
-        "cert1".into(),
-    )
-    .await?;
+        req_id: U256::from(1u64),
+        from: user_addr.clone(),
+        to: random_eth_address(),
+        value: U256::from(10u64),
+        start_ts: now,
+        cert: "cert1".into(),
+    };
+    repo::store_guarantee_on(ctx.db.as_ref(), g1).await?;
     // ensure created_at differs
     sleep(Duration::from_millis(10)).await;
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
+    let g2 = GuaranteeData {
         tab_id,
-        U256::from(2u64),
-        user_addr,
-        random_eth_address(),
-        U256::from(20u64),
-        now,
-        "cert2".into(),
-    )
-    .await?;
+        req_id: U256::from(2u64),
+        from: user_addr,
+        to: random_eth_address(),
+        value: U256::from(20u64),
+        start_ts: now,
+        cert: "cert2".into(),
+    };
+    repo::store_guarantee_on(ctx.db.as_ref(), g2).await?;
 
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
@@ -335,28 +329,26 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     // Insert two guarantees with different req_ids
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
+    let g1 = GuaranteeData {
         tab_id,
-        U256::from(0xA),
-        user_addr.clone(),
-        random_eth_address(),
-        U256::from(10u64),
-        now,
-        "cert-A".into(),
-    )
-    .await?;
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
+        req_id: U256::from(0xA),
+        from: user_addr.clone(),
+        to: random_eth_address(),
+        value: U256::from(10u64),
+        start_ts: now,
+        cert: "cert-A".into(),
+    };
+    repo::store_guarantee_on(ctx.db.as_ref(), g1).await?;
+    let g2 = GuaranteeData {
         tab_id,
-        U256::from(0xB),
-        user_addr,
-        random_eth_address(),
-        U256::from(20u64),
-        now,
-        "cert-B".into(),
-    )
-    .await?;
+        req_id: U256::from(0xB),
+        from: user_addr,
+        to: random_eth_address(),
+        value: U256::from(20u64),
+        start_ts: now,
+        cert: "cert-B".into(),
+    };
+    repo::store_guarantee_on(ctx.db.as_ref(), g2).await?;
 
     // The function should return the row with req_id = 0xB
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;

@@ -127,7 +127,7 @@ pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Resu
 
 async fn get_block<P: Provider>(provider: &P, num: u64) -> Result<Option<Block<Transaction>>> {
     provider
-        .get_block_by_number(BlockNumberOrTag::Number(num.into()))
+        .get_block_by_number(BlockNumberOrTag::Number(num))
         .await
         .map_err(|e| TxProcessingError::Rpc(e.into()))
 }
