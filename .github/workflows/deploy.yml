@@ -82,6 +82,17 @@ jobs:
       - name: Build workspace
         run: cargo build --release --workspace
 
+      - name: Initializing Postgres
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -U postgres; then
+              echo "Postgres is ready!"
+              break
+            fi
+            echo "Waiting for Postgres..."
+            sleep 2
+          done
+
       - name: Run tests
         env:
           DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
