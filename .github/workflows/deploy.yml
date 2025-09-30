@@ -70,7 +70,7 @@ jobs:
           VK_X1: ${{ secrets.VK_X1 }}
           VK_Y0: ${{ secrets.VK_Y0 }}
           VK_Y1: ${{ secrets.VK_Y1 }}
-          GUARANTEE_SIGNING_KEY: ${{ format('{0} {1} {2} {3}', secrets.VK_X0, secrets.VK_X1, secrets.VK_Y0, secrets.VK_Y1) }}
+          GUARANTEE_SIGNING_KEY: "${{ secrets.VK_X0 }} ${{ secrets.VK_X1 }} ${{ secrets.VK_Y0 }} ${{ secrets.VK_Y1 }}"
         working-directory: contracts
         run: |
           forge script script/Core4Mica.s.sol:Core4MicaScript \
@@ -88,7 +88,7 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          ETHEREUM_CONTRACT_ADDRESS: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
+          ETHEREUM_CONTRACT_ADDRESS: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
         run: cargo test --workspace
 
   deploy-develop:
