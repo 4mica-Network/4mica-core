@@ -55,7 +55,7 @@ jobs:
 
       - name: Start anvil (Prague)
         run: |
-          nohup "anvil" --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
+          nohup anvil --hardfork prague --host 0.0.0.0 > anvil.log 2>&1 &
           sleep 60
           cat anvil.log
 
@@ -66,10 +66,15 @@ jobs:
       - name: Deploy smart contract
         env:
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          VK_X0: ${{ secrets.VK_X0 }}
+          VK_X1: ${{ secrets.VK_X1 }}
+          VK_Y0: ${{ secrets.VK_Y0 }}
+          VK_Y1: ${{ secrets.VK_Y1 }}
+          GUARANTEE_SIGNING_KEY: ${{ format('{0} {1} {2} {3}', secrets.VK_X0, secrets.VK_X1, secrets.VK_Y0, secrets.VK_Y1) }}
         working-directory: contracts
         run: |
           forge script script/Core4Mica.s.sol:Core4MicaScript \
-            --rpc-url http://127.0.0.1:8545 \ 
+            --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --via-ir \
             -vvvv
@@ -79,7 +84,7 @@ jobs:
 
       - name: Run tests
         env:
-          DATABASE_URL: postgres://postgres:qwerty123456@pg:5432/core
+          DATABASE_URL: ${{ secrets.CI_DATABASE_URL }}
         run: cargo test --workspace
 
   deploy-develop:
