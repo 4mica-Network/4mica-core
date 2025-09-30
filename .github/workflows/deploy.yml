@@ -91,12 +91,17 @@ jobs:
         run: cargo run -- up
 
       - name: Start API service
+        working-directory: core
         env:
           DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
           SERVER_HOST: 0.0.0.0
           SERVER_PORT: 3000
+          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
+          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          ETHEREUM_CONTRACT_ADDRESS: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
         run: |
-          nohup ./target/release/core-service > api.log 2>&1 &
+          nohup cargo run -p core-service > api.log 2>&1 &
           for i in {1..30}; do
             if nc -z 127.0.0.1 3000; then
               echo "API is up!"
