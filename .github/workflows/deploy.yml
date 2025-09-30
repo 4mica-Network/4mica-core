@@ -14,7 +14,7 @@ jobs:
       pg:
         image: postgres:17-alpine
         env:
-          POSTGRES_PASSWORD: qwerty123456
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_DB: core
         ports:
           - 5432:5432
@@ -87,18 +87,18 @@ jobs:
       - name: Run migrations
         working-directory: crates/migration
         env:
-          DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: cargo run -- up
 
       - name: Start API service
         working-directory: core
         env:
-          DATABASE_URL: postgres://postgres:qwerty123456@localhost:5432/core
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SERVER_HOST: 0.0.0.0
           SERVER_PORT: 3000
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          ETHEREUM_CONTRACT_ADDRESS: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
         run: |
           nohup cargo run -p core-service > api.log 2>&1 &
