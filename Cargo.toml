@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "core",
+    "sdk",
     "crates/crypto",
     "crates/rpc",
     "crates/blockchain",
@@ -36,7 +37,6 @@ bls-signatures = "0.15.0"
 hex = "0.4.3"
 test-log = "0.2.17"
 uuid = { version = "1.18", features = ["v4"] }
-alloy = "=1.0.36"
 hyper = "1.6.0"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
@@ -44,8 +44,10 @@ sea-orm = { version = "1.1.16", features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",
 ] }
+alloy = "=1.0.36"
 alloy-primitives = { version = "1.4.0" }
 alloy-sol-types = "1.4.0"
 serial_test = "3.2.0"
 sha2 = "0.10.9"
 blst = "0.3.16"
+url = "2.5.7"

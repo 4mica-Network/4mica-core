@@ -29,10 +29,10 @@ async fn setup_clean_db() -> (AppConfig, RpcProxy, PersistCtx) {
         AppConfig::fetch()
     };
     let core_addr = format!(
-        "{}:{}",
+        "http://{}:{}",
         config.server_config.host, config.server_config.port
     );
-    let core_client = RpcProxy::new(&core_addr).await.expect("connect RPC");
+    let core_client = RpcProxy::new(&core_addr).expect("connect RPC");
     let ctx = PersistCtx::new().await.expect("db ctx");
     ctx.db
         .as_ref()
