@@ -5,8 +5,10 @@ edition.workspace = true
 
 [dependencies]
 rpc = { workspace = true }
+crypto = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }
 alloy = { workspace = true }
+jsonrpsee = { workspace = true, features = ["http-client"] }

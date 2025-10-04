@@ -20,8 +20,14 @@ pub enum Error4Mica {
     #[error("Config missing: {0}")]
     ConfigMissing(String),
 
+    #[error("Invalid params: {0}")]
+    InvalidParams(String),
+
     #[error(transparent)]
-    Rpc(anyhow::Error),
+    Rpc(#[from] jsonrpsee::core::ClientError),
+
+    #[error(transparent)]
+    ContractError(#[from] alloy::contract::Error),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),

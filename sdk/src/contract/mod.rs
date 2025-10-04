@@ -1,5 +1,7 @@
 use alloy::sol;
 
+pub mod utils;
+
 sol! {
     #[sol(rpc)]
     contract Core4Mica {
@@ -62,6 +64,24 @@ sol! {
             uint256 amount;
         }
 
+        struct G1Point {
+            bytes32 x_a;
+            bytes32 x_b;
+            bytes32 y_a;
+            bytes32 y_b;
+        }
+
+        struct G2Point {
+            bytes32 x_c0_a;
+            bytes32 x_c0_b;
+            bytes32 x_c1_a;
+            bytes32 x_c1_b;
+            bytes32 y_c0_a;
+            bytes32 y_c0_b;
+            bytes32 y_c1_a;
+            bytes32 y_c1_b;
+        }
+
         // ========= Constructor =========
         /// @param manager Address of AccessManager
         /// @param verificationKey Initial BLS verification key
@@ -76,7 +96,7 @@ sol! {
         /// Remunerate a recipient based on a signed guarantee
         function remunerate(
             Guarantee calldata g,
-            (bytes32,bytes32,bytes32,bytes32,bytes32,bytes32) signature
+            G2Point signature
         ) external;
 
         // ========= Admin / Manager =========
@@ -105,7 +125,7 @@ sol! {
         function encodeGuarantee(Guarantee memory g) external pure returns (bytes memory);
         function verifyGuaranteeSignature(
             Guarantee memory g,
-            (bytes32,bytes32,bytes32,bytes32,bytes32,bytes32) signature
+            G2Point signature
         ) external view returns (bool);
     }
 }

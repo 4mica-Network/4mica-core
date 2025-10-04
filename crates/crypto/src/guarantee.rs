@@ -52,9 +52,58 @@ pub fn encode_guarantee_bytes(
             tail, &ts32,
             "Timestamp tail != expected 32-byte padded timestamp"
         );
-        // Uncomment if you want to see it
-        // eprintln!("packed msg: {}", hex::encode(&out));
     }
 
     Ok(out)
+}
+
+pub fn decode_guarantee_bytes(
+    data: &[u8],
+) -> anyhow::Result<(
+    U256,    // tab_id
+    U256,    // req_id
+    Address, // client
+    Address, // recipient
+    U256,    // amount
+    u64,     // tab_timestamp
+)> {
+    if data.len() != 168 {
+        anyhow::bail!(
+            "decode_guarantee_bytes(): wrong length (expected 168, got {})",
+            data.len()
+        );
+    }
+
+    // Offsets
+    let mut offset = 0;
+
+    // tab_id (32 bytes)
+    let tab_id = U256::from_be_slice(&data[offset..offset + 32]);
+    offset += 32;
+
+    // req_id (32 bytes)
+    let req_id = U256::from_be_slice(&data[offset..offset + 32]);
+    offset += 32;
+
+    // client (20 bytes)
+    let client = Address::from_slice(&data[offset..offset + 20]);
+    offset += 20;
+
+    // recipient (20 bytes)
+    let recipient = Address::from_slice(&data[offset..offset + 20]);
+    offset += 20;
+
+    // amount (32 bytes)
+    let amount = U256::from_be_slice(&data[offset..offset + 32]);
+    offset += 32;
+
+    // timestamp (32 bytes)
+    let ts_slice = &data[offset..offset + 32];
+    let tab_timestamp = u64::from_be_bytes(
+        ts_slice[24..32]
+            .try_into()
+            .expect("timestamp slice must be 8 bytes"),
+    );
+
+    Ok((tab_id, req_id, client, recipient, amount, tab_timestamp))
 }
