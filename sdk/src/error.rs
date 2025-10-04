@@ -1,3 +1,4 @@
+use alloy::primitives::Address;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -12,6 +13,24 @@ pub enum ValidationError {
     InvalidPrivateKey(String),
 }
 
+#[derive(Debug, Error)]
+pub enum PaymentSignError {
+    #[error("address mismatch: signer={signer:?} != claims.user_address={claims}")]
+    AddressMismatch { signer: Address, claims: String },
+
+    #[error("invalid user address in claims")]
+    InvalidUserAddress,
+
+    #[error("invalid recipient address in claims")]
+    InvalidRecipientAddress,
+
+    #[error("digest failed: {0}")]
+    DigestFailed(String),
+
+    #[error("signing failed: {0}")]
+    SigningFailed(String),
+}
+
 #[derive(Error, Debug)]
 pub enum Error4Mica {
     #[error(transparent)]
@@ -22,6 +41,9 @@ pub enum Error4Mica {
 
     #[error("Invalid params: {0}")]
     InvalidParams(String),
+
+    #[error(transparent)]
+    PaymentSign(#[from] PaymentSignError),
 
     #[error(transparent)]
     Rpc(#[from] jsonrpsee::core::ClientError),

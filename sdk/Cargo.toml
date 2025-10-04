@@ -9,6 +9,7 @@ crypto = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 url = { workspace = true }
 alloy = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }

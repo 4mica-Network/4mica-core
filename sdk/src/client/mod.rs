@@ -5,7 +5,10 @@ use crate::{
     contract::Core4Mica::{self, Core4MicaInstance},
     error::Error4Mica,
 };
-use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::{
+    providers::{DynProvider, Provider, ProviderBuilder},
+    signers::local::PrivateKeySigner,
+};
 use rpc::proxy::RpcProxy;
 
 use self::{recipient::RecipientClient, user::UserClient};
@@ -46,6 +49,10 @@ impl ClientCtx {
 
     fn rpc_proxy(&self) -> &RpcProxy {
         &self.0.rpc_proxy
+    }
+
+    fn signer(&self) -> &PrivateKeySigner {
+        &self.0.cfg.wallet_private_key
     }
 }
 
