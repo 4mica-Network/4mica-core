@@ -3,23 +3,19 @@ use std::str::FromStr;
 use alloy::primitives::{Address, FixedBytes, U256};
 use rpc::common::PaymentGuaranteeClaims;
 
-use crate::{
-    contract::Core4Mica::{G2Point, Guarantee},
-    error::Error4Mica,
-};
+use crate::contract::Core4Mica::{G2Point, Guarantee};
 
 impl TryFrom<PaymentGuaranteeClaims> for Guarantee {
-    type Error = Error4Mica;
+    type Error = anyhow::Error;
 
     fn try_from(claims: PaymentGuaranteeClaims) -> Result<Self, Self::Error> {
         let guarantee = Guarantee {
             tab_id: claims.tab_id,
             tab_timestamp: U256::from(claims.timestamp),
             client: Address::from_str(&claims.user_address)
-                .map_err(|e| Error4Mica::InvalidParams(format!("Invalid client address: {}", e)))?,
-            recipient: Address::from_str(&claims.recipient_address).map_err(|e| {
-                Error4Mica::InvalidParams(format!("Invalid recipient address: {}", e))
-            })?,
+                .map_err(|e| anyhow::anyhow!("Invalid client address: {}", e))?,
+            recipient: Address::from_str(&claims.recipient_address)
+                .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?,
             req_id: claims.req_id,
             amount: claims.amount,
         };

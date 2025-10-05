@@ -2,7 +2,7 @@ use alloy::{primitives::Address, signers::local::PrivateKeySigner};
 use url::Url;
 
 use crate::{
-    error::Error4Mica,
+    error::ConfigError,
     validators::{validate_address, validate_url, validate_wallet_private_key},
 };
 
@@ -67,26 +67,28 @@ impl ConfigBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Config, Error4Mica> {
+    pub fn build(self) -> Result<Config, ConfigError> {
         let Some(rpc_url) = self.rpc_url else {
-            return Err(Error4Mica::ConfigMissing("rpc_url".to_string()));
+            return Err(ConfigError::Missing("rpc_url".to_string()));
         };
         let Some(ethereum_http_rpc_url) = self.ethereum_http_rpc_url else {
-            return Err(Error4Mica::ConfigMissing(
-                "ethereum_http_rpc_url".to_string(),
-            ));
+            return Err(ConfigError::Missing("ethereum_http_rpc_url".to_string()));
         };
         let Some(contract_address) = self.contract_address else {
-            return Err(Error4Mica::ConfigMissing("contract_address".to_string()));
+            return Err(ConfigError::Missing("contract_address".to_string()));
         };
         let Some(wallet_private_key) = self.wallet_private_key else {
-            return Err(Error4Mica::ConfigMissing("wallet_private_key".to_string()));
+            return Err(ConfigError::Missing("wallet_private_key".to_string()));
         };
 
-        let rpc_url = validate_url(&rpc_url)?;
-        let ethereum_http_rpc_url = validate_url(&ethereum_http_rpc_url)?;
-        let contract_address = validate_address(&contract_address)?;
-        let wallet_private_key = validate_wallet_private_key(&wallet_private_key)?;
+        let rpc_url =
+            validate_url(&rpc_url).map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
+        let ethereum_http_rpc_url = validate_url(&ethereum_http_rpc_url)
+            .map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
+        let contract_address = validate_address(&contract_address)
+            .map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
+        let wallet_private_key = validate_wallet_private_key(&wallet_private_key)
+            .map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
 
         Ok(Config {
             rpc_url,

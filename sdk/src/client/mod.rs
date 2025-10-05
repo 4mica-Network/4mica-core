@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     config::Config,
     contract::Core4Mica::{self, Core4MicaInstance},
-    error::Error4Mica,
+    error::ClientError,
 };
 use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
@@ -27,14 +27,15 @@ struct Inner {
 struct ClientCtx(Arc<Inner>);
 
 impl ClientCtx {
-    async fn new(cfg: Config) -> Result<Self, Error4Mica> {
-        let rpc_proxy = RpcProxy::new(&cfg.rpc_url.to_string())?;
+    async fn new(cfg: Config) -> Result<Self, ClientError> {
+        let rpc_proxy =
+            RpcProxy::new(&cfg.rpc_url.to_string()).map_err(|e| ClientError::Rpc(e.to_string()))?;
 
         let provider = ProviderBuilder::new()
             .wallet(cfg.wallet_private_key.clone())
             .connect(&cfg.ethereum_http_rpc_url.to_string())
             .await
-            .map_err(|e| Error4Mica::Other(e.into()))?
+            .map_err(|e| ClientError::Provider(e.to_string()))?
             .erased();
 
         Ok(Self(Arc::new(Inner {
@@ -68,7 +69,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(cfg: Config) -> Result<Self, Error4Mica> {
+    pub async fn new(cfg: Config) -> Result<Self, ClientError> {
         let ctx = ClientCtx::new(cfg).await?;
 
         Ok(Self {

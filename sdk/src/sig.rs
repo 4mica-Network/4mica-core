@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::error::PaymentSignError;
+use crate::error::SignPaymentError;
 use alloy::primitives::{Address, B256};
 use alloy::signers::Signer;
 
@@ -24,7 +24,7 @@ pub trait PaymentSigner: Send + Sync {
         params: &CorePublicParameters,
         claims: PaymentGuaranteeClaims,
         scheme: SigningScheme,
-    ) -> Result<PaymentSignature, PaymentSignError>;
+    ) -> Result<PaymentSignature, SignPaymentError>;
 }
 
 #[async_trait]
@@ -37,13 +37,13 @@ where
         params: &CorePublicParameters,
         claims: PaymentGuaranteeClaims,
         scheme: SigningScheme,
-    ) -> Result<PaymentSignature, PaymentSignError> {
+    ) -> Result<PaymentSignature, SignPaymentError> {
         let signer_addr = self.address();
         let expected = Address::from_str(&claims.user_address)
-            .map_err(|_| PaymentSignError::InvalidUserAddress)?;
+            .map_err(|_| SignPaymentError::InvalidUserAddress)?;
 
         if signer_addr != expected {
-            return Err(PaymentSignError::AddressMismatch {
+            return Err(SignPaymentError::AddressMismatch {
                 signer: signer_addr,
                 claims: claims.user_address.clone(),
             }
@@ -52,21 +52,21 @@ where
 
         let digest: B256 = match scheme {
             SigningScheme::Eip712 => crate::digest::eip712_digest(params, &claims)
-                .map_err(|e| PaymentSignError::DigestFailed(e.to_string()))?,
+                .map_err(|e| SignPaymentError::DigestFailed(e.to_string()))?,
             SigningScheme::Eip191 => {
                 let user = Address::from_str(&claims.user_address)
-                    .map_err(|_| PaymentSignError::InvalidUserAddress)?;
+                    .map_err(|_| SignPaymentError::InvalidUserAddress)?;
                 let recipient = Address::from_str(&claims.recipient_address)
-                    .map_err(|_| PaymentSignError::InvalidRecipientAddress)?;
+                    .map_err(|_| SignPaymentError::InvalidRecipientAddress)?;
                 crate::digest::eip191_digest(&claims, user, recipient)
-                    .map_err(|e| PaymentSignError::DigestFailed(e.to_string()))?
+                    .map_err(|e| SignPaymentError::DigestFailed(e.to_string()))?
             }
         };
 
         let sig = self
             .sign_hash(&digest)
             .await
-            .map_err(|e| PaymentSignError::SigningFailed(e.to_string()))?;
+            .map_err(|e| SignPaymentError::SigningFailed(e.to_string()))?;
 
         let signature = sig.to_string();
 

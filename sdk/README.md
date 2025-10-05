@@ -8,8 +8,9 @@ The official Rust SDK for interacting with the 4Mica payment network. This SDK p
 
 - **User Client**: Deposit collateral, sign payments, and manage withdrawals
 - **Recipient Client**: Create payment tabs, issue payment guarantees, and claim from user collateral when payments aren't fulfilled
-- Built-in EIP-712 and EIP-191 signing support
-- Type-safe interactions with the Core4Mica smart contract
+- **Comprehensive Error Handling**: Strongly-typed, specific error types for every operation with detailed context
+- **Built-in EIP-712 and EIP-191 signing support**: Type-safe cryptographic operations with automatic address validation
+- **Type-safe interactions**: Full type safety for all Core4Mica smart contract operations
 
 ## Installation
 
@@ -109,21 +110,23 @@ The SDK provides two client interfaces: `UserClient` for payers and `RecipientCl
 
 #### UserClient Methods
 
-- `deposit(amount: U256) -> Result<TransactionReceipt>`: Deposit collateral
-- `get_user() -> Result<UserInfo>`: Get current user information
-- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus>`: Get payment status for a tab
-- `sign_payment(claims: PaymentGuaranteeClaims, scheme: SigningScheme) -> Result<PaymentSignature>`: Sign a payment
-- `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String) -> Result<TransactionReceipt>`: Pay a tab directly on-chain
-- `request_withdrawal(amount: U256) -> Result<TransactionReceipt>`: Request withdrawal of collateral
-- `cancel_withdrawal() -> Result<TransactionReceipt>`: Cancel pending withdrawal
-- `finalize_withdrawal() -> Result<TransactionReceipt>`: Finalize withdrawal after waiting period
+- `deposit(amount: U256) -> Result<TransactionReceipt, DepositError>`: Deposit collateral
+- `get_user() -> Result<UserInfo, GetUserError>`: Get current user information
+- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
+- `sign_payment(claims: PaymentGuaranteeClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment
+- `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String) -> Result<TransactionReceipt, PayTabError>`: Pay a tab directly on-chain
+- `request_withdrawal(amount: U256) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral
+- `cancel_withdrawal() -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
+- `finalize_withdrawal() -> Result<TransactionReceipt, FinalizeWithdrawalError>`: Finalize withdrawal after waiting period
 
 #### RecipientClient Methods
 
-- `create_tab(user_address: String, recipient_address: String, ttl: Option<u64>) -> Result<U256>`: Create a new payment tab
-- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus>`: Get payment status for a tab
-- `issue_payment_guarantee(claims: PaymentGuaranteeClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert>`: Issue a payment guarantee
-- `remunerate(cert: BLSCert) -> Result<TransactionReceipt>`: Claim from user collateral using BLS certificate
+- `create_tab(user_address: String, recipient_address: String, ttl: Option<u64>) -> Result<U256, CreateTabError>`: Create a new payment tab
+- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
+- `issue_payment_guarantee(claims: PaymentGuaranteeClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
+- `remunerate(cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>`: Claim from user collateral using BLS certificate
+
+> **Note:** Each method returns a specific error type that provides detailed information about what went wrong. See the [Error Handling](#error-handling) section for comprehensive documentation and examples.
 
 ### User Client (Payer)
 
@@ -136,8 +139,14 @@ use rust_sdk_4mica::U256;
 
 // Deposit 1 ETH as collateral
 let amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH in wei
-let receipt = client.user.deposit(amount).await?;
-println!("Deposit successful: {:?}", receipt.transaction_hash);
+match client.user.deposit(amount).await {
+    Ok(receipt) => {
+        println!("Deposit successful: {:?}", receipt.transaction_hash);
+    }
+    Err(e) => {
+        eprintln!("Deposit failed: {}", e);
+    }
+}
 ```
 
 #### Get User Info
@@ -178,9 +187,15 @@ let claims = PaymentGuaranteeClaims {
 };
 
 // Sign using EIP-712 (recommended)
-let payment_sig = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
-println!("Signature: {}", payment_sig.signature);
-println!("Scheme: {:?}", payment_sig.scheme);
+match client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await {
+    Ok(payment_sig) => {
+        println!("Signature: {}", payment_sig.signature);
+        println!("Scheme: {:?}", payment_sig.scheme);
+    }
+    Err(e) => {
+        eprintln!("Signing failed: {}", e);
+    }
+}
 
 // Or use EIP-191 (personal_sign)
 let payment_sig = client.user.sign_payment(claims, SigningScheme::Eip191).await?;
@@ -357,6 +372,127 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Error Handling
+
+The SDK provides comprehensive, type-safe error handling with specific error types for each operation. All errors are strongly typed and provide detailed context about what went wrong.
+
+### Importing
+
+```rust
+// Import specific error types when needed
+use rust_sdk_4mica::error::{
+    DepositError, RemunerateError, RequestWithdrawalError,
+    SignPaymentError, FinalizeWithdrawalError,
+    // ... other error types as needed
+};
+```
+
+### Error Types
+
+#### Configuration Errors
+
+**`ConfigError`**
+
+- `InvalidValue(String)`: Invalid configuration value
+- `Missing(String)`: Required configuration parameter is missing
+
+#### Client Errors
+
+**`ClientError`**
+
+- `Rpc(String)`: RPC connection error
+- `Provider(String)`: Provider initialization error
+
+#### Payment Signing Errors
+
+**`SignPaymentError`**
+
+- `AddressMismatch { signer: Address, claims: String }`: Signer address doesn't match user address in claims
+- `InvalidUserAddress`: User address in claims is invalid
+- `InvalidRecipientAddress`: Recipient address in claims is invalid
+- `DigestFailed(String)`: Failed to compute payment digest
+- `SigningFailed(String)`: Signing operation failed
+- `Rpc(String)`: RPC communication error
+
+#### Deposit Errors
+
+**`DepositError`**
+
+- `InvalidParams(String)`: Invalid parameters provided
+- `AmountZero`: Cannot deposit zero amount
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
+- `Transport(String)`: Provider or transport error
+
+#### Withdrawal Errors
+
+**`RequestWithdrawalError`**
+
+- `InvalidParams(String)`: Invalid parameters provided
+- `AmountZero`: Cannot withdraw zero amount
+- `InsufficientAvailable`: Not enough available balance to withdraw
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
+- `Transport(String)`: Provider or transport error
+
+**`CancelWithdrawalError`**
+
+- `InvalidParams(String)`: Invalid parameters provided
+- `NoWithdrawalRequested`: No withdrawal request exists to cancel
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
+- `Transport(String)`: Provider or transport error
+
+**`FinalizeWithdrawalError`**
+
+- `InvalidParams(String)`: Invalid parameters provided
+- `NoWithdrawalRequested`: No withdrawal request exists to finalize
+- `GracePeriodNotElapsed`: Grace period has not elapsed yet
+- `TransferFailed`: Transfer of funds failed
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
+- `Transport(String)`: Provider or transport error
+
+#### Tab Payment Errors
+
+**`CreateTabError`**
+
+- `InvalidParams(String)`: Invalid parameters (e.g., signer address mismatch)
+- `Transport(String)`: RPC communication error
+
+**`PayTabError`**
+
+- `InvalidParams(String)`: Invalid parameters provided
+- `Transport(String)`: Provider or transport error
+
+**`TabPaymentStatusError`**
+
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
+- `Transport(String)`: Provider or transport error
+
+#### Payment Guarantee Errors
+
+**`IssuePaymentGuaranteeError`**
+
+- `InvalidParams(String)`: Invalid parameters (e.g., signer address mismatch)
+- `Transport(String)`: RPC communication error
+
+**`RemunerateError`**
+
+- `InvalidParams(String)`: Invalid parameters provided
+- `TabNotYetOverdue`: Tab has not reached its due date yet
+- `TabExpired`: Tab has expired and can no longer be remunerated
+- `TabPreviouslyRemunerated`: Tab has already been remunerated
+- `TabAlreadyPaid`: Tab has already been paid by user
+- `InvalidSignature`: BLS signature verification failed
+- `DoubleSpendingDetected`: Attempt to spend same guarantee twice
+- `InvalidRecipient`: Caller is not the recipient of this tab
+- `AmountZero`: Guarantee amount is zero
+- `TransferFailed`: Transfer of funds failed
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
+- `Transport(String)`: Provider or transport error
+
+**`GetUserError`**
+
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
+- `Transport(String)`: Provider or transport error
+
 ## Development
 
 ### Running Tests
@@ -373,10 +509,13 @@ cargo build --release
 
 ## Security Considerations
 
-- **Never commit private keys**: Always use environment variables or secure key management
-- **Validate addresses**: The SDK validates addresses automatically, but ensure you're using correct addresses
-- **Signature verification**: The SDK ensures the signer address matches the claims user address
-- **Use EIP-712**: Prefer EIP-712 signing over EIP-191 for better security
+- **Never commit private keys**: Always use environment variables or secure key management systems
+- **Validate addresses**: The SDK validates addresses automatically and returns `SignPaymentError::AddressMismatch` if the signer doesn't match the claims
+- **Signature verification**: The SDK ensures the signer address matches the claims user address before signing
+- **Use EIP-712**: Prefer EIP-712 signing over EIP-191 for better security and structured data hashing
+- **Handle errors properly**: Always handle errors explicitly. The SDK provides specific error types for each failure scenario to help you build robust applications
+- **Check signer addresses**: For `RecipientClient` operations, ensure your signer address matches the recipient address. The SDK will return `InvalidParams` errors for mismatches
+- **Validate amounts**: The SDK prevents zero-amount transactions at the contract level, but you should validate amounts in your application for better UX
 
 ## License
 

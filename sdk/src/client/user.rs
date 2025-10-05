@@ -10,10 +10,14 @@ use rpc::{
 };
 
 use crate::{
-    Error4Mica, PaymentSignature,
+    PaymentSignature,
     client::{
         ClientCtx,
         model::{TabPaymentStatus, UserInfo},
+    },
+    error::{
+        CancelWithdrawalError, DepositError, FinalizeWithdrawalError, GetUserError, PayTabError,
+        RequestWithdrawalError, SignPaymentError, TabPaymentStatusError,
     },
     sig::PaymentSigner,
     validators::validate_address,
@@ -29,43 +33,46 @@ impl UserClient {
         Self { ctx }
     }
 
-    pub async fn deposit(&self, amount: U256) -> Result<TransactionReceipt, Error4Mica> {
+    pub async fn deposit(&self, amount: U256) -> Result<TransactionReceipt, DepositError> {
         let send_result = self
             .ctx
             .get_contract()
             .deposit()
             .value(amount)
             .send()
-            .await?;
+            .await
+            .map_err(DepositError::from)?;
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| alloy::contract::Error::from(e))?;
+            .map_err(|e| DepositError::from(alloy::contract::Error::from(e)))?;
 
         Ok(receipt)
     }
 
-    pub async fn get_user(&self) -> Result<UserInfo, Error4Mica> {
+    pub async fn get_user(&self) -> Result<UserInfo, GetUserError> {
         let signer_address = self.ctx.signer().address();
         let user = self
             .ctx
             .get_contract()
             .getUser(signer_address)
             .call()
-            .await?;
+            .await
+            .map_err(|e| GetUserError::from(alloy::contract::Error::from(e)))?;
         Ok(user.into())
     }
 
     pub async fn get_tab_payment_status(
         &self,
         tab_id: U256,
-    ) -> Result<TabPaymentStatus, Error4Mica> {
+    ) -> Result<TabPaymentStatus, TabPaymentStatusError> {
         let status = self
             .ctx
             .get_contract()
             .getPaymentStatus(tab_id)
             .call()
-            .await?;
+            .await
+            .map_err(|e| TabPaymentStatusError::from(alloy::contract::Error::from(e)))?;
 
         Ok(TabPaymentStatus {
             paid: status.paid,
@@ -77,9 +84,14 @@ impl UserClient {
         &self,
         claims: PaymentGuaranteeClaims,
         scheme: SigningScheme,
-    ) -> Result<PaymentSignature, Error4Mica> {
+    ) -> Result<PaymentSignature, SignPaymentError> {
         // TODO: Cache public parameters for a while
-        let pub_params = self.ctx.rpc_proxy().get_public_params().await?;
+        let pub_params = self
+            .ctx
+            .rpc_proxy()
+            .get_public_params()
+            .await
+            .map_err(|e| SignPaymentError::Rpc(e.to_string()))?;
 
         let sig = self
             .ctx
@@ -96,8 +108,9 @@ impl UserClient {
         req_id: U256,
         amount: U256,
         recipient_address: String,
-    ) -> Result<TransactionReceipt, Error4Mica> {
-        let recipient = validate_address(&recipient_address)?;
+    ) -> Result<TransactionReceipt, PayTabError> {
+        let recipient = validate_address(&recipient_address)
+            .map_err(|e| PayTabError::InvalidParams(e.to_string()))?;
 
         let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, req_id);
         let tx = TransactionRequest::default()
@@ -110,46 +123,62 @@ impl UserClient {
             .provider()
             .send_transaction(tx)
             .await
-            .map_err(|e| Error4Mica::Other(e.into()))?;
+            .map_err(|e| PayTabError::Transport(e.to_string()))?;
         let receipt = pending_tx
             .get_receipt()
             .await
-            .map_err(|e| alloy::contract::Error::from(e))?;
+            .map_err(|e| PayTabError::Transport(e.to_string()))?;
 
         Ok(receipt)
     }
 
-    pub async fn request_withdrawal(&self, amount: U256) -> Result<TransactionReceipt, Error4Mica> {
+    pub async fn request_withdrawal(
+        &self,
+        amount: U256,
+    ) -> Result<TransactionReceipt, RequestWithdrawalError> {
         let send_result = self
             .ctx
             .get_contract()
             .requestWithdrawal(amount)
             .send()
-            .await?;
+            .await
+            .map_err(RequestWithdrawalError::from)?;
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| alloy::contract::Error::from(e))?;
+            .map_err(|e| RequestWithdrawalError::from(alloy::contract::Error::from(e)))?;
 
         Ok(receipt)
     }
 
-    pub async fn cancel_withdrawal(&self) -> Result<TransactionReceipt, Error4Mica> {
-        let send_result = self.ctx.get_contract().cancelWithdrawal().send().await?;
+    pub async fn cancel_withdrawal(&self) -> Result<TransactionReceipt, CancelWithdrawalError> {
+        let send_result = self
+            .ctx
+            .get_contract()
+            .cancelWithdrawal()
+            .send()
+            .await
+            .map_err(CancelWithdrawalError::from)?;
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| alloy::contract::Error::from(e))?;
+            .map_err(|e| CancelWithdrawalError::from(alloy::contract::Error::from(e)))?;
 
         Ok(receipt)
     }
 
-    pub async fn finalize_withdrawal(&self) -> Result<TransactionReceipt, Error4Mica> {
-        let send_result = self.ctx.get_contract().finalizeWithdrawal().send().await?;
+    pub async fn finalize_withdrawal(&self) -> Result<TransactionReceipt, FinalizeWithdrawalError> {
+        let send_result = self
+            .ctx
+            .get_contract()
+            .finalizeWithdrawal()
+            .send()
+            .await
+            .map_err(FinalizeWithdrawalError::from)?;
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| alloy::contract::Error::from(e))?;
+            .map_err(|e| FinalizeWithdrawalError::from(alloy::contract::Error::from(e)))?;
 
         Ok(receipt)
     }
