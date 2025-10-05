@@ -105,6 +105,26 @@ The default configuration uses:
 
 The SDK provides two client interfaces: `UserClient` for payers and `RecipientClient` for payment recipients.
 
+### API Methods Summary
+
+#### UserClient Methods
+
+- `deposit(amount: U256) -> Result<TransactionReceipt>`: Deposit collateral
+- `get_user() -> Result<UserInfo>`: Get current user information
+- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus>`: Get payment status for a tab
+- `sign_payment(claims: PaymentGuaranteeClaims, scheme: SigningScheme) -> Result<PaymentSignature>`: Sign a payment
+- `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String) -> Result<TransactionReceipt>`: Pay a tab directly on-chain
+- `request_withdrawal(amount: U256) -> Result<TransactionReceipt>`: Request withdrawal of collateral
+- `cancel_withdrawal() -> Result<TransactionReceipt>`: Cancel pending withdrawal
+- `finalize_withdrawal() -> Result<TransactionReceipt>`: Finalize withdrawal after waiting period
+
+#### RecipientClient Methods
+
+- `create_tab(user_address: String, recipient_address: String, ttl: Option<u64>) -> Result<U256>`: Create a new payment tab
+- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus>`: Get payment status for a tab
+- `issue_payment_guarantee(claims: PaymentGuaranteeClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert>`: Issue a payment guarantee
+- `remunerate(cert: BLSCert) -> Result<TransactionReceipt>`: Claim from user collateral using BLS certificate
+
 ### User Client (Payer)
 
 The user client allows you to manage your collateral and sign payments.
@@ -116,7 +136,31 @@ use rust_sdk_4mica::U256;
 
 // Deposit 1 ETH as collateral
 let amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH in wei
-client.user.deposit(amount).await?;
+let receipt = client.user.deposit(amount).await?;
+println!("Deposit successful: {:?}", receipt.transaction_hash);
+```
+
+#### Get User Info
+
+```rust
+use rust_sdk_4mica::UserInfo;
+
+// Get information about the current user
+let user_info = client.user.get_user().await?;
+println!("Collateral: {}", user_info.collateral);
+println!("Withdrawal request amount: {}", user_info.withdrawal_request_amount);
+println!("Withdrawal request timestamp: {}", user_info.withdrawal_request_timestamp);
+```
+
+#### Get Tab Payment Status
+
+```rust
+use rust_sdk_4mica::{TabPaymentStatus, U256};
+
+let tab_id = U256::from(1);
+let status = client.user.get_tab_payment_status(tab_id).await?;
+println!("Paid: {}", status.paid);
+println!("Remunerated: {}", status.remunerated);
 ```
 
 #### Sign a Payment
@@ -134,11 +178,27 @@ let claims = PaymentGuaranteeClaims {
 };
 
 // Sign using EIP-712 (recommended)
-let signature = client.user.sign_payment(claims, SigningScheme::Eip712).await?;
-println!("Signature: {}", signature.signature);
+let payment_sig = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
+println!("Signature: {}", payment_sig.signature);
+println!("Scheme: {:?}", payment_sig.scheme);
 
 // Or use EIP-191 (personal_sign)
-let signature = client.user.sign_payment(claims, SigningScheme::Eip191).await?;
+let payment_sig = client.user.sign_payment(claims, SigningScheme::Eip191).await?;
+```
+
+#### Pay a Tab
+
+```rust
+use rust_sdk_4mica::U256;
+
+// Pay 1 ETH to a tab
+let tab_id = U256::from(1);
+let req_id = U256::from(1);
+let amount = U256::from(1_000_000_000_000_000_000u128);
+let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
+
+let receipt = client.user.pay_tab(tab_id, req_id, amount, recipient_address).await?;
+println!("Payment successful: {:?}", receipt.transaction_hash);
 ```
 
 #### Request Withdrawal
@@ -148,21 +208,24 @@ use rust_sdk_4mica::U256;
 
 // Request to withdraw 0.5 ETH
 let amount = U256::from(500_000_000_000_000_000u128);
-client.user.request_withdrawal(amount).await?;
+let receipt = client.user.request_withdrawal(amount).await?;
+println!("Withdrawal requested: {:?}", receipt.transaction_hash);
 ```
 
 #### Cancel Withdrawal
 
 ```rust
 // Cancel a pending withdrawal request
-client.user.cancel_withdrawal().await?;
+let receipt = client.user.cancel_withdrawal().await?;
+println!("Withdrawal cancelled: {:?}", receipt.transaction_hash);
 ```
 
 #### Finalize Withdrawal
 
 ```rust
 // Finalize withdrawal (after the waiting period)
-client.user.finalize_withdrawal().await?;
+let receipt = client.user.finalize_withdrawal().await?;
+println!("Withdrawal finalized: {:?}", receipt.transaction_hash);
 ```
 
 ### Recipient Client
@@ -172,34 +235,49 @@ The recipient client allows you to create payment tabs, issue payment guarantees
 #### Create Payment Tab
 
 ```rust
-use rust_sdk_4mica::CreatePaymentTabRequest;
+// Create a new payment tab
+let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
+let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
+let ttl = Some(3600); // Tab expires in 1 hour (optional)
 
-let tab_request = CreatePaymentTabRequest {
-    user_address: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
-    recipient_address: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
-    ttl: Some(3600), // Tab expires in 1 hour (optional)
-};
-
-let tab_id = client.recipient.create_tab(tab_request).await?;
+let tab_id = client.recipient.create_tab(user_address, recipient_address, ttl).await?;
 println!("Created tab with ID: {}", tab_id);
+```
+
+#### Get Tab Payment Status
+
+```rust
+use rust_sdk_4mica::{TabPaymentStatus, U256};
+
+let tab_id = U256::from(1);
+let status = client.recipient.get_tab_payment_status(tab_id).await?;
+println!("Paid: {}", status.paid);
+println!("Remunerated: {}", status.remunerated);
 ```
 
 #### Issue Payment Guarantee
 
 ```rust
-use rust_sdk_4mica::{PaymentGuaranteeRequest, PaymentGuaranteeClaims, SigningScheme};
+use rust_sdk_4mica::{PaymentGuaranteeClaims, SigningScheme, U256};
 
 // First, the user signs the payment (see User Client example above)
-let signature = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
-
-// Then, the recipient requests a guarantee
-let guarantee_request = PaymentGuaranteeRequest {
-    claims,
-    signature: signature.signature,
-    scheme: signature.scheme,
+let claims = PaymentGuaranteeClaims {
+    user_address: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
+    recipient_address: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
+    tab_id: U256::from(1),
+    req_id: U256::from(1),
+    amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
+    timestamp: 1704067200,
 };
 
-let bls_cert = client.recipient.issue_payment_guarantee(guarantee_request).await?;
+let payment_sig = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
+
+// Then, the recipient requests a guarantee
+let bls_cert = client.recipient.issue_payment_guarantee(
+    claims,
+    payment_sig.signature,
+    payment_sig.scheme,
+).await?;
 println!("BLS Certificate: {:?}", bls_cert);
 ```
 
@@ -208,8 +286,9 @@ println!("BLS Certificate: {:?}", bls_cert);
 ```rust
 // If the user doesn't fulfill the payment guarantee,
 // the recipient can claim from the user's collateral on-chain
-client.recipient.remunerate(bls_cert).await?;
+let receipt = client.recipient.remunerate(bls_cert).await?;
 println!("Claimed from user collateral successfully!");
+println!("Transaction hash: {:?}", receipt.transaction_hash);
 ```
 
 ## Complete Example
@@ -218,8 +297,7 @@ Here's a complete example showing a payment flow:
 
 ```rust
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, CreatePaymentTabRequest, PaymentGuaranteeClaims,
-    PaymentGuaranteeRequest, SigningScheme, U256,
+    Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
 };
 
 #[tokio::main]
@@ -237,22 +315,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. User deposits collateral
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    user_client.user.deposit(deposit_amount).await?;
-    println!("Deposited collateral");
+    let receipt = user_client.user.deposit(deposit_amount).await?;
+    println!("Deposited collateral: {:?}", receipt.transaction_hash);
 
     // 3. Recipient creates a payment tab
-    let tab_request = CreatePaymentTabRequest {
-        user_address: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
-        recipient_address: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
-        ttl: Some(3600),
-    };
-    let tab_id = recipient_client.recipient.create_tab(tab_request).await?;
+    let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
+    let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
+    let tab_id = recipient_client
+        .recipient
+        .create_tab(user_address.clone(), recipient_address.clone(), Some(3600))
+        .await?;
     println!("Created tab: {}", tab_id);
 
     // 4. User signs a payment
     let claims = PaymentGuaranteeClaims {
-        user_address: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
-        recipient_address: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
+        user_address: user_address.clone(),
+        recipient_address: recipient_address.clone(),
         tab_id,
         req_id: U256::from(1),
         amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
@@ -260,24 +338,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
     };
-    let signature = user_client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
+    let payment_sig = user_client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
     println!("Payment signed");
 
     // 5. Recipient issues guarantee
-    let guarantee_request = PaymentGuaranteeRequest {
-        claims,
-        signature: signature.signature,
-        scheme: signature.scheme,
-    };
     let bls_cert = recipient_client
         .recipient
-        .issue_payment_guarantee(guarantee_request)
+        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
 
     // 6. If user doesn't pay, recipient can claim from user's collateral
-    recipient_client.recipient.remunerate(bls_cert).await?;
+    let receipt = recipient_client.recipient.remunerate(bls_cert).await?;
     println!("Claimed from user collateral!");
+    println!("Transaction hash: {:?}", receipt.transaction_hash);
 
     Ok(())
 }

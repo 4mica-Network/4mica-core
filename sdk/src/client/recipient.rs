@@ -1,11 +1,17 @@
-use alloy::primitives::U256;
+use alloy::{primitives::U256, rpc::types::TransactionReceipt};
 use crypto::bls::BLSCert;
 use rpc::{
-    common::{CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest},
+    common::{
+        CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme,
+    },
     core::CoreApiClient,
 };
 
-use crate::{client::ClientCtx, contract::Core4Mica::Guarantee, error::Error4Mica};
+use crate::{
+    client::{ClientCtx, model::TabPaymentStatus},
+    contract::Core4Mica::Guarantee,
+    error::Error4Mica,
+};
 
 #[derive(Clone)]
 pub struct RecipientClient {
@@ -29,24 +35,64 @@ impl RecipientClient {
     }
 
     /// Creates a new payment tab and returns the tab id
-    pub async fn create_tab(&self, params: CreatePaymentTabRequest) -> Result<U256, Error4Mica> {
-        self.check_signer_address(&params.recipient_address)?;
+    pub async fn create_tab(
+        &self,
+        user_address: String,
+        recipient_address: String,
+        ttl: Option<u64>,
+    ) -> Result<U256, Error4Mica> {
+        self.check_signer_address(&recipient_address)?;
 
-        let result = self.ctx.rpc_proxy().create_payment_tab(params).await?;
+        let result = self
+            .ctx
+            .rpc_proxy()
+            .create_payment_tab(CreatePaymentTabRequest {
+                user_address,
+                recipient_address,
+                ttl,
+            })
+            .await?;
         Ok(result.id)
+    }
+
+    pub async fn get_tab_payment_status(
+        &self,
+        tab_id: U256,
+    ) -> Result<TabPaymentStatus, Error4Mica> {
+        let status = self
+            .ctx
+            .get_contract()
+            .getPaymentStatus(tab_id)
+            .call()
+            .await?;
+
+        Ok(TabPaymentStatus {
+            paid: status.paid,
+            remunerated: status.remunerated,
+        })
     }
 
     pub async fn issue_payment_guarantee(
         &self,
-        params: PaymentGuaranteeRequest,
+        claims: PaymentGuaranteeClaims,
+        signature: String,
+        scheme: SigningScheme,
     ) -> Result<BLSCert, Error4Mica> {
-        self.check_signer_address(&params.claims.recipient_address)?;
+        self.check_signer_address(&claims.recipient_address)?;
 
-        let cert = self.ctx.rpc_proxy().issue_guarantee(params).await?;
+        let cert = self
+            .ctx
+            .rpc_proxy()
+            .issue_guarantee(PaymentGuaranteeRequest {
+                claims,
+                signature,
+                scheme,
+            })
+            .await?;
         Ok(cert)
     }
 
-    pub async fn remunerate(&self, cert: BLSCert) -> Result<(), Error4Mica> {
+    pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, Error4Mica> {
         let claims = crypto::hex::decode_hex(&cert.claims)
             .map_err(|e| Error4Mica::InvalidParams(format!("failed to parse claims: {}", e)))?;
         let claims = PaymentGuaranteeClaims::try_from(claims.as_slice())
@@ -67,11 +113,11 @@ impl RecipientClient {
             .send()
             .await?;
 
-        let _receipt = send_result
-            .watch()
+        let receipt = send_result
+            .get_receipt()
             .await
             .map_err(|e| alloy::contract::Error::from(e))?;
 
-        Ok(())
+        Ok(receipt)
     }
 }

@@ -3,7 +3,7 @@ use url::Url;
 
 use crate::{
     error::Error4Mica,
-    validators::{validate_ethereum_address, validate_url, validate_wallet_private_key},
+    validators::{validate_address, validate_url, validate_wallet_private_key},
 };
 
 #[derive(Debug, Clone)]
@@ -85,7 +85,7 @@ impl ConfigBuilder {
 
         let rpc_url = validate_url(&rpc_url)?;
         let ethereum_http_rpc_url = validate_url(&ethereum_http_rpc_url)?;
-        let contract_address = validate_ethereum_address(&contract_address)?;
+        let contract_address = validate_address(&contract_address)?;
         let wallet_private_key = validate_wallet_private_key(&wallet_private_key)?;
 
         Ok(Config {

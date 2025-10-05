@@ -13,6 +13,7 @@ use rpc::proxy::RpcProxy;
 
 use self::{recipient::RecipientClient, user::UserClient};
 
+pub mod model;
 pub mod recipient;
 pub mod user;
 
@@ -45,6 +46,10 @@ impl ClientCtx {
 
     fn get_contract(&self) -> Core4MicaInstance<DynProvider> {
         Core4Mica::new(self.0.cfg.contract_address, self.0.provider.clone())
+    }
+
+    fn provider(&self) -> &DynProvider {
+        &self.0.provider
     }
 
     fn rpc_proxy(&self) -> &RpcProxy {

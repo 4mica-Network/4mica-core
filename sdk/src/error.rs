@@ -6,8 +6,8 @@ pub enum ValidationError {
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),
 
-    #[error("Invalid contract address: {0}")]
-    InvalidContractAddress(String),
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
 
     #[error("Invalid private key: {0}")]
     InvalidPrivateKey(String),

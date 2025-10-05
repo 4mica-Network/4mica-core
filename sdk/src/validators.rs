@@ -8,8 +8,8 @@ pub fn validate_url(url: &str) -> Result<Url, ValidationError> {
     Url::parse(url).map_err(|e| ValidationError::InvalidUrl(e.to_string()))
 }
 
-pub fn validate_ethereum_address(address: &str) -> Result<Address, ValidationError> {
-    Address::from_str(address).map_err(|e| ValidationError::InvalidContractAddress(e.to_string()))
+pub fn validate_address(address: &str) -> Result<Address, ValidationError> {
+    Address::from_str(address).map_err(|e| ValidationError::InvalidAddress(e.to_string()))
 }
 
 pub fn validate_wallet_private_key(key: &str) -> Result<PrivateKeySigner, ValidationError> {
