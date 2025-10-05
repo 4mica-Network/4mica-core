@@ -49,8 +49,7 @@ impl RecipientClient {
                 recipient_address,
                 ttl,
             })
-            .await
-            .map_err(|e| CreateTabError::Transport(e.to_string()))?;
+            .await?;
         Ok(result.id)
     }
 
@@ -64,7 +63,8 @@ impl RecipientClient {
             .getPaymentStatus(tab_id)
             .call()
             .await
-            .map_err(|e| TabPaymentStatusError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(TabPaymentStatusError::from)?;
 
         Ok(TabPaymentStatus {
             paid: status.paid,
@@ -92,8 +92,7 @@ impl RecipientClient {
                 signature,
                 scheme,
             })
-            .await
-            .map_err(|e| IssuePaymentGuaranteeError::Transport(e.to_string()))?;
+            .await?;
         Ok(cert)
     }
 
@@ -125,7 +124,8 @@ impl RecipientClient {
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| RemunerateError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(RemunerateError::from)?;
 
         Ok(receipt)
     }

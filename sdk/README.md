@@ -410,9 +410,8 @@ use rust_sdk_4mica::error::{
 - `AddressMismatch { signer: Address, claims: String }`: Signer address doesn't match user address in claims
 - `InvalidUserAddress`: User address in claims is invalid
 - `InvalidRecipientAddress`: Recipient address in claims is invalid
-- `DigestFailed(String)`: Failed to compute payment digest
-- `SigningFailed(String)`: Signing operation failed
-- `Rpc(String)`: RPC communication error
+- `Failed(String)`: Failed to sign the payment (includes digest computation and signing errors)
+- `Rpc(jsonrpsee::core::ClientError)`: RPC communication error
 
 #### Deposit Errors
 
@@ -454,7 +453,7 @@ use rust_sdk_4mica::error::{
 **`CreateTabError`**
 
 - `InvalidParams(String)`: Invalid parameters (e.g., signer address mismatch)
-- `Transport(String)`: RPC communication error
+- `Rpc(jsonrpsee::core::ClientError)`: RPC communication error
 
 **`PayTabError`**
 
@@ -471,7 +470,7 @@ use rust_sdk_4mica::error::{
 **`IssuePaymentGuaranteeError`**
 
 - `InvalidParams(String)`: Invalid parameters (e.g., signer address mismatch)
-- `Transport(String)`: RPC communication error
+- `Rpc(jsonrpsee::core::ClientError)`: RPC communication error
 
 **`RemunerateError`**
 

@@ -45,7 +45,8 @@ impl UserClient {
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| DepositError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(DepositError::from)?;
 
         Ok(receipt)
     }
@@ -58,7 +59,8 @@ impl UserClient {
             .getUser(signer_address)
             .call()
             .await
-            .map_err(|e| GetUserError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(GetUserError::from)?;
         Ok(user.into())
     }
 
@@ -72,7 +74,8 @@ impl UserClient {
             .getPaymentStatus(tab_id)
             .call()
             .await
-            .map_err(|e| TabPaymentStatusError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(TabPaymentStatusError::from)?;
 
         Ok(TabPaymentStatus {
             paid: status.paid,
@@ -86,12 +89,7 @@ impl UserClient {
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError> {
         // TODO: Cache public parameters for a while
-        let pub_params = self
-            .ctx
-            .rpc_proxy()
-            .get_public_params()
-            .await
-            .map_err(|e| SignPaymentError::Rpc(e.to_string()))?;
+        let pub_params = self.ctx.rpc_proxy().get_public_params().await?;
 
         let sig = self
             .ctx
@@ -146,7 +144,8 @@ impl UserClient {
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| RequestWithdrawalError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(RequestWithdrawalError::from)?;
 
         Ok(receipt)
     }
@@ -162,7 +161,8 @@ impl UserClient {
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| CancelWithdrawalError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(CancelWithdrawalError::from)?;
 
         Ok(receipt)
     }
@@ -178,7 +178,8 @@ impl UserClient {
         let receipt = send_result
             .get_receipt()
             .await
-            .map_err(|e| FinalizeWithdrawalError::from(alloy::contract::Error::from(e)))?;
+            .map_err(alloy::contract::Error::from)
+            .map_err(FinalizeWithdrawalError::from)?;
 
         Ok(receipt)
     }

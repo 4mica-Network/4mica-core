@@ -52,21 +52,21 @@ where
 
         let digest: B256 = match scheme {
             SigningScheme::Eip712 => crate::digest::eip712_digest(params, &claims)
-                .map_err(|e| SignPaymentError::DigestFailed(e.to_string()))?,
+                .map_err(|e| SignPaymentError::Failed(e.to_string()))?,
             SigningScheme::Eip191 => {
                 let user = Address::from_str(&claims.user_address)
                     .map_err(|_| SignPaymentError::InvalidUserAddress)?;
                 let recipient = Address::from_str(&claims.recipient_address)
                     .map_err(|_| SignPaymentError::InvalidRecipientAddress)?;
                 crate::digest::eip191_digest(&claims, user, recipient)
-                    .map_err(|e| SignPaymentError::DigestFailed(e.to_string()))?
+                    .map_err(|e| SignPaymentError::Failed(e.to_string()))?
             }
         };
 
         let sig = self
             .sign_hash(&digest)
             .await
-            .map_err(|e| SignPaymentError::SigningFailed(e.to_string()))?;
+            .map_err(|e| SignPaymentError::Failed(e.to_string()))?;
 
         let signature = sig.to_string();
 

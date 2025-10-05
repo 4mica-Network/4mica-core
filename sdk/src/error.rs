@@ -29,13 +29,11 @@ pub enum SignPaymentError {
     InvalidUserAddress,
     #[error("invalid recipient address in claims")]
     InvalidRecipientAddress,
-    #[error("digest failed: {0}")]
-    DigestFailed(String),
-    #[error("signing failed: {0}")]
-    SigningFailed(String),
+    #[error("failed to sign the payment: {0}")]
+    Failed(String),
 
-    #[error("RPC error: {0}")]
-    Rpc(String),
+    #[error(transparent)]
+    Rpc(#[from] jsonrpsee::core::ClientError),
 }
 
 #[derive(Debug, Error)]
@@ -134,22 +132,6 @@ pub enum PayTabError {
 }
 
 #[derive(Debug, Error)]
-pub enum CreateTabError {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-    #[error("rpc error: {0}")]
-    Transport(String),
-}
-
-#[derive(Debug, Error)]
-pub enum IssuePaymentGuaranteeError {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-    #[error("rpc error: {0}")]
-    Transport(String),
-}
-
-#[derive(Debug, Error)]
 pub enum GetUserError {
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
@@ -163,6 +145,24 @@ pub enum TabPaymentStatusError {
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
+}
+
+#[derive(Debug, Error)]
+pub enum CreateTabError {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+
+    #[error(transparent)]
+    Rpc(#[from] jsonrpsee::core::ClientError),
+}
+
+#[derive(Debug, Error)]
+pub enum IssuePaymentGuaranteeError {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+
+    #[error(transparent)]
+    Rpc(#[from] jsonrpsee::core::ClientError),
 }
 
 fn extract_selector_and_data(e: &alloy_contract::Error) -> Option<(u32, Vec<u8>)> {
