@@ -526,6 +526,8 @@ async fn build_eip712_signed_request(
 async fn verify_eip712_signature_ok() {
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
@@ -541,6 +543,8 @@ async fn verify_eip712_signature_ok() {
 async fn verify_eip712_signature_fails_if_tampered() {
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
@@ -574,6 +578,8 @@ async fn verify_eip191_signature_ok() {
 
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
@@ -623,6 +629,8 @@ async fn verify_eip191_signature_ok() {
 async fn verify_signature_fails_with_invalid_hex() {
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,

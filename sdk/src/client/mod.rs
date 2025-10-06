@@ -4,12 +4,14 @@ use crate::{
     config::Config,
     contract::Core4Mica::{self, Core4MicaInstance},
     error::ClientError,
+    validators::{validate_address, validate_url},
 };
 use alloy::{
+    primitives::Address,
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use rpc::proxy::RpcProxy;
+use rpc::{core::CoreApiClient, proxy::RpcProxy};
 
 use self::{recipient::RecipientClient, user::UserClient};
 
@@ -21,6 +23,7 @@ struct Inner {
     cfg: Config,
     rpc_proxy: RpcProxy,
     provider: DynProvider,
+    contract_address: Address,
 }
 
 #[derive(Clone)]
@@ -31,22 +34,38 @@ impl ClientCtx {
         let rpc_proxy =
             RpcProxy::new(&cfg.rpc_url.to_string()).map_err(|e| ClientError::Rpc(e.to_string()))?;
 
+        let public_params = rpc_proxy
+            .get_public_params()
+            .await
+            .map_err(|e| ClientError::Rpc(e.to_string()))?;
+
+        let ethereum_http_rpc_url = cfg.ethereum_http_rpc_url.clone().unwrap_or(
+            validate_url(&public_params.ethereum_http_rpc_url)
+                .expect("Invalid Ethereum HTTP RPC URL received from server"),
+        );
+
         let provider = ProviderBuilder::new()
             .wallet(cfg.wallet_private_key.clone())
-            .connect(&cfg.ethereum_http_rpc_url.to_string())
+            .connect(&ethereum_http_rpc_url.to_string())
             .await
             .map_err(|e| ClientError::Provider(e.to_string()))?
             .erased();
+
+        let contract_address = cfg.contract_address.clone().unwrap_or(
+            validate_address(&public_params.contract_address)
+                .expect("Invalid contract address received from server"),
+        );
 
         Ok(Self(Arc::new(Inner {
             cfg,
             rpc_proxy,
             provider,
+            contract_address,
         })))
     }
 
     fn get_contract(&self) -> Core4MicaInstance<DynProvider> {
-        Core4Mica::new(self.0.cfg.contract_address, self.0.provider.clone())
+        Core4Mica::new(self.0.contract_address, self.0.provider.clone())
     }
 
     fn provider(&self) -> &DynProvider {

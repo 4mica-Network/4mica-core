@@ -23,12 +23,17 @@ rust-sdk-4mica = "0.1.0"
 
 ## Configuration
 
-The SDK requires four configuration parameters:
+The SDK requires two configuration parameters:
 
-- `rpc_url`: URL of the 4Mica RPC server
-- `ethereum_http_rpc_url`: URL of the Ethereum JSON-RPC endpoint
-- `contract_address`: Address of the deployed Core4Mica smart contract
+- `rpc_url`: URL of the 4Mica RPC server (defaults to http://localhost:3000)
 - `wallet_private_key`: Private key for signing transactions (hex string with or without `0x` prefix)
+
+The following parameters are **optional** and will be automatically fetched from the server if not provided:
+
+- `ethereum_http_rpc_url`: URL of the Ethereum JSON-RPC endpoint (optional)
+- `contract_address`: Address of the deployed Core4Mica smart contract (optional)
+
+> **Note:** You normally don't need to provide `ethereum_http_rpc_url` and `contract_address` as the SDK will fetch these from the server automatically. Only override these if you need to use different values than the server's defaults.
 
 ### Configuration Methods
 
@@ -40,9 +45,6 @@ use rust_sdk_4mica::{Config, ConfigBuilder, Client};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ConfigBuilder::default()
-        .rpc_url("http://localhost:3000".to_string())
-        .ethereum_http_rpc_url("http://localhost:8545".to_string())
-        .contract_address("0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0".to_string())
         .wallet_private_key("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string())
         .build()?;
 
@@ -56,10 +58,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Set the following environment variables:
 
 ```bash
+export 4MICA_WALLET_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+# Optional (will use defaults if not set)
 export 4MICA_RPC_URL="http://localhost:3000"
 export 4MICA_ETHEREUM_HTTP_RPC_URL="http://localhost:8545"
 export 4MICA_CONTRACT_ADDRESS="0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
-export 4MICA_WALLET_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 ```
 
 Then in your code:
@@ -77,30 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
-
-#### 3. Default Configuration (Development)
-
-For local development, you can use the default configuration:
-
-```rust
-use rust_sdk_4mica::{ConfigBuilder, Client};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = ConfigBuilder::default()
-        .wallet_private_key("your_private_key".to_string())  // Only private key required
-        .build()?;
-
-    let client = Client::new(config).await?;
-    Ok(())
-}
-```
-
-The default configuration uses:
-
-- RPC URL: `http://localhost:3000`
-- Ethereum RPC URL: `http://localhost:8545`
-- Contract Address: `0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0`
 
 ## Usage
 

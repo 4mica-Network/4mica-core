@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 
 pub struct CorePublicParameters {
-    pub public_key: Vec<u8>, // existing BLS pubkey
-    // new (helps clients sign EIP-712 correctly)
+    pub public_key: Vec<u8>, // BLS pubkey
+    pub contract_address: String,
+    pub ethereum_http_rpc_url: String,
     pub eip712_name: String,    // e.g., "4mica"
     pub eip712_version: String, // e.g., "1"
     pub chain_id: u64,          // Ethereum chain id used for signing domain

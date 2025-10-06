@@ -90,10 +90,13 @@ impl CoreService {
 
         let eip712_name = config.eip712.name.clone();
         let eip712_version = config.eip712.version.clone();
+        let eth_config = config.ethereum_config.clone();
         Ok(Self {
             config,
             public_params: CorePublicParameters {
                 public_key,
+                contract_address: eth_config.contract_address.clone(),
+                ethereum_http_rpc_url: eth_config.http_rpc_url.clone(),
                 eip712_name,
                 eip712_version,
                 chain_id,
