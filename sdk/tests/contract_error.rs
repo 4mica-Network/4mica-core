@@ -2,7 +2,7 @@ use rust_sdk_4mica::{Client, ConfigBuilder, PaymentGuaranteeClaims, SigningSchem
 use std::time::Duration;
 
 #[tokio::test]
-async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
+async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     // These wallet keys are picked from the default accounts in anvil test node
 
     let user_config = ConfigBuilder::default()
@@ -24,16 +24,8 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     let recipient_client = Client::new(recipient_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
-    let user_info = user_client.user.get_user().await?;
-
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
     let _receipt = user_client.user.deposit(deposit_amount).await?;
-
-    let user_info_after = user_client.user.get_user().await?;
-    assert_eq!(
-        user_info_after.collateral,
-        user_info.collateral + deposit_amount
-    );
 
     // Wait for transaction to settle
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -61,21 +53,25 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .await?;
 
     // Step 4: Recipient issues guarantee
-    let _bls_cert = recipient_client
+    let bls_cert = recipient_client
         .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
 
-    // Step 5: User pays the tab
-    let _receipt = user_client
-        .user
-        .pay_tab(
-            tab_id,
-            U256::from(0),
-            U256::from(1_000_000_000_000_000_000u128),
-            recipient_address.clone(),
-        )
-        .await?;
+    // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
+    let result = recipient_client.recipient.remunerate(bls_cert).await;
 
-    Ok(())
+    // Assert that we got the expected error
+    match result {
+        Err(rust_sdk_4mica::error::RemunerateError::TabNotYetOverdue) => {
+            // This is the expected error - test passes
+            Ok(())
+        }
+        Err(e) => {
+            panic!("Expected TabNotYetOverdue error, but got: {:?}", e);
+        }
+        Ok(_) => {
+            panic!("Expected TabNotYetOverdue error, but remuneration succeeded");
+        }
+    }
 }
