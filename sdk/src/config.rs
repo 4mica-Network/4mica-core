@@ -111,6 +111,213 @@ impl ConfigBuilder {
 
 impl Default for ConfigBuilder {
     fn default() -> Self {
-        Self::empty().rpc_url("http://localhost:3000".to_string())
+        Self::empty().rpc_url("http://localhost:3000/".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_PRIVATE_KEY: &str =
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+    const VALID_ADDRESS: &str = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+    const VALID_RPC_URL: &str = "http://api.4mica.xyz/";
+    const VALID_ETH_RPC_URL: &str = "http://localhost:8545/";
+
+    #[test]
+    fn test_default_builder() {
+        let builder = ConfigBuilder::default();
+        assert_eq!(builder.rpc_url, Some("http://localhost:3000/".to_string()));
+        assert!(builder.wallet_private_key.is_none());
+        assert!(builder.ethereum_http_rpc_url.is_none());
+        assert!(builder.contract_address.is_none());
+    }
+
+    #[test]
+    fn test_build_with_required_fields_only() {
+        let config = ConfigBuilder::default()
+            .wallet_private_key(VALID_PRIVATE_KEY.to_string())
+            .build();
+
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        assert_eq!(config.rpc_url.as_str(), "http://localhost:3000/");
+        assert_eq!(
+            config.wallet_private_key,
+            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
+        );
+        assert!(config.ethereum_http_rpc_url.is_none());
+        assert!(config.contract_address.is_none());
+    }
+
+    #[test]
+    fn test_build_with_all_fields() {
+        let config = ConfigBuilder::default()
+            .rpc_url(VALID_RPC_URL.to_string())
+            .wallet_private_key(VALID_PRIVATE_KEY.to_string())
+            .ethereum_http_rpc_url(VALID_ETH_RPC_URL.to_string())
+            .contract_address(VALID_ADDRESS.to_string())
+            .build();
+
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        assert_eq!(config.rpc_url.as_str(), VALID_RPC_URL);
+        assert_eq!(
+            config.wallet_private_key,
+            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
+        );
+        assert_eq!(
+            config.ethereum_http_rpc_url.unwrap().as_str(),
+            VALID_ETH_RPC_URL
+        );
+        assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
+    }
+
+    #[test]
+    fn test_build_missing_wallet_private_key() {
+        let config = ConfigBuilder::default().build();
+
+        assert!(config.is_err());
+        match config.unwrap_err() {
+            ConfigError::Missing(field) => assert_eq!(field, "wallet_private_key"),
+            _ => panic!("Expected Missing error"),
+        }
+    }
+
+    #[test]
+    fn test_build_invalid_rpc_url() {
+        let config = ConfigBuilder::default()
+            .rpc_url("not-a-valid-url".to_string())
+            .wallet_private_key(VALID_PRIVATE_KEY.to_string())
+            .build();
+
+        assert!(config.is_err());
+        match config.unwrap_err() {
+            ConfigError::InvalidValue(msg) => assert!(msg.contains("invalid URL")),
+            _ => panic!("Expected InvalidValue error"),
+        }
+    }
+
+    #[test]
+    fn test_build_invalid_wallet_private_key() {
+        let config = ConfigBuilder::default()
+            .wallet_private_key("not-a-valid-key".to_string())
+            .build();
+
+        assert!(config.is_err());
+        match config.unwrap_err() {
+            ConfigError::InvalidValue(msg) => assert!(msg.contains("invalid private key")),
+            _ => panic!("Expected InvalidValue error"),
+        }
+    }
+
+    #[test]
+    fn test_build_invalid_ethereum_http_rpc_url() {
+        let config = ConfigBuilder::default()
+            .wallet_private_key(VALID_PRIVATE_KEY.to_string())
+            .ethereum_http_rpc_url("not-a-valid-url".to_string())
+            .build();
+
+        assert!(config.is_err());
+        match config.unwrap_err() {
+            ConfigError::InvalidValue(msg) => assert!(msg.contains("invalid URL")),
+            _ => panic!("Expected InvalidValue error"),
+        }
+    }
+
+    #[test]
+    fn test_build_invalid_contract_address() {
+        let config = ConfigBuilder::default()
+            .wallet_private_key(VALID_PRIVATE_KEY.to_string())
+            .contract_address("not-a-valid-address".to_string())
+            .build();
+
+        assert!(config.is_err());
+        match config.unwrap_err() {
+            ConfigError::InvalidValue(msg) => assert!(msg.contains("invalid address")),
+            _ => panic!("Expected InvalidValue error"),
+        }
+    }
+
+    #[test]
+    fn test_from_env_with_all_vars() {
+        unsafe {
+            std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
+            std::env::set_var("4MICA_WALLET_PRIVATE_KEY", VALID_PRIVATE_KEY);
+            std::env::set_var("4MICA_ETHEREUM_HTTP_RPC_URL", VALID_ETH_RPC_URL);
+            std::env::set_var("4MICA_CONTRACT_ADDRESS", VALID_ADDRESS);
+        }
+
+        let config = ConfigBuilder::default().from_env().build();
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("4MICA_RPC_URL");
+            std::env::remove_var("4MICA_WALLET_PRIVATE_KEY");
+            std::env::remove_var("4MICA_ETHEREUM_HTTP_RPC_URL");
+            std::env::remove_var("4MICA_CONTRACT_ADDRESS");
+        }
+
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        assert_eq!(config.rpc_url.as_str(), VALID_RPC_URL);
+        assert_eq!(
+            config.wallet_private_key,
+            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
+        );
+        assert_eq!(
+            config.ethereum_http_rpc_url.unwrap().as_str(),
+            VALID_ETH_RPC_URL
+        );
+        assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
+    }
+
+    #[test]
+    fn test_from_env_with_partial_vars() {
+        unsafe {
+            std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
+        }
+
+        let config = ConfigBuilder::default()
+            .from_env()
+            .wallet_private_key(VALID_PRIVATE_KEY.to_string())
+            .build();
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("4MICA_RPC_URL");
+        }
+
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        assert_eq!(config.rpc_url.as_str(), VALID_RPC_URL);
+        assert_eq!(
+            config.wallet_private_key,
+            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
+        );
+    }
+
+    #[test]
+    fn test_from_env_override() {
+        unsafe {
+            std::env::set_var("4MICA_RPC_URL", "http://env-url:3000/");
+        }
+
+        let config = ConfigBuilder::default()
+            .rpc_url(VALID_RPC_URL.to_string())
+            .from_env()
+            .wallet_private_key(VALID_PRIVATE_KEY.to_string())
+            .build();
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("4MICA_RPC_URL");
+        }
+
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        // from_env should override the earlier value
+        assert_eq!(config.rpc_url.as_str(), "http://env-url:3000/");
     }
 }

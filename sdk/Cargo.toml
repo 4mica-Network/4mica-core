@@ -13,3 +13,8 @@ async-trait = { workspace = true }
 url = { workspace = true }
 alloy = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
+
+[dev-dependencies]
+core-service = { path = "../core" }
+tokio = { workspace = true }
+chrono = { workspace = true }
