@@ -76,7 +76,7 @@ impl CoreService {
                     .await
                 {
                     Ok(_) => {
-                        info!("EthereumListener exited gracefully");
+                        info!("EthereumListener connected successfully.");
                         break;
                     }
                     Err(e) => {
