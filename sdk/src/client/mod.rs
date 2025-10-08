@@ -51,7 +51,7 @@ impl ClientCtx {
             .map_err(|e| ClientError::Provider(e.to_string()))?
             .erased();
 
-        let contract_address = cfg.contract_address.clone().unwrap_or(
+        let contract_address = cfg.contract_address.unwrap_or(
             validate_address(&public_params.contract_address)
                 .expect("Invalid contract address received from server"),
         );

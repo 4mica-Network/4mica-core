@@ -1,4 +1,6 @@
-use rust_sdk_4mica::{Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256};
+use rust_sdk_4mica::{
+    Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256, error::RemunerateError,
+};
 use std::time::Duration;
 
 #[tokio::test]
@@ -61,17 +63,6 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
     let result = recipient_client.recipient.remunerate(bls_cert).await;
 
-    // Assert that we got the expected error
-    match result {
-        Err(rust_sdk_4mica::error::RemunerateError::TabNotYetOverdue) => {
-            // This is the expected error - test passes
-            Ok(())
-        }
-        Err(e) => {
-            panic!("Expected TabNotYetOverdue error, but got: {:?}", e);
-        }
-        Ok(_) => {
-            panic!("Expected TabNotYetOverdue error, but remuneration succeeded");
-        }
-    }
+    assert!(matches!(result, Err(RemunerateError::TabNotYetOverdue)));
+    Ok(())
 }

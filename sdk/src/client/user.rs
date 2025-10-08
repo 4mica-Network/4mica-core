@@ -59,7 +59,6 @@ impl UserClient {
             .getUser(signer_address)
             .call()
             .await
-            .map_err(alloy::contract::Error::from)
             .map_err(GetUserError::from)?;
         Ok(user.into())
     }
@@ -74,7 +73,6 @@ impl UserClient {
             .getPaymentStatus(tab_id)
             .call()
             .await
-            .map_err(alloy::contract::Error::from)
             .map_err(TabPaymentStatusError::from)?;
 
         Ok(TabPaymentStatus {

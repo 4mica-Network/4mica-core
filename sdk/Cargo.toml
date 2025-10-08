@@ -18,3 +18,5 @@ jsonrpsee = { workspace = true, features = ["http-client"] }
 core-service = { path = "../core" }
 tokio = { workspace = true }
 chrono = { workspace = true }
+alloy-provider = { workspace = true, features = ["anvil-api"] }
+test-log = { workspace = true }
