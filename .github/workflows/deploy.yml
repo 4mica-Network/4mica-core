@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -143,21 +147,28 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/develop'
     steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
 
-      - name: Deploy to staging server
+      - name: Deploy to staging via Docker
+        env:
+          IMAGE_NAME: ghcr.io/4mica-network/4mica-core
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          set -e
+          docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+          docker pull ghcr.io/4mica-network/4mica-core:latest
           cd /home/deploy/4mica-core
-          git fetch origin develop
-          git reset --hard origin/develop
-          git submodule update --init --recursive
-          cargo build --release --workspace
-          systemctl --user restart 4mica
+          docker compose up -d core-service
           EOF
 
   deploy-main:
@@ -165,19 +176,26 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
 
-      - name: Deploy to production server
+      - name: Deploy to production via Docker
+        env:
+          IMAGE_NAME: ghcr.io/4mica-network/4mica-core
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          set -e
+          docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+          docker pull ghcr.io/4mica-network/4mica-core:latest
           cd /home/deploy/4mica-core
-          git fetch origin main
-          git reset --hard origin/main
-          git submodule update --init --recursive
-          cargo build --release --workspace
-          systemctl --user restart 4mica
+          docker compose up -d core-service
           EOF
