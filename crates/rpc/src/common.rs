@@ -27,6 +27,23 @@ impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
     }
 }
 
+impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let (tab_id, req_id, client, recipient, amount, timestamp) =
+            crypto::guarantee::decode_guarantee_bytes(&value)?;
+        Ok(PaymentGuaranteeClaims {
+            user_address: client.to_string(),
+            recipient_address: recipient.to_string(),
+            tab_id,
+            req_id,
+            amount,
+            timestamp,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SigningScheme {
@@ -58,7 +75,7 @@ pub struct UserTransactionInfo {
 pub struct CreatePaymentTabRequest {
     pub user_address: String,
     pub recipient_address: String,
-    // ttl in seconds
+    /// Tab TTL in seconds
     pub ttl: Option<u64>,
 }
 

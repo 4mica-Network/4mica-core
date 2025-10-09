@@ -2,6 +2,12 @@ use hex::FromHexError;
 use std::ops::Deref;
 use std::str::FromStr;
 
+pub fn decode_hex(s: &str) -> Result<Vec<u8>, FromHexError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let decoded = hex::decode(s)?;
+    Ok(decoded)
+}
+
 #[derive(Debug, Clone)]
 pub struct HexBytes(Vec<u8>);
 
@@ -15,9 +21,7 @@ impl FromStr for HexBytes {
     type Err = FromHexError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.strip_prefix("0x").unwrap_or(s);
-        let decoded = hex::decode(s)?;
-        Ok(Self(decoded))
+        Ok(Self(decode_hex(s)?))
     }
 }
 

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "core",
+    "sdk",
     "crates/crypto",
     "crates/rpc",
     "crates/blockchain",
@@ -25,6 +26,7 @@ thiserror = "2.0.16"
 futures-util = "0.3.31"
 log = "0.4.25"
 env_logger = "0.11.6"
+test-log = "0.2.18"
 dotenv = "0.15.0"
 envconfig = "0.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -34,9 +36,7 @@ tokio-cron-scheduler = "0.14.0"
 jsonrpsee = { git = "https://github.com/paritytech/jsonrpsee.git" }
 bls-signatures = "0.15.0"
 hex = "0.4.3"
-test-log = "0.2.17"
 uuid = { version = "1.18", features = ["v4"] }
-alloy = "=1.0.36"
 hyper = "1.6.0"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
@@ -44,8 +44,11 @@ sea-orm = { version = "1.1.16", features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",
 ] }
+alloy = "=1.0.36"
 alloy-primitives = { version = "1.4.0" }
 alloy-sol-types = "1.4.0"
+alloy-provider = { version = "1.0.38" }
 serial_test = "3.2.0"
 sha2 = "0.10.9"
 blst = "0.3.16"
+url = "2.5.7"
