@@ -1,0 +1,23 @@
+{
+  "../claim_contracts/lib/forge-std": {
+    "rev": "0768d9c08c085c79bb31d88683a78770764fec49"
+  },
+  "../claim_contracts/lib/openzeppelin-contracts": {
+    "rev": "b9c7078bd6f8afc7d10dc198d6f7412a594fe7f8"
+  },
+  "../claim_contracts/lib/openzeppelin-contracts-upgradeable": {
+    "rev": "c8530d7fbfee81df85604d46222542eba3cf0c0e"
+  },
+  "lib/forge-std": {
+    "rev": "0768d9c08c085c79bb31d88683a78770764fec49"
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "b9c7078bd6f8afc7d10dc198d6f7412a594fe7f8"
+  },
+  "lib/openzeppelin-contracts-upgradeable": {
+    "rev": "c8530d7fbfee81df85604d46222542eba3cf0c0e"
+  },
+  "lib/solady": {
+    "rev": "208e4f31cfae26e4983eb95c3488a14fdc497ad7"
+  }
+}

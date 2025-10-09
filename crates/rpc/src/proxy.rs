@@ -2,14 +2,14 @@ use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use std::ops::Deref;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct RpcProxy {
     client: Arc<HttpClient>,
 }
 
 impl RpcProxy {
-    pub async fn new(addr: &str) -> anyhow::Result<Self> {
-        let client = HttpClientBuilder::default().build(format!("http://{addr}"))?;
+    pub fn new(endpoint: &str) -> anyhow::Result<Self> {
+        let client = HttpClientBuilder::default().build(endpoint)?;
         Ok(Self {
             client: Arc::new(client),
         })

@@ -8,7 +8,6 @@ async-trait.workspace = true
 alloy = { workspace = true, features = ["provider-ws"] }
 futures-util.workspace = true
 tokio.workspace = true
-rpc.workspace = true
 log.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
