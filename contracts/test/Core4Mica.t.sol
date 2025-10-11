@@ -53,7 +53,7 @@ contract Core4MicaTest is Test {
 
     function AccessUnauthorizedError(
         address accessor
-    ) public returns (bytes memory) {
+    ) public pure returns (bytes memory) {
         return
             abi.encodeWithSelector(
                 IAccessManaged.AccessManagedUnauthorized.selector,
@@ -196,7 +196,7 @@ contract Core4MicaTest is Test {
         core4Mica.setSynchronizationDelay(1 days);
     }
 
-    function newKey() public returns (BLS.G1Point memory) {
+    function newKey() public pure returns (BLS.G1Point memory) {
         return
             BLS.G1Point(
                 bytes32(
@@ -226,7 +226,7 @@ contract Core4MicaTest is Test {
         assertEq(x_a, key.x_a);
         assertEq(x_b, key.x_b);
         assertEq(y_a, key.y_a);
-        assertEq(x_b, key.x_b);
+        assertEq(y_b, key.y_b);
     }
 
     function test_SetVerificationKey_Revert_User_Unauthorized() public {
@@ -550,12 +550,20 @@ contract Core4MicaTest is Test {
         assertEq(paid, 0);
         assertFalse(remunerated);
 
+        // 🔹 Expect the new event to be emitted
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.PaymentRecorded(0x1234, 1 ether);
+
         vm.prank(operator);
         core4Mica.recordPayment(0x1234, 1 ether);
 
         (paid, remunerated) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 1 ether);
         assertFalse(remunerated);
+
+        // 🔹 Expect another PaymentRecorded for second call
+        vm.expectEmit(true, false, false, true);
+        emit Core4Mica.PaymentRecorded(0x1234, 2 ether);
 
         vm.prank(operator);
         core4Mica.recordPayment(0x1234, 2 ether);
@@ -1023,7 +1031,7 @@ contract Core4MicaTest is Test {
 
     // === Verify Guarantee Signature ===
 
-    function test_VerifyGuaranteeSignature() public {
+    function test_VerifyGuaranteeSignature() public view {
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(
             0x1234,
             vm.getBlockTimestamp(),
@@ -1039,7 +1047,7 @@ contract Core4MicaTest is Test {
         assert(core4Mica.verifyGuaranteeSignature(g, signature));
     }
 
-    function test_VerifyGuaranteeSignature_InvalidGuarantee() public {
+    function test_VerifyGuaranteeSignature_InvalidGuarantee() public view {
         Core4Mica.Guarantee memory g1 = Core4Mica.Guarantee(
             0x1234,
             vm.getBlockTimestamp(),
@@ -1064,7 +1072,7 @@ contract Core4MicaTest is Test {
         assert(!core4Mica.verifyGuaranteeSignature(g2, signature_g1));
     }
 
-    function test_VerifyGuaranteeSignature_InvalidSigningKey() public {
+    function test_VerifyGuaranteeSignature_InvalidSigningKey() public view {
         Core4Mica.Guarantee memory g = Core4Mica.Guarantee(
             0x1234,
             vm.getBlockTimestamp(),

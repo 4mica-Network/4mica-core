@@ -1,8 +1,8 @@
+use alloy::signers::local::LocalSignerError;
 use anyhow::anyhow;
 use rpc;
 use sea_orm::TransactionError as SeaTransactionError;
 use thiserror::Error;
-
 // ---------- SeaORM transaction error conversions ----------
 
 impl From<SeaTransactionError<PersistDbError>> for PersistDbError {
@@ -19,6 +19,17 @@ impl From<SeaTransactionError<BlockchainListenerError>> for BlockchainListenerEr
         match err {
             SeaTransactionError::Connection(db_err) => {
                 BlockchainListenerError::DatabaseFailure(db_err)
+            }
+            SeaTransactionError::Transaction(inner) => inner,
+        }
+    }
+}
+
+impl From<SeaTransactionError<BlockchainWriterError>> for BlockchainWriterError {
+    fn from(err: SeaTransactionError<BlockchainWriterError>) -> Self {
+        match err {
+            SeaTransactionError::Connection(db_err) => {
+                BlockchainWriterError::DatabaseFailure(db_err)
             }
             SeaTransactionError::Transaction(inner) => inner,
         }
@@ -45,6 +56,30 @@ pub enum BlockchainListenerError {
     UserNotFound(String),
 
     #[error("Unexpected error: {0}")]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum BlockchainWriterError {
+    #[error("Failed to sign or send transaction: {0}")]
+    TransportFailure(#[from] alloy::transports::TransportError),
+
+    #[error("Private key error: {0}")]
+    InvalidPrivateKey(String),
+
+    #[error("Failed to decode ABI response: {0}")]
+    AbiError(#[from] alloy::sol_types::Error),
+
+    #[error("Database operation failed: {0}")]
+    DatabaseFailure(#[from] sea_orm::DbErr),
+
+    #[error("Invalid contract address: {0}")]
+    InvalidAddress(String),
+
+    #[error("Pending transaction failed: {0}")]
+    PendingTxFailure(String),
+
+    #[error("Unexpected blockchain writer error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
@@ -160,6 +195,29 @@ impl From<PersistDbError> for ServiceError {
                 ServiceError::Db(PersistDbError::DatabaseFailure(e))
             }
         }
+    }
+}
+
+// ---------- Nice `From` conversions so we can use `?` everywhere ----------
+
+// 1) Private key parsing (`.parse::<PrivateKeySigner>()?`)
+impl From<LocalSignerError> for BlockchainWriterError {
+    fn from(e: LocalSignerError) -> Self {
+        BlockchainWriterError::InvalidPrivateKey(e.to_string())
+    }
+}
+
+// 2) Contract method calls: `tx.send().await?`, `pending.get_receipt().await?`
+impl From<alloy::contract::Error> for BlockchainWriterError {
+    fn from(e: alloy::contract::Error) -> Self {
+        // You can introduce a dedicated variant if you prefer.
+        BlockchainWriterError::Other(anyhow!(e))
+    }
+}
+
+impl From<alloy::providers::PendingTransactionError> for BlockchainWriterError {
+    fn from(e: alloy::providers::PendingTransactionError) -> Self {
+        BlockchainWriterError::PendingTxFailure(e.to_string())
     }
 }
 

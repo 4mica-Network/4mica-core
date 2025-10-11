@@ -80,6 +80,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event SynchronizationDelayUpdated(uint256 newExpirationTime);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
+    event PaymentRecorded(uint256 indexed tab_id, uint256 amount);
 
     // ========= Helper structs =========
     struct Guarantee {
@@ -250,6 +251,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         uint256 amount
     ) external restricted nonZero(amount) nonReentrant {
         payments[tab_id].paid += amount;
+        emit PaymentRecorded(tab_id, amount);
     }
 
     // ========= Views / Helpers =========
