@@ -30,10 +30,10 @@ async fn setup_clean_db() -> (AppConfig, RpcProxy, PersistCtx) {
         AppConfig::fetch()
     };
     let core_addr = format!(
-        "{}:{}",
+        "http://{}:{}",
         config.server_config.host, config.server_config.port
     );
-    let core_client = RpcProxy::new(&core_addr).await.expect("connect RPC");
+    let core_client = RpcProxy::new(&core_addr).expect("connect RPC");
     let ctx = PersistCtx::new().await.expect("db ctx");
 
     for table in [
@@ -538,6 +538,8 @@ async fn build_eip712_signed_request(
 async fn verify_eip712_signature_ok() {
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
@@ -554,6 +556,8 @@ async fn verify_eip712_signature_ok() {
 async fn verify_eip712_signature_fails_if_tampered() {
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
@@ -588,6 +592,8 @@ async fn verify_eip191_signature_ok() {
 
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
@@ -638,6 +644,8 @@ async fn verify_eip191_signature_ok() {
 async fn verify_signature_fails_with_invalid_hex() {
     let params = CorePublicParameters {
         public_key: vec![],
+        contract_address: "".to_string(),
+        ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
