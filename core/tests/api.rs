@@ -18,9 +18,9 @@ use rpc::{
     core::{CoreApiClient, CorePublicParameters},
     proxy::RpcProxy,
 };
-use serial_test::serial;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use sea_orm::{ConnectionTrait, Statement};
+use serial_test::serial;
 use std::str::FromStr;
 use test_log::test;
 

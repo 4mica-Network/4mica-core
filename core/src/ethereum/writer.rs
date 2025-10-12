@@ -19,10 +19,7 @@ impl EthereumWriter {
 
     async fn build_contract(
         &self,
-    ) -> Result<
-        Core4Mica::Core4MicaInstance<impl Provider + Send + Sync + 'static>,
-        BlockchainWriterError,
-    > {
+    ) -> Result<Core4Mica::Core4MicaInstance<impl Provider + 'static>, BlockchainWriterError> {
         let signer: PrivateKeySigner = self.config.ethereum_private_key.parse()?;
         let wallet = EthereumWallet::new(signer);
 
