@@ -117,6 +117,7 @@ jobs:
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
+          ETHEREUM_PRIVATE_KEY: ${{ secrets.ETHEREUM_PRIVATE_KEY }}
         run: |
           nohup cargo run -p core-service > api.log 2>&1 &
           for i in {1..30}; do
