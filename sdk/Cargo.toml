@@ -1,0 +1,22 @@
+[package]
+name = "rust-sdk-4mica"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+rpc = { workspace = true }
+crypto = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }
+alloy = { workspace = true }
+jsonrpsee = { workspace = true, features = ["http-client"] }
+
+[dev-dependencies]
+core-service = { path = "../core" }
+tokio = { workspace = true }
+chrono = { workspace = true }
+alloy-provider = { workspace = true, features = ["anvil-api"] }
+test-log = { workspace = true }
