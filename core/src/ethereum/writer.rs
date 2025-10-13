@@ -2,50 +2,63 @@ use crate::{config::EthereumConfig, error::BlockchainWriterError, ethereum::cont
 use alloy::{
     network::EthereumWallet,
     primitives::{Address, U256},
-    providers::{Provider, ProviderBuilder, WsConnect},
+    providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
     signers::local::PrivateKeySigner,
 };
 use anyhow::anyhow;
+use async_trait::async_trait;
 use log::info;
 
 pub struct EthereumWriter {
-    config: EthereumConfig,
+    provider: DynProvider,
+    contract_address: Address,
+}
+
+#[async_trait]
+pub trait PaymentWriter: Send + Sync {
+    async fn record_payment(&self, tab_id: U256, amount: U256)
+    -> Result<(), BlockchainWriterError>;
 }
 
 impl EthereumWriter {
-    pub fn new(config: EthereumConfig) -> Self {
-        Self { config }
-    }
-
-    async fn build_contract(
-        &self,
-    ) -> Result<Core4Mica::Core4MicaInstance<impl Provider + 'static>, BlockchainWriterError> {
-        let signer: PrivateKeySigner = self.config.ethereum_private_key.parse()?;
+    pub async fn new(config: EthereumConfig) -> Result<Self, BlockchainWriterError> {
+        let signer: PrivateKeySigner = config.ethereum_private_key.parse()?;
         let wallet = EthereumWallet::new(signer);
 
-        let ws = WsConnect::new(&self.config.ws_rpc_url);
+        let ws = WsConnect::new(&config.ws_rpc_url);
         let provider = ProviderBuilder::new()
             .wallet(wallet)
             .connect_ws(ws)
             .await
-            .map_err(BlockchainWriterError::TransportFailure)?;
+            .map_err(BlockchainWriterError::TransportFailure)?
+            .erased();
 
-        let address: Address = self.config.contract_address.parse().map_err(|_| {
+        let contract_address: Address = config.contract_address.parse().map_err(|_| {
             BlockchainWriterError::Other(anyhow!(
                 "invalid contract address {}",
-                self.config.contract_address
+                config.contract_address
             ))
         })?;
 
-        Ok(Core4Mica::Core4MicaInstance::new(address, provider))
+        Ok(Self {
+            provider,
+            contract_address,
+        })
     }
 
-    pub async fn record_payment(
+    fn build_contract(&self) -> Core4Mica::Core4MicaInstance<DynProvider> {
+        Core4Mica::Core4MicaInstance::new(self.contract_address, self.provider.clone())
+    }
+}
+
+#[async_trait]
+impl PaymentWriter for EthereumWriter {
+    async fn record_payment(
         &self,
         tab_id: U256,
         amount: U256,
     ) -> Result<(), BlockchainWriterError> {
-        let contract = self.build_contract().await?;
+        let contract = self.build_contract();
         let tx = contract.recordPayment(tab_id, amount);
 
         let receipt = tx.send().await?.get_receipt().await?;

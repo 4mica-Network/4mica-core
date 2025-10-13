@@ -4,4 +4,4 @@ pub mod writer;
 
 pub use contract::contract_abi;
 pub use listener::EthereumListener;
-pub use writer::EthereumWriter;
+pub use writer::{EthereumWriter, PaymentWriter};
