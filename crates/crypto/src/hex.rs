@@ -1,4 +1,4 @@
-use hex::FromHexError;
+pub use hex::FromHexError;
 use std::ops::Deref;
 use std::str::FromStr;
 

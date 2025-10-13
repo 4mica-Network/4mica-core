@@ -1,7 +1,8 @@
 use crate::contract::Core4Mica;
 use alloy::contract as alloy_contract;
-use alloy::primitives::Address;
-use alloy::primitives::Bytes;
+use alloy::primitives::{Address, Bytes};
+use anyhow::Error;
+use crypto::hex::FromHexError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -43,6 +44,16 @@ pub enum SignPaymentError {
 pub enum RemunerateError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
+    #[error("failed to decode guarantee claims hex")]
+    ClaimsHex(#[source] FromHexError),
+    #[error("failed to decode guarantee claims")]
+    ClaimsDecode(#[source] Error),
+    #[error("failed to convert guarantee claims into contract type")]
+    GuaranteeConversion(#[source] Error),
+    #[error("failed to decode signature hex")]
+    SignatureHex(#[source] FromHexError),
+    #[error("failed to decode BLS signature")]
+    SignatureDecode(#[source] Error),
     #[error("tab not yet overdue")]
     TabNotYetOverdue,
     #[error("tab expired")]
