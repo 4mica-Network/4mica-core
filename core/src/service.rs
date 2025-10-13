@@ -2,7 +2,7 @@ use crate::{
     auth::verify_promise_signature,
     config::{AppConfig, DEFAULT_TTL_SECS},
     error::{ServiceError, ServiceResult, service_error_to_rpc},
-    ethereum::{contract_abi::Core4Mica, EthereumListener, EthereumWriter, PaymentWriter},
+    ethereum::{EthereumListener, EthereumWriter, PaymentWriter, contract_abi::Core4Mica},
     persist::{PersistCtx, repo},
     util::u256_to_string,
 };
