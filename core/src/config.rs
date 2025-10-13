@@ -31,6 +31,8 @@ pub struct EthereumConfig {
     pub number_of_blocks_to_confirm: u64,
     #[envconfig(from = "NUMBER_OF_PENDING_BLOCKS", default = "5")]
     pub number_of_pending_blocks: u64,
+    #[envconfig(from = "ETHEREUM_PRIVATE_KEY")]
+    pub ethereum_private_key: String,
 }
 
 #[derive(Debug, Clone, Envconfig)]

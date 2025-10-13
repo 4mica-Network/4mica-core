@@ -369,6 +369,17 @@ pub async fn submit_payment_transaction(
     Ok(())
 }
 
+pub async fn payment_transaction_exists(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<bool, PersistDbError> {
+    let exists = user_transaction::Entity::find_by_id(transaction_id.to_owned())
+        .one(ctx.db.as_ref())
+        .await?
+        .is_some();
+    Ok(exists)
+}
+
 pub async fn fail_transaction(
     ctx: &PersistCtx,
     user_address: String,

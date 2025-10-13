@@ -2,7 +2,7 @@ use crate::{
     auth::verify_promise_signature,
     config::{AppConfig, DEFAULT_TTL_SECS},
     error::{ServiceError, ServiceResult, service_error_to_rpc},
-    ethereum::EthereumListener,
+    ethereum::{EthereumListener, EthereumWriter, PaymentWriter},
     persist::{PersistCtx, repo},
     util::u256_to_string,
 };
@@ -43,35 +43,84 @@ type EthereumProvider = FillProvider<
     RootProvider,
 >;
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod test_hooks {
+    use once_cell::sync::Lazy;
+    use std::sync::{Arc, Mutex};
+
+    pub type SchedulerCallback = Arc<dyn Fn(&str, u64) + Send + Sync + 'static>;
+    pub type ScanCallback = Arc<dyn Fn(u64) -> bool + Send + Sync + 'static>;
+
+    static SCHEDULER_CALLBACK: Lazy<Mutex<Option<SchedulerCallback>>> =
+        Lazy::new(|| Mutex::new(None));
+    static SCAN_CALLBACK: Lazy<Mutex<Option<ScanCallback>>> = Lazy::new(|| Mutex::new(None));
+
+    pub fn set_scheduler_callback(callback: SchedulerCallback) {
+        *SCHEDULER_CALLBACK
+            .lock()
+            .expect("scheduler callback poisoned") = Some(callback);
+    }
+
+    pub fn clear_scheduler_callback() {
+        *SCHEDULER_CALLBACK
+            .lock()
+            .expect("scheduler callback poisoned") = None;
+    }
+
+    pub fn invoke_scheduler_callback(cron_expr: &str, lookback: u64) {
+        if let Some(cb) = SCHEDULER_CALLBACK
+            .lock()
+            .expect("scheduler callback poisoned")
+            .clone()
+        {
+            cb(cron_expr, lookback);
+        }
+    }
+
+    pub fn set_scan_callback(callback: ScanCallback) {
+        *SCAN_CALLBACK.lock().expect("scan callback poisoned") = Some(callback);
+    }
+
+    pub fn clear_scan_callback() {
+        *SCAN_CALLBACK.lock().expect("scan callback poisoned") = None;
+    }
+
+    /// Returns `true` if the callback handled the scan and the caller should short-circuit.
+    pub fn invoke_scan_callback(lookback: u64) -> bool {
+        if let Some(cb) = SCAN_CALLBACK
+            .lock()
+            .expect("scan callback poisoned")
+            .clone()
+        {
+            return cb(lookback);
+        }
+        false
+    }
+}
+
 pub struct CoreService {
     config: AppConfig,
     public_params: CorePublicParameters,
     persist_ctx: PersistCtx,
     provider: RwLock<Option<EthereumProvider>>,
+    payment_writer: Arc<dyn PaymentWriter>,
 }
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        let bls_private_key = config.secrets.bls_private_key.bytes();
-        if bls_private_key.len() != 32 {
+        if config.secrets.bls_private_key.bytes().len() != 32 {
             anyhow::bail!("BLS private key must be 32 bytes");
         }
 
-        let public_key = crypto::bls::pub_key_from_scalar(bls_private_key.try_into()?)?;
-        info!(
-            "Operator started with BLS Public Key: {}",
-            hex::encode(&public_key)
-        );
-
-        let chain_id = config.ethereum_config.chain_id;
         let persist_ctx = PersistCtx::new().await?;
         let persist_ctx_clone = persist_ctx.clone();
         let eth_cfg = config.ethereum_config.clone();
+        let listener_cfg = eth_cfg.clone();
 
         spawn(async move {
             let mut delay = Duration::from_secs(1);
             loop {
-                match EthereumListener::new(eth_cfg.clone(), persist_ctx_clone.clone())
+                match EthereumListener::new(listener_cfg.clone(), persist_ctx_clone.clone())
                     .run()
                     .await
                 {
@@ -88,9 +137,37 @@ impl CoreService {
             }
         });
 
+        let payment_writer: Arc<dyn PaymentWriter> = Arc::new(
+            EthereumWriter::new(eth_cfg.clone())
+                .await
+                .map_err(|e| anyhow!(e))?,
+        );
+
+        Self::new_with_dependencies(config, persist_ctx, payment_writer)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn new_with_dependencies(
+        config: AppConfig,
+        persist_ctx: PersistCtx,
+        payment_writer: Arc<dyn PaymentWriter>,
+    ) -> anyhow::Result<Self> {
+        let bls_private_key = config.secrets.bls_private_key.bytes();
+        if bls_private_key.len() != 32 {
+            anyhow::bail!("BLS private key must be 32 bytes");
+        }
+
+        let public_key = crypto::bls::pub_key_from_scalar(bls_private_key.try_into()?)?;
+        info!(
+            "Operator started with BLS Public Key: {}",
+            hex::encode(&public_key)
+        );
+
+        let chain_id = config.ethereum_config.chain_id;
         let eip712_name = config.eip712.name.clone();
         let eip712_version = config.eip712.version.clone();
         let eth_config = config.ethereum_config.clone();
+
         Ok(Self {
             config,
             public_params: CorePublicParameters {
@@ -103,6 +180,7 @@ impl CoreService {
             },
             persist_ctx,
             provider: RwLock::new(None),
+            payment_writer,
         })
     }
 
@@ -117,6 +195,10 @@ impl CoreService {
 
     /// Periodically scan Ethereum for tab payments.
     async fn scan_blockchain(&self, lookback: u64) -> anyhow::Result<()> {
+        if test_hooks::invoke_scan_callback(lookback) {
+            return Ok(());
+        }
+
         let provider = self.get_ethereum_provider().await.inspect_err(|e| {
             error!("get_ethereum_provider failed: {e}");
         })?;
@@ -138,26 +220,54 @@ impl CoreService {
     /// Persist and unlock user collateral for each discovered on-chain payment.
     async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
         for ev in events {
-            let from = format!("{:?}", ev.from);
-            let to = format!("{:?}", ev.to);
-            let tx_hash = format!("{:?}", ev.tx_hash);
+            let tab_id_str = u256_to_string(ev.tab_id);
+            let tx_hash = format!("{:#x}", ev.tx_hash);
             let amount = ev.amount;
 
             info!(
-                "Persisting payment tx: block={} from={} to={} tab_id={} req_id={} amount={} hash={}",
-                ev.block_number, from, to, ev.tab_id, ev.req_id, amount, tx_hash
+                "Processing discovered payment: block={} tab_id={} req_id={} amount={} tx={}",
+                ev.block_number,
+                tab_id_str,
+                u256_to_string(ev.req_id),
+                amount,
+                tx_hash
             );
+
+            if repo::payment_transaction_exists(&self.persist_ctx, &tx_hash).await? {
+                info!(
+                    "Skipping already processed payment tx {} for tab {}",
+                    tx_hash, tab_id_str
+                );
+                continue;
+            }
+
+            let Some(tab) = repo::get_tab_by_id(&self.persist_ctx, ev.tab_id).await? else {
+                error!(
+                    "Tab {} not found while processing payment tx {}. Skipping.",
+                    tab_id_str, tx_hash
+                );
+                continue;
+            };
 
             repo::submit_payment_transaction(
                 &self.persist_ctx,
-                from.clone(),
-                to.clone(),
-                tx_hash,
+                tab.user_address.clone(),
+                tab.server_address.clone(),
+                tx_hash.clone(),
                 amount,
             )
             .await?;
 
-            // tab_id is already U256 in PaymentTx
+            if let Err(err) = self.payment_writer.record_payment(ev.tab_id, amount).await {
+                error!(
+                    "Failed to record payment on-chain for tab {} (tx {}): {err}",
+                    tab_id_str, tx_hash
+                );
+                return Err(ServiceError::Other(anyhow!(
+                    "failed to record payment on-chain for tab {tab_id_str}: {err}"
+                )));
+            }
+
             repo::unlock_user_collateral(&self.persist_ctx, ev.tab_id, amount).await?;
         }
         Ok(())
@@ -183,6 +293,8 @@ impl CoreService {
         cron_expr: &str,
         lookback: u64,
     ) -> anyhow::Result<()> {
+        test_hooks::invoke_scheduler_callback(cron_expr, lookback);
+
         let sched = JobScheduler::new().await?;
         let job_service = Arc::clone(&service);
 

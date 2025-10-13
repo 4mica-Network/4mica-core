@@ -97,8 +97,9 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     init()?;
     let anvil_port = 40101u16;
     let provider = ProviderBuilder::new()
-        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
-
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
+    let operator_key =
+        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
     let contract = Core4Mica::deploy(
@@ -117,6 +118,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
         number_of_pending_blocks: 1,
+        ethereum_private_key: operator_key,
     };
     let persist_ctx = PersistCtx::new().await?;
     user_transaction::Entity::delete_many()
@@ -160,13 +162,17 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
             .one(persist_ctx.db.as_ref())
             .await?
         {
-            assert_eq!(parse_collateral(&u.collateral), deposit_amount);
-            break;
+            let current = parse_collateral(&u.collateral);
+            if current == deposit_amount {
+                break;
+            }
         }
+
         if tries > NUMBER_OF_TRIALS {
             listener.abort();
             panic!("User not updated after deposit event");
         }
+
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
@@ -187,7 +193,8 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     let anvil_port = 40102u16;
     let provider = ProviderBuilder::new()
         .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
-
+    let operator_key =
+        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
     let contract = Core4Mica::deploy(
@@ -206,6 +213,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
+        ethereum_private_key: operator_key,
     };
 
     let persist_ctx = PersistCtx::new().await?;
@@ -296,7 +304,9 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     init()?;
     let anvil_port = 40110u16;
     let provider = ProviderBuilder::new()
-        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
+    let operator_key =
+        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
@@ -316,6 +326,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
         cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
+        ethereum_private_key: operator_key,
     };
     let persist_ctx = PersistCtx::new().await?;
     user_transaction::Entity::delete_many()
@@ -409,7 +420,9 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     init()?;
     let anvil_port = 40111u16;
     let provider = ProviderBuilder::new()
-        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
+    let operator_key =
+        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
@@ -429,6 +442,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
         cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
+        ethereum_private_key: operator_key,
     };
     let persist_ctx = PersistCtx::new().await?;
 
@@ -515,8 +529,7 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
     init()?;
     let anvil_port = 40113u16;
     let provider = ProviderBuilder::new()
-        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
-
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
     let contract = Core4Mica::deploy(
@@ -586,7 +599,9 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     init()?;
     let anvil_port = 40130u16;
     let provider = ProviderBuilder::new()
-        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
+    let operator_key =
+        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
 
     // Deploy two Core4Mica contracts
     let access_manager =
@@ -614,6 +629,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
         cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
+        ethereum_private_key: operator_key,
     };
 
     let persist_ctx = PersistCtx::new().await?;
@@ -709,7 +725,9 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
     init()?;
     let anvil_port = 40133u16;
     let provider = ProviderBuilder::new()
-        .connect_anvil_with_wallet_and_config(|anvil| anvil.block_time(1).port(anvil_port))?;
+        .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
+    let operator_key =
+        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
@@ -729,6 +747,7 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
         cron_job_settings: "0 */1 * * * *".to_string(),
         number_of_blocks_to_confirm: 1,
         number_of_pending_blocks: 1,
+        ethereum_private_key: operator_key,
     };
     let persist_ctx = PersistCtx::new().await?;
 

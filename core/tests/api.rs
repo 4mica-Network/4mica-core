@@ -18,8 +18,9 @@ use rpc::{
     core::{CoreApiClient, CorePublicParameters},
     proxy::RpcProxy,
 };
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use sea_orm::{ConnectionTrait, Statement};
+use serial_test::serial;
 use std::str::FromStr;
 use test_log::test;
 
@@ -34,31 +35,32 @@ async fn setup_clean_db() -> (AppConfig, RpcProxy, PersistCtx) {
     );
     let core_client = RpcProxy::new(&core_addr).expect("connect RPC");
     let ctx = PersistCtx::new().await.expect("db ctx");
-    ctx.db
-        .as_ref()
-        .execute(Statement::from_string(
-            ctx.db.get_database_backend(),
-            "TRUNCATE \"Guarantee\", \"Tabs\", \"CollateralEvent\", \"User\" CASCADE".to_string(),
-        ))
-        .await
-        .unwrap();
+
+    for table in [
+        "UserTransaction",
+        "Withdrawal",
+        "Guarantee",
+        "Tabs",
+        "CollateralEvent",
+        "User",
+    ] {
+        ctx.db
+            .as_ref()
+            .execute(Statement::from_string(
+                ctx.db.get_database_backend(),
+                format!(r#"DELETE FROM "{table}";"#),
+            ))
+            .await
+            .unwrap();
+    }
+
     (config, core_client, ctx)
 }
 
 async fn insert_user_with_collateral(ctx: &PersistCtx, addr: &str, amount: U256) {
-    let now = chrono::Utc::now().naive_utc();
-    let user_model = entities::user::ActiveModel {
-        address: Set(addr.to_string()),
-        version: Set(0),
-        created_at: Set(now),
-        updated_at: Set(now),
-        collateral: Set("0".to_string()),
-        locked_collateral: Set("0".to_string()),
-    };
-    entities::user::Entity::insert(user_model)
-        .exec(ctx.db.as_ref())
+    repo::ensure_user_exists_on(ctx.db.as_ref(), addr)
         .await
-        .expect("insert user");
+        .expect("ensure user exists");
     repo::deposit(ctx, addr.to_string(), amount)
         .await
         .expect("deposit");
@@ -117,6 +119,7 @@ async fn build_signed_req(
 
 /// Invalid: future timestamp
 #[test(tokio::test)]
+#[serial]
 async fn issue_guarantee_rejects_future_timestamp() {
     let (_config, core_client, ctx) = setup_clean_db().await;
 
@@ -145,6 +148,7 @@ async fn issue_guarantee_rejects_future_timestamp() {
 
 /// Invalid: Not enough collateral
 #[test(tokio::test)]
+#[serial]
 async fn issue_guarantee_rejects_insufficient_collateral() {
     let (_, core_client, ctx) = setup_clean_db().await;
 
@@ -175,6 +179,7 @@ async fn issue_guarantee_rejects_insufficient_collateral() {
 
 /// Invalid: Wrong req_id sequence
 #[test(tokio::test)]
+#[serial]
 async fn issue_guarantee_rejects_wrong_req_id_sequence() {
     let (_, core_client, ctx) = setup_clean_db().await;
 
@@ -227,6 +232,7 @@ async fn issue_guarantee_rejects_wrong_req_id_sequence() {
 
 /// Invalid: Modified start timestamp in second request
 #[test(tokio::test)]
+#[serial]
 async fn issue_guarantee_rejects_modified_start_ts() {
     let (_, core_client, ctx) = setup_clean_db().await;
 
@@ -278,6 +284,7 @@ async fn issue_guarantee_rejects_modified_start_ts() {
 
 /// Valid: second sequential request works
 #[test(tokio::test)]
+#[serial]
 async fn issue_two_sequential_guarantees_ok() {
     let (_, core_client, ctx) = setup_clean_db().await;
 
@@ -337,6 +344,7 @@ async fn issue_two_sequential_guarantees_ok() {
 
 /// Invalid: Tab not found
 #[test(tokio::test)]
+#[serial]
 async fn issue_guarantee_rejects_when_tab_not_found() {
     let (_, core_client, ctx) = setup_clean_db().await;
 
@@ -365,6 +373,7 @@ async fn issue_guarantee_rejects_when_tab_not_found() {
 
 /// Valid: Issue guarantee should open tab
 #[test(tokio::test)]
+#[serial]
 async fn issue_guarantee_should_open_tab() {
     let (_, core_client, ctx) = setup_clean_db().await;
 
@@ -418,6 +427,7 @@ async fn issue_guarantee_should_open_tab() {
 
 /// Invalid: Invalid req_id when tab is still pending
 #[test(tokio::test)]
+#[serial]
 async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() {
     let (_, core_client, ctx) = setup_clean_db().await;
 
@@ -454,6 +464,7 @@ async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() {
 
 /// Invalid: User not registered in DB
 #[test(tokio::test)]
+#[serial]
 async fn create_tab_rejects_unregistered_user() {
     let (_, core_client, _) = setup_clean_db().await;
 
@@ -523,6 +534,7 @@ async fn build_eip712_signed_request(
 }
 
 #[tokio::test]
+#[serial]
 async fn verify_eip712_signature_ok() {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -540,6 +552,7 @@ async fn verify_eip712_signature_ok() {
 }
 
 #[tokio::test]
+#[serial]
 async fn verify_eip712_signature_fails_if_tampered() {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -563,6 +576,7 @@ async fn verify_eip712_signature_fails_if_tampered() {
 }
 
 #[tokio::test]
+#[serial]
 async fn verify_eip191_signature_ok() {
     use alloy::{primitives::keccak256, sol_types::sol};
     sol! {
@@ -626,6 +640,7 @@ async fn verify_eip191_signature_ok() {
 }
 
 #[tokio::test]
+#[serial]
 async fn verify_signature_fails_with_invalid_hex() {
     let params = CorePublicParameters {
         public_key: vec![],
