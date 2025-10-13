@@ -12,6 +12,7 @@ pub struct Config {
     pub wallet_private_key: PrivateKeySigner,
     pub ethereum_http_rpc_url: Option<Url>,
     pub contract_address: Option<Address>,
+    pub chain_id: u64,
 }
 
 pub struct ConfigBuilder {
@@ -19,6 +20,7 @@ pub struct ConfigBuilder {
     wallet_private_key: Option<String>,
     ethereum_http_rpc_url: Option<String>,
     contract_address: Option<String>,
+    chain_id: Option<u64>,
 }
 
 impl ConfigBuilder {
@@ -28,6 +30,7 @@ impl ConfigBuilder {
             wallet_private_key: None,
             ethereum_http_rpc_url: None,
             contract_address: None,
+            chain_id: None,
         }
     }
 
@@ -55,6 +58,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn chain_id(mut self, chain_id: u64) -> Self {
+        self.chain_id = Some(chain_id);
+        self
+    }
+
     pub fn from_env(mut self) -> Self {
         if let Ok(v) = std::env::var("4MICA_RPC_URL") {
             self = self.rpc_url(v);
@@ -67,6 +75,11 @@ impl ConfigBuilder {
         }
         if let Ok(v) = std::env::var("4MICA_CONTRACT_ADDRESS") {
             self = self.contract_address(v);
+        }
+        if let Ok(v) = std::env::var("4MICA_CHAIN_ID") {
+            if let Ok(parsed) = v.parse::<u64>() {
+                self = self.chain_id(parsed);
+            }
         }
         self
     }
@@ -100,24 +113,35 @@ impl ConfigBuilder {
         }
         let contract_address = contract_address.map(|address| address.unwrap());
 
+        let chain_id = self.chain_id.unwrap_or(1);
+        if chain_id == 0 {
+            return Err(ConfigError::InvalidValue(
+                "chain_id must be greater than zero".into(),
+            ));
+        }
+
         Ok(Config {
             rpc_url,
             wallet_private_key,
             ethereum_http_rpc_url,
             contract_address,
+            chain_id,
         })
     }
 }
 
 impl Default for ConfigBuilder {
     fn default() -> Self {
-        Self::empty().rpc_url("http://localhost:3000/".to_string())
+        Self::empty()
+            .rpc_url("https://api.4mica.xyz/".to_string())
+            .chain_id(1)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     const VALID_PRIVATE_KEY: &str =
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -128,10 +152,11 @@ mod tests {
     #[test]
     fn test_default_builder() {
         let builder = ConfigBuilder::default();
-        assert_eq!(builder.rpc_url, Some("http://localhost:3000/".to_string()));
+        assert_eq!(builder.rpc_url, Some("https://api.4mica.xyz/".to_string()));
         assert!(builder.wallet_private_key.is_none());
         assert!(builder.ethereum_http_rpc_url.is_none());
         assert!(builder.contract_address.is_none());
+        assert_eq!(builder.chain_id, Some(1));
     }
 
     #[test]
@@ -142,13 +167,14 @@ mod tests {
 
         assert!(config.is_ok());
         let config = config.unwrap();
-        assert_eq!(config.rpc_url.as_str(), "http://localhost:3000/");
+        assert_eq!(config.rpc_url.as_str(), "https://api.4mica.xyz/");
         assert_eq!(
             config.wallet_private_key,
             validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
         );
         assert!(config.ethereum_http_rpc_url.is_none());
         assert!(config.contract_address.is_none());
+        assert_eq!(config.chain_id, 1);
     }
 
     #[test]
@@ -158,6 +184,7 @@ mod tests {
             .wallet_private_key(VALID_PRIVATE_KEY.to_string())
             .ethereum_http_rpc_url(VALID_ETH_RPC_URL.to_string())
             .contract_address(VALID_ADDRESS.to_string())
+            .chain_id(31337)
             .build();
 
         assert!(config.is_ok());
@@ -172,6 +199,7 @@ mod tests {
             VALID_ETH_RPC_URL
         );
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
+        assert_eq!(config.chain_id, 31337);
     }
 
     #[test]
@@ -241,6 +269,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_from_env_with_all_vars() {
         unsafe {
             std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
@@ -266,14 +295,17 @@ mod tests {
             config.wallet_private_key,
             validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
         );
+        assert_eq!(config.chain_id, 1);
         assert_eq!(
             config.ethereum_http_rpc_url.unwrap().as_str(),
             VALID_ETH_RPC_URL
         );
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
+        assert_eq!(config.chain_id, 1);
     }
 
     #[test]
+    #[serial]
     fn test_from_env_with_partial_vars() {
         unsafe {
             std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
@@ -296,9 +328,11 @@ mod tests {
             config.wallet_private_key,
             validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
         );
+        assert_eq!(config.chain_id, 1);
     }
 
     #[test]
+    #[serial]
     fn test_from_env_override() {
         unsafe {
             std::env::set_var("4MICA_RPC_URL", "http://env-url:3000/");
@@ -319,5 +353,6 @@ mod tests {
         let config = config.unwrap();
         // from_env should override the earlier value
         assert_eq!(config.rpc_url.as_str(), "http://env-url:3000/");
+        assert_eq!(config.chain_id, 1);
     }
 }

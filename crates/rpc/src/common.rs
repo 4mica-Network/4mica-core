@@ -31,8 +31,12 @@ impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let (tab_id, req_id, client, recipient, amount, timestamp) =
+        let (domain, tab_id, req_id, client, recipient, amount, timestamp) =
             crypto::guarantee::decode_guarantee_bytes(&value)?;
+        let expected_domain = crypto::guarantee::guarantee_domain_separator()?;
+        if domain != expected_domain {
+            anyhow::bail!("guarantee domain separator mismatch");
+        }
         Ok(PaymentGuaranteeClaims {
             user_address: client.to_string(),
             recipient_address: recipient.to_string(),

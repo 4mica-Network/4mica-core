@@ -39,6 +39,13 @@ impl ClientCtx {
             .await
             .map_err(|e| ClientError::Rpc(e.to_string()))?;
 
+        if cfg.chain_id != public_params.chain_id {
+            return Err(ClientError::Initialization(format!(
+                "chain id mismatch between SDK config ({}) and core service ({})",
+                cfg.chain_id, public_params.chain_id
+            )));
+        }
+
         let ethereum_http_rpc_url = cfg.ethereum_http_rpc_url.clone().unwrap_or(
             validate_url(&public_params.ethereum_http_rpc_url)
                 .expect("Invalid Ethereum HTTP RPC URL received from server"),
@@ -51,10 +58,32 @@ impl ClientCtx {
             .map_err(|e| ClientError::Provider(e.to_string()))?
             .erased();
 
+        let provider_chain_id = provider
+            .get_chain_id()
+            .await
+            .map_err(|e| ClientError::Initialization(e.to_string()))?;
+
+        if provider_chain_id != cfg.chain_id {
+            return Err(ClientError::Initialization(format!(
+                "chain id mismatch between SDK config ({}) and Ethereum provider ({})",
+                cfg.chain_id, provider_chain_id
+            )));
+        }
+
         let contract_address = cfg.contract_address.unwrap_or(
             validate_address(&public_params.contract_address)
                 .expect("Invalid contract address received from server"),
         );
+
+        let contract = Core4Mica::new(contract_address, provider.clone());
+        let on_chain_domain = contract
+            .guaranteeDomainSeparator()
+            .call()
+            .await
+            .map_err(|e| ClientError::Initialization(e.to_string()))?;
+        let domain_bytes: [u8; 32] = on_chain_domain.into();
+        crypto::guarantee::set_guarantee_domain_separator(domain_bytes)
+            .map_err(|e| ClientError::Initialization(e.to_string()))?;
 
         Ok(Self(Arc::new(Inner {
             cfg,

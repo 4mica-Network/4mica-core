@@ -19,6 +19,9 @@ pub enum ClientError {
 
     #[error("client provider error: {0}")]
     Provider(String),
+
+    #[error("client initialization error: {0}")]
+    Initialization(String),
 }
 
 #[derive(Debug, Error)]

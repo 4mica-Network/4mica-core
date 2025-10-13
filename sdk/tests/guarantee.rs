@@ -6,6 +6,8 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     // These wallet keys are picked from the default accounts in anvil test node
 
     let user_config = ConfigBuilder::default()
+        .rpc_url("http://localhost:3000".to_string())
+        .chain_id(31337)
         .wallet_private_key(
             "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
         )
@@ -15,6 +17,8 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     let user_client = Client::new(user_config).await?;
 
     let recipient_config = ConfigBuilder::default()
+        .rpc_url("http://localhost:3000".to_string())
+        .chain_id(31337)
         .wallet_private_key(
             "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356".to_string(),
         )

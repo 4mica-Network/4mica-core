@@ -122,7 +122,8 @@ sol! {
             view
             returns (uint256 paid, bool remunerated);
 
-        function encodeGuarantee(Guarantee memory g) external pure returns (bytes memory);
+        function guaranteeDomainSeparator() external view returns (bytes32);
+        function encodeGuarantee(Guarantee memory g) external view returns (bytes memory);
         function verifyGuaranteeSignature(
             Guarantee memory g,
             G2Point signature

@@ -29,6 +29,10 @@ async fn setup_clean_db() -> (AppConfig, RpcProxy, PersistCtx) {
         dotenv::dotenv().ok();
         AppConfig::fetch()
     };
+    let contract = Address::from_str(&config.ethereum_config.contract_address)
+        .expect("invalid contract address in config");
+    crypto::guarantee::init_guarantee_domain_separator(config.ethereum_config.chain_id, contract)
+        .expect("initialize guarantee domain");
     let core_addr = format!(
         "http://{}:{}",
         config.server_config.host, config.server_config.port
