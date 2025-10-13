@@ -32,7 +32,7 @@ struct ClientCtx(Arc<Inner>);
 impl ClientCtx {
     async fn new(cfg: Config) -> Result<Self, ClientError> {
         let rpc_proxy =
-            RpcProxy::new(&cfg.rpc_url.to_string()).map_err(|e| ClientError::Rpc(e.to_string()))?;
+            RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))?;
 
         let public_params = rpc_proxy
             .get_public_params()
@@ -53,7 +53,7 @@ impl ClientCtx {
 
         let provider = ProviderBuilder::new()
             .wallet(cfg.wallet_private_key.clone())
-            .connect(&ethereum_http_rpc_url.to_string())
+            .connect(ethereum_http_rpc_url.as_ref())
             .await
             .map_err(|e| ClientError::Provider(e.to_string()))?
             .erased();

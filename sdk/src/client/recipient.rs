@@ -103,8 +103,9 @@ impl RecipientClient {
             RemunerateError::InvalidParams(format!("failed to decode claims: {}", e))
         })?;
 
-        let guarantee: Guarantee = <Result<Guarantee, _>>::from(claims.try_into())
-            .map_err(|e| RemunerateError::InvalidParams(e.to_string()))?;
+        let guarantee: Guarantee = claims
+            .try_into()
+            .map_err(|e: anyhow::Error| RemunerateError::InvalidParams(e.to_string()))?;
 
         let sig = crypto::hex::decode_hex(&cert.signature)
             .map_err(|e| RemunerateError::InvalidParams(format!("Invalid signature: {}", e)))?;

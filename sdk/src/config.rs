@@ -76,10 +76,10 @@ impl ConfigBuilder {
         if let Ok(v) = std::env::var("4MICA_CONTRACT_ADDRESS") {
             self = self.contract_address(v);
         }
-        if let Ok(v) = std::env::var("4MICA_CHAIN_ID") {
-            if let Ok(parsed) = v.parse::<u64>() {
-                self = self.chain_id(parsed);
-            }
+        if let Ok(v) = std::env::var("4MICA_CHAIN_ID")
+            && let Ok(parsed) = v.parse::<u64>()
+        {
+            self = self.chain_id(parsed);
         }
         self
     }

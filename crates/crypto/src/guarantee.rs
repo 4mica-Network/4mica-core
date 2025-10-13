@@ -55,7 +55,7 @@ pub fn compute_guarantee_domain_separator(
     len_bytes[24..].copy_from_slice(&(tag_bytes.len() as u64).to_be_bytes());
     encoded.extend_from_slice(&len_bytes);
 
-    let padded_len = ((tag_bytes.len() + 31) / 32) * 32;
+    let padded_len = tag_bytes.len().div_ceil(32) * 32;
     let mut tag_padded = vec![0u8; padded_len];
     tag_padded[..tag_bytes.len()].copy_from_slice(tag_bytes);
     encoded.extend_from_slice(&tag_padded);
@@ -122,9 +122,7 @@ pub fn encode_guarantee_bytes(
     Ok(out)
 }
 
-pub fn decode_guarantee_bytes(
-    data: &[u8],
-) -> anyhow::Result<(
+type DecodedGuarantee = (
     [u8; 32], // domain separator
     U256,     // tab_id
     U256,     // req_id
@@ -132,7 +130,9 @@ pub fn decode_guarantee_bytes(
     Address,  // recipient
     U256,     // amount
     u64,      // tab_timestamp
-)> {
+);
+
+pub fn decode_guarantee_bytes(data: &[u8]) -> anyhow::Result<DecodedGuarantee> {
     if data.len() != 176 && data.len() != 200 {
         anyhow::bail!(
             "decode_guarantee_bytes(): wrong length (expected 176 or 200, got {})",
