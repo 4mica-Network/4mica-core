@@ -11,5 +11,16 @@ services:
     ports:
       - "5432:5432"
 
+  core-service:
+    image: ghcr.io/4mica-network/4mica-core:latest
+    env_file:
+      - ./core/.env
+    depends_on:
+      - pg
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./core/.env:/app/.env:ro
+
 volumes:
   pg-data:
