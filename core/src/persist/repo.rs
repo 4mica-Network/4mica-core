@@ -143,9 +143,6 @@ pub async fn unlock_user_collateral(
                 let tab = get_tab_by_id_on(txn, tab_id).await?;
 
                 let tab_id = u256_to_string(tab_id);
-                let mut active: entities::tabs::ActiveModel = Default::default();
-                active.settlement_status = Set(SettlementStatus::Settled);
-                active.updated_at = Set(now);
                 // CAS: mark tab as Settled once (idempotent)
                 let cas = entities::tabs::Entity::update_many()
                     .filter(entities::tabs::Column::Id.eq(&tab_id))
@@ -789,7 +786,6 @@ pub async fn create_pending_tab(
         settlement_status: Set(SettlementStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     info!("Creating new pending tab {}", new_tab.id.as_ref());
 

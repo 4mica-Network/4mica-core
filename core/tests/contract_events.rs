@@ -77,7 +77,6 @@ async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()>
         updated_at: Set(now),
         collateral: Set("0".to_string()),
         locked_collateral: Set("0".to_string()),
-        ..Default::default()
     };
     user::Entity::insert(am)
         .on_conflict(
@@ -396,14 +395,13 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
 
     let mut tries = 0;
     loop {
-        if let Some(w) = withdrawal::Entity::find()
+        if withdrawal::Entity::find()
             .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
             .one(persist_ctx.db.as_ref())
             .await?
+            .is_some_and(|w| w.status == WithdrawalStatus::Cancelled)
         {
-            if w.status == WithdrawalStatus::Cancelled {
-                break;
-            }
+            break;
         }
         if tries > NUMBER_OF_TRIALS {
             listener.abort();
@@ -501,14 +499,13 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     // wait until the user collateral shows the reduced balance
     let mut tries = 0;
     loop {
-        if let Some(u) = user::Entity::find()
+        if user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
             .one(persist_ctx.db.as_ref())
             .await?
+            .is_some_and(|u| parse_collateral(&u.collateral) == deposit_amount - withdraw_amount)
         {
-            if parse_collateral(&u.collateral) == deposit_amount - withdraw_amount {
-                break;
-            }
+            break;
         }
 
         if tries > NUMBER_OF_TRIALS {
@@ -699,14 +696,13 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     // Poll until applied
     let mut tries = 0;
     loop {
-        if let Some(u) = user::Entity::find()
+        if user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
             .one(persist_ctx.db.as_ref())
             .await?
+            .is_some_and(|u| parse_collateral(&u.collateral) == tracked_amount)
         {
-            if parse_collateral(&u.collateral) == tracked_amount {
-                break;
-            }
+            break;
         }
         if tries > NUMBER_OF_TRIALS {
             listener.abort();
@@ -796,14 +792,13 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
 
     let mut tries = 0;
     loop {
-        if let Some(u) = user::Entity::find()
+        if user::Entity::find()
             .filter(user::Column::Address.eq(user_addr.clone()))
             .one(persist_ctx.db.as_ref())
             .await?
+            .is_some_and(|u| parse_collateral(&u.collateral) == amount)
         {
-            if parse_collateral(&u.collateral) == amount {
-                break;
-            }
+            break;
         }
         if tries > NUMBER_OF_TRIALS {
             listener2.abort();

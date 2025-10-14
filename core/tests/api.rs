@@ -9,7 +9,6 @@ use core_service::config::AppConfig;
 use core_service::persist::{PersistCtx, repo};
 use core_service::{auth::verify_promise_signature, util::u256_to_string};
 use entities::guarantee;
-use hex;
 use rand::random;
 use rpc::{
     common::{
@@ -57,6 +56,7 @@ async fn insert_user_with_collateral(ctx: &PersistCtx, addr: &str, amount: U256)
         .expect("seed user collateral");
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_signed_req(
     public_params: &CorePublicParameters,
     user_addr: &str,
@@ -98,10 +98,11 @@ async fn build_signed_req(
         claims: PaymentGuaranteeClaims {
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id: tab_id,
-            req_id: req_id,
+            tab_id,
+            req_id,
             amount,
             timestamp: ts,
+            asset_address: "0x0000000000000000000000000000000000000000".into(),
         },
         signature: format!("0x{}", hex::encode(sig.as_bytes())),
         scheme: SigningScheme::Eip712,
@@ -518,6 +519,7 @@ async fn build_eip712_signed_request(
             req_id: U256::from(0u64),
             amount: U256::from(42u64),
             timestamp,
+            asset_address: "0x0000000000000000000000000000000000000000".into(),
         },
         signature: format!("0x{}", hex::encode(sig.as_bytes())),
         scheme: SigningScheme::Eip712,
@@ -596,12 +598,12 @@ async fn verify_eip191_signature_ok() {
     let timestamp = Utc::now().timestamp() as u64;
 
     // --- use one variable so we can reuse the exact same tab id everywhere ---
-    let tab = U256::from(0x7461622d7473u128); // "tab-ts" as bytes
+    let tab_id = U256::from(0x7461622d7473u128); // "tab-ts" as bytes
 
     let msg = PaymentGuarantee {
         user,
         recipient,
-        tabId: tab,
+        tabId: tab_id,
         reqId: U256::from(0u64),
         amount: U256::from(1u64),
         timestamp,
@@ -618,10 +620,11 @@ async fn verify_eip191_signature_ok() {
         claims: PaymentGuaranteeClaims {
             user_address: user.to_string(),
             recipient_address: recipient.to_string(),
-            tab_id: tab,
+            tab_id,
             req_id: U256::from(0u64),
             amount: U256::from(1u64),
             timestamp,
+            asset_address: "0x0000000000000000000000000000000000000000".into(),
         },
         signature: format!("0x{}", hex::encode(sig.as_bytes())),
         scheme: SigningScheme::Eip191,

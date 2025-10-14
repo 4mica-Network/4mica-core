@@ -103,7 +103,6 @@ async fn insert_tab(
         created_at: Set(now),
         updated_at: Set(now),
         ttl: Set(3600i64),
-        ..Default::default()
     };
 
     tabs::Entity::insert(tab).exec(ctx.db.as_ref()).await?;

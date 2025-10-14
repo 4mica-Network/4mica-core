@@ -50,7 +50,6 @@ async fn insert_test_tab(
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
 
     entities::tabs::Entity::insert(new_tab)
@@ -77,7 +76,6 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -133,7 +131,6 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(from_user)
         .exec(ctx.db.as_ref())
@@ -150,7 +147,6 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
         ttl: Set(300),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
@@ -219,7 +215,6 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -275,7 +270,6 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -293,7 +287,6 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         ttl: Set(123),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
@@ -326,7 +319,6 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -389,6 +381,7 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
         recipient_address: recipient_addr.clone(),
         amount: U256::from(40u64),
         timestamp: Utc::now().timestamp() as u64,
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
 
     // BLSCert::new requires an exact 32-byte scalar
@@ -437,6 +430,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
         amount: U256::from(10u64),
         // deliberately invalid: chrono cannot represent this
         timestamp: i64::MAX as u64,
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
 
     // BLSCert::new requires an exact 32-byte scalar
