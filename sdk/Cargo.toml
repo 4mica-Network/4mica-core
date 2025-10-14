@@ -2,6 +2,14 @@
 name = "rust-sdk-4mica"
 version = "0.1.0"
 edition.workspace = true
+authors = ["4Mica Network <cto@4mica.xyz>"]
+description = "Official Rust SDK for interacting with the 4Mica payment network."
+license = "CC-BY-NC-4.0"
+repository = "https://github.com/4mica-Network/4mica-core"
+homepage = "https://4mica.xyz"
+readme = "README.md"
+keywords = ["4mica", "payments", "blockchain", "sdk", "ethereum"]
+categories = ["api-bindings", "cryptography::cryptocurrencies"]
 
 [dependencies]
 rpc = { workspace = true }
@@ -15,7 +23,6 @@ alloy = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
 
 [dev-dependencies]
-core-service = { path = "../core" }
 tokio = { workspace = true }
 chrono = { workspace = true }
 alloy-provider = { workspace = true, features = ["anvil-api"] }
