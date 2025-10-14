@@ -2,6 +2,8 @@
 pragma solidity ^0.8.29;
 
 import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -9,6 +11,8 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 /// @title Core4Mica
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
 contract Core4Mica is AccessManaged, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     // ========= Errors =========
     error AmountZero();
     error InsufficientAvailable();
@@ -24,6 +28,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error InvalidSignature();
     error InvalidRecipient();
     error IllegalValue();
+    error UnsupportedAsset(address asset);
+    error InvalidAsset(address asset);
+    error DeprecatedRecordPayment();
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -34,6 +41,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     /// TODO(#22): move key to registry
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
     bytes32 public guaranteeDomainSeparator;
+
+    address public immutable USDC;
+    address public immutable USDT;
+
+    address internal constant ETH_ASSET = address(0);
 
     /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
     BLS.G1Point internal NEGATED_G1_GENERATOR =
@@ -62,26 +74,44 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         bool remunerated;
     }
 
-    mapping(address => uint256) public collateral;
-    mapping(address => WithdrawalRequest) public withdrawalRequests;
-    mapping(uint256 => PaymentStatus) public payments;
+    mapping(address => mapping(address => uint256)) internal collateralBalances;
+    mapping(address => mapping(address => WithdrawalRequest))
+        public withdrawalRequests;
+    mapping(uint256 => mapping(address => PaymentStatus)) public payments;
 
     // ========= Events =========
-    event CollateralDeposited(address indexed user, uint256 amount);
-    event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
-    event CollateralWithdrawn(address indexed user, uint256 amount);
+    event CollateralDeposited(
+        address indexed user,
+        address indexed asset,
+        uint256 amount
+    );
+    event RecipientRemunerated(
+        uint256 indexed tab_id,
+        address indexed asset,
+        uint256 amount
+    );
+    event CollateralWithdrawn(
+        address indexed user,
+        address indexed asset,
+        uint256 amount
+    );
     event WithdrawalRequested(
         address indexed user,
+        address indexed asset,
         uint256 when,
         uint256 amount
     );
-    event WithdrawalCanceled(address indexed user);
+    event WithdrawalCanceled(address indexed user, address indexed asset);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event SynchronizationDelayUpdated(uint256 newExpirationTime);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
-    event PaymentRecorded(uint256 indexed tab_id, uint256 amount);
+    event PaymentRecorded(
+        uint256 indexed tab_id,
+        address indexed asset,
+        uint256 amount
+    );
 
     // ========= Helper structs =========
     struct Guarantee {
@@ -91,20 +121,25 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         address recipient;
         uint256 req_id;
         uint256 amount;
+        address asset;
     }
 
     // ========= Constructor =========
     constructor(
         address manager,
-        BLS.G1Point memory verificationKey
+        BLS.G1Point memory verificationKey,
+        address usdc_,
+        address usdt_
     ) AccessManaged(manager) {
+        if (usdc_ == address(0)) revert InvalidAsset(usdc_);
+        if (usdt_ == address(0)) revert InvalidAsset(usdt_);
+        if (usdc_ == usdt_) revert InvalidAsset(usdc_);
+
+        USDC = usdc_;
+        USDT = usdt_;
         GUARANTEE_VERIFICATION_KEY = verificationKey;
         guaranteeDomainSeparator = keccak256(
-            abi.encode(
-                "4MICA_CORE_GUARANTEE_V1",
-                block.chainid,
-                address(this)
-            )
+            abi.encode("4MICA_CORE_GUARANTEE_V1", block.chainid, address(this))
         );
     }
 
@@ -116,6 +151,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     modifier validRecipient(address recipient) {
         if (recipient == address(0)) revert InvalidRecipient();
+        _;
+    }
+
+    modifier supportedAsset(address asset) {
+        if (!_isSupportedAsset(asset)) revert UnsupportedAsset(asset);
+        _;
+    }
+
+    modifier stablecoin(address asset) {
+        if (!_isStablecoin(asset)) revert UnsupportedAsset(asset);
         _;
     }
 
@@ -157,6 +202,35 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit SynchronizationDelayUpdated(_synchronizationDelay);
     }
 
+    function setTimingParameters(
+        uint256 _remunerationGracePeriod,
+        uint256 _tabExpirationTime,
+        uint256 _synchronizationDelay,
+        uint256 _withdrawalGracePeriod
+    ) external restricted {
+        if (
+            _remunerationGracePeriod == 0 ||
+            _tabExpirationTime == 0 ||
+            _synchronizationDelay == 0 ||
+            _withdrawalGracePeriod == 0
+        ) revert AmountZero();
+
+        if (_remunerationGracePeriod >= _tabExpirationTime)
+            revert IllegalValue();
+        if (_synchronizationDelay + _tabExpirationTime >= _withdrawalGracePeriod)
+            revert IllegalValue();
+
+        remunerationGracePeriod = _remunerationGracePeriod;
+        tabExpirationTime = _tabExpirationTime;
+        synchronizationDelay = _synchronizationDelay;
+        withdrawalGracePeriod = _withdrawalGracePeriod;
+
+        emit RemunerationGracePeriodUpdated(_remunerationGracePeriod);
+        emit TabExpirationTimeUpdated(_tabExpirationTime);
+        emit SynchronizationDelayUpdated(_synchronizationDelay);
+        emit WithdrawalGracePeriodUpdated(_withdrawalGracePeriod);
+    }
+
     function setGuaranteeVerificationKey(
         BLS.G1Point calldata verificationKey
     ) external restricted {
@@ -166,47 +240,93 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= User flows =========
     function deposit() external payable nonReentrant nonZero(msg.value) {
-        collateral[msg.sender] += msg.value;
-        emit CollateralDeposited(msg.sender, msg.value);
+        collateralBalances[msg.sender][ETH_ASSET] += msg.value;
+        emit CollateralDeposited(msg.sender, ETH_ASSET, msg.value);
+    }
+
+    function depositStablecoin(
+        address asset,
+        uint256 amount
+    ) external payable nonReentrant stablecoin(asset) nonZero(amount) {
+        if (msg.value != 0) revert IllegalValue();
+        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+        collateralBalances[msg.sender][asset] += amount;
+        emit CollateralDeposited(msg.sender, asset, amount);
     }
 
     function requestWithdrawal(uint256 amount) external nonZero(amount) {
-        if (amount > collateral[msg.sender]) revert InsufficientAvailable();
+        _requestWithdrawal(msg.sender, ETH_ASSET, amount);
+    }
 
-        withdrawalRequests[msg.sender] = WithdrawalRequest(
+    function requestWithdrawal(
+        address asset,
+        uint256 amount
+    ) external supportedAsset(asset) nonZero(amount) {
+        _requestWithdrawal(msg.sender, asset, amount);
+    }
+
+    function _requestWithdrawal(
+        address user,
+        address asset,
+        uint256 amount
+    ) internal {
+        if (amount > collateralBalances[user][asset])
+            revert InsufficientAvailable();
+
+        withdrawalRequests[user][asset] = WithdrawalRequest(
             block.timestamp,
             amount
         );
-        emit WithdrawalRequested(msg.sender, block.timestamp, amount);
+        emit WithdrawalRequested(user, asset, block.timestamp, amount);
     }
 
     function cancelWithdrawal() external {
-        if (withdrawalRequests[msg.sender].timestamp == 0)
+        _cancelWithdrawal(msg.sender, ETH_ASSET);
+    }
+
+    function cancelWithdrawal(address asset) external supportedAsset(asset) {
+        _cancelWithdrawal(msg.sender, asset);
+    }
+
+    function _cancelWithdrawal(address user, address asset) internal {
+        if (withdrawalRequests[user][asset].timestamp == 0)
             revert NoWithdrawalRequested();
-        delete withdrawalRequests[msg.sender];
-        emit WithdrawalCanceled(msg.sender);
+        delete withdrawalRequests[user][asset];
+        emit WithdrawalCanceled(user, asset);
     }
 
     function finalizeWithdrawal() external nonReentrant {
-        WithdrawalRequest memory request = withdrawalRequests[msg.sender];
+        _finalizeWithdrawal(msg.sender, ETH_ASSET);
+    }
+
+    function finalizeWithdrawal(
+        address asset
+    ) external nonReentrant supportedAsset(asset) {
+        _finalizeWithdrawal(msg.sender, asset);
+    }
+
+    function _finalizeWithdrawal(address user, address asset) internal {
+        WithdrawalRequest memory request = withdrawalRequests[user][asset];
         if (request.timestamp == 0) revert NoWithdrawalRequested();
         if (block.timestamp < request.timestamp + withdrawalGracePeriod)
             revert GracePeriodNotElapsed();
 
         /// The user's collateral may have been reduced since the withdrawal was requested.
         /// As such, take the minimum of the two, making sure we never overdraw the account.
-        uint256 withdrawal_amount = Math.min(
-            collateral[msg.sender],
-            request.amount
-        );
+        uint256 available = collateralBalances[user][asset];
+        uint256 withdrawal_amount = Math.min(available, request.amount);
 
-        collateral[msg.sender] -= withdrawal_amount;
-        delete withdrawalRequests[msg.sender];
+        collateralBalances[user][asset] = available - withdrawal_amount;
+        delete withdrawalRequests[user][asset];
 
-        (bool ok, ) = payable(msg.sender).call{value: withdrawal_amount}("");
-        if (!ok) revert TransferFailed();
+        if (asset == ETH_ASSET) {
+            (bool ok, ) = payable(user).call{value: withdrawal_amount}("");
+            if (!ok) revert TransferFailed();
+        } else {
+            IERC20(asset).safeTransfer(user, withdrawal_amount);
+        }
 
-        emit CollateralWithdrawn(msg.sender, withdrawal_amount);
+        emit CollateralWithdrawn(user, asset, withdrawal_amount);
     }
 
     /// TODO(#20): compress signature
@@ -223,67 +343,137 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         if (g.tab_timestamp + tabExpirationTime < block.timestamp)
             revert TabExpired();
 
+        address asset = _requireSupportedAsset(g.asset);
+        PaymentStatus storage status = payments[g.tab_id][asset];
+
         // 3. Tab must not previously be remunerated
-        if (payments[g.tab_id].remunerated) revert TabPreviouslyRemunerated();
+        if (status.remunerated) revert TabPreviouslyRemunerated();
 
         // 4. Tab must not be paid
-        if (payments[g.tab_id].paid >= g.amount) revert TabAlreadyPaid();
+        if (status.paid >= g.amount) revert TabAlreadyPaid();
 
         // 5. Verify signature
         if (!verifyGuaranteeSignature(g, signature)) revert InvalidSignature();
 
         // 6. Client must have sufficient funds
-        if (collateral[g.client] < g.amount) revert DoubleSpendingDetected();
+        if (collateralBalances[g.client][asset] < g.amount)
+            revert DoubleSpendingDetected();
 
-        collateral[g.client] -= g.amount;
-        payments[g.tab_id].remunerated = true;
+        collateralBalances[g.client][asset] -= g.amount;
+        status.remunerated = true;
 
         // Subtract the remunerated value from the withdrawal request
         // whenever the tab was opened BEFORE the withdrawal request
         // was synchronized.
-        WithdrawalRequest storage wr = withdrawalRequests[g.client];
-        if (g.tab_timestamp < wr.timestamp + synchronizationDelay) {
+        WithdrawalRequest storage wr = withdrawalRequests[g.client][asset];
+        if (
+            wr.timestamp != 0 &&
+            g.tab_timestamp < wr.timestamp + synchronizationDelay
+        ) {
             uint256 deduction = Math.min(wr.amount, g.amount);
             wr.amount -= deduction;
         }
 
-        (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
-        if (!ok) revert TransferFailed();
+        if (asset == ETH_ASSET) {
+            (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
+            if (!ok) revert TransferFailed();
+        } else {
+            IERC20(asset).safeTransfer(g.recipient, g.amount);
+        }
 
-        emit RecipientRemunerated(g.tab_id, g.amount);
+        emit RecipientRemunerated(g.tab_id, asset, g.amount);
     }
 
     // ========= Operator / Manager flows =========
     function recordPayment(
         uint256 tab_id,
+        address asset,
+        uint256 amount
+    ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant {
+        _recordPayment(tab_id, asset, amount);
+    }
+
+    function _recordPayment(
+        uint256 tab_id,
+        address asset,
+        uint256 amount
+    ) internal {
+        payments[tab_id][asset].paid += amount;
+        emit PaymentRecorded(tab_id, asset, amount);
+    }
+
+    function recordPayment(
+        uint256 tab_id,
         uint256 amount
     ) external restricted nonZero(amount) nonReentrant {
-        payments[tab_id].paid += amount;
-        emit PaymentRecorded(tab_id, amount);
+        revert DeprecatedRecordPayment();
     }
 
     // ========= Views / Helpers =========
+    function collateral(address userAddr) external view returns (uint256) {
+        return collateralBalances[userAddr][ETH_ASSET];
+    }
+
+    function collateral(
+        address userAddr,
+        address asset
+    ) external view supportedAsset(asset) returns (uint256) {
+        return collateralBalances[userAddr][asset];
+    }
+
     function getUser(
         address userAddr
     )
         external
         view
         returns (
-            uint256 _collateral,
+            uint256 assetCollateral,
             uint256 withdrawal_request_timestamp,
             uint256 withdrawal_request_amount
         )
     {
-        _collateral = collateral[userAddr];
-        withdrawal_request_timestamp = withdrawalRequests[userAddr].timestamp;
-        withdrawal_request_amount = withdrawalRequests[userAddr].amount;
+        return getUser(userAddr, ETH_ASSET);
+    }
+
+    function getUser(
+        address userAddr,
+        address asset
+    )
+        public
+        view
+        supportedAsset(asset)
+        returns (
+            uint256 assetCollateral,
+            uint256 withdrawal_request_timestamp,
+            uint256 withdrawal_request_amount
+        )
+    {
+        WithdrawalRequest storage request = withdrawalRequests[userAddr][asset];
+        assetCollateral = collateralBalances[userAddr][asset];
+        withdrawal_request_timestamp = request.timestamp;
+        withdrawal_request_amount = request.amount;
     }
 
     function getPaymentStatus(
         uint256 tab_id
     ) external view returns (uint256 paid, bool remunerated) {
-        paid = payments[tab_id].paid;
-        remunerated = payments[tab_id].remunerated;
+        PaymentStatus storage status = payments[tab_id][ETH_ASSET];
+        paid = status.paid;
+        remunerated = status.remunerated;
+    }
+
+    function getPaymentStatus(
+        uint256 tab_id,
+        address asset
+    )
+        external
+        view
+        supportedAsset(asset)
+        returns (uint256 paid, bool remunerated)
+    {
+        PaymentStatus storage status = payments[tab_id][asset];
+        paid = status.paid;
+        remunerated = status.remunerated;
     }
 
     // === Signature verification ===
@@ -298,6 +488,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
                 g.client,
                 g.recipient,
                 g.amount,
+                g.asset,
                 g.tab_timestamp
             );
     }
@@ -324,5 +515,20 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     fallback() external payable {
         revert DirectTransferNotAllowed();
+    }
+
+    function _requireSupportedAsset(
+        address asset
+    ) internal view returns (address) {
+        if (_isSupportedAsset(asset)) return asset;
+        revert UnsupportedAsset(asset);
+    }
+
+    function _isSupportedAsset(address asset) internal view returns (bool) {
+        return asset == ETH_ASSET || asset == USDC || asset == USDT;
+    }
+
+    function _isStablecoin(address asset) internal view returns (bool) {
+        return asset == USDC || asset == USDT;
     }
 }
