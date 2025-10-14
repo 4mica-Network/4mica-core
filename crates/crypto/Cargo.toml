@@ -1,7 +1,17 @@
 [package]
-name = "crypto"
+name = "crypto-4mica"
 version = "0.1.0"
 edition.workspace = true
+authors = ["4Mica Network <team@4mica.xyz>"]
+description = "Cryptographic primitives for the 4Mica payment network."
+license = "CC-BY-NC-4.0"
+repository = "https://github.com/4mica-Network/4mica-core"
+homepage = "https://4mica.xyz"
+keywords = ["4mica", "cryptography", "bls", "ethereum"]
+categories = ["cryptography"]
+
+[lib]
+name = "crypto"
 
 [dependencies]
 anyhow = { workspace = true }

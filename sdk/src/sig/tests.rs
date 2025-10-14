@@ -1,9 +1,10 @@
 use super::*;
-use alloy::primitives::U256;
+use alloy::hex;
+use alloy::primitives::{Address, Signature, U256};
 use alloy::signers::local::PrivateKeySigner;
 use chrono::Utc;
-use core_service::auth::verify_promise_signature;
 use rpc::common::PaymentGuaranteeRequest;
+use std::str::FromStr;
 
 fn create_test_params() -> CorePublicParameters {
     CorePublicParameters {
@@ -25,6 +26,37 @@ fn create_test_claims(user_addr: &str, recipient_addr: &str) -> PaymentGuarantee
         amount: U256::from(100u64),
         timestamp: Utc::now().timestamp() as u64,
     }
+}
+
+fn verify_promise_signature(
+    params: &CorePublicParameters,
+    req: &PaymentGuaranteeRequest,
+) -> Result<(), String> {
+    let claims = &req.claims;
+    let user_addr =
+        Address::from_str(&claims.user_address).map_err(|_| "invalid user address".to_string())?;
+    let recipient_addr = Address::from_str(&claims.recipient_address)
+        .map_err(|_| "invalid recipient address".to_string())?;
+
+    let sig_bytes = hex::decode(req.signature.trim_start_matches("0x"))
+        .map_err(|_| "invalid hex signature".to_string())?;
+    let sig = Signature::try_from(sig_bytes.as_slice())
+        .map_err(|_| "invalid signature length".to_string())?;
+
+    let digest = match req.scheme {
+        SigningScheme::Eip712 => crate::digest::eip712_digest(params, claims)
+            .map_err(|_| "failed to compute digest".to_string())?,
+        SigningScheme::Eip191 => crate::digest::eip191_digest(claims, user_addr, recipient_addr)
+            .map_err(|_| "failed to compute digest".to_string())?,
+    };
+
+    let recovered = sig
+        .recover_address_from_prehash(&digest)
+        .map_err(|_| "signature recovery failed".to_string())?;
+    if recovered != user_addr {
+        return Err("Invalid signature".into());
+    }
+    Ok(())
 }
 
 #[tokio::test]
