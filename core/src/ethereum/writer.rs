@@ -17,7 +17,7 @@ pub struct EthereumWriter {
 #[async_trait]
 pub trait PaymentWriter: Send + Sync {
     async fn record_payment(&self, tab_id: U256, amount: U256)
-    -> Result<(), BlockchainWriterError>;
+        -> Result<(), BlockchainWriterError>;
 }
 
 impl EthereumWriter {
@@ -59,7 +59,7 @@ impl PaymentWriter for EthereumWriter {
         amount: U256,
     ) -> Result<(), BlockchainWriterError> {
         let contract = self.build_contract();
-        let tx = contract.recordPayment(tab_id, amount);
+        let tx = contract.recordPayment(tab_id, Address::ZERO, amount);
 
         let receipt = tx.send().await?.get_receipt().await?;
 

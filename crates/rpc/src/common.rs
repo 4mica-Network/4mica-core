@@ -9,6 +9,12 @@ pub struct PaymentGuaranteeClaims {
     pub req_id: U256,
     pub amount: U256,
     pub timestamp: u64,
+    #[serde(default = "default_asset_address")]
+    pub asset_address: String,
+}
+
+fn default_asset_address() -> String {
+    "0x0000000000000000000000000000000000000000".to_string()
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
@@ -21,6 +27,7 @@ impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
             &self.user_address,
             &self.recipient_address,
             self.amount,
+            &self.asset_address,
             self.timestamp,
         )
         .map_err(|e| anyhow::anyhow!("Failed to encode guarantee bytes: {}", e))
@@ -31,7 +38,7 @@ impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let (domain, tab_id, req_id, client, recipient, amount, timestamp) =
+        let (domain, tab_id, req_id, client, recipient, amount, asset, timestamp) =
             crypto::guarantee::decode_guarantee_bytes(value)?;
         let expected_domain = crypto::guarantee::guarantee_domain_separator()?;
         if domain != expected_domain {
@@ -43,6 +50,7 @@ impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
             tab_id,
             req_id,
             amount,
+            asset_address: asset.to_string(),
             timestamp,
         })
     }

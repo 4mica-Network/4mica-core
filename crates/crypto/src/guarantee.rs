@@ -80,13 +80,15 @@ pub fn encode_guarantee_bytes(
     client: &str,
     recipient: &str,
     amount: U256,
+    asset: &str,
     tab_timestamp: u64,
 ) -> anyhow::Result<Vec<u8>> {
-    // 32 (domain) + 32 + 32 + 20 + 20 + 32 + 32 = 200
-    let mut out = Vec::with_capacity(32 + 32 + 32 + 20 + 20 + 32 + 32);
+    // 32 (domain) + 32 + 32 + 20 + 20 + 32 + 20 + 32 = 220
+    let mut out = Vec::with_capacity(32 + 32 + 32 + 20 + 20 + 32 + 20 + 32);
 
     let addr_client = Address::from_str(client)?;
     let addr_recipient = Address::from_str(recipient)?;
+    let addr_asset = Address::from_str(asset)?;
 
     let domain = ensure_domain_separator()?;
     out.extend_from_slice(&domain);
@@ -102,6 +104,9 @@ pub fn encode_guarantee_bytes(
     // uint256 amount (32 bytes)
     out.extend_from_slice(&amount.to_be_bytes::<32>());
 
+    // asset address (20 bytes)
+    out.extend_from_slice(addr_asset.as_slice());
+
     // uint256 timestamp (32 bytes, big-endian)
     let mut ts32 = [0u8; 32];
     ts32[24..].copy_from_slice(&tab_timestamp.to_be_bytes());
@@ -110,13 +115,13 @@ pub fn encode_guarantee_bytes(
     // Hard length assertion to catch silent mistakes
     debug_assert_eq!(
         out.len(),
-        200,
-        "encode_guarantee_bytes(): wrong length (expected 200)"
+        220,
+        "encode_guarantee_bytes(): wrong length (expected 220)"
     );
     assert_eq!(
         out.len(),
-        200,
-        "encode_guarantee_bytes(): wrong length (expected 200)"
+        220,
+        "encode_guarantee_bytes(): wrong length (expected 220)"
     );
 
     Ok(out)
@@ -129,13 +134,14 @@ type DecodedGuarantee = (
     Address,  // client
     Address,  // recipient
     U256,     // amount
+    Address,  // asset
     u64,      // tab_timestamp
 );
 
 pub fn decode_guarantee_bytes(data: &[u8]) -> anyhow::Result<DecodedGuarantee> {
-    if data.len() != 176 && data.len() != 200 {
+    if data.len() != 176 && data.len() != 200 && data.len() != 220 {
         anyhow::bail!(
-            "decode_guarantee_bytes(): wrong length (expected 176 or 200, got {})",
+            "decode_guarantee_bytes(): wrong length (expected 176, 200, or 220, got {})",
             data.len()
         );
     }
@@ -148,7 +154,7 @@ pub fn decode_guarantee_bytes(data: &[u8]) -> anyhow::Result<DecodedGuarantee> {
     domain.copy_from_slice(&data[offset..offset + 32]);
     offset += 32;
 
-    let take_timestamp_as_u256 = data.len() == 200;
+    let take_timestamp_as_u256 = data.len() >= 200;
 
     // tab_id (32 bytes)
     let tab_id = U256::from_be_slice(&data[offset..offset + 32]);
@@ -170,6 +176,17 @@ pub fn decode_guarantee_bytes(data: &[u8]) -> anyhow::Result<DecodedGuarantee> {
     let amount = U256::from_be_slice(&data[offset..offset + 32]);
     offset += 32;
 
+    let asset = if data.len() == 176 {
+        Address::ZERO
+    } else if data.len() == 200 {
+        // Older format without explicit asset, assume ETH (zero address)
+        Address::ZERO
+    } else {
+        let asset = Address::from_slice(&data[offset..offset + 20]);
+        offset += 20;
+        asset
+    };
+
     // timestamp
     let tab_timestamp = if take_timestamp_as_u256 {
         let ts_slice = &data[offset + 24..offset + 32];
@@ -186,6 +203,7 @@ pub fn decode_guarantee_bytes(data: &[u8]) -> anyhow::Result<DecodedGuarantee> {
         client,
         recipient,
         amount,
+        asset,
         tab_timestamp,
     ))
 }

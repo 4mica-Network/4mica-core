@@ -56,7 +56,7 @@ impl UserClient {
         let user = self
             .ctx
             .get_contract()
-            .getUser(signer_address)
+            .getUser_0(signer_address)
             .call()
             .await
             .map_err(GetUserError::from)?;
@@ -70,7 +70,7 @@ impl UserClient {
         let status = self
             .ctx
             .get_contract()
-            .getPaymentStatus(tab_id)
+            .getPaymentStatus_0(tab_id)
             .call()
             .await
             .map_err(TabPaymentStatusError::from)?;
@@ -136,7 +136,7 @@ impl UserClient {
         let send_result = self
             .ctx
             .get_contract()
-            .requestWithdrawal(amount)
+            .requestWithdrawal_0(amount)
             .send()
             .await
             .map_err(RequestWithdrawalError::from)?;
@@ -153,7 +153,7 @@ impl UserClient {
         let send_result = self
             .ctx
             .get_contract()
-            .cancelWithdrawal()
+            .cancelWithdrawal_0()
             .send()
             .await
             .map_err(CancelWithdrawalError::from)?;
@@ -170,7 +170,7 @@ impl UserClient {
         let send_result = self
             .ctx
             .get_contract()
-            .finalizeWithdrawal()
+            .finalizeWithdrawal_0()
             .send()
             .await
             .map_err(FinalizeWithdrawalError::from)?;

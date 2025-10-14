@@ -60,7 +60,7 @@ impl RecipientClient {
         let status = self
             .ctx
             .get_contract()
-            .getPaymentStatus(tab_id)
+            .getPaymentStatus_0(tab_id)
             .call()
             .await
             .map_err(TabPaymentStatusError::from)?;
