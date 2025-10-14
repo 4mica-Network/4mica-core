@@ -116,6 +116,12 @@ pub mod contract_abi {
             /// Records a successful off-chain payment for a given tab.
             /// Only callable by an AccessManager-restricted operator.
             function recordPayment(uint256 tab_id, uint256 amount) external;
+
+            /// View: guarantee domain separator used for BLS signatures.
+            function guaranteeDomainSeparator() external view returns (bytes32);
+
+            /// View: current BLS verification key.
+            function GUARANTEE_VERIFICATION_KEY() external view returns (bytes32,bytes32,bytes32,bytes32);
         }
     }
 }

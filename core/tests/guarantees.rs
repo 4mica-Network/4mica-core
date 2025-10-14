@@ -1,4 +1,5 @@
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
+use anyhow::anyhow;
 use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::error::PersistDbError;
@@ -8,11 +9,16 @@ use crypto::bls::BLSCert;
 use entities::{guarantee, user};
 use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
+use std::str::FromStr;
 use test_log::test;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    Ok(AppConfig::fetch())
+    let cfg = AppConfig::fetch();
+    let contract = Address::from_str(&cfg.ethereum_config.contract_address)
+        .map_err(|e| anyhow!("invalid contract address: {}", e))?;
+    crypto::guarantee::init_guarantee_domain_separator(cfg.ethereum_config.chain_id, contract)?;
+    Ok(cfg)
 }
 
 // helper to build a random valid 0x… address

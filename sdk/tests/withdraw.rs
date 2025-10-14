@@ -9,6 +9,7 @@ use std::time::Duration;
 async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     // Setup user client
     let user_config = ConfigBuilder::default()
+        .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
             "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
         )
@@ -67,6 +68,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
 async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Result<()> {
     // Setup user client
     let user_config = ConfigBuilder::default()
+        .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
             "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356".to_string(),
         )
@@ -106,6 +108,7 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
 async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     // Setup user client
     let user_config = ConfigBuilder::default()
+        .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
             "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6".to_string(),
         )

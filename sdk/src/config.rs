@@ -111,13 +111,14 @@ impl ConfigBuilder {
 
 impl Default for ConfigBuilder {
     fn default() -> Self {
-        Self::empty().rpc_url("http://localhost:3000/".to_string())
+        Self::empty().rpc_url("https://api.4mica.xyz/".to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     const VALID_PRIVATE_KEY: &str =
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -128,7 +129,7 @@ mod tests {
     #[test]
     fn test_default_builder() {
         let builder = ConfigBuilder::default();
-        assert_eq!(builder.rpc_url, Some("http://localhost:3000/".to_string()));
+        assert_eq!(builder.rpc_url, Some("https://api.4mica.xyz/".to_string()));
         assert!(builder.wallet_private_key.is_none());
         assert!(builder.ethereum_http_rpc_url.is_none());
         assert!(builder.contract_address.is_none());
@@ -142,7 +143,7 @@ mod tests {
 
         assert!(config.is_ok());
         let config = config.unwrap();
-        assert_eq!(config.rpc_url.as_str(), "http://localhost:3000/");
+        assert_eq!(config.rpc_url.as_str(), "https://api.4mica.xyz/");
         assert_eq!(
             config.wallet_private_key,
             validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key")
@@ -241,6 +242,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_from_env_with_all_vars() {
         unsafe {
             std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
@@ -274,6 +276,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_from_env_with_partial_vars() {
         unsafe {
             std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
@@ -299,6 +302,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_from_env_override() {
         unsafe {
             std::env::set_var("4MICA_RPC_URL", "http://env-url:3000/");

@@ -32,12 +32,14 @@ struct ClientCtx(Arc<Inner>);
 impl ClientCtx {
     async fn new(cfg: Config) -> Result<Self, ClientError> {
         let rpc_proxy =
-            RpcProxy::new(&cfg.rpc_url.to_string()).map_err(|e| ClientError::Rpc(e.to_string()))?;
+            RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))?;
 
         let public_params = rpc_proxy
             .get_public_params()
             .await
             .map_err(|e| ClientError::Rpc(e.to_string()))?;
+
+        let expected_chain_id = public_params.chain_id;
 
         let ethereum_http_rpc_url = cfg.ethereum_http_rpc_url.clone().unwrap_or(
             validate_url(&public_params.ethereum_http_rpc_url)
@@ -46,15 +48,37 @@ impl ClientCtx {
 
         let provider = ProviderBuilder::new()
             .wallet(cfg.wallet_private_key.clone())
-            .connect(&ethereum_http_rpc_url.to_string())
+            .connect(ethereum_http_rpc_url.as_ref())
             .await
             .map_err(|e| ClientError::Provider(e.to_string()))?
             .erased();
+
+        let provider_chain_id = provider
+            .get_chain_id()
+            .await
+            .map_err(|e| ClientError::Initialization(e.to_string()))?;
+
+        if provider_chain_id != expected_chain_id {
+            return Err(ClientError::Initialization(format!(
+                "chain id mismatch between core service ({}) and Ethereum provider ({})",
+                expected_chain_id, provider_chain_id
+            )));
+        }
 
         let contract_address = cfg.contract_address.unwrap_or(
             validate_address(&public_params.contract_address)
                 .expect("Invalid contract address received from server"),
         );
+
+        let contract = Core4Mica::new(contract_address, provider.clone());
+        let on_chain_domain = contract
+            .guaranteeDomainSeparator()
+            .call()
+            .await
+            .map_err(|e| ClientError::Initialization(e.to_string()))?;
+        let domain_bytes: [u8; 32] = on_chain_domain.into();
+        crypto::guarantee::set_guarantee_domain_separator(domain_bytes)
+            .map_err(|e| ClientError::Initialization(e.to_string()))?;
 
         Ok(Self(Arc::new(Inner {
             cfg,

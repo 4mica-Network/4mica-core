@@ -2,14 +2,14 @@ use crate::{
     auth::verify_promise_signature,
     config::{AppConfig, DEFAULT_TTL_SECS},
     error::{ServiceError, ServiceResult, service_error_to_rpc},
-    ethereum::{EthereumListener, EthereumWriter, PaymentWriter},
+    ethereum::{EthereumListener, EthereumWriter, PaymentWriter, contract_abi::Core4Mica},
     persist::{PersistCtx, repo},
     util::u256_to_string,
 };
 use alloy::{
-    primitives::U256,
+    primitives::{Address, U256},
     providers::{
-        Identity, ProviderBuilder, RootProvider, WsConnect,
+        Identity, Provider, ProviderBuilder, RootProvider, WsConnect,
         fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller},
     },
     rpc::types::Transaction,
@@ -117,6 +117,34 @@ impl CoreService {
         let eth_cfg = config.ethereum_config.clone();
         let listener_cfg = eth_cfg.clone();
 
+        let provider = ProviderBuilder::new()
+            .connect(&eth_cfg.http_rpc_url)
+            .await
+            .map_err(|e| anyhow!("failed to connect to Ethereum RPC: {e}"))?;
+        let actual_chain_id = provider
+            .get_chain_id()
+            .await
+            .map_err(|e| anyhow!("failed to fetch chain id from Ethereum RPC: {e}"))?;
+
+        if actual_chain_id != eth_cfg.chain_id {
+            anyhow::bail!(
+                "ETHEREUM_CHAIN_ID ({}) does not match node-reported chain id ({actual_chain_id}).",
+                eth_cfg.chain_id
+            );
+        }
+
+        let contract_addr = Address::from_str(&eth_cfg.contract_address)
+            .map_err(|e| anyhow!("invalid contract address: {}", e))?;
+        let contract = Core4Mica::new(contract_addr, provider);
+        let on_chain_domain = contract
+            .guaranteeDomainSeparator()
+            .call()
+            .await
+            .map_err(|e| anyhow!("failed to read on-chain domain separator: {e}"))?;
+        let domain_bytes: [u8; 32] = on_chain_domain.into();
+        crypto::guarantee::set_guarantee_domain_separator(domain_bytes)
+            .map_err(|e| anyhow!("failed to set guarantee domain: {e}"))?;
+
         spawn(async move {
             let mut delay = Duration::from_secs(1);
             loop {
@@ -143,7 +171,7 @@ impl CoreService {
                 .map_err(|e| anyhow!(e))?,
         );
 
-        Self::new_with_dependencies(config, persist_ctx, payment_writer)
+        Self::new_with_dependencies(config, persist_ctx, payment_writer, actual_chain_id)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -151,6 +179,7 @@ impl CoreService {
         config: AppConfig,
         persist_ctx: PersistCtx,
         payment_writer: Arc<dyn PaymentWriter>,
+        chain_id: u64,
     ) -> anyhow::Result<Self> {
         let bls_private_key = config.secrets.bls_private_key.bytes();
         if bls_private_key.len() != 32 {
@@ -163,10 +192,11 @@ impl CoreService {
             hex::encode(&public_key)
         );
 
-        let chain_id = config.ethereum_config.chain_id;
         let eip712_name = config.eip712.name.clone();
         let eip712_version = config.eip712.version.clone();
         let eth_config = config.ethereum_config.clone();
+        let domain = crypto::guarantee::guarantee_domain_separator()?;
+        info!("Guarantee domain separator: 0x{}", hex::encode(domain));
 
         Ok(Self {
             config,

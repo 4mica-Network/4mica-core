@@ -1,9 +1,8 @@
-use alloy::primitives::FixedBytes;
-use alloy::primitives::U256;
-use alloy::primitives::keccak256;
+use alloy::primitives::{Address, FixedBytes, U256, keccak256};
 
 use alloy::providers::ext::AnvilApi;
 use alloy::providers::{ProviderBuilder, WalletProvider};
+use anyhow::anyhow;
 use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::config::EthereumConfig;
@@ -53,7 +52,11 @@ fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
     // also try parent folder when running from core/tests
     dotenv::from_filename("../.env").ok();
-    Ok(AppConfig::fetch())
+    let cfg = AppConfig::fetch();
+    let contract = Address::from_str(&cfg.ethereum_config.contract_address)
+        .map_err(|e| anyhow!("invalid contract address: {}", e))?;
+    crypto::guarantee::init_guarantee_domain_separator(cfg.ethereum_config.chain_id, contract)?;
+    Ok(cfg)
 }
 
 /// Start the Ethereum listener in the background for tests, and return a handle you can abort.

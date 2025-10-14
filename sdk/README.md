@@ -34,6 +34,8 @@ The following parameters are **optional** and will be automatically fetched from
 - `contract_address`: Address of the deployed Core4Mica smart contract (optional)
 
 > **Note:** You normally don't need to provide `ethereum_http_rpc_url` and `contract_address` as the SDK will fetch these from the server automatically. Only override these if you need to use different values than the server's defaults.
+>
+> The Ethereum `chain_id` is fetched from the core service and validated against the connected Ethereum provider automatically.
 
 ### Configuration Methods
 
@@ -382,6 +384,7 @@ use rust_sdk_4mica::error::{
 
 - `Rpc(String)`: RPC connection error
 - `Provider(String)`: Provider initialization error
+- `Initialization(String)`: Client initialization error
 
 #### Payment Signing Errors
 
@@ -455,6 +458,11 @@ use rust_sdk_4mica::error::{
 **`RemunerateError`**
 
 - `InvalidParams(String)`: Invalid parameters provided
+- `ClaimsHex(FromHexError)`: Failed to decode the hex-encoded guarantee claims blob
+- `ClaimsDecode(anyhow::Error)`: Failed to deserialize guarantee claims after decoding
+- `GuaranteeConversion(anyhow::Error)`: Failed to convert decoded claims into the contract call type
+- `SignatureHex(FromHexError)`: Failed to decode the hex-encoded BLS signature
+- `SignatureDecode(anyhow::Error)`: Failed to parse the decoded BLS signature bytes
 - `TabNotYetOverdue`: Tab has not reached its due date yet
 - `TabExpired`: Tab has expired and can no longer be remunerated
 - `TabPreviouslyRemunerated`: Tab has already been remunerated
