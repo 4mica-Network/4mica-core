@@ -96,21 +96,19 @@ impl RecipientClient {
     }
 
     pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError> {
-        let claims = crypto::hex::decode_hex(&cert.claims).map_err(|e| {
-            RemunerateError::InvalidParams(format!("failed to parse claims: {}", e))
-        })?;
-        let claims = PaymentGuaranteeClaims::try_from(claims.as_slice()).map_err(|e| {
-            RemunerateError::InvalidParams(format!("failed to decode claims: {}", e))
-        })?;
+        let claims = crypto::hex::decode_hex(&cert.claims).map_err(RemunerateError::ClaimsHex)?;
+        let claims = PaymentGuaranteeClaims::try_from(claims.as_slice())
+            .map_err(RemunerateError::ClaimsDecode)?;
 
-        let guarantee: Guarantee = <Result<Guarantee, _>>::from(claims.try_into())
-            .map_err(|e| RemunerateError::InvalidParams(e.to_string()))?;
+        let guarantee: Guarantee = claims
+            .try_into()
+            .map_err(RemunerateError::GuaranteeConversion)?;
 
-        let sig = crypto::hex::decode_hex(&cert.signature)
-            .map_err(|e| RemunerateError::InvalidParams(format!("Invalid signature: {}", e)))?;
+        let sig =
+            crypto::hex::decode_hex(&cert.signature).map_err(RemunerateError::SignatureHex)?;
 
         let sig_words = crypto::bls::g2_words_from_signature(sig.as_slice())
-            .map_err(|e| RemunerateError::InvalidParams(format!("Invalid signature: {}", e)))?;
+            .map_err(RemunerateError::SignatureDecode)?;
 
         let send_result = self
             .ctx

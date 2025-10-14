@@ -33,18 +33,19 @@ def fq2_to_fp2_words(fq2) -> Tuple[bytes, bytes, bytes, bytes]:
 def to_hex32(b: bytes) -> str:
     return "0x" + b.hex()
 
-def pack_encode_guarantee(tab_id: int, req_id: int, client: str, recipient: str,
+def pack_encode_guarantee(domain: bytes, tab_id: int, req_id: int, client: str, recipient: str,
                           amount: int, tab_timestamp: int) -> bytes:
-    """Mirror Solidity: abi.encodePacked(uint256,uint256,address,address,uint256,uint256)."""
+    """Mirror Solidity: abi.encodePacked(domain, uint256,uint256,address,address,uint256,uint256)."""
     def u256(x): return x.to_bytes(32, "big")
     def addr(a): return bytes.fromhex(Web3.to_checksum_address(a)[2:])
     return b"".join([
+        domain,
         u256(tab_id),
         u256(req_id),
         addr(client),
         addr(recipient),
         u256(amount),
-        u256(tab_timestamp),
+        tab_timestamp.to_bytes(32, "big"),
     ])
 
 def pubkey_g1_words_from_bls_sk(sk_hex: str):
@@ -155,6 +156,11 @@ def main(guarantee_path: str = "guarantee.json", set_key_first: bool = True):
     ]
 
     core = w3.eth.contract(address=CONTRACT_ADDR, abi=ABI)
+    chain_id = w3.eth.chain_id
+    domain = Web3.solidity_keccak(
+        ["string", "uint256", "address"],
+        ["4MICA_CORE_GUARANTEE_V1", chain_id, CONTRACT_ADDR],
+    )
 
     # ---- load guarantee.json ----
     with open(guarantee_path, "r", encoding="utf-8") as f:
@@ -186,9 +192,15 @@ def main(guarantee_path: str = "guarantee.json", set_key_first: bool = True):
 
     # ---- rebuild message & verify off-chain ----
     msg_bytes_off = pack_encode_guarantee(
-        g["tab_id"], g["req_id"], g["client"], g["recipient"], g["amount"], g["tab_timestamp"]
+        domain,
+        g["tab_id"],
+        g["req_id"],
+        g["client"],
+        g["recipient"],
+        g["amount"],
+        g["tab_timestamp"],
     )
-    print(f"\nPacked off-chain length: {len(msg_bytes_off)} bytes (expect 168)")
+    print(f"\nPacked off-chain length: {len(msg_bytes_off)} bytes (expect 200)")
     print("Off-chain last 32 bytes:", msg_bytes_off.hex()[-64:])
 
     pk48 = bls.SkToPk(int(BLS_PRIVATE_KEY, 16))
@@ -198,7 +210,7 @@ def main(guarantee_path: str = "guarantee.json", set_key_first: bool = True):
     msg_bytes_on = core.functions.encodeGuarantee((
         g["tab_id"], g["tab_timestamp"], g["client"], g["recipient"], g["req_id"], g["amount"]
     )).call()
-    print(f"Packed on-chain   length: {len(msg_bytes_on)} bytes (expect 168)")
+    print(f"Packed on-chain   length: {len(msg_bytes_on)} bytes (expect 200)")
     print("On-chain  last 32 bytes:", msg_bytes_on.hex()[-64:])
 
     if msg_bytes_on.hex() != msg_bytes_off.hex():

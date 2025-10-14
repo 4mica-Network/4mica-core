@@ -33,6 +33,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     /// TODO(#22): move key to registry
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
+    bytes32 public guaranteeDomainSeparator;
 
     /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
     BLS.G1Point internal NEGATED_G1_GENERATOR =
@@ -98,6 +99,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         BLS.G1Point memory verificationKey
     ) AccessManaged(manager) {
         GUARANTEE_VERIFICATION_KEY = verificationKey;
+        guaranteeDomainSeparator = keccak256(
+            abi.encode(
+                "4MICA_CORE_GUARANTEE_V1",
+                block.chainid,
+                address(this)
+            )
+        );
     }
 
     // ========= Modifiers =========
@@ -281,9 +289,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     // === Signature verification ===
     function encodeGuarantee(
         Guarantee memory g
-    ) public pure returns (bytes memory) {
+    ) public view returns (bytes memory) {
         return
             abi.encodePacked(
+                guaranteeDomainSeparator,
                 g.tab_id,
                 g.req_id,
                 g.client,

@@ -112,7 +112,8 @@ impl UserClient {
         let tx = TransactionRequest::default()
             .with_to(recipient)
             .with_value(amount)
-            .with_input(input.into_bytes());
+            .with_input(input.into_bytes())
+            .with_gas_limit(120_000u64);
 
         let pending_tx = self
             .ctx

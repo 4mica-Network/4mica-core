@@ -1,5 +1,6 @@
-use alloy::primitives::{FixedBytes, U256};
+use alloy::primitives::{Address, FixedBytes, U256};
 use alloy::providers::{ProviderBuilder, WalletProvider};
+use anyhow::anyhow;
 use core_service::{
     config::{AppConfig, EthereumConfig},
     ethereum::EthereumListener,
@@ -27,7 +28,11 @@ static NUMBER_OF_TRIALS: u32 = 60;
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
-    Ok(AppConfig::fetch())
+    let cfg = AppConfig::fetch();
+    let contract = Address::from_str(&cfg.ethereum_config.contract_address)
+        .map_err(|e| anyhow!("invalid contract address: {}", e))?;
+    crypto::guarantee::init_guarantee_domain_separator(cfg.ethereum_config.chain_id, contract)?;
+    Ok(cfg)
 }
 
 fn dummy_verification_key() -> (

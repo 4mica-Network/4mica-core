@@ -49,6 +49,13 @@ contract Core4MicaTest is Test {
         arr[0] = selector;
     }
 
+    function _signGuarantee(
+        Core4Mica.Guarantee memory g,
+        bytes32 privKey
+    ) internal view returns (BLS.G2Point memory) {
+        return BlsHelper.signGuarantee(core4Mica, g, privKey);
+    }
+
     // === Admin Config ===
 
     function AccessUnauthorizedError(
@@ -414,7 +421,7 @@ contract Core4MicaTest is Test {
             17,
             3 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -472,7 +479,7 @@ contract Core4MicaTest is Test {
             17,
             5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -606,7 +613,7 @@ contract Core4MicaTest is Test {
             req_id,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -648,7 +655,7 @@ contract Core4MicaTest is Test {
             req_id,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -686,7 +693,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -737,7 +744,7 @@ contract Core4MicaTest is Test {
             17,
             amount
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -779,7 +786,7 @@ contract Core4MicaTest is Test {
             17,
             0
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -798,7 +805,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -820,7 +827,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -844,7 +851,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -869,7 +876,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -901,7 +908,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -928,7 +935,7 @@ contract Core4MicaTest is Test {
         bytes32 invalid_key = bytes32(
             0x1234123412341234123412341234123412341234123412341234123412341234
         );
-        BLS.G2Point memory invalid_signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory invalid_signature = _signGuarantee(
             g,
             invalid_key
         );
@@ -953,7 +960,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -992,7 +999,7 @@ contract Core4MicaTest is Test {
             17,
             0.5 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -1040,7 +1047,7 @@ contract Core4MicaTest is Test {
             17,
             3 ether
         );
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature = _signGuarantee(
             g,
             TEST_PRIVATE_KEY
         );
@@ -1056,7 +1063,7 @@ contract Core4MicaTest is Test {
             17,
             3 ether
         );
-        BLS.G2Point memory signature_g1 = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature_g1 = _signGuarantee(
             g1,
             TEST_PRIVATE_KEY
         );
@@ -1085,7 +1092,7 @@ contract Core4MicaTest is Test {
         bytes32 otherKey = bytes32(
             0x5B85C3922AB2E2738F196576D00A8583CBE4A1C6BCA85DDFC65438574F42377C
         );
-        BLS.G2Point memory signature_with_other_key = BlsHelper.signGuarantee(
+        BLS.G2Point memory signature_with_other_key = _signGuarantee(
             g,
             otherKey
         );

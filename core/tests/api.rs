@@ -19,51 +19,42 @@ use rpc::{
     proxy::RpcProxy,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-use sea_orm::{ConnectionTrait, Statement};
 use serial_test::serial;
 use std::str::FromStr;
 use test_log::test;
 
+mod common;
+use common::fixtures::{clear_tables, ensure_user_with_collateral, init_test_env, random_address};
+
 async fn setup_clean_db() -> (AppConfig, RpcProxy, PersistCtx) {
-    let config = {
-        dotenv::dotenv().ok();
-        AppConfig::fetch()
-    };
+    let (config, ctx) = init_test_env().await.expect("init test env");
     let core_addr = format!(
         "http://{}:{}",
         config.server_config.host, config.server_config.port
     );
     let core_client = RpcProxy::new(&core_addr).expect("connect RPC");
-    let ctx = PersistCtx::new().await.expect("db ctx");
 
-    for table in [
-        "UserTransaction",
-        "Withdrawal",
-        "Guarantee",
-        "Tabs",
-        "CollateralEvent",
-        "User",
-    ] {
-        ctx.db
-            .as_ref()
-            .execute(Statement::from_string(
-                ctx.db.get_database_backend(),
-                format!(r#"DELETE FROM "{table}";"#),
-            ))
-            .await
-            .unwrap();
-    }
+    clear_tables(
+        &ctx,
+        &[
+            "UserTransaction",
+            "Withdrawal",
+            "Guarantee",
+            "Tabs",
+            "CollateralEvent",
+            "User",
+        ],
+    )
+    .await
+    .expect("clear tables");
 
     (config, core_client, ctx)
 }
 
 async fn insert_user_with_collateral(ctx: &PersistCtx, addr: &str, amount: U256) {
-    repo::ensure_user_exists_on(ctx.db.as_ref(), addr)
+    ensure_user_with_collateral(ctx, addr, amount)
         .await
-        .expect("ensure user exists");
-    repo::deposit(ctx, addr.to_string(), amount)
-        .await
-        .expect("deposit");
+        .expect("seed user collateral");
 }
 
 async fn build_signed_req(
@@ -125,7 +116,7 @@ async fn issue_guarantee_rejects_future_timestamp() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -154,7 +145,7 @@ async fn issue_guarantee_rejects_insufficient_collateral() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await; // only 1 unit
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -185,7 +176,7 @@ async fn issue_guarantee_rejects_wrong_req_id_sequence() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -238,7 +229,7 @@ async fn issue_guarantee_rejects_modified_start_ts() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -290,7 +281,7 @@ async fn issue_two_sequential_guarantees_ok() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -350,7 +341,7 @@ async fn issue_guarantee_rejects_when_tab_not_found() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -379,7 +370,7 @@ async fn issue_guarantee_should_open_tab() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let tab_result = core_client
@@ -433,7 +424,7 @@ async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
     insert_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await;
 
     let tab_result = core_client
@@ -470,7 +461,7 @@ async fn create_tab_rejects_unregistered_user() {
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = format!("0x{}", hex::encode(random::<[u8; 20]>()));
+    let recipient_addr = random_address();
 
     let tab_result = core_client
         .create_payment_tab(CreatePaymentTabRequest {

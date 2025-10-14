@@ -19,14 +19,15 @@ library BlsHelper {
         return blsScalarMul(G1_GENERATOR(), privateKey);
     }
 
-    function signGuarantee(Core4Mica.Guarantee memory g, bytes32 privateKey) public view returns (BLS.G2Point memory) {
-        return blsSign(encodeGuarantee(g), privateKey);
+    function signGuarantee(Core4Mica core, Core4Mica.Guarantee memory g, bytes32 privateKey) public view returns (BLS.G2Point memory) {
+        return blsSign(encodeGuarantee(core, g), privateKey);
     }
 
     // === Helpers ===
 
-    function encodeGuarantee(Core4Mica.Guarantee memory g) public pure returns (bytes memory) {
-        return abi.encodePacked(g.tab_id, g.req_id, g.client, g.recipient, g.amount, g.tab_timestamp);
+    function encodeGuarantee(Core4Mica core, Core4Mica.Guarantee memory g) public view returns (bytes memory) {
+        bytes32 domain = core.guaranteeDomainSeparator();
+        return abi.encodePacked(domain, g.tab_id, g.req_id, g.client, g.recipient, g.amount, g.tab_timestamp);
     }
 
     function blsSign(bytes memory message, bytes32 privateKey) public view returns (BLS.G2Point memory) {

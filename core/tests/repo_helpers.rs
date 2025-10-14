@@ -1,21 +1,18 @@
 use alloy::primitives::U256;
 use chrono::Utc;
-use core_service::config::AppConfig;
 use core_service::error::PersistDbError;
-use core_service::persist::PersistCtx;
-use core_service::persist::repo;
+use core_service::persist::{PersistCtx, repo};
 use entities::collateral_event;
 use entities::sea_orm_active_enums::CollateralEventType;
 use entities::sea_orm_active_enums::WithdrawalStatus;
-use entities::{user, user_transaction};
-use sea_orm::sea_query::OnConflict;
+use entities::user_transaction;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
 
-fn init() -> anyhow::Result<AppConfig> {
-    dotenv::dotenv().ok();
-    Ok(AppConfig::fetch())
-}
+mod common;
+use common::fixtures::{
+    ensure_user, ensure_user_with_collateral, fetch_user, init_test_env, random_address,
+};
 
 /// Fetch unfinalized transactions for a user
 pub async fn get_unfinalized_transactions_for_user(
@@ -36,44 +33,16 @@ pub async fn get_unfinalized_transactions_for_user(
     Ok(rows)
 }
 
-// Ensure a user row exists (idempotent)
-async fn ensure_user(ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
-    let now = Utc::now().naive_utc();
-    let am = entities::user::ActiveModel {
-        address: Set(addr.to_string()),
-        version: Set(0),
-        created_at: Set(now),
-        updated_at: Set(now),
-        collateral: Set("0".to_string()),
-        locked_collateral: Set("0".to_string()),
-        ..Default::default()
-    };
-    user::Entity::insert(am)
-        .on_conflict(
-            OnConflict::column(user::Column::Address)
-                .do_nothing()
-                .to_owned(),
-        )
-        .exec_without_returning(ctx.db.as_ref())
-        .await?;
-    Ok(())
-}
-
 /// Ensure get_user_transactions only returns transactions for the given user.
 #[test(tokio::test)]
 async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let other_user = random_address();
+    let recipient = random_address();
 
-    let other_user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-
-    ensure_user(&ctx, &user_addr).await?;
-    ensure_user(&ctx, &other_user).await?;
-
-    repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
-    repo::deposit(&ctx, other_user.clone(), U256::from(10)).await?;
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
+    ensure_user_with_collateral(&ctx, &other_user, U256::from(10u64)).await?;
 
     let tx_id_1 = format!("0x{:040x}", rand::random::<u128>());
     let tx_id_2 = format!("0x{:040x}", rand::random::<u128>());
@@ -104,14 +73,11 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
 /// Ensure get_unfinalized_transactions_for_user excludes the passed tx_id.
 #[test(tokio::test)]
 async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let recipient = random_address();
 
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-
-    ensure_user(&ctx, &user_addr).await?;
-    repo::deposit(&ctx, user_addr.clone(), U256::from(10)).await?;
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
 
     let tx_id_1 = format!("0x{:040x}", rand::random::<u128>());
     let tx_id_2 = format!("0x{:040x}", rand::random::<u128>());
@@ -155,12 +121,10 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
 /// Ensure get_pending_withdrawals_for_user finds only pending ones.
 #[test(tokio::test)]
 async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
 
-    ensure_user(&ctx, &user_addr).await?;
-    repo::deposit(&ctx, user_addr.clone(), U256::from(20)).await?;
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
 
     let when = chrono::Utc::now().timestamp();
     // request withdrawal of 5
@@ -181,18 +145,12 @@ async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()
 /// bump_user_version should increase version once and return false on second attempt
 #[test(tokio::test)]
 async fn bump_user_version_increments_once() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
 
-    ensure_user(&ctx, &user_addr).await?;
-    repo::deposit(&ctx, user_addr.clone(), U256::from(1)).await?;
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
 
-    let u0 = user::Entity::find()
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
+    let u0 = fetch_user(&ctx, &user_addr).await?;
     let v0 = u0.version;
 
     // First bump succeeds
@@ -200,11 +158,7 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
     assert!(res1.is_ok(), "first bump should succeed");
 
     // Version incremented by 1
-    let u1 = user::Entity::find()
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
+    let u1 = fetch_user(&ctx, &user_addr).await?;
     assert_eq!(u1.version, v0 + 1);
 
     // Second bump with stale version must error
@@ -212,11 +166,7 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
     assert!(res2.is_err(), "second bump with old version should error");
 
     // Version unchanged after failed attempt
-    let u2 = user::Entity::find()
-        .filter(user::Column::Address.eq(user_addr))
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
+    let u2 = fetch_user(&ctx, &user_addr).await?;
     assert_eq!(u2.version, v0 + 1);
 
     Ok(())
@@ -225,8 +175,7 @@ async fn bump_user_version_increments_once() -> anyhow::Result<()> {
 /// Ensure get_tab_by_id returns None for unknown id (simple smoke test)
 #[test(tokio::test)]
 async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
+    let (_cfg, ctx) = init_test_env().await?;
     let res = repo::get_tab_by_id(&ctx, U256::from(12345u64)).await?;
     assert!(res.is_none());
     Ok(())
@@ -234,9 +183,8 @@ async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
 
 #[test(tokio::test)]
 async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()> {
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
     ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = U256::from(rand::random::<u128>());

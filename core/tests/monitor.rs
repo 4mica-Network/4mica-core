@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use alloy::primitives::Address;
 use async_trait::async_trait;
 use core_service::{
     config::{AppConfig, Eip712Config, EthereumConfig, Secrets, ServerConfig},
@@ -79,14 +80,20 @@ async fn monitor_transactions_triggers_scheduler_and_scan() -> anyhow::Result<()
     let lookback = 5u64;
 
     let config = build_config(cron_expr, lookback);
+    let chain_id = config.ethereum_config.chain_id;
     let conn = Database::connect("sqlite::memory:").await?;
     let persist_ctx = PersistCtx::from_conn(conn);
     let payment_writer: Arc<dyn PaymentWriter> = Arc::new(MockPaymentWriter::default());
+
+    let contract_addr = Address::from_str(&config.ethereum_config.contract_address)?;
+    let domain = crypto::guarantee::compute_guarantee_domain_separator(chain_id, contract_addr)?;
+    crypto::guarantee::set_guarantee_domain_separator(domain)?;
 
     let service = Arc::new(CoreService::new_with_dependencies(
         config,
         persist_ctx,
         payment_writer,
+        chain_id,
     )?);
 
     test_hooks::clear_scheduler_callback();
