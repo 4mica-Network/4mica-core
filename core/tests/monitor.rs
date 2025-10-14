@@ -83,7 +83,7 @@ async fn monitor_transactions_triggers_scheduler_and_scan() -> anyhow::Result<()
     let chain_id = config.ethereum_config.chain_id;
     let conn = Database::connect("sqlite::memory:").await?;
     let persist_ctx = PersistCtx::from_conn(conn);
-    let payment_writer: Arc<dyn PaymentWriter> = Arc::new(MockPaymentWriter::default());
+    let payment_writer: Arc<dyn PaymentWriter> = Arc::new(MockPaymentWriter);
 
     let contract_addr = Address::from_str(&config.ethereum_config.contract_address)?;
     let domain = crypto::guarantee::compute_guarantee_domain_separator(chain_id, contract_addr)?;

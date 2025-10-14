@@ -172,6 +172,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         &claims.user_address,
         &claims.recipient_address,
         claims.amount,
+        &claims.asset_address,
         claims.timestamp,
     )?;
     println!(
@@ -286,6 +287,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         &claims.user_address,
         &claims.recipient_address,
         claims.amount,
+        &claims.asset_address,
         claims.timestamp,
     )?;
     println!(

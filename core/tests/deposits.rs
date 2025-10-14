@@ -228,7 +228,6 @@ async fn db_check_rejects_inserting_locked_gt_total() -> anyhow::Result<()> {
         updated_at: Set(now),
         collateral: Set("10".to_string()),
         locked_collateral: Set("11".to_string()), // violates CHECK
-        ..Default::default()
     };
     let res = entities::user::Entity::insert(am)
         .exec(ctx.db.as_ref())
@@ -327,7 +326,6 @@ async fn make_user_with_locked(
         updated_at: Set(now),
         collateral: Set(total.to_string()),
         locked_collateral: Set(locked.to_string()),
-        ..Default::default()
     };
     user::Entity::insert(am)
         .on_conflict(
@@ -352,7 +350,6 @@ async fn make_tab(ctx: &PersistCtx, tab_id: U256, user_addr: &str) -> anyhow::Re
         settlement_status: Set(SettlementStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     tabs::Entity::insert(am).exec(ctx.db.as_ref()).await?;
     Ok(())

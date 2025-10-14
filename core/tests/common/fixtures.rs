@@ -41,7 +41,6 @@ pub async fn ensure_user(ctx: &PersistCtx, addr: &str) -> Result<()> {
         updated_at: Set(now),
         collateral: Set("0".to_string()),
         locked_collateral: Set("0".to_string()),
-        ..Default::default()
     };
     user::Entity::insert(am)
         .on_conflict(
