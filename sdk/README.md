@@ -23,11 +23,10 @@ rust-sdk-4mica = "0.1.0"
 
 ## Configuration
 
-The SDK requires three configuration parameters:
+The SDK requires two configuration parameters:
 
 - `rpc_url`: URL of the 4Mica RPC server (defaults to http://localhost:3000)
 - `wallet_private_key`: Private key for signing transactions (hex string with or without `0x` prefix)
-- `chain_id`: Ethereum network chain id. Defaults to `1`, but **must** match the chain id of the node the 4Mica core service is connected to (e.g., `31337` for Anvil).
 
 The following parameters are **optional** and will be automatically fetched from the server if not provided:
 
@@ -35,6 +34,8 @@ The following parameters are **optional** and will be automatically fetched from
 - `contract_address`: Address of the deployed Core4Mica smart contract (optional)
 
 > **Note:** You normally don't need to provide `ethereum_http_rpc_url` and `contract_address` as the SDK will fetch these from the server automatically. Only override these if you need to use different values than the server's defaults.
+>
+> The Ethereum `chain_id` is fetched from the core service and validated against the connected Ethereum provider automatically.
 
 ### Configuration Methods
 
@@ -47,7 +48,6 @@ use rust_sdk_4mica::{Config, ConfigBuilder, Client};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ConfigBuilder::default()
         .wallet_private_key("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string())
-        .chain_id(31337)
         .build()?;
 
     let client = Client::new(config).await?;
@@ -61,7 +61,6 @@ Set the following environment variables:
 
 ```bash
 export 4MICA_WALLET_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-export 4MICA_CHAIN_ID="31337"
 
 # Optional (will use defaults if not set)
 export 4MICA_RPC_URL="http://localhost:3000"

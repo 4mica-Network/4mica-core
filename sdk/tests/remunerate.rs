@@ -1,5 +1,8 @@
 use alloy::{hex, primitives::Address, providers::ProviderBuilder, sol};
-use rpc::{core::CoreApiClient, proxy::RpcProxy};
+use rpc::{
+    core::{CoreApiClient, CorePublicParameters},
+    proxy::RpcProxy,
+};
 use rust_sdk_4mica::{
     Client, Config, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
     error::RemunerateError,
@@ -17,12 +20,12 @@ sol! {
     }
 }
 
-async fn log_signature_environment(tag: &str, config: &Config) -> anyhow::Result<()> {
+async fn log_signature_environment(
+    tag: &str,
+    config: &Config,
+) -> anyhow::Result<CorePublicParameters> {
     let rpc_url = config.rpc_url.as_str();
-    println!(
-        "[{}] SDK config chain_id={}, rpc_url={}",
-        tag, config.chain_id, rpc_url
-    );
+    println!("[{}] SDK rpc_url={}", tag, rpc_url);
 
     let rpc_proxy = RpcProxy::new(rpc_url)?;
     let public_params = rpc_proxy.get_public_params().await?;
@@ -47,8 +50,10 @@ async fn log_signature_environment(tag: &str, config: &Config) -> anyhow::Result
     );
 
     let contract_address = Address::from_str(&public_params.contract_address)?;
-    let recomputed_domain =
-        crypto::guarantee::compute_guarantee_domain_separator(config.chain_id, contract_address)?;
+    let recomputed_domain = crypto::guarantee::compute_guarantee_domain_separator(
+        public_params.chain_id,
+        contract_address,
+    )?;
     println!(
         "[{}] SDK recomputed domain separator=0x{}",
         tag,
@@ -75,7 +80,7 @@ async fn log_signature_environment(tag: &str, config: &Config) -> anyhow::Result
         hex::encode(key._3)
     );
 
-    Ok(())
+    Ok(public_params)
 }
 
 #[tokio::test]
@@ -83,7 +88,6 @@ async fn log_signature_environment(tag: &str, config: &Config) -> anyhow::Result
 async fn test_recipient_remuneration() -> anyhow::Result<()> {
     let user_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
-        .chain_id(31337)
         .wallet_private_key(
             "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
         )
@@ -96,7 +100,6 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
-        .chain_id(31337)
         .wallet_private_key(
             "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356".to_string(),
         )
@@ -206,7 +209,6 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     let user_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
-        .chain_id(31337)
         .wallet_private_key(
             "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".to_string(),
         )
@@ -219,7 +221,6 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
 
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
-        .chain_id(31337)
         .wallet_private_key(
             "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a".to_string(),
         )
