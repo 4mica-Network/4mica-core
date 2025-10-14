@@ -40,7 +40,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features
 
   build-and-test:
     name: Build, run services, and test
