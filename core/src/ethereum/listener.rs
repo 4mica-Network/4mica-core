@@ -217,7 +217,9 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let WithdrawalRequested { user, when, amount, .. } = *log.log_decode()?.data();
+        let WithdrawalRequested {
+            user, when, amount, ..
+        } = *log.log_decode()?.data();
         repo::request_withdrawal(ctx, user.to_string(), when.to(), amount).await?;
         info!("Withdrawal requested: {user:?}, when={when}, amount={amount}");
         Ok(())
