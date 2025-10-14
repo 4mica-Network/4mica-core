@@ -14,8 +14,8 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-rpc = { version = "0.1.0", path = "crates/rpc" }
-crypto = { version = "0.1.0", path = "crates/crypto" }
+rpc = { version = "0.1.0", path = "crates/rpc", package = "rpc-4mica" }
+crypto = { version = "0.1.0", path = "crates/crypto", package = "crypto-4mica" }
 blockchain = { version = "0.1.0", path = "crates/blockchain" }
 migration = { version = "0.1.0", path = "crates/migration" }
 entities = { version = "0.1.0", path = "crates/entities" }
