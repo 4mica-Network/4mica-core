@@ -124,8 +124,17 @@ def remunerate(
     tx = Core4Mica.functions.remunerate(g_tuple, sig_tuple).build_transaction(base_tx)
     return _send_tx(acct, tx)
 
-def record_payment(private_key: str, tab_id: int, amount_wei: int) -> TxReceipt:
+def record_payment(
+    private_key: str,
+    tab_id: int,
+    amount_wei: int,
+    asset: str = "0x0000000000000000000000000000000000000000",
+) -> TxReceipt:
     acct = w3.eth.account.from_key(private_key)
     base_tx = _build_base_tx(acct)
-    tx = Core4Mica.functions.recordPayment(tab_id, amount_wei).build_transaction(base_tx)
+    tx = Core4Mica.functions.recordPayment(
+        tab_id,
+        to_checksum_address(asset),
+        amount_wei
+    ).build_transaction(base_tx)
     return _send_tx(acct, tx)
