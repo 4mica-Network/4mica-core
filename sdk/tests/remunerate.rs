@@ -143,6 +143,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         req_id: U256::from(0),
         amount: guarantee_amount,
         timestamp: common::get_now().as_secs() - 3600 * 24 * 15,
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     println!("[recipient] claims struct: {:?}", claims);
 
@@ -256,6 +257,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         req_id: U256::from(0),
         amount: guarantee_amount,
         timestamp: common::get_now().as_secs() - 3600 * 24 * 15,
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     println!("[double] claims struct: {:?}", claims);
 

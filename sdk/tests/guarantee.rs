@@ -56,6 +56,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     let payment_sig = user_client
         .user

@@ -148,7 +148,7 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let CollateralDeposited { user, amount } = *log.log_decode()?.data();
+        let CollateralDeposited { user, amount, .. } = *log.log_decode()?.data();
         repo::deposit(ctx, user.to_string(), amount).await?;
         info!("Deposit by {user:?} of {amount}");
         Ok(())
@@ -158,7 +158,7 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let RecipientRemunerated { tab_id, amount } = *log.log_decode()?.data();
+        let RecipientRemunerated { tab_id, amount, .. } = *log.log_decode()?.data();
         repo::remunerate_recipient(ctx, tab_id, amount).await?;
         info!("Recipient remunerated: tab={tab_id}, amount={amount}");
         Ok(())
@@ -169,7 +169,7 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let PaymentRecorded { tab_id, amount } = *log.log_decode()?.data();
+        let PaymentRecorded { tab_id, amount, .. } = *log.log_decode()?.data();
 
         // Lookup tab → user + server
         let tab = repo::get_tab_by_id(ctx, tab_id).await?.ok_or_else(|| {
@@ -207,7 +207,7 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let CollateralWithdrawn { user, amount } = *log.log_decode()?.data();
+        let CollateralWithdrawn { user, amount, .. } = *log.log_decode()?.data();
         repo::finalize_withdrawal(ctx, user.to_string(), amount).await?;
         info!("Collateral withdrawn by {user:?}: {amount}");
         Ok(())
@@ -217,7 +217,7 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let WithdrawalRequested { user, when, amount } = *log.log_decode()?.data();
+        let WithdrawalRequested { user, when, amount, .. } = *log.log_decode()?.data();
         repo::request_withdrawal(ctx, user.to_string(), when.to(), amount).await?;
         info!("Withdrawal requested: {user:?}, when={when}, amount={amount}");
         Ok(())
@@ -227,7 +227,7 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let WithdrawalCanceled { user } = *log.log_decode()?.data();
+        let WithdrawalCanceled { user, .. } = *log.log_decode()?.data();
         repo::cancel_withdrawal(ctx, user.to_string()).await?;
         info!("Withdrawal canceled by {user:?}");
         Ok(())

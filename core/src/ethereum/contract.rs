@@ -21,19 +21,19 @@ pub mod abi {
         event UserRegistered(address indexed user, uint256 initial_collateral);
 
         #[derive(Debug)]
-        event CollateralDeposited(address indexed user, uint256 amount);
+        event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
-        event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
+        event RecipientRemunerated(uint256 indexed tab_id, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
-        event CollateralWithdrawn(address indexed user, uint256 amount);
+        event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
-        event WithdrawalRequested(address indexed user, uint256 when, uint256 amount);
+        event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
 
         #[derive(Debug)]
-        event WithdrawalCanceled(address indexed user);
+        event WithdrawalCanceled(address indexed user, address indexed asset);
 
         #[derive(Debug)]
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
@@ -48,7 +48,7 @@ pub mod abi {
         event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
 
         #[derive(Debug)]
-        event PaymentRecorded(uint256 indexed tab_id, uint256 amount);
+        event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
     }
 }
 
@@ -115,7 +115,7 @@ pub mod contract_abi {
         contract Core4Mica {
             /// Records a successful off-chain payment for a given tab.
             /// Only callable by an AccessManager-restricted operator.
-            function recordPayment(uint256 tab_id, uint256 amount) external;
+            function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
 
             /// View: guarantee domain separator used for BLS signatures.
             function guaranteeDomainSeparator() external view returns (bytes32);
