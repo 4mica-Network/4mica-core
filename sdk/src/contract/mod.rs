@@ -20,6 +20,9 @@ sol! {
         error InvalidSignature();
         error InvalidRecipient();
         error IllegalValue();
+        error UnsupportedAsset(address asset);
+        error InvalidAsset(address asset);
+        error DeprecatedRecordPayment();
 
         // ========= Storage =========
         function remunerationGracePeriod() external view returns (uint256);
@@ -33,16 +36,17 @@ sol! {
         );
 
         // ========= Events =========
-        event CollateralDeposited(address indexed user, uint256 amount);
-        event RecipientRemunerated(uint256 indexed tab_id, uint256 amount);
-        event CollateralWithdrawn(address indexed user, uint256 amount);
-        event WithdrawalRequested(address indexed user, uint256 when, uint256 amount);
-        event WithdrawalCanceled(address indexed user);
+        event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
+        event RecipientRemunerated(uint256 indexed tab_id, address indexed asset, uint256 amount);
+        event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
+        event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
+        event WithdrawalCanceled(address indexed user, address indexed asset);
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
         event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
         event TabExpirationTimeUpdated(uint256 newExpirationTime);
         event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
+        event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
 
         // ========= Structs =========
         struct WithdrawalRequest {
@@ -62,6 +66,7 @@ sol! {
             address recipient;
             uint256 req_id;
             uint256 amount;
+            address asset;
         }
 
         struct G1Point {
@@ -89,9 +94,13 @@ sol! {
 
         // ========= User flows =========
         function deposit() external payable;
+        function depositStablecoin(address asset, uint256 amount) external;
         function requestWithdrawal(uint256 amount) external;
+        function requestWithdrawal(address asset, uint256 amount) external;
         function cancelWithdrawal() external;
+        function cancelWithdrawal(address asset) external;
         function finalizeWithdrawal() external;
+        function finalizeWithdrawal(address asset) external;
 
         /// Remunerate a recipient based on a signed guarantee
         function remunerate(
@@ -105,10 +114,22 @@ sol! {
         function setTabExpirationTime(uint256 _expirationTime) external;
         function setSynchronizationDelay(uint256 _synchronizationDelay) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
+        function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
+        function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
         function recordPayment(uint256 tab_id, uint256 amount) external;
 
         // ========= Views =========
+        function collateral(address userAddr) external view returns (uint256);
+        function collateral(address userAddr, address asset) external view returns (uint256);
         function getUser(address userAddr)
+            external
+            view
+            returns (
+                uint256 _collateral,
+                uint256 withdrawal_request_timestamp,
+                uint256 withdrawal_request_amount
+            );
+        function getUser(address userAddr, address asset)
             external
             view
             returns (
@@ -118,6 +139,10 @@ sol! {
             );
 
         function getPaymentStatus(uint256 tab_id)
+            external
+            view
+            returns (uint256 paid, bool remunerated);
+        function getPaymentStatus(uint256 tab_id, address asset)
             external
             view
             returns (uint256 paid, bool remunerated);
