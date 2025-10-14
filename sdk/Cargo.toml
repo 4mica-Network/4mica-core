@@ -23,7 +23,6 @@ alloy = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
 
 [dev-dependencies]
-core-service = { version = "0.1.0", path = "../core" }
 tokio = { workspace = true }
 chrono = { workspace = true }
 alloy-provider = { workspace = true, features = ["anvil-api"] }
