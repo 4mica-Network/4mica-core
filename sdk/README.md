@@ -457,6 +457,11 @@ use rust_sdk_4mica::error::{
 **`RemunerateError`**
 
 - `InvalidParams(String)`: Invalid parameters provided
+- `ClaimsHex(FromHexError)`: Failed to decode the hex-encoded guarantee claims blob
+- `ClaimsDecode(anyhow::Error)`: Failed to deserialize guarantee claims after decoding
+- `GuaranteeConversion(anyhow::Error)`: Failed to convert decoded claims into the contract call type
+- `SignatureHex(FromHexError)`: Failed to decode the hex-encoded BLS signature
+- `SignatureDecode(anyhow::Error)`: Failed to parse the decoded BLS signature bytes
 - `TabNotYetOverdue`: Tab has not reached its due date yet
 - `TabExpired`: Tab has expired and can no longer be remunerated
 - `TabPreviouslyRemunerated`: Tab has already been remunerated
