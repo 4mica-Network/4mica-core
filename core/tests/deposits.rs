@@ -4,8 +4,8 @@ use core_service::error::PersistDbError;
 use core_service::persist::{PersistCtx, repo};
 use core_service::util::u256_to_string;
 use entities::{collateral_event, sea_orm_active_enums::*, tabs, user};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use sea_orm::sea_query::OnConflict;
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::str::FromStr;
 use test_log::test;
 
