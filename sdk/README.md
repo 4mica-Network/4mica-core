@@ -384,6 +384,7 @@ use rust_sdk_4mica::error::{
 
 - `Rpc(String)`: RPC connection error
 - `Provider(String)`: Provider initialization error
+- `Initialization(String)`: Client initialization error
 
 #### Payment Signing Errors
 
