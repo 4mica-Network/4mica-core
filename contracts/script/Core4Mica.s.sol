@@ -12,9 +12,7 @@ contract Core4MicaScript is Script {
         bytes4(keccak256("recordPayment(uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
         bytes4(
-            keccak256(
-                "setTimingParameters(uint256,uint256,uint256,uint256)"
-            )
+            keccak256("setTimingParameters(uint256,uint256,uint256,uint256)")
         );
 
     // Roles
@@ -50,7 +48,10 @@ contract Core4MicaScript is Script {
         address deployer = vm.addr(deployerPrivateKey);
         address usdc = vm.envAddress("USDC_TOKEN");
         address usdt = vm.envAddress("USDT_TOKEN");
-        require(usdc != address(0) && usdt != address(0), "Stablecoin addresses required");
+        require(
+            usdc != address(0) && usdt != address(0),
+            "Stablecoin addresses required"
+        );
 
         BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),

@@ -75,8 +75,4 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
         core4Mica.recordPayment(0x1234, address(0x777), 1 ether);
     }
 
-    function test_RecordPayment_DeprecatedSelectorReverts() public {
-        vm.expectRevert(Core4Mica.DeprecatedRecordPayment.selector);
-        core4Mica.recordPayment(0x9876, 5 ether);
-    }
 }

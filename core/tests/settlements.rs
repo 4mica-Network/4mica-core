@@ -63,6 +63,12 @@ fn unique_addr() -> String {
     format!("0x{:040x}", rand::random::<u128>())
 }
 
+fn dummy_stablecoins() -> (Address, Address) {
+    let usdc = Address::with_last_byte(0x55);
+    let usdt = Address::with_last_byte(0x66);
+    (usdc, usdt)
+}
+
 /// Clean DB tables
 async fn clean_db(ctx: &PersistCtx) -> anyhow::Result<()> {
     use entities::*;
@@ -129,10 +135,13 @@ async fn record_payment_event_creates_user_transaction() -> anyhow::Result<()> {
     // deploy contracts
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
 
@@ -164,7 +173,7 @@ async fn record_payment_event_creates_user_transaction() -> anyhow::Result<()> {
 
     let amount = U256::from(10u64);
     contract
-        .recordPayment(tab_id, amount)
+        .recordPayment(tab_id, Address::ZERO, amount)
         .send()
         .await?
         .watch()
@@ -208,10 +217,13 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
 
@@ -242,7 +254,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 
     let amount = U256::from(25u64);
     contract
-        .recordPayment(tab_id, amount)
+        .recordPayment(tab_id, Address::ZERO, amount)
         .send()
         .await?
         .watch()
@@ -303,10 +315,13 @@ async fn record_payment_event_does_not_reduce_collateral() -> anyhow::Result<()>
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
 
@@ -339,7 +354,7 @@ async fn record_payment_event_does_not_reduce_collateral() -> anyhow::Result<()>
 
     let amount = U256::from(100u64);
     contract
-        .recordPayment(tab_id, amount)
+        .recordPayment(tab_id, Address::ZERO, amount)
         .send()
         .await?
         .watch()
