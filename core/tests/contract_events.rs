@@ -45,6 +45,12 @@ fn dummy_verification_key() -> (
     )
 }
 
+fn dummy_stablecoins() -> (Address, Address) {
+    let usdc = Address::with_last_byte(0x11);
+    let usdt = Address::with_last_byte(0x22);
+    (usdc, usdt)
+}
+
 //
 // ────────────────────── ENV INIT ──────────────────────
 //
@@ -104,10 +110,13 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
     let user_addr = provider.default_signer_address().to_string();
@@ -199,10 +208,13 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
     let user_addr = provider.default_signer_address().to_string();
@@ -312,10 +324,13 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
     let user_addr = provider.default_signer_address().to_string();
@@ -427,10 +442,13 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
     let user_addr = provider.default_signer_address().to_string();
@@ -532,10 +550,13 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
         .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
     let me = provider.default_signer_address();
@@ -606,16 +627,23 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     // Deploy two Core4Mica contracts
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc_a, usdt_a) = dummy_stablecoins();
     let contract_a = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc_a,
+        usdt_a,
     )
     .await?;
+    let usdc_b = Address::with_last_byte(0x33);
+    let usdt_b = Address::with_last_byte(0x44);
     let contract_b = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc_b,
+        usdt_b,
     )
     .await?;
     let user_addr = provider.default_signer_address().to_string();
@@ -730,10 +758,13 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
 
     let access_manager =
         AccessManager::deploy(&provider, provider.default_signer_address()).await?;
+    let (usdc, usdt) = dummy_stablecoins();
     let contract = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        usdc,
+        usdt,
     )
     .await?;
     let user_addr = provider.default_signer_address().to_string();

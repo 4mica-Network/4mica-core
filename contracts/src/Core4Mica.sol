@@ -30,7 +30,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error IllegalValue();
     error UnsupportedAsset(address asset);
     error InvalidAsset(address asset);
-    error DeprecatedRecordPayment();
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -155,12 +154,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     modifier supportedAsset(address asset) {
-        if (!_isSupportedAsset(asset)) revert UnsupportedAsset(asset);
+        if (!isSupportedAsset(asset)) revert UnsupportedAsset(asset);
         _;
     }
 
     modifier stablecoin(address asset) {
-        if (!_isStablecoin(asset)) revert UnsupportedAsset(asset);
+        if (!isStablecoin(asset)) revert UnsupportedAsset(asset);
         _;
     }
 
@@ -255,17 +254,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     function requestWithdrawal(uint256 amount) external nonZero(amount) {
-        _requestWithdrawal(msg.sender, ETH_ASSET, amount);
+        requestWithdrawalInternal(msg.sender, ETH_ASSET, amount);
     }
 
     function requestWithdrawal(
         address asset,
         uint256 amount
     ) external supportedAsset(asset) nonZero(amount) {
-        _requestWithdrawal(msg.sender, asset, amount);
+        requestWithdrawalInternal(msg.sender, asset, amount);
     }
 
-    function _requestWithdrawal(
+    function requestWithdrawalInternal(
         address user,
         address asset,
         uint256 amount
@@ -281,14 +280,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     function cancelWithdrawal() external {
-        _cancelWithdrawal(msg.sender, ETH_ASSET);
+        cancelWithdrawalInternal(msg.sender, ETH_ASSET);
     }
 
     function cancelWithdrawal(address asset) external supportedAsset(asset) {
-        _cancelWithdrawal(msg.sender, asset);
+        cancelWithdrawalInternal(msg.sender, asset);
     }
 
-    function _cancelWithdrawal(address user, address asset) internal {
+    function cancelWithdrawalInternal(address user, address asset) internal {
         if (withdrawalRequests[user][asset].timestamp == 0)
             revert NoWithdrawalRequested();
         delete withdrawalRequests[user][asset];
@@ -296,16 +295,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     function finalizeWithdrawal() external nonReentrant {
-        _finalizeWithdrawal(msg.sender, ETH_ASSET);
+        finalizeWithdrawalInternal(msg.sender, ETH_ASSET);
     }
 
     function finalizeWithdrawal(
         address asset
     ) external nonReentrant supportedAsset(asset) {
-        _finalizeWithdrawal(msg.sender, asset);
+        finalizeWithdrawalInternal(msg.sender, asset);
     }
 
-    function _finalizeWithdrawal(address user, address asset) internal {
+    function finalizeWithdrawalInternal(address user, address asset) internal {
         WithdrawalRequest memory request = withdrawalRequests[user][asset];
         if (request.timestamp == 0) revert NoWithdrawalRequested();
         if (block.timestamp < request.timestamp + withdrawalGracePeriod)
@@ -343,7 +342,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         if (g.tab_timestamp + tabExpirationTime < block.timestamp)
             revert TabExpired();
 
-        address asset = _requireSupportedAsset(g.asset);
+        address asset = requireSupportedAsset(g.asset);
         PaymentStatus storage status = payments[g.tab_id][asset];
 
         // 3. Tab must not previously be remunerated
@@ -390,23 +389,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         address asset,
         uint256 amount
     ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant {
-        _recordPayment(tab_id, asset, amount);
+        recordPaymentInternal(tab_id, asset, amount);
     }
 
-    function _recordPayment(
+    function recordPaymentInternal(
         uint256 tab_id,
         address asset,
         uint256 amount
     ) internal {
         payments[tab_id][asset].paid += amount;
         emit PaymentRecorded(tab_id, asset, amount);
-    }
-
-    function recordPayment(
-        uint256 tab_id,
-        uint256 amount
-    ) external restricted nonZero(amount) nonReentrant {
-        revert DeprecatedRecordPayment();
     }
 
     // ========= Views / Helpers =========
@@ -517,18 +509,18 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         revert DirectTransferNotAllowed();
     }
 
-    function _requireSupportedAsset(
+    function requireSupportedAsset(
         address asset
     ) internal view returns (address) {
-        if (_isSupportedAsset(asset)) return asset;
+        if (isSupportedAsset(asset)) return asset;
         revert UnsupportedAsset(asset);
     }
 
-    function _isSupportedAsset(address asset) internal view returns (bool) {
+    function isSupportedAsset(address asset) internal view returns (bool) {
         return asset == ETH_ASSET || asset == USDC || asset == USDT;
     }
 
-    function _isStablecoin(address asset) internal view returns (bool) {
+    function isStablecoin(address asset) internal view returns (bool) {
         return asset == USDC || asset == USDT;
     }
 }

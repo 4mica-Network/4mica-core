@@ -22,7 +22,6 @@ sol! {
         error IllegalValue();
         error UnsupportedAsset(address asset);
         error InvalidAsset(address asset);
-        error DeprecatedRecordPayment();
 
         // ========= Storage =========
         function remunerationGracePeriod() external view returns (uint256);
@@ -116,7 +115,6 @@ sol! {
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
         function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
-        function recordPayment(uint256 tab_id, uint256 amount) external;
 
         // ========= Views =========
         function collateral(address userAddr) external view returns (uint256);
