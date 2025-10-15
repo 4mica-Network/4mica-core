@@ -14,15 +14,15 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-rpc = { path = "crates/rpc" }
-crypto = { path = "crates/crypto" }
-blockchain = { path = "crates/blockchain" }
-migration = { path = "crates/migration" }
-entities = { path = "crates/entities" }
+rpc = { version = "0.1.0", path = "crates/rpc", package = "rpc-4mica" }
+crypto = { version = "0.1.0", path = "crates/crypto", package = "crypto-4mica" }
+blockchain = { version = "0.1.0", path = "crates/blockchain" }
+migration = { version = "0.1.0", path = "crates/migration" }
+entities = { version = "0.1.0", path = "crates/entities" }
 chrono = "0.4.42"
 anyhow = "1.0.95"
 async-trait = "0.1.86"
-thiserror = "2.0.16"
+thiserror = "2.0.17"
 futures-util = "0.3.31"
 log = "0.4.25"
 env_logger = "0.11.6"
@@ -32,19 +32,24 @@ envconfig = "0.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tokio = "1.43.0"
-tokio-cron-scheduler = "0.14.0"
-jsonrpsee = { git = "https://github.com/paritytech/jsonrpsee.git" }
+tokio-cron-scheduler = "0.15.0"
+jsonrpsee = { version = "0.26.0", features = [
+    "macros",
+    "server",
+    "ws-client",
+    "http-client",
+] }
 bls-signatures = "0.15.0"
 hex = "0.4.3"
 uuid = { version = "1.18", features = ["v4"] }
 hyper = "1.6.0"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
-sea-orm = { version = "1.1.16", features = [
+sea-orm = { version = "1.1.17", features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",
 ] }
-alloy = "=1.0.36"
+alloy = "1.0.38"
 alloy-primitives = { version = "1.4.0" }
 alloy-sol-types = "1.4.0"
 alloy-provider = { version = "1.0.38" }

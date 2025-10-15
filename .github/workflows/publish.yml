@@ -1,0 +1,53 @@
+name: Publish crates
+
+on:
+    push:
+        tags:
+            - "v*"
+
+jobs:
+    publish:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            - uses: actions-rs/toolchain@v1
+              with:
+                  toolchain: stable
+            - name: Ensure tag commit is on main
+              id: ensure-main
+              run: |
+                  git fetch origin main --depth=1
+                  if git merge-base --is-ancestor HEAD origin/main; then
+                      echo "on_main=true" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "on_main=false" >> "$GITHUB_OUTPUT"
+                      echo "Tag is not pointing to main; skipping publish."
+                  fi
+            - name: Build workspace
+              if: steps.ensure-main.outputs.on_main == 'true'
+              run: |
+                  cargo build --release --workspace
+            - name: Publish crypto crate
+              if: steps.ensure-main.outputs.on_main == 'true'
+              working-directory: crates/crypto
+              env:
+                  CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+              run: |
+                  cargo publish --verbose --locked
+                  sleep 30
+            - name: Publish RPC crate
+              if: steps.ensure-main.outputs.on_main == 'true'
+              working-directory: crates/rpc
+              env:
+                  CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+              run: |
+                  cargo publish --verbose --locked
+                  sleep 30
+            - name: Publish SDK crate
+              if: steps.ensure-main.outputs.on_main == 'true'
+              working-directory: sdk
+              env:
+                  CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+              run: cargo publish --verbose --locked
