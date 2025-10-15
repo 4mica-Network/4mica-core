@@ -9,3 +9,4 @@ pub mod tabs;
 pub mod user;
 pub mod user_transaction;
 pub mod withdrawal;
+pub mod user_asset_balance;
