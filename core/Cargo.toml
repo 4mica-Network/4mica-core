@@ -21,7 +21,6 @@ envconfig = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 tokio-cron-scheduler = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server"] }
-hex = { workspace = true }
 alloy = { workspace = true, features = ["provider-ws"] }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
@@ -34,7 +33,6 @@ entities = { workspace = true }
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 sha2 = { workspace = true }
-once_cell = "1.21.3"
 
 [dev-dependencies]
 serial_test = { workspace = true }
