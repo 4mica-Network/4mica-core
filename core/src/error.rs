@@ -25,11 +25,11 @@ impl From<SeaTransactionError<BlockchainListenerError>> for BlockchainListenerEr
     }
 }
 
-impl From<SeaTransactionError<BlockchainWriterError>> for BlockchainWriterError {
-    fn from(err: SeaTransactionError<BlockchainWriterError>) -> Self {
+impl From<SeaTransactionError<CoreContractApiError>> for CoreContractApiError {
+    fn from(err: SeaTransactionError<CoreContractApiError>) -> Self {
         match err {
             SeaTransactionError::Connection(db_err) => {
-                BlockchainWriterError::DatabaseFailure(db_err)
+                CoreContractApiError::DatabaseFailure(db_err)
             }
             SeaTransactionError::Transaction(inner) => inner,
         }
@@ -60,7 +60,7 @@ pub enum BlockchainListenerError {
 }
 
 #[derive(Debug, Error)]
-pub enum BlockchainWriterError {
+pub enum CoreContractApiError {
     #[error("Failed to sign or send transaction: {0}")]
     TransportFailure(#[from] alloy::transports::TransportError),
 
@@ -79,7 +79,7 @@ pub enum BlockchainWriterError {
     #[error("Pending transaction failed: {0}")]
     PendingTxFailure(String),
 
-    #[error("Unexpected blockchain writer error: {0}")]
+    #[error("Unexpected core contract api error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
@@ -201,23 +201,23 @@ impl From<PersistDbError> for ServiceError {
 // ---------- Nice `From` conversions so we can use `?` everywhere ----------
 
 // 1) Private key parsing (`.parse::<PrivateKeySigner>()?`)
-impl From<LocalSignerError> for BlockchainWriterError {
+impl From<LocalSignerError> for CoreContractApiError {
     fn from(e: LocalSignerError) -> Self {
-        BlockchainWriterError::InvalidPrivateKey(e.to_string())
+        CoreContractApiError::InvalidPrivateKey(e.to_string())
     }
 }
 
 // 2) Contract method calls: `tx.send().await?`, `pending.get_receipt().await?`
-impl From<alloy::contract::Error> for BlockchainWriterError {
+impl From<alloy::contract::Error> for CoreContractApiError {
     fn from(e: alloy::contract::Error) -> Self {
         // You can introduce a dedicated variant if you prefer.
-        BlockchainWriterError::Other(anyhow!(e))
+        CoreContractApiError::Other(anyhow!(e))
     }
 }
 
-impl From<alloy::providers::PendingTransactionError> for BlockchainWriterError {
+impl From<alloy::providers::PendingTransactionError> for CoreContractApiError {
     fn from(e: alloy::providers::PendingTransactionError) -> Self {
-        BlockchainWriterError::PendingTxFailure(e.to_string())
+        CoreContractApiError::PendingTxFailure(e.to_string())
     }
 }
 
