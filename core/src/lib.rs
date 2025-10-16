@@ -3,5 +3,6 @@ pub mod config;
 pub mod error;
 pub mod ethereum;
 pub mod persist;
+pub mod scheduler;
 pub mod service;
 pub mod util;

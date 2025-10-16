@@ -1,7 +1,6 @@
 use crate::error::{ServiceError, ServiceResult};
 use alloy_primitives::{Address, B256, Signature, keccak256};
 use alloy_sol_types::{SolStruct, SolValue, eip712_domain, sol};
-use hex;
 use rpc::common::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme};
 use rpc::core::CorePublicParameters;
 use std::str::FromStr;
@@ -17,7 +16,7 @@ pub fn verify_promise_signature(
     let recipient_addr = Address::from_str(&claims.recipient_address)
         .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?;
 
-    let sig_bytes = hex::decode(req.signature.trim_start_matches("0x"))
+    let sig_bytes = crypto::hex::decode_hex(&req.signature)
         .map_err(|_| ServiceError::InvalidParams("invalid hex signature".into()))?;
     let sig = Signature::try_from(&sig_bytes[..])
         .map_err(|_| ServiceError::InvalidParams("invalid signature length".into()))?;

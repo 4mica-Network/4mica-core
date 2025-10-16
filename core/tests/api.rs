@@ -9,7 +9,6 @@ use core_service::config::AppConfig;
 use core_service::persist::{PersistCtx, repo};
 use core_service::{auth::verify_promise_signature, util::u256_to_string};
 use entities::guarantee;
-use hex;
 use rand::random;
 use rpc::{
     common::{
@@ -103,7 +102,7 @@ async fn build_signed_req(
             amount,
             timestamp: ts,
         },
-        signature: format!("0x{}", hex::encode(sig.as_bytes())),
+        signature: crypto::hex::encode_hex(&sig.as_bytes()),
         scheme: SigningScheme::Eip712,
     }
 }
@@ -519,7 +518,7 @@ async fn build_eip712_signed_request(
             amount: U256::from(42u64),
             timestamp,
         },
-        signature: format!("0x{}", hex::encode(sig.as_bytes())),
+        signature: crypto::hex::encode_hex(&sig.as_bytes()),
         scheme: SigningScheme::Eip712,
     }
 }
@@ -623,7 +622,7 @@ async fn verify_eip191_signature_ok() {
             amount: U256::from(1u64),
             timestamp,
         },
-        signature: format!("0x{}", hex::encode(sig.as_bytes())),
+        signature: crypto::hex::encode_hex(&sig.as_bytes()),
         scheme: SigningScheme::Eip191,
     };
 
