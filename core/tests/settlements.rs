@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, FixedBytes, U256};
 use alloy::providers::{ProviderBuilder, WalletProvider};
 use anyhow::anyhow;
+use core_service::service::CoreService;
 use core_service::{
     config::{AppConfig, EthereumConfig},
     ethereum::EthereumListener,
@@ -51,7 +52,13 @@ fn dummy_verification_key() -> (
 
 fn start_listener(eth_config: EthereumConfig, persist_ctx: PersistCtx) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let _ = EthereumListener::new(eth_config, persist_ctx).run().await;
+        let provider = CoreService::build_ws_provider(eth_config.clone())
+            .await
+            .expect("failed to connect to Ethereum provider");
+
+        let _ = EthereumListener::new(eth_config, persist_ctx, provider)
+            .run()
+            .await;
     })
 }
 

@@ -7,7 +7,7 @@ use crate::{
 use alloy::{
     eips::BlockNumberOrTag,
     primitives::Address,
-    providers::{ProviderBuilder, WsConnect},
+    providers::DynProvider,
     rpc::types::{Filter, Log},
     sol_types::SolEvent,
 };
@@ -19,24 +19,20 @@ use tokio;
 pub struct EthereumListener {
     config: EthereumConfig,
     persist_ctx: PersistCtx,
+    provider: DynProvider,
 }
 
 impl EthereumListener {
-    pub fn new(config: EthereumConfig, persist_ctx: PersistCtx) -> Self {
+    pub fn new(config: EthereumConfig, persist_ctx: PersistCtx, provider: DynProvider) -> Self {
         Self {
             config,
             persist_ctx,
+            provider,
         }
     }
 
     /// Entry point — runs forever, reconnecting with exponential backoff.
     pub async fn run(&self) -> Result<(), BlockchainListenerError> {
-        let ws = WsConnect::new(&self.config.ws_rpc_url);
-        let provider = ProviderBuilder::new()
-            .connect_ws(ws)
-            .await
-            .map_err(anyhow::Error::from)?;
-
         let address: Address = self
             .config
             .contract_address
@@ -49,7 +45,12 @@ impl EthereumListener {
             .from_block(BlockNumberOrTag::Latest);
 
         let persist_ctx = self.persist_ctx.clone();
-        tokio::spawn(Self::listen_loop(provider, filter, address, persist_ctx));
+        tokio::spawn(Self::listen_loop(
+            self.provider.clone(),
+            filter,
+            address,
+            persist_ctx,
+        ));
 
         Ok(())
     }

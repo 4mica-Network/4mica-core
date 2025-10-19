@@ -104,7 +104,7 @@ async fn build_signed_req(
             timestamp: ts,
             asset_address: "0x0000000000000000000000000000000000000000".into(),
         },
-        signature: format!("0x{}", hex::encode(sig.as_bytes())),
+        signature: crypto::hex::encode_hex(&sig.as_bytes()),
         scheme: SigningScheme::Eip712,
     }
 }
@@ -521,7 +521,7 @@ async fn build_eip712_signed_request(
             timestamp,
             asset_address: "0x0000000000000000000000000000000000000000".into(),
         },
-        signature: format!("0x{}", hex::encode(sig.as_bytes())),
+        signature: crypto::hex::encode_hex(&sig.as_bytes()),
         scheme: SigningScheme::Eip712,
     }
 }
@@ -626,7 +626,7 @@ async fn verify_eip191_signature_ok() {
             timestamp,
             asset_address: "0x0000000000000000000000000000000000000000".into(),
         },
-        signature: format!("0x{}", hex::encode(sig.as_bytes())),
+        signature: crypto::hex::encode_hex(&sig.as_bytes()),
         scheme: SigningScheme::Eip191,
     };
 
