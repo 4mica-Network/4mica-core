@@ -8,6 +8,7 @@ use core_service::config::AppConfig;
 use core_service::config::EthereumConfig;
 use core_service::ethereum::EthereumListener;
 use core_service::persist::PersistCtx;
+use core_service::service::CoreService;
 use entities::sea_orm_active_enums::*;
 use entities::*;
 use sea_orm::sea_query::OnConflict;
@@ -68,8 +69,14 @@ fn init() -> anyhow::Result<AppConfig> {
 /// Start the Ethereum listener in the background for tests, and return a handle you can abort.
 fn start_listener(eth_config: EthereumConfig, persist_ctx: PersistCtx) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let provider = CoreService::build_ws_provider(eth_config.clone())
+            .await
+            .expect("failed to connect to Ethereum provider");
+
         // Ignore the result; the listener is a long-running task with its own retry loop.
-        let _ = EthereumListener::new(eth_config, persist_ctx).run().await;
+        let _ = EthereumListener::new(eth_config, persist_ctx, provider)
+            .run()
+            .await;
     })
 }
 

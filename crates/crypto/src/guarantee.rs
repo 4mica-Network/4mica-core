@@ -4,32 +4,20 @@ use std::{convert::TryInto, str::FromStr, sync::OnceLock};
 const GUARANTEE_DOMAIN_TAG: &str = "4MICA_CORE_GUARANTEE_V1";
 static GUARANTEE_DOMAIN_SEPARATOR: OnceLock<[u8; 32]> = OnceLock::new();
 
-fn ensure_domain_separator() -> anyhow::Result<[u8; 32]> {
+pub fn guarantee_domain_separator() -> anyhow::Result<[u8; 32]> {
     GUARANTEE_DOMAIN_SEPARATOR
         .get()
-        .copied()
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("guarantee domain separator not initialized"))
 }
 
-pub fn guarantee_domain_separator() -> anyhow::Result<[u8; 32]> {
-    ensure_domain_separator()
-}
-
 pub fn set_guarantee_domain_separator(domain: [u8; 32]) -> anyhow::Result<()> {
-    match GUARANTEE_DOMAIN_SEPARATOR.set(domain) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            if GUARANTEE_DOMAIN_SEPARATOR
-                .get()
-                .map(|existing| existing == &domain)
-                .unwrap_or(false)
-            {
-                Ok(())
-            } else {
-                anyhow::bail!("guarantee domain separator already set to a different value");
-            }
-        }
+    if let Err(existing) = GUARANTEE_DOMAIN_SEPARATOR.set(domain)
+        && existing != domain
+    {
+        anyhow::bail!("guarantee domain separator already set to a different value");
     }
+    Ok(())
 }
 
 pub fn compute_guarantee_domain_separator(
@@ -90,7 +78,7 @@ pub fn encode_guarantee_bytes(
     let addr_recipient = Address::from_str(recipient)?;
     let addr_asset = Address::from_str(asset)?;
 
-    let domain = ensure_domain_separator()?;
+    let domain = guarantee_domain_separator()?;
     out.extend_from_slice(&domain);
 
     // uint256 fields (big-endian 32 bytes)

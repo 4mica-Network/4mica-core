@@ -8,6 +8,10 @@ pub fn decode_hex(s: &str) -> Result<Vec<u8>, FromHexError> {
     Ok(decoded)
 }
 
+pub fn encode_hex(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
+}
+
 #[derive(Debug, Clone)]
 pub struct HexBytes(Vec<u8>);
 
