@@ -15,10 +15,7 @@ use rpc::{
     core::{CoreApiServer, CorePublicParameters},
 };
 use std::sync::Arc;
-use tokio::{
-    spawn,
-    time::{Duration, sleep},
-};
+use tokio::time::{Duration, sleep};
 
 mod guarantee;
 pub mod payment;
@@ -67,7 +64,7 @@ impl CoreService {
             .map_err(|e| anyhow!("failed to set guarantee domain: {e}"))?;
 
         let read_provider_clone = read_provider.clone();
-        spawn(async move {
+        tokio::spawn(async move {
             let mut delay = Duration::from_secs(1);
             loop {
                 match EthereumListener::new(

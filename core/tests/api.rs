@@ -23,7 +23,9 @@ use std::str::FromStr;
 use test_log::test;
 
 mod common;
-use common::fixtures::{clear_tables, ensure_user_with_collateral, init_test_env, random_address};
+use common::fixtures::{
+    clear_all_tables, ensure_user_with_collateral, init_test_env, random_address,
+};
 
 async fn setup_clean_db() -> (AppConfig, RpcProxy, PersistCtx) {
     let (config, ctx) = init_test_env().await.expect("init test env");
@@ -33,19 +35,7 @@ async fn setup_clean_db() -> (AppConfig, RpcProxy, PersistCtx) {
     );
     let core_client = RpcProxy::new(&core_addr).expect("connect RPC");
 
-    clear_tables(
-        &ctx,
-        &[
-            "UserTransaction",
-            "Withdrawal",
-            "Guarantee",
-            "Tabs",
-            "CollateralEvent",
-            "User",
-        ],
-    )
-    .await
-    .expect("clear tables");
+    clear_all_tables(&ctx).await.expect("clear all tables");
 
     (config, core_client, ctx)
 }
@@ -187,6 +177,7 @@ async fn issue_guarantee_rejects_wrong_req_id_sequence() {
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            erc20_token: None,
             ttl: None,
         })
         .await
@@ -238,6 +229,7 @@ async fn issue_guarantee_rejects_modified_start_ts() {
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            erc20_token: None,
             ttl: None,
         })
         .await
@@ -290,6 +282,7 @@ async fn issue_two_sequential_guarantees_ok() {
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            erc20_token: None,
             ttl: Some(3600),
         })
         .await
@@ -378,6 +371,7 @@ async fn issue_guarantee_should_open_tab() {
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            erc20_token: None,
             ttl: Some(3600),
         })
         .await
@@ -432,6 +426,7 @@ async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() {
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            erc20_token: None,
             ttl: None,
         })
         .await
@@ -468,6 +463,7 @@ async fn create_tab_rejects_unregistered_user() {
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            erc20_token: None,
             ttl: None,
         })
         .await;

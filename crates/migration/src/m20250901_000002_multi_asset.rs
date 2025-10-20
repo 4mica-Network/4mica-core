@@ -42,6 +42,14 @@ impl MigrationTrait for Migration {
                             .date_time()
                             .not_null(),
                     )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_user_asset_balance_user_address")
+                            .from(UserAssetBalance::Table, UserAssetBalance::UserAddress)
+                            .to(User::Table, User::Address)
+                            .on_delete(ForeignKeyAction::Restrict)
+                            .on_update(ForeignKeyAction::Cascade),
+                    )
                     .primary_key(
                         Index::create()
                             .col(UserAssetBalance::UserAddress)
@@ -82,6 +90,17 @@ impl MigrationTrait for Migration {
                     .table(User::Table)
                     .drop_column(User::Collateral)
                     .to_owned(),
+            )
+            .await?;
+
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                ALTER TABLE "UserAssetBalance"
+                ADD CONSTRAINT user_asset_balance_locked_not_greater_than_total
+                CHECK ((locked::numeric) <= (total::numeric));
+                "#,
             )
             .await?;
 
@@ -324,6 +343,7 @@ pub enum Guarantee {
 pub enum User {
     #[sea_orm(iden = "User")]
     Table,
+    Address,
     Collateral,
     LockedCollateral,
 }

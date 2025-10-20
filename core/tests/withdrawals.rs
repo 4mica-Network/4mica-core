@@ -1,5 +1,6 @@
 use alloy::primitives::U256;
 use chrono::Utc;
+use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::repo;
 use entities::sea_orm_active_enums::WithdrawalStatus;
 use entities::withdrawal::{self, ActiveModel, Entity};
@@ -8,9 +9,9 @@ use test_log::test;
 use uuid::Uuid;
 
 mod common;
-use common::fixtures::{
-    ensure_user, ensure_user_with_collateral, fetch_user, init_test_env, random_address,
-};
+use common::fixtures::{ensure_user, ensure_user_with_collateral, init_test_env, random_address};
+
+use crate::common::fixtures::read_collateral;
 
 #[test(tokio::test)]
 async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
@@ -18,12 +19,21 @@ async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
     let user_addr = random_address();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let res = repo::request_withdrawal(&ctx, user_addr.clone(), 1, U256::from(10u64)).await;
+    let res = repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        1,
+        U256::from(10u64),
+    )
+    .await;
 
     assert!(res.is_err());
 
-    let u = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u.collateral, U256::from(5u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(5u64)
+    );
 
     Ok(())
 }
@@ -36,7 +46,14 @@ async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     let user_addr = random_address();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    repo::request_withdrawal(&ctx, user_addr.clone(), 1, U256::from(5u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        1,
+        U256::from(5u64),
+    )
+    .await?;
 
     // First finalize succeeds
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
@@ -66,7 +83,14 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     // Create and verify it's Pending
-    repo::request_withdrawal(&ctx, user_addr.clone(), 12345, U256::from(2u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        12345,
+        U256::from(2u64),
+    )
+    .await?;
     let w1 = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
         .one(ctx.db.as_ref())
@@ -93,8 +117,10 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
         .unwrap();
     assert_eq!(w3.status, WithdrawalStatus::Cancelled);
 
-    let u = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u.collateral, U256::from(5u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(5u64)
+    );
 
     Ok(())
 }
@@ -106,11 +132,20 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
-    repo::request_withdrawal(&ctx, user_addr.clone(), 123, U256::from(5u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        123,
+        U256::from(5u64),
+    )
+    .await?;
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(3u64)).await?;
 
-    let u = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u.collateral, U256::from(2u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(2u64)
+    );
     Ok(())
 }
 
@@ -129,8 +164,10 @@ async fn finalize_without_any_request_errors_and_preserves_collateral() -> anyho
     );
 
     // Collateral unchanged
-    let u = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u.collateral, U256::from(10u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(10u64)
+    );
     Ok(())
 }
 
@@ -142,7 +179,14 @@ async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> 
     let user_addr = random_address();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(6u64)).await?;
-    repo::request_withdrawal(&ctx, user_addr.clone(), 111, U256::from(5u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        111,
+        U256::from(5u64),
+    )
+    .await?;
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     // Calling cancel afterward should be a no-op on Executed withdrawals
@@ -165,7 +209,14 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
     let user_addr = random_address();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(8u64)).await?;
-    repo::request_withdrawal(&ctx, user_addr.clone(), 222, U256::from(3u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        222,
+        U256::from(3u64),
+    )
+    .await?;
 
     repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
     repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
@@ -185,13 +236,22 @@ async fn finalize_withdrawal_underflow_errors() -> anyhow::Result<()> {
     let user_addr = random_address();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(3u64)).await?;
-    repo::request_withdrawal(&ctx, user_addr.clone(), 333, U256::from(2u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        333,
+        U256::from(2u64),
+    )
+    .await?;
 
     let res = repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await;
     assert!(res.is_err());
 
-    let u = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u.collateral, U256::from(3u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(3u64)
+    );
     Ok(())
 }
 
@@ -207,14 +267,23 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
 
     // user requests 8
-    repo::request_withdrawal(&ctx, user_addr.clone(), 42, U256::from(8u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        42,
+        U256::from(8u64),
+    )
+    .await?;
 
     // but chain only executes 5
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(5u64)).await?;
 
     // user collateral must now be 10 – 5 = 5
-    let u = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u.collateral, U256::from(5u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(5u64)
+    );
 
     // withdrawal row must be Executed and executed_amount = 5, requested amount still 8
     let w = withdrawal::Entity::find()
@@ -248,11 +317,20 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
 
     // request 4, chain executes full 4
-    repo::request_withdrawal(&ctx, user_addr.clone(), 99, U256::from(4u64)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        99,
+        U256::from(4u64),
+    )
+    .await?;
     repo::finalize_withdrawal(&ctx, user_addr.clone(), U256::from(4u64)).await?;
 
-    let u = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u.collateral, U256::from(6u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(6u64)
+    );
 
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr))
@@ -286,6 +364,7 @@ async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> 
     let w1 = ActiveModel {
         id: Set(Uuid::new_v4().to_string()),
         user_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         requested_amount: Set(U256::from(5u64).to_string()),
         executed_amount: Set("0".into()),
         request_ts: Set(Utc::now().naive_utc()),
@@ -300,6 +379,7 @@ async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> 
     let w2 = ActiveModel {
         id: Set(Uuid::new_v4().to_string()),
         user_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         requested_amount: Set(U256::from(5u64).to_string()),
         executed_amount: Set("0".into()),
         request_ts: Set(Utc::now().naive_utc()),

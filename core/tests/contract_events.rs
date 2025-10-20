@@ -4,8 +4,8 @@ use alloy::providers::ext::AnvilApi;
 use alloy::providers::{ProviderBuilder, WalletProvider};
 use anyhow::anyhow;
 use chrono::Utc;
-use core_service::config::AppConfig;
 use core_service::config::EthereumConfig;
+use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::ethereum::EthereumListener;
 use core_service::persist::PersistCtx;
 use core_service::service::CoreService;
@@ -20,12 +20,9 @@ use tokio::task::JoinHandle;
 
 mod common;
 use crate::common::contract::{AccessManager, Core4Mica};
+use crate::common::fixtures::{clear_all_tables, read_collateral};
 
 static NUMBER_OF_TRIALS: u32 = 120;
-
-fn parse_collateral(val: &str) -> U256 {
-    U256::from_str(val).expect("invalid collateral stored in DB")
-}
 
 fn fn_selector(sig: &str) -> FixedBytes<4> {
     let h = keccak256(sig.as_bytes());
@@ -67,17 +64,15 @@ fn init() -> anyhow::Result<AppConfig> {
 }
 
 /// Start the Ethereum listener in the background for tests, and return a handle you can abort.
-fn start_listener(eth_config: EthereumConfig, persist_ctx: PersistCtx) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let provider = CoreService::build_ws_provider(eth_config.clone())
-            .await
-            .expect("failed to connect to Ethereum provider");
+async fn start_listener(eth_config: EthereumConfig, persist_ctx: PersistCtx) -> JoinHandle<()> {
+    let provider = CoreService::build_ws_provider(eth_config.clone())
+        .await
+        .expect("failed to connect to Ethereum provider");
 
-        // Ignore the result; the listener is a long-running task with its own retry loop.
-        let _ = EthereumListener::new(eth_config, persist_ctx, provider)
-            .run()
-            .await;
-    })
+    EthereumListener::new(eth_config, persist_ctx, provider)
+        .run()
+        .await
+        .expect("failed to start listener")
 }
 
 /// Ensure a user row exists (idempotent).
@@ -88,8 +83,6 @@ async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()>
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        collateral: Set("0".to_string()),
-        locked_collateral: Set("0".to_string()),
     };
     user::Entity::insert(am)
         .on_conflict(
@@ -139,27 +132,10 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         ethereum_private_key: operator_key,
     };
     let persist_ctx = PersistCtx::new().await?;
-    user_transaction::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    guarantee::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    collateral_event::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    withdrawal::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    tabs::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    user::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
+    clear_all_tables(&persist_ctx).await?;
 
     // start listener in the background
-    let listener = start_listener(eth_config, persist_ctx.clone());
+    let listener = start_listener(eth_config, persist_ctx.clone()).await;
 
     // strictly ensure user exists before a deposit event is processed
     ensure_user(&persist_ctx, &user_addr).await?;
@@ -175,15 +151,9 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 
     let mut tries = 0;
     loop {
-        if let Some(u) = user::Entity::find()
-            .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(persist_ctx.db.as_ref())
-            .await?
-        {
-            let current = parse_collateral(&u.collateral);
-            if current == deposit_amount {
-                break;
-            }
+        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == deposit_amount {
+            break;
         }
 
         if tries > NUMBER_OF_TRIALS {
@@ -240,27 +210,10 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     let persist_ctx = PersistCtx::new().await?;
 
     // clean DB
-    user_transaction::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    guarantee::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    collateral_event::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    withdrawal::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    tabs::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    user::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
+    clear_all_tables(&persist_ctx).await?;
 
     // start listener
-    let listener = start_listener(eth_config, persist_ctx.clone());
+    let listener = start_listener(eth_config, persist_ctx.clone()).await;
     // small delay so the WS subscription is up before we emit events
     sleep(Duration::from_millis(150)).await;
 
@@ -289,15 +242,9 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     // poll until the accumulated balance is visible
     let mut tries = 0;
     loop {
-        if let Some(u) = user::Entity::find()
-            .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(persist_ctx.db.as_ref())
-            .await?
-        {
-            let current = parse_collateral(&u.collateral);
-            if current == expected {
-                break;
-            }
+        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == expected {
+            break;
         }
 
         if tries >= NUMBER_OF_TRIALS {
@@ -353,27 +300,10 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
         ethereum_private_key: operator_key,
     };
     let persist_ctx = PersistCtx::new().await?;
-    user_transaction::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    guarantee::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    collateral_event::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    withdrawal::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    tabs::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    user::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
+    clear_all_tables(&persist_ctx).await?;
 
     // start listener
-    let listener = start_listener(eth_config, persist_ctx.clone());
+    let listener = start_listener(eth_config, persist_ctx.clone()).await;
 
     // ensure user exists before deposit/withdrawal events
     ensure_user(&persist_ctx, &user_addr).await?;
@@ -473,27 +403,10 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let persist_ctx = PersistCtx::new().await?;
 
     // clean DB
-    user_transaction::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    guarantee::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    collateral_event::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    withdrawal::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    tabs::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    user::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
+    clear_all_tables(&persist_ctx).await?;
 
     // start listener
-    let listener = start_listener(eth_config, persist_ctx.clone());
+    let listener = start_listener(eth_config, persist_ctx.clone()).await;
 
     // ensure user exists before deposit/withdrawal events
     ensure_user(&persist_ctx, &user_addr).await?;
@@ -524,12 +437,8 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     // wait until the user collateral shows the reduced balance
     let mut tries = 0;
     loop {
-        if user::Entity::find()
-            .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(persist_ctx.db.as_ref())
-            .await?
-            .is_some_and(|u| parse_collateral(&u.collateral) == deposit_amount - withdraw_amount)
-        {
+        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == deposit_amount - withdraw_amount {
             break;
         }
 
@@ -670,28 +579,12 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     let persist_ctx = PersistCtx::new().await?;
 
     // Clean DB and ensure user exists with 0 balance
-    user_transaction::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    guarantee::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    collateral_event::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    withdrawal::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    tabs::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    user::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
+    clear_all_tables(&persist_ctx).await?;
+
     ensure_user(&persist_ctx, &user_addr).await?;
 
     // Start listener
-    let listener = start_listener(eth_config, persist_ctx.clone());
+    let listener = start_listener(eth_config, persist_ctx.clone()).await;
     sleep(Duration::from_millis(200)).await;
 
     // Emit a deposit on the *other* contract (B); the listener should ignore it.
@@ -706,17 +599,12 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
 
     // Give the listener a moment; user balance should still be zero.
     sleep(Duration::from_millis(500)).await;
-    if let Some(u) = user::Entity::find()
-        .filter(user::Column::Address.eq(user_addr.clone()))
-        .one(persist_ctx.db.as_ref())
-        .await?
-    {
-        assert_eq!(
-            parse_collateral(&u.collateral),
-            U256::ZERO,
-            "deposit from other contract must be ignored"
-        );
-    }
+    let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(
+        current,
+        U256::ZERO,
+        "deposit from other contract must be ignored"
+    );
 
     // Now emit a deposit from the watched contract (A); this one must be applied.
     let tracked_amount = U256::from(1234u64);
@@ -731,12 +619,8 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     // Poll until applied
     let mut tries = 0;
     loop {
-        if user::Entity::find()
-            .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(persist_ctx.db.as_ref())
-            .await?
-            .is_some_and(|u| parse_collateral(&u.collateral) == tracked_amount)
-        {
+        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == tracked_amount {
             break;
         }
         if tries > NUMBER_OF_TRIALS {
@@ -789,33 +673,17 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
     let persist_ctx = PersistCtx::new().await?;
 
     // Clean DB and ensure user
-    user_transaction::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    guarantee::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    collateral_event::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    withdrawal::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    tabs::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
-    user::Entity::delete_many()
-        .exec(persist_ctx.db.as_ref())
-        .await?;
+    clear_all_tables(&persist_ctx).await?;
+
     ensure_user(&persist_ctx, &user_addr).await?;
 
     // Start and immediately stop the listener
-    let listener1 = start_listener(eth_config.clone(), persist_ctx.clone());
+    let listener1 = start_listener(eth_config.clone(), persist_ctx.clone()).await;
     sleep(Duration::from_millis(100)).await;
     listener1.abort();
 
     // Start a fresh listener
-    let listener2 = start_listener(eth_config, persist_ctx.clone());
+    let listener2 = start_listener(eth_config, persist_ctx.clone()).await;
     sleep(Duration::from_millis(150)).await;
 
     // Emit a deposit and ensure it's processed by the restarted listener
@@ -830,12 +698,8 @@ async fn listener_restart_still_processes_events() -> anyhow::Result<()> {
 
     let mut tries = 0;
     loop {
-        if user::Entity::find()
-            .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(persist_ctx.db.as_ref())
-            .await?
-            .is_some_and(|u| parse_collateral(&u.collateral) == amount)
-        {
+        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == amount {
             break;
         }
         if tries > NUMBER_OF_TRIALS {
