@@ -43,7 +43,12 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
         .recipient
-        .create_tab(user_address.clone(), recipient_address.clone(), Some(3600))
+        .create_tab(
+            user_address.clone(),
+            recipient_address.clone(),
+            None,
+            Some(3600),
+        )
         .await?;
 
     // Step 3: User signs a payment (1 ETH)

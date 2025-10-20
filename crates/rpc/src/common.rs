@@ -1,6 +1,10 @@
 use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
 
+fn default_asset_address() -> String {
+    "0x0000000000000000000000000000000000000000".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentGuaranteeClaims {
     pub user_address: String,
@@ -13,8 +17,27 @@ pub struct PaymentGuaranteeClaims {
     pub asset_address: String,
 }
 
-fn default_asset_address() -> String {
-    "0x0000000000000000000000000000000000000000".to_string()
+impl PaymentGuaranteeClaims {
+    pub fn new(
+        user_address: String,
+        recipient_address: String,
+        tab_id: U256,
+        req_id: U256,
+        amount: U256,
+        timestamp: u64,
+        erc20_token: Option<String>,
+    ) -> Self {
+        let asset_address = erc20_token.unwrap_or(default_asset_address());
+        Self {
+            user_address,
+            recipient_address,
+            tab_id,
+            req_id,
+            amount,
+            timestamp,
+            asset_address,
+        }
+    }
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
@@ -87,6 +110,8 @@ pub struct UserTransactionInfo {
 pub struct CreatePaymentTabRequest {
     pub user_address: String,
     pub recipient_address: String,
+    /// Address of ERC20-Token
+    pub erc20_token: Option<String>,
     /// Tab TTL in seconds
     pub ttl: Option<u64>,
 }
@@ -96,6 +121,7 @@ pub struct CreatePaymentTabResult {
     pub id: U256,
     pub user_address: String,
     pub recipient_address: String,
+    pub erc20_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

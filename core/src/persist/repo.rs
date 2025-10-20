@@ -20,6 +20,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
 };
 use std::str::FromStr;
+
 //
 // ────────────────────── USER FUNCTIONS ──────────────────────
 //
@@ -27,17 +28,6 @@ use std::str::FromStr;
 pub async fn get_user(ctx: &PersistCtx, user_address: &str) -> Result<user::Model, PersistDbError> {
     user::Entity::find_by_id(user_address)
         .one(ctx.db.as_ref())
-        .await?
-        .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
-}
-
-pub async fn get_user_on<C: ConnectionTrait>(
-    conn: &C,
-    user_address: &str,
-) -> Result<user::Model, PersistDbError> {
-    user::Entity::find()
-        .filter(user::Column::Address.eq(user_address))
-        .one(conn)
         .await?
         .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
 }
@@ -52,8 +42,6 @@ pub async fn ensure_user_exists_on<C: ConnectionTrait>(
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        collateral: Set("0".to_string()),
-        locked_collateral: Set("0".to_string()),
     };
 
     // Idempotent insert; avoids "RecordNotInserted" on DO NOTHING
@@ -97,7 +85,7 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
     };
 
     // Idempotent insert; avoids "RecordNotInserted" on DO NOTHING
-    user_asset_balance::Entity::insert(new_balance.clone())
+    match user_asset_balance::Entity::insert(new_balance.clone())
         .on_conflict(
             OnConflict::columns([
                 user_asset_balance::Column::UserAddress,
@@ -107,7 +95,17 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
             .to_owned(),
         )
         .exec_without_returning(conn)
-        .await?;
+        .await
+    {
+        Ok(_) => {}
+        Err(sea_orm::DbErr::Exec(err))
+            if err.to_string().contains("FOREIGN KEY constraint failed")
+                || err.to_string().contains("foreign key constraint") =>
+        {
+            return Err(PersistDbError::UserNotFound(user_address.to_owned()));
+        }
+        Err(e) => return Err(e.into()),
+    }
 
     // Fetch and return the record (in case it was inserted by another concurrent transaction)
     user_asset_balance::Entity::find()
@@ -229,7 +227,6 @@ pub async fn unlock_user_collateral(
                 }
 
                 // Decrease user's locked_collateral (does not touch total collateral)
-                let user_row = get_user_on(txn, &tab.user_address).await?;
                 let asset_balance =
                     get_user_balance_on(txn, &tab.user_address, &asset_address).await?;
                 let total = U256::from_str(&asset_balance.total)
@@ -250,7 +247,7 @@ pub async fn unlock_user_collateral(
                 // optimistic lock bump + write new locked value
                 update_user_balance_and_version_on(
                     txn,
-                    &user_row.address,
+                    &tab.user_address,
                     &asset_address,
                     asset_balance.version,
                     total,
@@ -261,7 +258,7 @@ pub async fn unlock_user_collateral(
                 // Audit trail: Unlock event (see NOTE below if enum variant differs)
                 let ev = collateral_event::ActiveModel {
                     id: Set(uuid::Uuid::new_v4().to_string()),
-                    user_address: Set(user_row.address.clone()),
+                    user_address: Set(tab.user_address.clone()),
                     asset_address: Set(asset_address),
                     amount: Set(amount.to_string()),
                     event_type: Set(CollateralEventType::Unlock),
@@ -292,7 +289,6 @@ pub async fn request_withdrawal(
     amount: U256,
 ) -> Result<(), PersistDbError> {
     // Ensure user exists and has enough collateral
-    get_user_on(ctx.db.as_ref(), &user_address).await?;
     let asset_balance = get_user_balance_on(ctx.db.as_ref(), &user_address, &asset_address).await?;
 
     let user_collateral = U256::from_str(&asset_balance.total)
@@ -356,11 +352,6 @@ pub async fn finalize_withdrawal(
             Box::pin(async move {
                 let now = Utc::now().naive_utc();
 
-                // strict user fetch
-                let user = get_user_on(txn, &user_address).await?;
-                let current_collateral = U256::from_str(&user.collateral)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-
                 // most recent Pending withdrawal; if none => error
                 let withdrawal = withdrawal::Entity::find()
                     .filter(withdrawal::Column::UserAddress.eq(&user_address))
@@ -380,14 +371,29 @@ pub async fn finalize_withdrawal(
                         "executed_amount exceeds requested_amount".into(),
                     ));
                 }
+
+                // get user's balance for this asset
+                let asset_balance =
+                    get_user_balance_on(txn, &user_address, &withdrawal.asset_address).await?;
+                let current_total = U256::from_str(&asset_balance.total)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let locked = U256::from_str(&asset_balance.locked)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
                 // update user balance
-                let new_collateral = current_collateral
+                let new_total = current_total
                     .checked_sub(executed_amount)
                     .ok_or(PersistDbError::InsufficientCollateral)?;
-                let mut am_user = user.into_active_model();
-                am_user.collateral = Set(new_collateral.to_string());
-                am_user.updated_at = Set(now);
-                am_user.update(txn).await?;
+
+                update_user_balance_and_version_on(
+                    txn,
+                    &user_address,
+                    &withdrawal.asset_address,
+                    asset_balance.version,
+                    new_total,
+                    locked,
+                )
+                .await?;
 
                 // mark withdrawal executed
                 let mut am_w = withdrawal.into_active_model();
@@ -464,15 +470,11 @@ pub async fn fail_transaction(
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                let tx_row = match user_transaction::Entity::find_by_id(transaction_id.clone())
+                let Some(tx_row) = user_transaction::Entity::find_by_id(transaction_id.clone())
                     .one(txn)
                     .await?
-                {
-                    Some(row) => row,
-                    None => {
-                        // ← Proper domain error instead of silent success
-                        return Err(PersistDbError::TransactionNotFound(transaction_id));
-                    }
+                else {
+                    return Err(PersistDbError::TransactionNotFound(transaction_id));
                 };
 
                 if tx_row.user_address != user_address {
@@ -493,10 +495,10 @@ pub async fn fail_transaction(
                 active_model.updated_at = Set(now);
                 active_model.update(txn).await?;
 
-                // subtract collateral only once (strict fetch)
-                let user_row = get_user_on(txn, &user_address).await?;
+                let asset_balance =
+                    get_user_balance_on(txn, &user_address, &tx_row.asset_address).await?;
 
-                let current_collateral = U256::from_str(&user_row.collateral)
+                let current_collateral = U256::from_str(&asset_balance.total)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
                 let delta = U256::from_str(&tx_row.amount)
                     .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
@@ -505,10 +507,18 @@ pub async fn fail_transaction(
                     .checked_sub(delta)
                     .ok_or(PersistDbError::InsufficientCollateral)?;
 
-                let mut user_active_model = user_row.into_active_model();
-                user_active_model.collateral = Set(new_collateral.to_string());
-                user_active_model.updated_at = Set(now);
-                user_active_model.update(txn).await?;
+                let locked = U256::from_str(&asset_balance.locked)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+                update_user_balance_and_version_on(
+                    txn,
+                    &user_address,
+                    &tx_row.asset_address,
+                    asset_balance.version,
+                    new_collateral,
+                    locked,
+                )
+                .await?;
 
                 Ok::<_, PersistDbError>(())
             })
@@ -574,9 +584,6 @@ pub async fn lock_and_store_guarantee(
             let promise = promise.clone();
             let cert_str = cert_str.clone();
             Box::pin(async move {
-                // --- 0. ensure user exists
-                get_user_on(txn, &promise.user_address).await?;
-
                 // --- 1. fetch + collateral math
                 let asset_balance =
                     get_user_balance_on(txn, &promise.user_address, &promise.asset_address).await?;
@@ -721,8 +728,6 @@ pub async fn remunerate_recipient(
                     return Ok::<_, PersistDbError>(());
                 }
 
-                get_user_on(txn, &tab.user_address).await?;
-
                 let asset_balance =
                     get_user_balance_on(txn, &tab.user_address, &asset_address).await?;
                 let collateral = U256::from_str(&asset_balance.total)
@@ -830,6 +835,7 @@ pub async fn create_pending_tab(
     tab_id: U256,
     user_address: &str,
     server_address: &str,
+    asset_address: &str,
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
 ) -> Result<(), PersistDbError> {
@@ -841,6 +847,7 @@ pub async fn create_pending_tab(
         id: Set(u256_to_string(tab_id)),
         user_address: Set(user_address.to_owned()),
         server_address: Set(server_address.to_owned()),
+        asset_address: Set(asset_address.to_owned()),
         start_ts: Set(start_ts),
         ttl: Set(ttl),
         status: Set(TabStatus::Pending),

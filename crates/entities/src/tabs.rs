@@ -13,6 +13,8 @@ pub struct Model {
     pub user_address: String,
     #[sea_orm(column_type = "Text")]
     pub server_address: String,
+    #[sea_orm(column_type = "Text")]
+    pub asset_address: String,
     pub start_ts: DateTime,
     pub status: TabStatus,
     pub settlement_status: SettlementStatus,

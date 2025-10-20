@@ -131,6 +131,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
+            None,
             Some(3600 * 24 * 21),
         )
         .await?;
@@ -246,6 +247,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
+            None,
             Some(3600 * 24 * 21),
         )
         .await?;
