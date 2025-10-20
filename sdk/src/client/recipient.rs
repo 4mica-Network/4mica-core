@@ -29,10 +29,18 @@ impl RecipientClient {
     }
 
     /// Creates a new payment tab and returns the tab id
+    ///
+    /// ### Arguments
+    ///
+    /// * `user_address` - The address of the user who is creating the tab
+    /// * `recipient_address` - The address of the recipient who will receive the payment
+    /// * `erc20_token` - The address of the ERC20 token to use for the payment, leave as `None` for ETH
+    /// * `ttl` - The time to live for the tab in seconds
     pub async fn create_tab(
         &self,
         user_address: String,
         recipient_address: String,
+        erc20_token: Option<String>,
         ttl: Option<u64>,
     ) -> Result<U256, CreateTabError> {
         if !self.check_signer_address(&recipient_address) {
@@ -47,6 +55,7 @@ impl RecipientClient {
             .create_payment_tab(CreatePaymentTabRequest {
                 user_address,
                 recipient_address,
+                erc20_token,
                 ttl,
             })
             .await?;

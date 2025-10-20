@@ -1,45 +1,15 @@
+use sea_orm::entity::prelude::DeriveIden;
 use sea_orm_migration::prelude::*;
-use std::fmt;
+
+const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
-pub enum UserAssetBalance {
-    Table,
-    UserAddress,
-    AssetAddress,
-    Total,
-    Locked,
-    Version,
-    CreatedAt,
-    UpdatedAt,
-}
-
-pub enum CollateralEvent {
-    Table,
-    AssetAddress,
-}
-
-pub enum UserTransaction {
-    Table,
-    AssetAddress,
-}
-
-pub enum Withdrawal {
-    Table,
-    AssetAddress,
-}
-
-pub enum Guarantee {
-    Table,
-    AssetAddress,
-}
-
-const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
-
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Create UserAssetBalance table
         manager
             .create_table(
                 Table::create()
@@ -77,6 +47,49 @@ impl MigrationTrait for Migration {
                             .col(UserAssetBalance::UserAddress)
                             .col(UserAssetBalance::AssetAddress),
                     )
+                    .to_owned(),
+            )
+            .await?;
+
+        // Migrate User.collateral and User.locked_collateral to UserAssetBalance with ZERO_ADDRESS
+        manager
+            .get_connection()
+            .execute_unprepared(&format!(
+                r#"
+                INSERT INTO "UserAssetBalance" (user_address, asset_address, total, locked, version, created_at, updated_at)
+                SELECT address, '{}', collateral, locked_collateral, version, created_at, updated_at
+                FROM "User";
+                "#,
+                ZERO_ADDRESS
+            ))
+            .await?;
+
+        // Drop the constraint on User table
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                ALTER TABLE "User"
+                DROP CONSTRAINT IF EXISTS user_locked_not_greater_than_total;
+                "#,
+            )
+            .await?;
+
+        // Drop collateral and locked_collateral columns from User table
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(User::Table)
+                    .drop_column(User::Collateral)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(User::Table)
+                    .drop_column(User::LockedCollateral)
                     .to_owned(),
             )
             .await?;
@@ -137,10 +150,82 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Tabs::Table)
+                    .add_column_if_not_exists(
+                        ColumnDef::new(Tabs::AssetAddress)
+                            .string()
+                            .not_null()
+                            .default(ZERO_ADDRESS),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
         Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Re-add collateral and locked_collateral columns to User table
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(User::Table)
+                    .add_column(
+                        ColumnDef::new(User::Collateral)
+                            .string()
+                            .not_null()
+                            .default("0"),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(User::Table)
+                    .add_column(
+                        ColumnDef::new(User::LockedCollateral)
+                            .string()
+                            .not_null()
+                            .default("0"),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        // Migrate data back from UserAssetBalance to User
+        manager
+            .get_connection()
+            .execute_unprepared(&format!(
+                r#"
+                UPDATE "User"
+                SET collateral = uab.total,
+                    locked_collateral = uab.locked
+                FROM "UserAssetBalance" uab
+                WHERE "User".address = uab.user_address
+                  AND uab.asset_address = '{}';
+                "#,
+                ZERO_ADDRESS
+            ))
+            .await?;
+
+        // Re-add the constraint on User table
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                ALTER TABLE "User"
+                ADD CONSTRAINT user_locked_not_greater_than_total
+                CHECK ((locked_collateral::numeric) <= (collateral::numeric));
+                "#,
+            )
+            .await?;
+
+        // Drop AssetAddress columns from other tables
         manager
             .alter_table(
                 Table::alter()
@@ -178,6 +263,15 @@ impl MigrationTrait for Migration {
             .await?;
 
         manager
+            .alter_table(
+                Table::alter()
+                    .table(Tabs::Table)
+                    .drop_column(Tabs::AssetAddress)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
             .drop_table(Table::drop().table(UserAssetBalance::Table).to_owned())
             .await?;
 
@@ -185,63 +279,58 @@ impl MigrationTrait for Migration {
     }
 }
 
-impl Iden for UserAssetBalance {
-    fn unquoted(&self, s: &mut dyn fmt::Write) {
-        use UserAssetBalance::*;
-        let name = match self {
-            Table => "UserAssetBalance",
-            UserAddress => "user_address",
-            AssetAddress => "asset_address",
-            Total => "total",
-            Locked => "locked",
-            Version => "version",
-            CreatedAt => "created_at",
-            UpdatedAt => "updated_at",
-        };
-        write!(s, "{}", name).unwrap();
-    }
+#[derive(DeriveIden)]
+pub enum UserAssetBalance {
+    #[sea_orm(iden = "UserAssetBalance")]
+    Table,
+    UserAddress,
+    AssetAddress,
+    Total,
+    Locked,
+    Version,
+    CreatedAt,
+    UpdatedAt,
 }
 
-impl Iden for CollateralEvent {
-    fn unquoted(&self, s: &mut dyn fmt::Write) {
-        use CollateralEvent::*;
-        let name = match self {
-            Table => "CollateralEvent",
-            AssetAddress => "asset_address",
-        };
-        write!(s, "{}", name).unwrap();
-    }
+#[derive(DeriveIden)]
+pub enum CollateralEvent {
+    #[sea_orm(iden = "CollateralEvent")]
+    Table,
+    AssetAddress,
 }
 
-impl Iden for UserTransaction {
-    fn unquoted(&self, s: &mut dyn fmt::Write) {
-        use UserTransaction::*;
-        let name = match self {
-            Table => "UserTransaction",
-            AssetAddress => "asset_address",
-        };
-        write!(s, "{}", name).unwrap();
-    }
+#[derive(DeriveIden)]
+pub enum UserTransaction {
+    #[sea_orm(iden = "UserTransaction")]
+    Table,
+    AssetAddress,
 }
 
-impl Iden for Withdrawal {
-    fn unquoted(&self, s: &mut dyn fmt::Write) {
-        use Withdrawal::*;
-        let name = match self {
-            Table => "Withdrawal",
-            AssetAddress => "asset_address",
-        };
-        write!(s, "{}", name).unwrap();
-    }
+#[derive(DeriveIden)]
+pub enum Withdrawal {
+    #[sea_orm(iden = "Withdrawal")]
+    Table,
+    AssetAddress,
 }
 
-impl Iden for Guarantee {
-    fn unquoted(&self, s: &mut dyn fmt::Write) {
-        use Guarantee::*;
-        let name = match self {
-            Table => "Guarantee",
-            AssetAddress => "asset_address",
-        };
-        write!(s, "{}", name).unwrap();
-    }
+#[derive(DeriveIden)]
+pub enum Guarantee {
+    #[sea_orm(iden = "Guarantee")]
+    Table,
+    AssetAddress,
+}
+
+#[derive(DeriveIden)]
+pub enum User {
+    #[sea_orm(iden = "User")]
+    Table,
+    Collateral,
+    LockedCollateral,
+}
+
+#[derive(DeriveIden)]
+pub enum Tabs {
+    #[sea_orm(iden = "Tabs")]
+    Table,
+    AssetAddress,
 }

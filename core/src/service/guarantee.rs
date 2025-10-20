@@ -81,9 +81,13 @@ impl CoreService {
             let start_ts = chrono::Utc
                 .timestamp_opt(promise.timestamp as i64, 0)
                 .single()
-                .ok_or_else(|| ServiceError::InvalidParams("invalid timestamp".into()))?
+                .ok_or_else(|| ServiceError::InvalidParams("Invalid timestamp".into()))?
                 .naive_utc();
             repo::open_tab(&self.inner.persist_ctx, promise.tab_id, start_ts).await?;
+        }
+
+        if tab.asset_address != promise.asset_address {
+            return Err(ServiceError::InvalidParams("Invalid asset address".into()));
         }
 
         if tab.ttl <= 0 {

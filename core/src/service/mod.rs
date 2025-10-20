@@ -1,5 +1,5 @@
 use crate::{
-    config::{AppConfig, DEFAULT_TTL_SECS, EthereumConfig},
+    config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS, EthereumConfig},
     error::{ServiceError, ServiceResult, service_error_to_rpc},
     ethereum::{CoreContractApi, CoreContractProxy, EthereumListener},
     persist::{PersistCtx, repo},
@@ -179,11 +179,17 @@ impl CoreService {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
 
+        let asset_address = req
+            .erc20_token
+            .clone()
+            .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
+
         repo::create_pending_tab(
             &self.inner.persist_ctx,
             tab_id,
             &req.user_address,
             &req.recipient_address,
+            &asset_address,
             now,
             ttl as i64,
         )
@@ -193,6 +199,7 @@ impl CoreService {
             id: tab_id,
             user_address: req.user_address,
             recipient_address: req.recipient_address,
+            erc20_token: req.erc20_token,
         })
     }
 }
