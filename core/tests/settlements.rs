@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, FixedBytes, U256};
 use alloy::providers::{ProviderBuilder, WalletProvider};
 use anyhow::anyhow;
+use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::service::CoreService;
 use core_service::{
     config::{AppConfig, EthereumConfig},
@@ -9,7 +10,7 @@ use core_service::{
 };
 use entities::{
     sea_orm_active_enums::{SettlementStatus, TabStatus},
-    tabs, user, user_transaction,
+    tabs, user_transaction,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use serial_test::serial;
@@ -19,6 +20,7 @@ use tokio::task::JoinHandle;
 
 mod common;
 use crate::common::contract::{AccessManager, Core4Mica};
+use crate::common::fixtures::{clear_all_tables, read_collateral};
 
 static NUMBER_OF_TRIALS: u32 = 60;
 
@@ -78,21 +80,7 @@ fn dummy_stablecoins() -> (Address, Address) {
 
 /// Clean DB tables
 async fn clean_db(ctx: &PersistCtx) -> anyhow::Result<()> {
-    use entities::*;
-    user_transaction::Entity::delete_many()
-        .exec(ctx.db.as_ref())
-        .await?;
-    guarantee::Entity::delete_many()
-        .exec(ctx.db.as_ref())
-        .await?;
-    collateral_event::Entity::delete_many()
-        .exec(ctx.db.as_ref())
-        .await?;
-    withdrawal::Entity::delete_many()
-        .exec(ctx.db.as_ref())
-        .await?;
-    tabs::Entity::delete_many().exec(ctx.db.as_ref()).await?;
-    user::Entity::delete_many().exec(ctx.db.as_ref()).await?;
+    clear_all_tables(ctx).await?;
     Ok(())
 }
 
@@ -110,6 +98,7 @@ async fn insert_tab(
         id: Set(format!("{tab_id:#x}")),
         user_address: Set(user_addr.to_string()),
         server_address: Set(server_addr.to_string()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
@@ -168,7 +157,13 @@ async fn record_payment_event_creates_user_transaction() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     clean_db(&ctx).await?;
     repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
-    repo::deposit(&ctx, user_addr.clone(), U256::from(1000u64)).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(1000u64),
+    )
+    .await?;
 
     // Insert dummy tab so the listener can match it
     let tab_id = U256::from(rand::random::<u64>());
@@ -250,7 +245,13 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
     let ctx = PersistCtx::new().await?;
     clean_db(&ctx).await?;
     repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
-    repo::deposit(&ctx, user_addr.clone(), U256::from(1000u64)).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(1000u64),
+    )
+    .await?;
 
     // Insert dummy tab
     let tab_id = U256::from(rand::random::<u64>());
@@ -290,6 +291,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
         &ctx,
         user_addr.clone(),
         server_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_record.tx_id.clone(),
         amount,
     )
@@ -350,7 +352,13 @@ async fn record_payment_event_does_not_reduce_collateral() -> anyhow::Result<()>
     repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
 
     let start_collateral = U256::from(500u64);
-    repo::deposit(&ctx, user_addr.clone(), start_collateral).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        start_collateral,
+    )
+    .await?;
 
     // Insert dummy tab
     let tab_id = U256::from(rand::random::<u64>());
@@ -369,15 +377,10 @@ async fn record_payment_event_does_not_reduce_collateral() -> anyhow::Result<()>
 
     let mut tries = 0;
     loop {
-        if let Some(u) = user::Entity::find()
-            .filter(user::Column::Address.eq(user_addr.clone()))
-            .one(ctx.db.as_ref())
-            .await?
-        {
-            // recordPayment should NOT alter collateral
-            if parse_u256(&u.collateral) == start_collateral {
-                break;
-            }
+        let collateral = read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        // recordPayment should NOT alter collateral
+        if collateral == start_collateral {
+            break;
         }
         if tries > NUMBER_OF_TRIALS {
             listener.abort();

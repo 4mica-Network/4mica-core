@@ -14,7 +14,7 @@ use alloy::{
 use futures_util::StreamExt;
 use log::{error, info, warn};
 use std::time::Duration;
-use tokio;
+use tokio::{self, task::JoinHandle};
 
 pub struct EthereumListener {
     config: EthereumConfig,
@@ -32,7 +32,7 @@ impl EthereumListener {
     }
 
     /// Entry point — runs forever, reconnecting with exponential backoff.
-    pub async fn run(&self) -> Result<(), BlockchainListenerError> {
+    pub async fn run(&self) -> Result<JoinHandle<()>, BlockchainListenerError> {
         let address: Address = self
             .config
             .contract_address
@@ -45,14 +45,13 @@ impl EthereumListener {
             .from_block(BlockNumberOrTag::Latest);
 
         let persist_ctx = self.persist_ctx.clone();
-        tokio::spawn(Self::listen_loop(
+        let handle = tokio::spawn(Self::listen_loop(
             self.provider.clone(),
             filter,
             address,
             persist_ctx,
         ));
-
-        Ok(())
+        Ok(handle)
     }
 
     async fn listen_loop(
@@ -156,7 +155,7 @@ impl EthereumListener {
             ..
         } = *log.log_decode()?.data();
         repo::deposit(ctx, user.to_string(), asset.to_string(), amount).await?;
-        info!("Deposit by {user:?} of {amount}");
+        info!("Deposit by {user:?} of {amount}, asset={asset}");
         Ok(())
     }
 

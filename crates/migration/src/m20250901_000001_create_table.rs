@@ -54,6 +54,7 @@ impl MigrationTrait for Migration {
                     .to_owned(),
             )
             .await?;
+
         manager
             .get_connection()
             .execute_unprepared(
@@ -64,6 +65,7 @@ impl MigrationTrait for Migration {
         "#,
             )
             .await?;
+
         // ----- Tabs -----
         manager
             .create_table(
