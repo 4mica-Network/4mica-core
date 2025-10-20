@@ -149,8 +149,13 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let CollateralDeposited { user, amount, .. } = *log.log_decode()?.data();
-        repo::deposit(ctx, user.to_string(), amount).await?;
+        let CollateralDeposited {
+            user,
+            amount,
+            asset,
+            ..
+        } = *log.log_decode()?.data();
+        repo::deposit(ctx, user.to_string(), asset.to_string(), amount).await?;
         info!("Deposit by {user:?} of {amount}");
         Ok(())
     }
@@ -159,8 +164,13 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let RecipientRemunerated { tab_id, amount, .. } = *log.log_decode()?.data();
-        repo::remunerate_recipient(ctx, tab_id, amount).await?;
+        let RecipientRemunerated {
+            tab_id,
+            amount,
+            asset,
+            ..
+        } = *log.log_decode()?.data();
+        repo::remunerate_recipient(ctx, tab_id, asset.to_string(), amount).await?;
         info!("Recipient remunerated: tab={tab_id}, amount={amount}");
         Ok(())
     }
@@ -170,7 +180,12 @@ impl EthereumListener {
         ctx: &PersistCtx,
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
-        let PaymentRecorded { tab_id, amount, .. } = *log.log_decode()?.data();
+        let PaymentRecorded {
+            tab_id,
+            amount,
+            asset,
+            ..
+        } = *log.log_decode()?.data();
 
         // Lookup tab → user + server
         let tab = repo::get_tab_by_id(ctx, tab_id).await?.ok_or_else(|| {
@@ -191,6 +206,7 @@ impl EthereumListener {
             ctx,
             tab.user_address.clone(),
             tab.server_address.clone(),
+            asset.to_string(),
             tx_id,
             amount,
         )
@@ -219,9 +235,14 @@ impl EthereumListener {
         log: Log,
     ) -> Result<(), BlockchainListenerError> {
         let WithdrawalRequested {
-            user, when, amount, ..
+            user,
+            when,
+            amount,
+            asset,
+            ..
         } = *log.log_decode()?.data();
-        repo::request_withdrawal(ctx, user.to_string(), when.to(), amount).await?;
+        repo::request_withdrawal(ctx, user.to_string(), asset.to_string(), when.to(), amount)
+            .await?;
         info!("Withdrawal requested: {user:?}, when={when}, amount={amount}");
         Ok(())
     }

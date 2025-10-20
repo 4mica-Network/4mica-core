@@ -1,4 +1,4 @@
-use crate::config::EthereumConfig;
+use crate::config::{DEFAULT_ASSET_ADDRESS, EthereumConfig};
 use crate::scheduler::Task;
 use crate::service::CoreService;
 use crate::{
@@ -45,10 +45,13 @@ impl CoreService {
                 continue;
             };
 
+            let asset_address = DEFAULT_ASSET_ADDRESS.to_string();
+
             repo::submit_payment_transaction(
                 &self.inner.persist_ctx,
                 tab.user_address.clone(),
                 tab.server_address.clone(),
+                asset_address.clone(),
                 tx_hash.clone(),
                 amount,
             )
@@ -69,7 +72,8 @@ impl CoreService {
                 )));
             }
 
-            repo::unlock_user_collateral(&self.inner.persist_ctx, ev.tab_id, amount).await?;
+            repo::unlock_user_collateral(&self.inner.persist_ctx, ev.tab_id, asset_address, amount)
+                .await?;
         }
         Ok(())
     }
