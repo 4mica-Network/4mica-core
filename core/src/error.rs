@@ -49,6 +49,9 @@ pub enum BlockchainListenerError {
     #[error("Database operation failed: {0}")]
     DatabaseFailure(#[from] sea_orm::DbErr),
 
+    #[error("Event handler error: {0}")]
+    EventHandlerError(String),
+
     #[error("Tab not found: {0}")]
     TabNotFound(String),
 

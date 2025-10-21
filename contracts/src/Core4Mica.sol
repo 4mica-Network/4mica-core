@@ -216,8 +216,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
         if (_remunerationGracePeriod >= _tabExpirationTime)
             revert IllegalValue();
-        if (_synchronizationDelay + _tabExpirationTime >= _withdrawalGracePeriod)
-            revert IllegalValue();
+        if (
+            _synchronizationDelay + _tabExpirationTime >= _withdrawalGracePeriod
+        ) revert IllegalValue();
 
         remunerationGracePeriod = _remunerationGracePeriod;
         tabExpirationTime = _tabExpirationTime;
@@ -466,6 +467,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         PaymentStatus storage status = payments[tab_id][asset];
         paid = status.paid;
         remunerated = status.remunerated;
+    }
+
+    function getERC20Tokens() external view returns (address[] memory) {
+        address[] memory tokens = new address[](2);
+        tokens[0] = USDC;
+        tokens[1] = USDT;
+        return tokens;
     }
 
     // === Signature verification ===

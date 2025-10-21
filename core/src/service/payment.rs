@@ -14,7 +14,7 @@ use log::{error, info};
 
 impl CoreService {
     /// Persist and unlock user collateral for each discovered on-chain payment.
-    async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
+    pub async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
         for ev in events {
             let tab_id_str = u256_to_string(ev.tab_id);
             let tx_hash = format!("{:#x}", ev.tx_hash);
@@ -45,7 +45,10 @@ impl CoreService {
                 continue;
             };
 
-            let asset_address = DEFAULT_ASSET_ADDRESS.to_string();
+            let asset_address = ev
+                .erc20_token
+                .map(|token| token.to_string())
+                .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
 
             repo::submit_payment_transaction(
                 &self.inner.persist_ctx,
