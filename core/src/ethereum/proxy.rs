@@ -20,6 +20,8 @@ pub trait CoreContractApi: Send + Sync {
 
     async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError>;
 
+    async fn get_erc20_tokens(&self) -> Result<Vec<Address>, CoreContractApiError>;
+
     async fn record_payment(&self, tab_id: U256, amount: U256) -> Result<(), CoreContractApiError>;
 }
 
@@ -64,6 +66,12 @@ impl CoreContractApi for CoreContractProxy {
         let contract = self.build_contract();
         let domain_separator = contract.guaranteeDomainSeparator().call().await?;
         Ok(domain_separator.into())
+    }
+
+    async fn get_erc20_tokens(&self) -> Result<Vec<Address>, CoreContractApiError> {
+        let contract = self.build_contract();
+        let tokens = contract.getERC20Tokens().call().await?;
+        Ok(tokens)
     }
 
     async fn record_payment(&self, tab_id: U256, amount: U256) -> Result<(), CoreContractApiError> {

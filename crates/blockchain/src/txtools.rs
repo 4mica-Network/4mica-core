@@ -4,7 +4,7 @@ use log::{debug, info};
 
 use alloy::{
     consensus::{Transaction as AlloyTransaction, TxEnvelope},
-    primitives::{Address, B256, TxKind, U256},
+    primitives::{Address, B256, TxHash, TxKind, U256},
     providers::Provider,
     rpc::types::eth::{Block, BlockNumberOrTag, Transaction},
 };
@@ -22,6 +22,7 @@ pub struct PaymentTx {
     pub amount: U256,
     pub tab_id: U256,
     pub req_id: U256,
+    pub erc20_token: Option<Address>,
 }
 
 /// Fetch a transaction by hash.
@@ -108,7 +109,7 @@ pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Resu
             };
 
             // convert to our PaymentTx type
-            let Some(rec) = to_payment_tx(&tx, num, tab_id, req_id)? else {
+            let Some(rec) = parse_eth_transfer(&tx, num, tab_id, req_id)? else {
                 continue; // not an EIP-7702 tx
             };
 
@@ -172,7 +173,7 @@ fn extract_tab_req(tx: &Transaction) -> Result<Option<(U256, U256)>> {
     })
 }
 
-fn to_payment_tx(
+fn parse_eth_transfer(
     tx: &Transaction,
     block_number: u64,
     tab_id: U256,
@@ -193,5 +194,31 @@ fn to_payment_tx(
         amount,
         tab_id,
         req_id,
+        erc20_token: None,
+    }))
+}
+
+pub async fn parse_erc20_transfer(
+    provider: &impl Provider,
+    tx_hash: TxHash,
+    from: Address,
+    to: Address,
+    amount: U256,
+    erc20_token: Address,
+) -> Result<Option<PaymentTx>> {
+    let tx = fetch_transaction(provider, tx_hash).await?;
+    let Some((tab_id, req_id)) = extract_tab_req(&tx)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(PaymentTx {
+        block_number: tx.block_number.unwrap_or_default(),
+        tx_hash,
+        from,
+        to,
+        amount,
+        tab_id,
+        req_id,
+        erc20_token: Some(erc20_token),
     }))
 }
