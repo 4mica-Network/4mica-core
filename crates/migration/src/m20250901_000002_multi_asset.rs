@@ -155,6 +155,28 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Drop old unique constraint on pending withdrawals (user_address only)
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                DROP INDEX IF EXISTS uniq_user_pending_withdrawal;
+                "#,
+            )
+            .await?;
+
+        // Recreate unique constraint with asset_address included
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                CREATE UNIQUE INDEX uniq_user_asset_pending_withdrawal
+                ON "Withdrawal" (user_address, asset_address)
+                WHERE status = 'PENDING';
+                "#,
+            )
+            .await?;
+
         manager
             .alter_table(
                 Table::alter()
@@ -245,12 +267,34 @@ impl MigrationTrait for Migration {
             .await?;
 
         // Drop AssetAddress columns from other tables
+        // Drop new unique constraint on pending withdrawals (with asset_address)
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                DROP INDEX IF EXISTS uniq_user_asset_pending_withdrawal;
+                "#,
+            )
+            .await?;
+
         manager
             .alter_table(
                 Table::alter()
                     .table(Withdrawal::Table)
                     .drop_column(Withdrawal::AssetAddress)
                     .to_owned(),
+            )
+            .await?;
+
+        // Recreate old unique constraint (user_address only)
+        manager
+            .get_connection()
+            .execute_unprepared(
+                r#"
+                CREATE UNIQUE INDEX uniq_user_pending_withdrawal
+                ON "Withdrawal" (user_address)
+                WHERE status = 'PENDING';
+                "#,
             )
             .await?;
 

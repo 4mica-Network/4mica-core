@@ -20,7 +20,6 @@ pub struct EthereumListener {
     config: EthereumConfig,
     persist_ctx: PersistCtx,
     provider: DynProvider,
-    erc20_tokens: Vec<Address>,
     handler: Arc<dyn EthereumEventHandler>,
 }
 
@@ -29,14 +28,12 @@ impl EthereumListener {
         config: EthereumConfig,
         persist_ctx: PersistCtx,
         provider: DynProvider,
-        erc20_tokens: Vec<Address>,
         handler: Arc<dyn EthereumEventHandler>,
     ) -> Self {
         Self {
             config,
             persist_ctx,
             provider,
-            erc20_tokens,
             handler,
         }
     }
@@ -49,11 +46,8 @@ impl EthereumListener {
             .parse()
             .map_err(anyhow::Error::from)?;
 
-        let addresses: Vec<Address> = std::iter::once(address)
-            .chain(self.erc20_tokens.iter().copied())
-            .collect();
         let filter = Filter::new()
-            .address(addresses)
+            .address(address)
             .events(all_event_signatures())
             .from_block(BlockNumberOrTag::Latest);
 
@@ -144,10 +138,6 @@ impl EthereumListener {
                         .handle_admin_event(log, "SynchronizationDelayUpdated")
                         .await
                 }
-                Some(&erc20::Transfer::SIGNATURE_HASH) => handler
-                    .handle_erc20_transfer(log)
-                    .await
-                    .map_err(|e| BlockchainListenerError::from(e)),
                 _ => {
                     info!("Unknown log: {:?}", log);
                     Ok(())

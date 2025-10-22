@@ -37,7 +37,7 @@ impl CoreService {
                 continue;
             }
 
-            let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, ev.tab_id).await? else {
+            let Some(_tab) = repo::get_tab_by_id(&self.inner.persist_ctx, ev.tab_id).await? else {
                 error!(
                     "Tab {} not found while processing payment tx {}. Skipping.",
                     tab_id_str, tx_hash
@@ -47,23 +47,12 @@ impl CoreService {
 
             let asset_address = ev
                 .erc20_token
-                .map(|token| token.to_string())
-                .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
-
-            repo::submit_payment_transaction(
-                &self.inner.persist_ctx,
-                tab.user_address.clone(),
-                tab.server_address.clone(),
-                asset_address.clone(),
-                tx_hash.clone(),
-                amount,
-            )
-            .await?;
+                .unwrap_or(DEFAULT_ASSET_ADDRESS.parse().map_err(anyhow::Error::from)?);
 
             if let Err(err) = self
                 .inner
                 .contract_api
-                .record_payment(ev.tab_id, amount)
+                .record_payment(ev.tab_id, asset_address, amount)
                 .await
             {
                 error!(
@@ -74,9 +63,6 @@ impl CoreService {
                     "failed to record payment on-chain for tab {tab_id_str}: {err}"
                 )));
             }
-
-            repo::unlock_user_collateral(&self.inner.persist_ctx, ev.tab_id, asset_address, amount)
-                .await?;
         }
         Ok(())
     }

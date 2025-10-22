@@ -12,4 +12,5 @@ pub use rpc::common::{PaymentGuaranteeClaims, SigningScheme};
 pub use client::Client;
 pub use client::model::{TabPaymentStatus, UserInfo};
 pub use config::{Config, ConfigBuilder};
+pub use crypto::bls::BLSCert;
 pub use sig::PaymentSignature;

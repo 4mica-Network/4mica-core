@@ -28,6 +28,8 @@ sol! {
         function withdrawalGracePeriod() external view returns (uint256);
         function tabExpirationTime() external view returns (uint256);
         function synchronizationDelay() external view returns (uint256);
+        function USDC() external view returns (address);
+        function USDT() external view returns (address);
 
         /// TODO(#22): move key to registry
         function GUARANTEE_VERIFICATION_KEY() external view returns (
@@ -56,6 +58,14 @@ sol! {
         struct PaymentStatus {
             uint256 paid;
             bool remunerated;
+            address asset;
+        }
+
+        struct UserAssetInfo {
+            address asset;
+            uint256 collateral;
+            uint256 withdrawalRequestTimestamp;
+            uint256 withdrawalRequestAmount;
         }
 
         struct Guarantee {
@@ -89,7 +99,9 @@ sol! {
         // ========= Constructor =========
         /// @param manager Address of AccessManager
         /// @param verificationKey Initial BLS verification key
-        constructor(address manager, (bytes32,bytes32,bytes32,bytes32) verificationKey);
+        /// @param usdc_ USDC token address
+        /// @param usdt_ USDT token address
+        constructor(address manager, (bytes32,bytes32,bytes32,bytes32) verificationKey, address usdc_, address usdt_);
 
         // ========= User flows =========
         function deposit() external payable;
@@ -100,6 +112,13 @@ sol! {
         function cancelWithdrawal(address asset) external;
         function finalizeWithdrawal() external;
         function finalizeWithdrawal(address asset) external;
+
+        function payTabInERC20Token(
+            uint256 tab_id,
+            address asset,
+            uint256 amount,
+            address recipient
+        ) external;
 
         /// Remunerate a recipient based on a signed guarantee
         function remunerate(
@@ -117,33 +136,17 @@ sol! {
         function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
 
         // ========= Views =========
-        function collateral(address userAddr) external view returns (uint256);
-        function collateral(address userAddr, address asset) external view returns (uint256);
-        function getUser(address userAddr)
+        function getUserAllAssets(address userAddr)
             external
             view
-            returns (
-                uint256 _collateral,
-                uint256 withdrawal_request_timestamp,
-                uint256 withdrawal_request_amount
-            );
-        function getUser(address userAddr, address asset)
-            external
-            view
-            returns (
-                uint256 _collateral,
-                uint256 withdrawal_request_timestamp,
-                uint256 withdrawal_request_amount
-            );
+            returns (UserAssetInfo[] memory);
 
         function getPaymentStatus(uint256 tab_id)
             external
             view
-            returns (uint256 paid, bool remunerated);
-        function getPaymentStatus(uint256 tab_id, address asset)
-            external
-            view
-            returns (uint256 paid, bool remunerated);
+            returns (uint256 paid, bool remunerated, address asset);
+
+        function getERC20Tokens() external view returns (address[] memory);
 
         function guaranteeDomainSeparator() external view returns (bytes32);
         function encodeGuarantee(Guarantee memory g) external view returns (bytes memory);
@@ -151,5 +154,20 @@ sol! {
             Guarantee memory g,
             G2Point signature
         ) external view returns (bool);
+    }
+}
+
+sol! {
+    #[sol(rpc)]
+    contract ERC20 {
+        event Transfer(address indexed from, address indexed to, uint256 amount);
+        event Approval(address indexed owner, address indexed spender, uint256 amount);
+
+        constructor(string memory name_, string memory symbol_);
+
+        function mint(address to, uint256 amount) external;
+        function approve(address spender, uint256 amount) external returns (bool);
+        function transfer(address to, uint256 amount) external returns (bool);
+        function transferFrom(address from, address to, uint256 amount) external returns (bool);
     }
 }

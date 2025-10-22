@@ -145,7 +145,7 @@ async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()
     assert_eq!(pending[0].status, WithdrawalStatus::Pending);
 
     // cancel it
-    repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
 
     let pending_after = repo::get_pending_withdrawals_for_user(&ctx, &user_addr).await?;
     assert_eq!(pending_after.len(), 0);
