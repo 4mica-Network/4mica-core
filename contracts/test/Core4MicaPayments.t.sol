@@ -120,8 +120,8 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
         uint256 recipientBalanceBefore = usdc.balanceOf(recipient);
 
         // Expect events
-        vm.expectEmit(true, true, false, true);
-        emit Core4Mica.PaymentRecorded(tabId, address(usdc), amount);
+        vm.expectEmit(true, true, true, true);
+        emit Core4Mica.TabPaid(tabId, address(usdc), OPERATOR, amount);
 
         // Pay tab in USDC
         vm.prank(OPERATOR);
@@ -130,58 +130,5 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
         // Verify balances changed correctly
         assertEq(usdc.balanceOf(OPERATOR), operatorBalanceBefore - amount);
         assertEq(usdc.balanceOf(recipient), recipientBalanceBefore + amount);
-
-        // Verify payment was recorded
-        (uint256 paid, bool remunerated, address asset) = core4Mica
-            .getPaymentStatus(tabId);
-        assertEq(paid, amount);
-        assertFalse(remunerated);
-        assertEq(asset, address(usdc));
-    }
-
-    function test_PayTabInERC20Token_Revert_DifferentAsset() public {
-        uint256 tabId = 0xCAFE;
-        address recipient = address(0x999);
-        uint256 amount = 100 ether;
-
-        // First, record a payment with ETH
-        vm.prank(OPERATOR);
-        core4Mica.recordPayment(tabId, ETH_ASSET, 1 ether);
-
-        // Verify payment is recorded with ETH
-        (uint256 paid, bool remunerated, address asset) = core4Mica
-            .getPaymentStatus(tabId);
-        assertEq(paid, 1 ether);
-        assertFalse(remunerated);
-        assertEq(asset, ETH_ASSET);
-
-        // Setup: mint and approve USDC for OPERATOR
-        usdc.mint(OPERATOR, 1_000 ether);
-        vm.prank(OPERATOR);
-        usdc.approve(address(core4Mica), type(uint256).max);
-
-        // Record balances before the failed transaction
-        uint256 operatorBalanceBefore = usdc.balanceOf(OPERATOR);
-        uint256 recipientBalanceBefore = usdc.balanceOf(recipient);
-
-        // Try to pay the same tab with USDC - should revert
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Core4Mica.InvalidAsset.selector,
-                address(usdc)
-            )
-        );
-        vm.prank(OPERATOR);
-        core4Mica.payTabInERC20Token(tabId, address(usdc), amount, recipient);
-
-        // Verify ERC20 balances haven't changed
-        assertEq(usdc.balanceOf(OPERATOR), operatorBalanceBefore);
-        assertEq(usdc.balanceOf(recipient), recipientBalanceBefore);
-
-        // Verify payment state hasn't changed
-        (paid, remunerated, asset) = core4Mica.getPaymentStatus(tabId);
-        assertEq(paid, 1 ether);
-        assertFalse(remunerated);
-        assertEq(asset, ETH_ASSET);
     }
 }

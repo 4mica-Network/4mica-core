@@ -119,6 +119,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         address indexed asset,
         uint256 amount
     );
+    event TabPaid(
+        uint256 indexed tab_id,
+        address indexed asset,
+        address indexed user,
+        uint256 amount
+    );
 
     // ========= Helper structs =========
     struct Guarantee {
@@ -349,7 +355,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         validRecipient(recipient)
     {
         IERC20(asset).safeTransferFrom(msg.sender, recipient, amount);
-        recordPaymentInternal(tab_id, asset, amount);
+        emit TabPaid(tab_id, asset, msg.sender, amount);
     }
 
     /// TODO(#20): compress signature
@@ -421,14 +427,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         address asset,
         uint256 amount
     ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant {
-        recordPaymentInternal(tab_id, asset, amount);
-    }
-
-    function recordPaymentInternal(
-        uint256 tab_id,
-        address asset,
-        uint256 amount
-    ) internal {
         PaymentStatus storage status = payments[tab_id];
 
         // If payment doesn't exist yet (never been initialized), set the asset

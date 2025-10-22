@@ -49,18 +49,26 @@ pub mod abi {
 
         #[derive(Debug)]
         event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
+
+        #[derive(Debug)]
+        event TabPaid(
+            uint256 indexed tab_id,
+            address indexed asset,
+            address indexed user,
+            uint256 amount
+        );
     }
 }
 
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
     CollateralDeposited, CollateralWithdrawn, PaymentRecorded, RecipientRemunerated,
-    RemunerationGracePeriodUpdated, SynchronizationDelayUpdated, TabExpirationTimeUpdated,
+    RemunerationGracePeriodUpdated, SynchronizationDelayUpdated, TabExpirationTimeUpdated, TabPaid,
     UserRegistered, WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested,
 };
 
 /// Human-readable ABI signatures for all known events.
-pub const EVENT_SIGNATURES: [&str; 11] = [
+pub const EVENT_SIGNATURES: [&str; 12] = [
     UserRegistered::SIGNATURE,
     CollateralDeposited::SIGNATURE,
     RecipientRemunerated::SIGNATURE,
@@ -72,10 +80,11 @@ pub const EVENT_SIGNATURES: [&str; 11] = [
     TabExpirationTimeUpdated::SIGNATURE,
     SynchronizationDelayUpdated::SIGNATURE,
     PaymentRecorded::SIGNATURE,
+    TabPaid::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 11] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 12] = [
     UserRegistered::SIGNATURE_HASH,
     CollateralDeposited::SIGNATURE_HASH,
     RecipientRemunerated::SIGNATURE_HASH,
@@ -87,6 +96,7 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 11] = [
     TabExpirationTimeUpdated::SIGNATURE_HASH,
     SynchronizationDelayUpdated::SIGNATURE_HASH,
     PaymentRecorded::SIGNATURE_HASH,
+    TabPaid::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -143,7 +153,7 @@ mod tests {
     #[test]
     fn signatures_and_hashes_align() {
         assert_eq!(EVENT_SIGNATURES.len(), EVENT_SIGNATURE_HASHES.len());
-        assert_eq!(EVENT_SIGNATURES.len(), 11);
+        assert_eq!(EVENT_SIGNATURES.len(), 12);
         // spot check a couple of associated consts line up
         assert_eq!(EVENT_SIGNATURES[0], UserRegistered::SIGNATURE);
         assert_eq!(EVENT_SIGNATURE_HASHES[0], UserRegistered::SIGNATURE_HASH);

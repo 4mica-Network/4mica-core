@@ -17,6 +17,8 @@ pub trait EthereumEventHandler: Send + Sync {
 
     async fn handle_payment_recorded(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
+    async fn handle_tab_paid(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
     async fn handle_admin_event(
         &self,
         log: Log,

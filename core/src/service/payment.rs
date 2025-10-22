@@ -10,57 +10,76 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
 use blockchain::txtools::PaymentTx;
-use log::{error, info};
+use log::{error, info, warn};
 
 impl CoreService {
-    /// Persist and unlock user collateral for each discovered on-chain payment.
+    /// Submit user transactions and record payments on-chain for each discovered on-chain payment.
     pub async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
-        for ev in events {
-            let tab_id_str = u256_to_string(ev.tab_id);
-            let tx_hash = format!("{:#x}", ev.tx_hash);
-            let amount = ev.amount;
+        for payment in events {
+            let tab_id_str = u256_to_string(payment.tab_id);
+            let tx_hash = format!("{:#x}", payment.tx_hash);
+            let amount = payment.amount;
 
             info!(
-                "Processing discovered payment: block={} tab_id={} req_id={} amount={} tx={}",
-                ev.block_number,
+                "Processing discovered payment: block={} tab_id={} req_id={} amount={} tx={} from={} to={}",
+                payment.block_number,
                 tab_id_str,
-                u256_to_string(ev.req_id),
+                u256_to_string(payment.req_id),
                 amount,
-                tx_hash
+                tx_hash,
+                payment.from,
+                payment.to
             );
 
-            if repo::payment_transaction_exists(&self.inner.persist_ctx, &tx_hash).await? {
-                info!(
-                    "Skipping already processed payment tx {} for tab {}",
-                    tx_hash, tab_id_str
-                );
-                continue;
-            }
-
-            let Some(_tab) = repo::get_tab_by_id(&self.inner.persist_ctx, ev.tab_id).await? else {
-                error!(
+            let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, payment.tab_id).await?
+            else {
+                warn!(
                     "Tab {} not found while processing payment tx {}. Skipping.",
                     tab_id_str, tx_hash
                 );
                 continue;
             };
+            if tab.server_address != payment.to.to_string() {
+                warn!(
+                    "Recipient address does not match payment recipient for tab {}. Skipping.",
+                    tab_id_str
+                );
+                continue;
+            }
 
-            let asset_address = ev
+            let asset_address = payment
                 .erc20_token
                 .unwrap_or(DEFAULT_ASSET_ADDRESS.parse().map_err(anyhow::Error::from)?);
+
+            // Submit a user transaction if it doesn't already exist
+            let rows_affected = repo::submit_payment_transaction(
+                &self.inner.persist_ctx,
+                tab.user_address.clone(),
+                tab.server_address.clone(),
+                asset_address.to_string(),
+                tx_hash.clone(),
+                amount,
+            )
+            .await?;
+
+            if rows_affected == 0 {
+                info!(
+                    "Payment transaction already exists for tab {}. Skipping.",
+                    tab_id_str
+                );
+                continue;
+            }
 
             if let Err(err) = self
                 .inner
                 .contract_api
-                .record_payment(ev.tab_id, asset_address, amount)
+                .record_payment(payment.tab_id, asset_address, amount)
                 .await
             {
-                error!(
-                    "Failed to record payment on-chain for tab {} (tx {}): {err}",
-                    tab_id_str, tx_hash
-                );
                 return Err(ServiceError::Other(anyhow!(
-                    "failed to record payment on-chain for tab {tab_id_str}: {err}"
+                    "Failed to record payment on-chain for tab {} (tx {}): {err}",
+                    tab_id_str,
+                    tx_hash
                 )));
             }
         }
@@ -78,7 +97,7 @@ impl CoreService {
         self.handle_discovered_payments(events)
             .await
             .inspect_err(|e| {
-                error!("failed to persist discovered payments: {e}");
+                error!("failed to handle discovered payments: {e}");
             })?;
 
         Ok(())

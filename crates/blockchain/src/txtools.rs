@@ -4,15 +4,14 @@ use log::{debug, info};
 
 use alloy::{
     consensus::{Transaction as AlloyTransaction, TxEnvelope},
-    primitives::{Address, B256, TxHash, TxKind, U256},
+    primitives::{Address, B256, TxKind, U256},
     providers::Provider,
     rpc::types::eth::{Block, BlockNumberOrTag, Transaction},
 };
 
 use crate::error::{Result, TxProcessingError};
 
-/// Simple, structured representation of a tab payment discovered on-chain.
-/// No persistence or side-effects here.
+/// Simple representation of a tab payment discovered on-chain.
 #[derive(Debug, Clone)]
 pub struct PaymentTx {
     pub block_number: u64,
@@ -195,30 +194,5 @@ fn parse_eth_transfer(
         tab_id,
         req_id,
         erc20_token: None,
-    }))
-}
-
-pub async fn parse_erc20_transfer(
-    provider: &impl Provider,
-    tx_hash: TxHash,
-    from: Address,
-    to: Address,
-    amount: U256,
-    erc20_token: Address,
-) -> Result<Option<PaymentTx>> {
-    let tx = fetch_transaction(provider, tx_hash).await?;
-    let Some((tab_id, req_id)) = extract_tab_req(&tx)? else {
-        return Ok(None);
-    };
-
-    Ok(Some(PaymentTx {
-        block_number: tx.block_number.unwrap_or_default(),
-        tx_hash,
-        from,
-        to,
-        amount,
-        tab_id,
-        req_id,
-        erc20_token: Some(erc20_token),
     }))
 }

@@ -1,6 +1,8 @@
 use alloy::rpc::types::Log;
+use alloy_primitives::{Address, U256};
 use async_trait::async_trait;
-use log::info;
+use blockchain::txtools::PaymentTx;
+use log::{info, warn};
 
 use crate::{
     error::BlockchainListenerError,
@@ -106,35 +108,60 @@ impl EthereumEventHandler for CoreService {
             amount
         );
 
-        // Lookup tab → user + server
-        let tab = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id)
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Tab not found for PaymentRecorded: {}",
-                    crate::util::u256_to_string(tab_id)
-                )
-            })?;
-
-        // Create a stable tx_id; using the tx hash is a good idempotent key.
-        let tx_id = log
-            .transaction_hash
-            .map(|h| format!("{:#x}", h))
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        // Persist a user transaction; recipient = server for recorded payment
-        repo::submit_payment_transaction(
-            &self.inner.persist_ctx,
-            tab.user_address.clone(),
-            tab.server_address.clone(),
-            asset.to_string(),
-            tx_id,
-            amount,
-        )
-        .await?;
-
         repo::unlock_user_collateral(&self.inner.persist_ctx, tab_id, asset.to_string(), amount)
             .await?;
+
+        Ok(())
+    }
+
+    async fn handle_tab_paid(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let TabPaid {
+            tab_id,
+            asset,
+            user,
+            amount,
+            ..
+        } = *log.log_decode()?.data();
+
+        let tab_id_str = crate::util::u256_to_string(tab_id);
+        info!("Tab paid: tab={tab_id_str}, user={user}, amount={amount}, asset={asset}");
+
+        let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? else {
+            warn!("Tab not found for TabPaid: {}. Skipping.", tab_id_str);
+            return Ok(());
+        };
+
+        if tab.user_address != user.to_string() {
+            warn!(
+                "User address does not match tab user address for tab {}. Skipping.",
+                tab_id_str
+            );
+            return Ok(());
+        }
+
+        let recipient_address: Address = tab.server_address.parse().map_err(|e| {
+            BlockchainListenerError::EventHandlerError(format!(
+                "Failed to parse recipient address: {e}"
+            ))
+        })?;
+
+        let payment = PaymentTx {
+            block_number: log.block_number.unwrap_or_default(),
+            tx_hash: log.transaction_hash.unwrap_or_default(),
+            from: user,
+            to: recipient_address,
+            amount,
+            tab_id,
+            req_id: U256::from(1),
+            erc20_token: Some(asset),
+        };
+        self.handle_discovered_payments(vec![payment])
+            .await
+            .map_err(|e| {
+                BlockchainListenerError::EventHandlerError(format!(
+                    "Failed to handle discovered payments: {e}"
+                ))
+            })?;
 
         Ok(())
     }

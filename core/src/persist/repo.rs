@@ -425,7 +425,7 @@ pub async fn submit_payment_transaction(
     asset_address: String,
     transaction_id: String,
     amount: U256,
-) -> Result<(), PersistDbError> {
+) -> Result<u64, PersistDbError> {
     let now = Utc::now().naive_utc();
 
     validate_address(&user_address)?;
@@ -444,7 +444,7 @@ pub async fn submit_payment_transaction(
     };
 
     // Duplicate tx_id → no-op
-    user_transaction::Entity::insert(tx)
+    let rows_affected = user_transaction::Entity::insert(tx)
         .on_conflict(
             OnConflict::column(user_transaction::Column::TxId)
                 .do_nothing()
@@ -453,18 +453,7 @@ pub async fn submit_payment_transaction(
         .exec_without_returning(ctx.db.as_ref())
         .await?;
 
-    Ok(())
-}
-
-pub async fn payment_transaction_exists(
-    ctx: &PersistCtx,
-    transaction_id: &str,
-) -> Result<bool, PersistDbError> {
-    let exists = user_transaction::Entity::find_by_id(transaction_id.to_owned())
-        .one(ctx.db.as_ref())
-        .await?
-        .is_some();
-    Ok(exists)
+    Ok(rows_affected)
 }
 
 pub async fn fail_transaction(
