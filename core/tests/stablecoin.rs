@@ -1,5 +1,6 @@
 use alloy::primitives::U256;
 use alloy::providers::ext::AnvilApi;
+use alloy_primitives::Address;
 use core_service::persist::{PersistCtx, repo};
 use entities::{
     sea_orm_active_enums::{SettlementStatus, TabStatus},
@@ -18,7 +19,7 @@ use crate::common::setup::{E2eEnvironment, setup_e2e_environment};
 static NUMBER_OF_TRIALS: u32 = 60;
 
 fn unique_addr() -> String {
-    format!("0x{:040x}", rand::random::<u128>())
+    Address::random().to_string()
 }
 
 /// Insert a dummy tab so the listener can resolve user/server addresses.
