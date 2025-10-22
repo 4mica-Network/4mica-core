@@ -118,6 +118,7 @@ impl EthereumListener {
                 Some(&PaymentRecorded::SIGNATURE_HASH) => {
                     handler.handle_payment_recorded(log).await
                 }
+                Some(&TabPaid::SIGNATURE_HASH) => handler.handle_tab_paid(log).await,
                 Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
                     handler
                         .handle_admin_event(log, "WithdrawalGracePeriodUpdated")
