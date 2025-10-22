@@ -97,10 +97,4 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.depositStablecoin(address(usdc), 0);
     }
-
-    function test_DepositStablecoin_RevertWithValue() public {
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        vm.prank(USER1);
-        core4Mica.depositStablecoin{value: 1}(address(usdc), 10 ether);
-    }
 }

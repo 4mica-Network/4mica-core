@@ -76,8 +76,6 @@ impl CoreService {
         crypto::guarantee::set_guarantee_domain_separator(on_chain_domain)
             .map_err(|e| anyhow!("failed to set guarantee domain: {e}"))?;
 
-        let erc20_tokens = contract_api.get_erc20_tokens().await?;
-
         let core_service = Self::new_with_dependencies(
             config,
             persist_ctx.clone(),
@@ -94,7 +92,6 @@ impl CoreService {
                     listener_cfg.clone(),
                     persist_ctx.clone(),
                     read_provider.clone(),
-                    erc20_tokens.clone(),
                     Arc::new(core_service_clone.clone()),
                 )
                 .run()

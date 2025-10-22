@@ -179,7 +179,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
 
     let withdraw_amount = U256::from(500_000_000_000_000_000u128);
     contract
-        .requestWithdrawal(withdraw_amount)
+        .requestWithdrawal_0(withdraw_amount)
         .send()
         .await?
         .watch()
@@ -202,7 +202,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    contract.cancelWithdrawal().send().await?.watch().await?;
+    contract.cancelWithdrawal_0().send().await?.watch().await?;
 
     let mut tries = 0;
     loop {
@@ -251,7 +251,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
 
     let withdraw_amount = U256::from(1_000_000_000_000_000_000u128);
     contract
-        .requestWithdrawal(withdraw_amount)
+        .requestWithdrawal_0(withdraw_amount)
         .send()
         .await?
         .watch()
@@ -261,7 +261,12 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     provider
         .anvil_set_block_timestamp_interval(23 * 24 * 60 * 60)
         .await?;
-    contract.finalizeWithdrawal().send().await?.watch().await?;
+    contract
+        .finalizeWithdrawal_0()
+        .send()
+        .await?
+        .watch()
+        .await?;
 
     // wait until the user collateral shows the reduced balance
     let mut tries = 0;

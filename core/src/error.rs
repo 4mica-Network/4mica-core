@@ -115,11 +115,15 @@ pub enum PersistDbError {
     #[error("Insufficient collateral")]
     InsufficientCollateral,
 
-    #[error("No pending withdrawal found for user {user}")]
-    WithdrawalNotFound { user: String },
+    #[error("No pending withdrawal found for user {user}, asset {asset}")]
+    WithdrawalNotFound { user: String, asset: String },
 
-    #[error("Multiple pending withdrawals for user {user} (found {count})")]
-    MultiplePendingWithdrawals { user: String, count: usize },
+    #[error("Multiple pending withdrawals for user {user}, asset {asset} (found {count})")]
+    MultiplePendingWithdrawals {
+        user: String,
+        asset: String,
+        count: usize,
+    },
 
     #[error(
         "optimistic lock conflict for user {user}, asset {asset_address}, expected version {expected_version}"
@@ -190,12 +194,12 @@ impl From<PersistDbError> for ServiceError {
             PersistDbError::InsufficientCollateral => {
                 ServiceError::InvalidParams("Not enough free collateral".into())
             }
-            PersistDbError::WithdrawalNotFound { user } => {
-                ServiceError::NotFound(format!("No pending withdrawal found for user {user}"))
-            }
-            PersistDbError::MultiplePendingWithdrawals { user, count } => {
+            PersistDbError::WithdrawalNotFound { user, asset } => ServiceError::NotFound(format!(
+                "No pending withdrawal found for user {user}, asset {asset}"
+            )),
+            PersistDbError::MultiplePendingWithdrawals { user, asset, count } => {
                 ServiceError::InvalidParams(format!(
-                    "Multiple pending withdrawals for user {user} (found {count})"
+                    "Multiple pending withdrawals for user {user}, asset {asset} (found {count})"
                 ))
             }
             PersistDbError::OptimisticLockConflict { .. } => ServiceError::OptimisticLockConflict,

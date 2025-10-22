@@ -29,7 +29,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     // Step 1: User deposits collateral (2 ETH)
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let _receipt = user_client.user.deposit(deposit_amount).await?;
+    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
     // Wait for transaction to settle
     tokio::time::sleep(Duration::from_secs(2)).await;

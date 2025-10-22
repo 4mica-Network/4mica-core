@@ -71,12 +71,20 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     struct PaymentStatus {
         uint256 paid;
         bool remunerated;
+        address asset;
+    }
+
+    struct UserAssetInfo {
+        address asset;
+        uint256 collateral;
+        uint256 withdrawalRequestTimestamp;
+        uint256 withdrawalRequestAmount;
     }
 
     mapping(address => mapping(address => uint256)) internal collateralBalances;
     mapping(address => mapping(address => WithdrawalRequest))
         public withdrawalRequests;
-    mapping(uint256 => mapping(address => PaymentStatus)) public payments;
+    mapping(uint256 => PaymentStatus) public payments;
 
     // ========= Events =========
     event CollateralDeposited(
@@ -247,8 +255,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     function depositStablecoin(
         address asset,
         uint256 amount
-    ) external payable nonReentrant stablecoin(asset) nonZero(amount) {
-        if (msg.value != 0) revert IllegalValue();
+    ) external nonReentrant stablecoin(asset) nonZero(amount) {
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
         collateralBalances[msg.sender][asset] += amount;
         emit CollateralDeposited(msg.sender, asset, amount);
@@ -329,33 +336,57 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit CollateralWithdrawn(user, asset, withdrawal_amount);
     }
 
+    function payTabInERC20Token(
+        uint256 tab_id,
+        address asset,
+        uint256 amount,
+        address recipient
+    )
+        external
+        nonReentrant
+        stablecoin(asset)
+        nonZero(amount)
+        validRecipient(recipient)
+    {
+        IERC20(asset).safeTransferFrom(msg.sender, recipient, amount);
+        recordPaymentInternal(tab_id, asset, amount);
+    }
+
     /// TODO(#20): compress signature
     /// TODO(#21): permit batch verification
     function remunerate(
         Guarantee calldata g,
         BLS.G2Point calldata signature
     ) external nonReentrant nonZero(g.amount) validRecipient(g.recipient) {
-        // 1. Tab must be overdue
+        // Tab must be overdue
         if (block.timestamp < g.tab_timestamp + remunerationGracePeriod)
             revert TabNotYetOverdue();
 
-        // 2. Tab must not be expired
+        // Tab must not be expired
         if (g.tab_timestamp + tabExpirationTime < block.timestamp)
             revert TabExpired();
 
         address asset = requireSupportedAsset(g.asset);
-        PaymentStatus storage status = payments[g.tab_id][asset];
+        PaymentStatus storage status = payments[g.tab_id];
 
-        // 3. Tab must not previously be remunerated
+        // If payment doesn't exist yet (never been initialized), set the asset
+        if (status.paid == 0 && !status.remunerated) {
+            status.asset = asset;
+        } else {
+            // If payment already exists, verify the asset matches
+            if (status.asset != asset) revert InvalidAsset(asset);
+        }
+
+        // Tab must not previously be remunerated
         if (status.remunerated) revert TabPreviouslyRemunerated();
 
-        // 4. Tab must not be paid
+        // Tab must not be paid
         if (status.paid >= g.amount) revert TabAlreadyPaid();
 
-        // 5. Verify signature
+        // Verify signature
         if (!verifyGuaranteeSignature(g, signature)) revert InvalidSignature();
 
-        // 6. Client must have sufficient funds
+        // Client must have sufficient funds
         if (collateralBalances[g.client][asset] < g.amount)
             revert DoubleSpendingDetected();
 
@@ -398,7 +429,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         address asset,
         uint256 amount
     ) internal {
-        payments[tab_id][asset].paid += amount;
+        PaymentStatus storage status = payments[tab_id];
+
+        // If payment doesn't exist yet (never been initialized), set the asset
+        if (status.paid == 0 && !status.remunerated) {
+            status.asset = asset;
+        } else {
+            // If payment already exists, verify the asset matches
+            if (status.asset != asset) revert InvalidAsset(asset);
+        }
+
+        status.paid += amount;
         emit PaymentRecorded(tab_id, asset, amount);
     }
 
@@ -414,6 +455,30 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         return collateralBalances[userAddr][asset];
     }
 
+    function getUserAllAssets(
+        address userAddr
+    ) external view returns (UserAssetInfo[] memory) {
+        UserAssetInfo[] memory assetInfos = new UserAssetInfo[](3);
+
+        address[3] memory assets = [ETH_ASSET, USDC, USDT];
+
+        for (uint256 i = 0; i < 3; i++) {
+            address asset = assets[i];
+            WithdrawalRequest storage request = withdrawalRequests[userAddr][
+                asset
+            ];
+
+            assetInfos[i] = UserAssetInfo({
+                asset: asset,
+                collateral: collateralBalances[userAddr][asset],
+                withdrawalRequestTimestamp: request.timestamp,
+                withdrawalRequestAmount: request.amount
+            });
+        }
+
+        return assetInfos;
+    }
+
     function getUser(
         address userAddr
     )
@@ -421,8 +486,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         view
         returns (
             uint256 assetCollateral,
-            uint256 withdrawal_request_timestamp,
-            uint256 withdrawal_request_amount
+            uint256 withdrawalRequestTimestamp,
+            uint256 withdrawalRequestAmount
         )
     {
         return getUser(userAddr, ETH_ASSET);
@@ -437,36 +502,23 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         supportedAsset(asset)
         returns (
             uint256 assetCollateral,
-            uint256 withdrawal_request_timestamp,
-            uint256 withdrawal_request_amount
+            uint256 withdrawalRequestTimestamp,
+            uint256 withdrawalRequestAmount
         )
     {
         WithdrawalRequest storage request = withdrawalRequests[userAddr][asset];
         assetCollateral = collateralBalances[userAddr][asset];
-        withdrawal_request_timestamp = request.timestamp;
-        withdrawal_request_amount = request.amount;
+        withdrawalRequestTimestamp = request.timestamp;
+        withdrawalRequestAmount = request.amount;
     }
 
     function getPaymentStatus(
         uint256 tab_id
-    ) external view returns (uint256 paid, bool remunerated) {
-        PaymentStatus storage status = payments[tab_id][ETH_ASSET];
+    ) external view returns (uint256 paid, bool remunerated, address asset) {
+        PaymentStatus storage status = payments[tab_id];
         paid = status.paid;
         remunerated = status.remunerated;
-    }
-
-    function getPaymentStatus(
-        uint256 tab_id,
-        address asset
-    )
-        external
-        view
-        supportedAsset(asset)
-        returns (uint256 paid, bool remunerated)
-    {
-        PaymentStatus storage status = payments[tab_id][asset];
-        paid = status.paid;
-        remunerated = status.remunerated;
+        asset = status.asset;
     }
 
     function getERC20Tokens() external view returns (address[] memory) {

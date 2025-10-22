@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use crate::{
     config::Config,
-    contract::Core4Mica::{self, Core4MicaInstance},
+    contract::{
+        Core4Mica::{self, Core4MicaInstance},
+        ERC20::{self, ERC20Instance},
+    },
     error::ClientError,
     validators::{validate_address, validate_url},
 };
@@ -88,8 +91,16 @@ impl ClientCtx {
         })))
     }
 
+    fn contract_address(&self) -> Address {
+        self.0.contract_address
+    }
+
     fn get_contract(&self) -> Core4MicaInstance<DynProvider> {
         Core4Mica::new(self.0.contract_address, self.0.provider.clone())
+    }
+
+    fn get_erc20_contract(&self, token_address: Address) -> ERC20Instance<DynProvider> {
+        ERC20::new(token_address, self.0.provider.clone())
     }
 
     fn provider(&self) -> &DynProvider {

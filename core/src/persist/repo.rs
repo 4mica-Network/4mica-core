@@ -324,9 +324,11 @@ pub async fn request_withdrawal(
 pub async fn cancel_withdrawal(
     ctx: &PersistCtx,
     user_address: String,
+    asset_address: String,
 ) -> Result<(), PersistDbError> {
     match withdrawal::Entity::find()
-        .filter(withdrawal::Column::UserAddress.eq(user_address.clone()))
+        .filter(withdrawal::Column::UserAddress.eq(user_address))
+        .filter(withdrawal::Column::AssetAddress.eq(asset_address))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
         .one(ctx.db.as_ref())
         .await?
@@ -345,6 +347,7 @@ pub async fn cancel_withdrawal(
 pub async fn finalize_withdrawal(
     ctx: &PersistCtx,
     user_address: String,
+    asset_address: String,
     executed_amount: U256,
 ) -> Result<(), PersistDbError> {
     ctx.db
@@ -352,15 +355,17 @@ pub async fn finalize_withdrawal(
             Box::pin(async move {
                 let now = Utc::now().naive_utc();
 
-                // most recent Pending withdrawal; if none => error
+                // most recent Pending withdrawal for this asset; if none => error
                 let withdrawal = withdrawal::Entity::find()
                     .filter(withdrawal::Column::UserAddress.eq(&user_address))
+                    .filter(withdrawal::Column::AssetAddress.eq(&asset_address))
                     .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
                     .order_by_desc(withdrawal::Column::CreatedAt)
                     .one(txn)
                     .await?
                     .ok_or(PersistDbError::WithdrawalNotFound {
                         user: user_address.clone(),
+                        asset: asset_address.clone(),
                     })?;
 
                 // ensure we never execute more than requested
