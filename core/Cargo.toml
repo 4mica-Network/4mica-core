@@ -40,3 +40,4 @@ serial_test = { workspace = true }
 test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }
 chrono = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom"] }

@@ -46,7 +46,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     );
 
     // Wait for transaction to settle
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
@@ -94,7 +94,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         )
         .await?;
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let tab_status = recipient_client
         .recipient

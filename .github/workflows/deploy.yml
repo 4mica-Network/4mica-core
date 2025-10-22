@@ -141,8 +141,9 @@ jobs:
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
-          ETHEREUM_PRIVATE_KEY: ${{ secrets.ETHEREUM_PRIVATE_KEY }}
+          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
+          CRON_JOB_SETTINGS: "*/3 * * * * *"
         run: |
           nohup cargo run -p core-service > api.log 2>&1 &
           for i in {1..30}; do
@@ -162,8 +163,9 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
-          ETHEREUM_PRIVATE_KEY: ${{ secrets.ETHEREUM_PRIVATE_KEY }}
+          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
+          CRON_JOB_SETTINGS: "*/3 * * * * *"
         run: cargo test --workspace -- --test-threads=1
 
   deploy-develop:
@@ -184,6 +186,7 @@ jobs:
           git reset --hard origin/develop
           git submodule update --init --recursive
           cargo build --release --workspace
+          cargo run -p migration --release -- up
           systemctl --user restart 4mica
           EOF
 
@@ -205,5 +208,6 @@ jobs:
           git reset --hard origin/main
           git submodule update --init --recursive
           cargo build --release --workspace
+          cargo run -p migration --release -- up
           systemctl --user restart 4mica
           EOF

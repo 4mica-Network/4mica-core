@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WalletProvider};
 use alloy_primitives::{Address, FixedBytes};
 use core_service::{
     config::{AppConfig, EthereumConfig},
-    service::CoreService,
+    scheduler::TaskScheduler,
+    service::{CoreService, payment::ScanPaymentsTask},
 };
 use log::debug;
 
@@ -22,6 +25,7 @@ pub struct E2eEnvironment {
     pub usdc: MockERC20Instance<DynProvider>,
     pub usdt: MockERC20Instance<DynProvider>,
     pub core_service: CoreService,
+    pub scheduler: TaskScheduler,
     pub signer_addr: Address,
 }
 
@@ -106,15 +110,26 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         contract_address: contract.address().to_string(),
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
-        cron_job_settings: "0 */1 * * * *".to_string(),
+        cron_job_settings: "*/2 * * * * *".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
         number_of_pending_blocks: 1,
         ethereum_private_key: operator_key,
         ..cfg.ethereum_config
     };
 
+    debug!(
+        "cron job settings: {}",
+        cfg.ethereum_config.cron_job_settings
+    );
+
     let core_service = CoreService::new(cfg).await?;
     clear_all_tables(core_service.persist_ctx()).await?;
+
+    let mut scheduler = TaskScheduler::new().await?;
+    scheduler
+        .add_task(Arc::new(ScanPaymentsTask::new(core_service.clone())))
+        .await?;
+    scheduler.start().await?;
 
     Ok(E2eEnvironment {
         provider,
@@ -123,6 +138,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         usdc,
         usdt,
         core_service,
+        scheduler,
         signer_addr,
     })
 }
