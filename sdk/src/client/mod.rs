@@ -69,16 +69,17 @@ impl ClientCtx {
             )));
         }
 
-        let operator_public_key: [u8; 48] = public_params
-            .public_key
-            .clone()
-            .try_into()
-            .map_err(|pk: Vec<u8>| {
-                ClientError::Initialization(format!(
-                    "invalid operator public key length: expected 48 bytes, got {}",
-                    pk.len()
-                ))
-            })?;
+        let operator_public_key: [u8; 48] =
+            public_params
+                .public_key
+                .clone()
+                .try_into()
+                .map_err(|pk: Vec<u8>| {
+                    ClientError::Initialization(format!(
+                        "invalid operator public key length: expected 48 bytes, got {}",
+                        pk.len()
+                    ))
+                })?;
 
         let contract_address = cfg.contract_address.unwrap_or(
             validate_address(&public_params.contract_address)
