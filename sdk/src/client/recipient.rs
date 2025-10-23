@@ -108,10 +108,7 @@ impl RecipientClient {
         Ok(cert)
     }
 
-    pub fn verify_payment_guarantee(
-        &self,
-        cert: &BLSCert,
-    ) -> Result<bool, VerifyGuaranteeError> {
+    pub fn verify_payment_guarantee(&self, cert: &BLSCert) -> Result<bool, VerifyGuaranteeError> {
         cert.verify(self.ctx.operator_public_key())
             .map_err(VerifyGuaranteeError::InvalidCertificate)
     }
