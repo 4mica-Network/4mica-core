@@ -162,7 +162,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         "unexpected tab paid amount: expected {expected_paid:?} or 0, got {:?}",
         tab_status.paid
     );
-    assert_eq!(tab_status.remunerated, false);
+    assert!(!tab_status.remunerated);
     assert_eq!(tab_status.asset, ETH_ASSET_ADDRESS.to_string());
 
     Ok(())
