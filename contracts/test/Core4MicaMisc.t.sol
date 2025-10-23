@@ -100,4 +100,40 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         );
         assertFalse(ok);
     }
+
+    function test_GetUserAllAssets_ReturnsOrderedBalances() public {
+        vm.startPrank(USER1);
+        core4Mica.deposit{value: 1 ether}();
+        core4Mica.depositStablecoin(address(usdc), 250 ether);
+        core4Mica.depositStablecoin(address(usdt), 750 ether);
+        core4Mica.requestWithdrawal(address(usdc), 100 ether);
+        vm.stopPrank();
+
+        Core4Mica.UserAssetInfo[] memory infos = core4Mica.getUserAllAssets(
+            USER1
+        );
+        assertEq(infos.length, 3);
+
+        assertEq(infos[0].asset, ETH_ASSET);
+        assertEq(infos[0].collateral, 1 ether);
+        assertEq(infos[0].withdrawalRequestTimestamp, 0);
+        assertEq(infos[0].withdrawalRequestAmount, 0);
+
+        assertEq(infos[1].asset, address(usdc));
+        assertEq(infos[1].collateral, 250 ether);
+        assertEq(infos[1].withdrawalRequestAmount, 100 ether);
+        assertGt(infos[1].withdrawalRequestTimestamp, 0);
+
+        assertEq(infos[2].asset, address(usdt));
+        assertEq(infos[2].collateral, 750 ether);
+        assertEq(infos[2].withdrawalRequestTimestamp, 0);
+        assertEq(infos[2].withdrawalRequestAmount, 0);
+    }
+
+    function test_GetERC20Tokens_ReturnsStablecoins() public view {
+        address[] memory tokens = core4Mica.getERC20Tokens();
+        assertEq(tokens.length, 2);
+        assertEq(tokens[0], address(usdc));
+        assertEq(tokens[1], address(usdt));
+    }
 }

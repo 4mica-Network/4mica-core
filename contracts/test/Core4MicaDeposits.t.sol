@@ -97,4 +97,25 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.depositStablecoin(address(usdc), 0);
     }
+
+    function test_DepositStablecoin_USDT() public {
+        uint256 amount = 750 ether;
+        uint256 starting = usdt.balanceOf(USER1);
+
+        vm.prank(USER1);
+        vm.expectEmit(true, true, false, true);
+        emit Core4Mica.CollateralDeposited(USER1, address(usdt), amount);
+        core4Mica.depositStablecoin(address(usdt), amount);
+
+        (
+            uint256 collateral,
+            uint256 withdrawTimestamp,
+            uint256 withdrawAmount
+        ) = core4Mica.getUser(USER1, address(usdt));
+        assertEq(collateral, amount);
+        assertEq(withdrawTimestamp, 0);
+        assertEq(withdrawAmount, 0);
+        assertEq(usdt.balanceOf(USER1), starting - amount);
+        assertEq(usdt.balanceOf(address(core4Mica)), amount);
+    }
 }
