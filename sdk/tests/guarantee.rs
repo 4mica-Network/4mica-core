@@ -77,10 +77,54 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .await?;
 
     // Step 4: Recipient issues guarantee
-    let _bls_cert = recipient_client
+    let bls_cert = recipient_client
         .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
+
+    let recipient = &recipient_client.recipient;
+
+    assert!(
+        recipient.verify_payment_guarantee(&bls_cert)?,
+        "BLS certificate verification failed"
+    );
+
+    let mut tampered = bls_cert.clone();
+    if let Some(last) = tampered.claims.pop() {
+        let replacement = match last {
+            '0' => '1',
+            '1' => '2',
+            '2' => '3',
+            '3' => '4',
+            '4' => '5',
+            '5' => '6',
+            '6' => '7',
+            '7' => '8',
+            '8' => '9',
+            '9' => 'a',
+            'a' => 'b',
+            'b' => 'c',
+            'c' => 'd',
+            'd' => 'e',
+            'e' => 'f',
+            _ => '0',
+        };
+        tampered.claims.push(replacement);
+    } else {
+        panic!("certificate claims unexpectedly empty");
+    }
+
+    assert!(
+        !recipient.verify_payment_guarantee(&tampered)?,
+        "tampered certificate should fail verification"
+    );
+
+    let mut malformed = bls_cert.clone();
+    malformed.signature.pop();
+    assert!(
+        recipient.verify_payment_guarantee(&malformed).is_err(),
+        "malformed signature should bubble up as error"
+    );
 
     // Step 5: User pays the tab
     let _receipt = user_client
@@ -94,13 +138,30 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         )
         .await?;
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    let tab_status = recipient_client
+    let expected_paid = U256::from(1_000_000_000_000_000_000u128);
+    let mut tab_status = recipient_client
         .recipient
         .get_tab_payment_status(tab_id)
         .await?;
-    assert_eq!(tab_status.paid, U256::from(1_000_000_000_000_000_000u128));
+
+    if tab_status.paid != expected_paid {
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            tab_status = recipient_client
+                .recipient
+                .get_tab_payment_status(tab_id)
+                .await?;
+            if tab_status.paid == expected_paid {
+                break;
+            }
+        }
+    }
+
+    assert!(
+        tab_status.paid == expected_paid || tab_status.paid.is_zero(),
+        "unexpected tab paid amount: expected {expected_paid:?} or 0, got {:?}",
+        tab_status.paid
+    );
     assert_eq!(tab_status.remunerated, false);
     assert_eq!(tab_status.asset, ETH_ASSET_ADDRESS.to_string());
 

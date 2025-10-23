@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{convert::TryInto, sync::Arc};
 
 use crate::{
     config::Config,
@@ -27,6 +27,7 @@ struct Inner {
     rpc_proxy: RpcProxy,
     provider: DynProvider,
     contract_address: Address,
+    operator_public_key: [u8; 48],
 }
 
 #[derive(Clone)]
@@ -68,6 +69,17 @@ impl ClientCtx {
             )));
         }
 
+        let operator_public_key: [u8; 48] = public_params
+            .public_key
+            .clone()
+            .try_into()
+            .map_err(|pk: Vec<u8>| {
+                ClientError::Initialization(format!(
+                    "invalid operator public key length: expected 48 bytes, got {}",
+                    pk.len()
+                ))
+            })?;
+
         let contract_address = cfg.contract_address.unwrap_or(
             validate_address(&public_params.contract_address)
                 .expect("Invalid contract address received from server"),
@@ -88,6 +100,7 @@ impl ClientCtx {
             rpc_proxy,
             provider,
             contract_address,
+            operator_public_key,
         })))
     }
 
@@ -113,6 +126,10 @@ impl ClientCtx {
 
     fn signer(&self) -> &PrivateKeySigner {
         &self.0.cfg.wallet_private_key
+    }
+
+    fn operator_public_key(&self) -> &[u8; 48] {
+        &self.0.operator_public_key
     }
 }
 

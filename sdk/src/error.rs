@@ -72,6 +72,10 @@ pub enum RemunerateError {
     AmountZero,
     #[error("transfer failed")]
     TransferFailed,
+    #[error("certificate verification failed: {0}")]
+    CertificateInvalid(#[source] Error),
+    #[error("certificate signature mismatch before submission")]
+    CertificateMismatch,
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
@@ -193,6 +197,12 @@ pub enum IssuePaymentGuaranteeError {
 
     #[error(transparent)]
     Rpc(#[from] jsonrpsee::core::ClientError),
+}
+
+#[derive(Debug, Error)]
+pub enum VerifyGuaranteeError {
+    #[error("invalid BLS certificate")]
+    InvalidCertificate(#[source] Error),
 }
 
 fn extract_selector_and_data(e: &alloy_contract::Error) -> Option<(u32, Vec<u8>)> {

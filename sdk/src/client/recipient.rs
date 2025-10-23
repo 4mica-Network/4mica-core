@@ -10,7 +10,10 @@ use rpc::{
 use crate::{
     client::{ClientCtx, model::TabPaymentStatus},
     contract::Core4Mica::Guarantee,
-    error::{CreateTabError, IssuePaymentGuaranteeError, RemunerateError, TabPaymentStatusError},
+    error::{
+        CreateTabError, IssuePaymentGuaranteeError, RemunerateError, TabPaymentStatusError,
+        VerifyGuaranteeError,
+    },
 };
 
 #[derive(Clone)]
@@ -105,7 +108,26 @@ impl RecipientClient {
         Ok(cert)
     }
 
+    pub fn verify_payment_guarantee(
+        &self,
+        cert: &BLSCert,
+    ) -> Result<bool, VerifyGuaranteeError> {
+        cert.verify(self.ctx.operator_public_key())
+            .map_err(VerifyGuaranteeError::InvalidCertificate)
+    }
+
     pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError> {
+        let is_valid = self
+            .verify_payment_guarantee(&cert)
+            .map_err(|err| match err {
+                VerifyGuaranteeError::InvalidCertificate(source) => {
+                    RemunerateError::CertificateInvalid(source)
+                }
+            })?;
+        if !is_valid {
+            return Err(RemunerateError::CertificateMismatch);
+        }
+
         let claims = crypto::hex::decode_hex(&cert.claims).map_err(RemunerateError::ClaimsHex)?;
         let claims = PaymentGuaranteeClaims::try_from(claims.as_slice())
             .map_err(RemunerateError::ClaimsDecode)?;
