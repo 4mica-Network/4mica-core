@@ -110,6 +110,71 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         assertEq(collateral, depositAmount - remunerationAmount);
     }
 
+    function test_Remunerate_Stablecoin_USDT() public {
+        uint256 depositAmount = 3_500 ether;
+        uint256 remunerationAmount = 1_000 ether;
+        vm.prank(USER1);
+        core4Mica.depositStablecoin(address(usdt), depositAmount);
+
+        uint256 tabId = 0x0BEEF;
+        uint256 reqId = 99;
+        uint256 tabTimestamp = 1;
+        vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
+
+        Core4Mica.Guarantee memory g = _guarantee(
+            tabId,
+            tabTimestamp,
+            USER1,
+            USER2,
+            reqId,
+            remunerationAmount,
+            address(usdt)
+        );
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+
+        vm.expectEmit(true, true, false, true);
+        emit Core4Mica.RecipientRemunerated(
+            tabId,
+            address(usdt),
+            remunerationAmount
+        );
+        vm.prank(USER2);
+        core4Mica.remunerate(g, signature);
+
+        assertEq(usdt.balanceOf(USER2), remunerationAmount);
+        (uint256 collateral, , ) = core4Mica.getUser(USER1, address(usdt));
+        assertEq(collateral, depositAmount - remunerationAmount);
+    }
+
+    function test_Remunerate_Revert_InvalidAssetForRecordedPayment() public {
+        vm.prank(USER1);
+        core4Mica.deposit{value: 2 ether}();
+
+        uint256 tabId = 0xFEED;
+        vm.prank(OPERATOR);
+        core4Mica.recordPayment(tabId, ETH_ASSET, 0.25 ether);
+
+        uint256 tabTimestamp = 1;
+        vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
+
+        Core4Mica.Guarantee memory g = _guarantee(
+            tabId,
+            tabTimestamp,
+            USER1,
+            USER2,
+            41,
+            0.5 ether,
+            address(usdc)
+        );
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Core4Mica.InvalidAsset.selector, address(usdc))
+        );
+        vm.prank(USER2);
+        core4Mica.remunerate(g, signature);
+    }
+
     function test_Remunerate_GuaranteeIssuedBeforeWithdrawalRequestSynchronization()
         public
     {
