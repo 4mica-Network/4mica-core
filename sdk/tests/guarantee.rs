@@ -1,4 +1,6 @@
-use rust_sdk_4mica::{Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256};
+use rust_sdk_4mica::{
+    error::VerifyGuaranteeError, Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
+};
 use std::time::Duration;
 
 mod common;
@@ -84,9 +86,17 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
 
     let recipient = &recipient_client.recipient;
 
-    assert!(
-        recipient.verify_payment_guarantee(&bls_cert)?,
-        "BLS certificate verification failed"
+    let verified_claims = recipient.verify_payment_guarantee(&bls_cert)?;
+    assert_eq!(verified_claims.user_address, user_address);
+    assert_eq!(verified_claims.recipient_address, recipient_address);
+    assert_eq!(verified_claims.tab_id, tab_id);
+    assert_eq!(
+        verified_claims.amount,
+        U256::from(1_000_000_000_000_000_000u128)
+    );
+    assert_eq!(
+        verified_claims.asset_address,
+        ETH_ASSET_ADDRESS.to_string()
     );
 
     let mut tampered = bls_cert.clone();
@@ -114,8 +124,9 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         panic!("certificate claims unexpectedly empty");
     }
 
+    let err = recipient.verify_payment_guarantee(&tampered).unwrap_err();
     assert!(
-        !recipient.verify_payment_guarantee(&tampered)?,
+        matches!(err, VerifyGuaranteeError::CertificateMismatch),
         "tampered certificate should fail verification"
     );
 
