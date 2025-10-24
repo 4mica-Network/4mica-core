@@ -1,5 +1,6 @@
 use alloy::primitives::U256;
 use chrono::Utc;
+use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::error::PersistDbError;
 use core_service::persist::{PersistCtx, repo};
 use entities::collateral_event;
@@ -10,9 +11,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use test_log::test;
 
 mod common;
-use common::fixtures::{
-    ensure_user, ensure_user_with_collateral, fetch_user, init_test_env, random_address,
-};
+use common::fixtures::{ensure_user, ensure_user_with_collateral, init_test_env, random_address};
 
 /// Fetch unfinalized transactions for a user
 pub async fn get_unfinalized_transactions_for_user(
@@ -51,6 +50,7 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
         &ctx,
         user_addr.clone(),
         recipient.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id_1.clone(),
         U256::from(1),
     )
@@ -59,6 +59,7 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
         &ctx,
         other_user.clone(),
         recipient.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id_2.clone(),
         U256::from(1),
     )
@@ -86,6 +87,7 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
         &ctx,
         user_addr.clone(),
         recipient.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id_1.clone(),
         U256::from(2),
     )
@@ -94,6 +96,7 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
         &ctx,
         user_addr.clone(),
         recipient.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id_2.clone(),
         U256::from(2),
     )
@@ -128,47 +131,24 @@ async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()
 
     let when = chrono::Utc::now().timestamp();
     // request withdrawal of 5
-    repo::request_withdrawal(&ctx, user_addr.clone(), when, U256::from(5)).await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        when,
+        U256::from(5),
+    )
+    .await?;
 
     let pending = repo::get_pending_withdrawals_for_user(&ctx, &user_addr).await?;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].status, WithdrawalStatus::Pending);
 
     // cancel it
-    repo::cancel_withdrawal(&ctx, user_addr.clone()).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
 
     let pending_after = repo::get_pending_withdrawals_for_user(&ctx, &user_addr).await?;
     assert_eq!(pending_after.len(), 0);
-    Ok(())
-}
-
-/// bump_user_version should increase version once and return false on second attempt
-#[test(tokio::test)]
-async fn bump_user_version_increments_once() -> anyhow::Result<()> {
-    let (_cfg, ctx) = init_test_env().await?;
-    let user_addr = random_address();
-
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
-
-    let u0 = fetch_user(&ctx, &user_addr).await?;
-    let v0 = u0.version;
-
-    // First bump succeeds
-    let res1 = repo::bump_user_version(&ctx, &user_addr, v0).await;
-    assert!(res1.is_ok(), "first bump should succeed");
-
-    // Version incremented by 1
-    let u1 = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u1.version, v0 + 1);
-
-    // Second bump with stale version must error
-    let res2 = repo::bump_user_version(&ctx, &user_addr, v0).await;
-    assert!(res2.is_err(), "second bump with old version should error");
-
-    // Version unchanged after failed attempt
-    let u2 = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(u2.version, v0 + 1);
-
     Ok(())
 }
 
@@ -193,6 +173,7 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
     let ev1 = collateral_event::ActiveModel {
         id: Set(format!("0x{:040x}", rand::random::<u128>())),
         user_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         amount: Set(U256::from(1u64).to_string()),
         event_type: Set(CollateralEventType::Remunerate),
         tab_id: Set(Some(tab_id.to_string())),
@@ -209,6 +190,7 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
     let ev2 = collateral_event::ActiveModel {
         id: Set(format!("0x{:040x}", rand::random::<u128>())),
         user_address: Set(user_addr),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         amount: Set(U256::from(2u64).to_string()),
         event_type: Set(CollateralEventType::Remunerate),
         tab_id: Set(Some(tab_id.to_string())),
@@ -224,6 +206,30 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
         res.is_err(),
         "second Remunerate event for same tab should violate unique index"
     );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let nonexistent_user = random_address();
+
+    let result =
+        repo::get_user_balance_on(ctx.db.as_ref(), &nonexistent_user, DEFAULT_ASSET_ADDRESS).await;
+
+    println!("result: {:?}", result);
+
+    assert!(result.is_err(), "Expected error for non-existent user");
+    match result.unwrap_err() {
+        PersistDbError::UserNotFound(addr) => {
+            assert_eq!(
+                addr, nonexistent_user,
+                "Error should contain the user address"
+            );
+        }
+        other => panic!("Expected UserNotFound error, got: {:?}", other),
+    }
 
     Ok(())
 }

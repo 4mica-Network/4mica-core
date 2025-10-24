@@ -1,6 +1,10 @@
 use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
 
+fn default_asset_address() -> String {
+    "0x0000000000000000000000000000000000000000".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentGuaranteeClaims {
     pub user_address: String,
@@ -9,6 +13,31 @@ pub struct PaymentGuaranteeClaims {
     pub req_id: U256,
     pub amount: U256,
     pub timestamp: u64,
+    #[serde(default = "default_asset_address")]
+    pub asset_address: String,
+}
+
+impl PaymentGuaranteeClaims {
+    pub fn new(
+        user_address: String,
+        recipient_address: String,
+        tab_id: U256,
+        req_id: U256,
+        amount: U256,
+        timestamp: u64,
+        erc20_token: Option<String>,
+    ) -> Self {
+        let asset_address = erc20_token.unwrap_or(default_asset_address());
+        Self {
+            user_address,
+            recipient_address,
+            tab_id,
+            req_id,
+            amount,
+            timestamp,
+            asset_address,
+        }
+    }
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
@@ -21,6 +50,7 @@ impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
             &self.user_address,
             &self.recipient_address,
             self.amount,
+            &self.asset_address,
             self.timestamp,
         )
         .map_err(|e| anyhow::anyhow!("Failed to encode guarantee bytes: {}", e))
@@ -31,7 +61,7 @@ impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let (domain, tab_id, req_id, client, recipient, amount, timestamp) =
+        let (domain, tab_id, req_id, client, recipient, amount, asset, timestamp) =
             crypto::guarantee::decode_guarantee_bytes(value)?;
         let expected_domain = crypto::guarantee::guarantee_domain_separator()?;
         if domain != expected_domain {
@@ -43,6 +73,7 @@ impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
             tab_id,
             req_id,
             amount,
+            asset_address: asset.to_string(),
             timestamp,
         })
     }
@@ -79,6 +110,8 @@ pub struct UserTransactionInfo {
 pub struct CreatePaymentTabRequest {
     pub user_address: String,
     pub recipient_address: String,
+    /// Address of ERC20-Token
+    pub erc20_token: Option<String>,
     /// Tab TTL in seconds
     pub ttl: Option<u64>,
 }
@@ -88,6 +121,7 @@ pub struct CreatePaymentTabResult {
     pub id: U256,
     pub user_address: String,
     pub recipient_address: String,
+    pub erc20_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

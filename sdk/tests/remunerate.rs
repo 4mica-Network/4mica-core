@@ -9,6 +9,8 @@ use rust_sdk_4mica::{
 };
 use std::{str::FromStr, time::Duration};
 
+use crate::common::ETH_ASSET_ADDRESS;
+
 mod common;
 
 sol! {
@@ -114,14 +116,18 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     log_signature_environment("recipient", &recipient_config_clone).await?;
 
     let user_info = user_client.user.get_user().await?;
+    let eth_asset_before =
+        common::extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
 
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let _receipt = user_client.user.deposit(deposit_amount).await?;
+    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
     let user_info_after = user_client.user.get_user().await?;
+    let eth_asset = common::extract_asset_info(&user_info_after, ETH_ASSET_ADDRESS)
+        .expect("ETH asset not found");
     assert_eq!(
-        user_info_after.collateral,
-        user_info.collateral + deposit_amount
+        eth_asset.collateral,
+        eth_asset_before.collateral + deposit_amount
     );
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -131,6 +137,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
+            None,
             Some(3600 * 24 * 21),
         )
         .await?;
@@ -143,6 +150,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         req_id: U256::from(0),
         amount: guarantee_amount,
         timestamp: common::get_now().as_secs() - 3600 * 24 * 15,
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     println!("[recipient] claims struct: {:?}", claims);
 
@@ -171,6 +179,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         &claims.user_address,
         &claims.recipient_address,
         claims.amount,
+        &claims.asset_address,
         claims.timestamp,
     )?;
     println!(
@@ -188,9 +197,11 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let user_info_after = user_client.user.get_user().await?;
+    let eth_asset = common::extract_asset_info(&user_info_after, ETH_ASSET_ADDRESS)
+        .expect("ETH asset not found");
     assert_eq!(
-        user_info_after.collateral,
-        user_info.collateral + deposit_amount - guarantee_amount
+        eth_asset.collateral,
+        eth_asset_before.collateral + deposit_amount - guarantee_amount
     );
 
     let tab_status = recipient_client
@@ -235,7 +246,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     log_signature_environment("double:recipient", &recipient_config_clone).await?;
 
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let _receipt = user_client.user.deposit(deposit_amount).await?;
+    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -244,6 +255,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
+            None,
             Some(3600 * 24 * 21),
         )
         .await?;
@@ -256,6 +268,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         req_id: U256::from(0),
         amount: guarantee_amount,
         timestamp: common::get_now().as_secs() - 3600 * 24 * 15,
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     println!("[double] claims struct: {:?}", claims);
 
@@ -284,6 +297,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         &claims.user_address,
         &claims.recipient_address,
         claims.amount,
+        &claims.asset_address,
         claims.timestamp,
     )?;
     println!(

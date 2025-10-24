@@ -6,21 +6,24 @@ use crate::contract::Core4Mica;
 pub struct TabPaymentStatus {
     pub paid: U256,
     pub remunerated: bool,
+    pub asset: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct UserInfo {
+    pub asset: String,
     pub collateral: U256,
     pub withdrawal_request_amount: U256,
     pub withdrawal_request_timestamp: u64,
 }
 
-impl From<Core4Mica::getUserReturn> for UserInfo {
-    fn from(value: Core4Mica::getUserReturn) -> Self {
+impl From<Core4Mica::UserAssetInfo> for UserInfo {
+    fn from(value: Core4Mica::UserAssetInfo) -> Self {
         Self {
-            collateral: value._collateral,
-            withdrawal_request_amount: value.withdrawal_request_amount,
-            withdrawal_request_timestamp: value.withdrawal_request_timestamp.to(),
+            asset: value.asset.to_string(),
+            collateral: value.collateral,
+            withdrawal_request_amount: value.withdrawalRequestAmount,
+            withdrawal_request_timestamp: value.withdrawalRequestTimestamp.to(),
         }
     }
 }

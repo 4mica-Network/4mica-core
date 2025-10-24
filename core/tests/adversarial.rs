@@ -1,6 +1,6 @@
 use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
-use core_service::config::AppConfig;
+use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::error::PersistDbError;
 use core_service::persist::{PersistCtx, repo};
 use std::str::FromStr;
@@ -23,8 +23,15 @@ async fn weird_identifiers_do_not_crash() -> anyhow::Result<()> {
     let strange_user = "'; DROP TABLE users; --".to_string();
     let strange_recipient = "0xdeadbeef::weird".to_string();
 
-    match repo::deposit(&ctx, strange_user.clone(), U256::from(1u64)).await {
-        Err(PersistDbError::UserNotFound(_)) => {}
+    match repo::deposit(
+        &ctx,
+        strange_user.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(1u64),
+    )
+    .await
+    {
+        Err(PersistDbError::InvariantViolation(_)) => {}
         Ok(_) => panic!("deposit unexpectedly succeeded for non-existent user"),
         Err(e) => panic!("unexpected error from deposit: {e}"),
     }
@@ -33,12 +40,13 @@ async fn weird_identifiers_do_not_crash() -> anyhow::Result<()> {
         &ctx,
         strange_user.clone(),
         strange_recipient.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
         "tx::id::odd".into(),
         U256::from(1u64),
     )
     .await
     {
-        Err(PersistDbError::UserNotFound(_)) => {}
+        Err(PersistDbError::InvariantViolation(_)) => {}
         Ok(_) => panic!("submit_payment_transaction unexpectedly succeeded for non-existent user"),
         Err(e) => panic!("unexpected error from submit_payment_transaction: {e}"),
     }
