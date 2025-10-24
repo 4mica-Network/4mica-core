@@ -64,11 +64,8 @@ pub fn compute_guarantee_domain_separator(
     const STRING_HEAD_OFFSET: usize = WORD_SIZE * 3;
 
     fn align_to_word(len: usize) -> usize {
-        if len % WORD_SIZE == 0 {
-            len
-        } else {
-            len + (WORD_SIZE - (len % WORD_SIZE))
-        }
+        let remainder = len % WORD_SIZE;
+        len + ((WORD_SIZE - remainder) % WORD_SIZE)
     }
 
     fn push_u256(buf: &mut Vec<u8>, value: U256) {
