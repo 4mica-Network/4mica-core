@@ -72,6 +72,10 @@ pub enum RemunerateError {
     AmountZero,
     #[error("transfer failed")]
     TransferFailed,
+    #[error("certificate verification failed: {0}")]
+    CertificateInvalid(#[source] Error),
+    #[error("certificate signature mismatch before submission")]
+    CertificateMismatch,
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
@@ -138,9 +142,25 @@ pub enum DepositError {
 }
 
 #[derive(Debug, Error)]
+pub enum ApproveErc20Error {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+
+    #[error("unknown revert (selector {selector:#x})")]
+    UnknownRevert { selector: u32, data: Vec<u8> },
+    #[error("provider/transport error: {0}")]
+    Transport(String),
+}
+
+#[derive(Debug, Error)]
 pub enum PayTabError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
+    #[error("invalid asset")]
+    InvalidAsset,
+
+    #[error("unknown revert (selector {selector:#x})")]
+    UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
 }
@@ -177,6 +197,14 @@ pub enum IssuePaymentGuaranteeError {
 
     #[error(transparent)]
     Rpc(#[from] jsonrpsee::core::ClientError),
+}
+
+#[derive(Debug, Error)]
+pub enum VerifyGuaranteeError {
+    #[error("invalid BLS certificate")]
+    InvalidCertificate(#[source] Error),
+    #[error("certificate signature mismatch")]
+    CertificateMismatch,
 }
 
 fn extract_selector_and_data(e: &alloy_contract::Error) -> Option<(u32, Vec<u8>)> {
@@ -256,6 +284,12 @@ impl_from_alloy_error!(CancelWithdrawalError, {
 impl_from_alloy_error!(DepositError, {
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
 });
+
+impl_from_alloy_error!(PayTabError, {
+    Core4Mica::Core4MicaErrors::InvalidAsset(_) => Self::InvalidAsset,
+});
+
+impl_from_alloy_error!(ApproveErc20Error);
 
 impl_from_alloy_error!(GetUserError);
 

@@ -11,6 +11,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub user_address: String,
     #[sea_orm(column_type = "Text")]
+    pub asset_address: String,
+    #[sea_orm(column_type = "Text")]
     pub amount: String,
     pub event_type: CollateralEventType,
     #[sea_orm(column_type = "Text", nullable)]

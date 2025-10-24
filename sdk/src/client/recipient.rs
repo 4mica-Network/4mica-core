@@ -10,7 +10,10 @@ use rpc::{
 use crate::{
     client::{ClientCtx, model::TabPaymentStatus},
     contract::Core4Mica::Guarantee,
-    error::{CreateTabError, IssuePaymentGuaranteeError, RemunerateError, TabPaymentStatusError},
+    error::{
+        CreateTabError, IssuePaymentGuaranteeError, RemunerateError, TabPaymentStatusError,
+        VerifyGuaranteeError,
+    },
 };
 
 #[derive(Clone)]
@@ -29,10 +32,18 @@ impl RecipientClient {
     }
 
     /// Creates a new payment tab and returns the tab id
+    ///
+    /// ### Arguments
+    ///
+    /// * `user_address` - The address of the user who is creating the tab
+    /// * `recipient_address` - The address of the recipient who will receive the payment
+    /// * `erc20_token` - The address of the ERC20 token to use for the payment, leave as `None` for ETH
+    /// * `ttl` - The time to live for the tab in seconds
     pub async fn create_tab(
         &self,
         user_address: String,
         recipient_address: String,
+        erc20_token: Option<String>,
         ttl: Option<u64>,
     ) -> Result<U256, CreateTabError> {
         if !self.check_signer_address(&recipient_address) {
@@ -47,6 +58,7 @@ impl RecipientClient {
             .create_payment_tab(CreatePaymentTabRequest {
                 user_address,
                 recipient_address,
+                erc20_token,
                 ttl,
             })
             .await?;
@@ -68,6 +80,7 @@ impl RecipientClient {
         Ok(TabPaymentStatus {
             paid: status.paid,
             remunerated: status.remunerated,
+            asset: status.asset.to_string(),
         })
     }
 
@@ -95,12 +108,34 @@ impl RecipientClient {
         Ok(cert)
     }
 
-    pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError> {
-        let claims = crypto::hex::decode_hex(&cert.claims).map_err(RemunerateError::ClaimsHex)?;
-        let claims = PaymentGuaranteeClaims::try_from(claims.as_slice())
-            .map_err(RemunerateError::ClaimsDecode)?;
+    pub fn verify_payment_guarantee(
+        &self,
+        cert: &BLSCert,
+    ) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError> {
+        let is_valid = cert
+            .verify(self.ctx.operator_public_key())
+            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
+        if !is_valid {
+            return Err(VerifyGuaranteeError::CertificateMismatch);
+        }
 
-        let guarantee: Guarantee = claims
+        let claims_bytes = cert
+            .claims_bytes()
+            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
+        PaymentGuaranteeClaims::try_from(claims_bytes.as_slice())
+            .map_err(VerifyGuaranteeError::InvalidCertificate)
+    }
+
+    pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError> {
+        let guarantee_claims = self
+            .verify_payment_guarantee(&cert)
+            .map_err(|err| match err {
+                VerifyGuaranteeError::InvalidCertificate(source) => {
+                    RemunerateError::CertificateInvalid(source)
+                }
+                VerifyGuaranteeError::CertificateMismatch => RemunerateError::CertificateMismatch,
+            })?;
+        let guarantee: Guarantee = guarantee_claims
             .try_into()
             .map_err(RemunerateError::GuaranteeConversion)?;
 

@@ -1,5 +1,5 @@
 use crate::{
-    config::{AppConfig, DEFAULT_TTL_SECS, EthereumConfig},
+    config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS, EthereumConfig},
     error::{ServiceError, ServiceResult, service_error_to_rpc},
     ethereum::{CoreContractApi, CoreContractProxy, EthereumListener},
     persist::{PersistCtx, repo},
@@ -9,6 +9,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use crypto::bls::BLSCert;
 use log::{error, info};
+use parking_lot::Mutex;
 use rpc::{
     RpcResult,
     common::*,
@@ -16,10 +17,11 @@ use rpc::{
 };
 use std::sync::Arc;
 use tokio::{
-    spawn,
+    task::JoinHandle,
     time::{Duration, sleep},
 };
 
+pub mod event_handler;
 mod guarantee;
 pub mod payment;
 
@@ -29,6 +31,15 @@ pub struct Inner {
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
+    listener_handle: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if let Some(handle) = self.listener_handle.lock().take() {
+            handle.abort();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -43,7 +54,6 @@ impl CoreService {
         }
 
         let persist_ctx = PersistCtx::new().await?;
-        let persist_ctx_clone = persist_ctx.clone();
         let eth_cfg = config.ethereum_config.clone();
         let listener_cfg = eth_cfg.clone();
 
@@ -66,20 +76,35 @@ impl CoreService {
         crypto::guarantee::set_guarantee_domain_separator(on_chain_domain)
             .map_err(|e| anyhow!("failed to set guarantee domain: {e}"))?;
 
-        let read_provider_clone = read_provider.clone();
-        spawn(async move {
+        let core_service = Self::new_with_dependencies(
+            config,
+            persist_ctx.clone(),
+            contract_api,
+            actual_chain_id,
+            read_provider.clone(),
+        )?;
+
+        let core_service_clone = core_service.clone();
+        tokio::spawn(async move {
             let mut delay = Duration::from_secs(1);
             loop {
                 match EthereumListener::new(
                     listener_cfg.clone(),
-                    persist_ctx_clone.clone(),
-                    read_provider_clone.clone(),
+                    persist_ctx.clone(),
+                    read_provider.clone(),
+                    Arc::new(core_service_clone.clone()),
                 )
                 .run()
                 .await
                 {
-                    Ok(_) => {
+                    Ok(handle) => {
                         info!("EthereumListener connected successfully.");
+                        core_service_clone
+                            .inner
+                            .listener_handle
+                            .lock()
+                            .replace(handle);
+
                         break;
                     }
                     Err(e) => {
@@ -91,16 +116,9 @@ impl CoreService {
             }
         });
 
-        Self::new_with_dependencies(
-            config,
-            persist_ctx,
-            contract_api,
-            actual_chain_id,
-            read_provider,
-        )
+        Ok(core_service)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new_with_dependencies(
         config: AppConfig,
         persist_ctx: PersistCtx,
@@ -136,6 +154,7 @@ impl CoreService {
             persist_ctx,
             read_provider,
             contract_api,
+            listener_handle: Mutex::default(),
         };
 
         Ok(Self {
@@ -151,6 +170,10 @@ impl CoreService {
             .bytes()
             .try_into()
             .expect("BLS private key must be 32 bytes")
+    }
+
+    pub fn persist_ctx(&self) -> &PersistCtx {
+        &self.inner.persist_ctx
     }
 
     pub async fn build_ws_provider(config: EthereumConfig) -> ServiceResult<DynProvider> {
@@ -179,11 +202,17 @@ impl CoreService {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
 
+        let asset_address = req
+            .erc20_token
+            .clone()
+            .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
+
         repo::create_pending_tab(
             &self.inner.persist_ctx,
             tab_id,
             &req.user_address,
             &req.recipient_address,
+            &asset_address,
             now,
             ttl as i64,
         )
@@ -193,6 +222,7 @@ impl CoreService {
             id: tab_id,
             user_address: req.user_address,
             recipient_address: req.recipient_address,
+            erc20_token: req.erc20_token,
         })
     }
 }

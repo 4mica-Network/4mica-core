@@ -2,17 +2,21 @@ use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use chrono::Utc;
 use core_service::config::AppConfig;
+use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use core_service::util::u256_to_string;
 use entities::{
     collateral_event,
     sea_orm_active_enums::{CollateralEventType, SettlementStatus, TabStatus},
-    tabs, user,
+    tabs,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::str::FromStr;
 use test_log::test;
+
+mod common;
+use common::fixtures::read_collateral;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
@@ -33,12 +37,9 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
 
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set(U256::ZERO.to_string()),
-        locked_collateral: Set(U256::ZERO.to_string()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -49,22 +50,34 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
         id: Set(u256_to_string(tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
         ttl: Set(300),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
         .await?;
 
     // Fund user so remuneration of 10 passes strict checks
-    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await?;
 
-    repo::remunerate_recipient(&ctx, tab_id, U256::from(10u64)).await?;
+    repo::remunerate_recipient(
+        &ctx,
+        tab_id,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await?;
 
     // Event recorded once
     let events = collateral_event::Entity::find()
@@ -86,11 +99,10 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     assert_eq!(tab.settlement_status, SettlementStatus::Settled);
 
     // Collateral debited
-    let u = user::Entity::find_by_id(user_addr.clone())
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
-    assert_eq!(U256::from_str(&u.collateral).unwrap(), U256::ZERO);
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
 
     Ok(())
 }
@@ -100,7 +112,13 @@ async fn remunerate_without_tab_errors() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
 
-    let res = repo::remunerate_recipient(&ctx, U256::from(999u64), U256::from(5u64)).await;
+    let res = repo::remunerate_recipient(
+        &ctx,
+        U256::from(999u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(5u64),
+    )
+    .await;
     assert!(res.is_err());
     Ok(())
 }
@@ -115,12 +133,9 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
 
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -131,22 +146,22 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         id: Set(u256_to_string(tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
         ttl: Set(300),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
         .await?;
 
     // 0 amount requires only that user exists (already inserted)
-    repo::remunerate_recipient(&ctx, tab_id, U256::ZERO).await?;
+    repo::remunerate_recipient(&ctx, tab_id, DEFAULT_ASSET_ADDRESS.to_string(), U256::ZERO).await?;
     // Duplicate remuneration is a no-op due to status CAS
-    repo::remunerate_recipient(&ctx, tab_id, U256::ZERO).await?;
+    repo::remunerate_recipient(&ctx, tab_id, DEFAULT_ASSET_ADDRESS.to_string(), U256::ZERO).await?;
 
     // Event recorded exactly once with amount 0
     let events = collateral_event::Entity::find()
@@ -163,11 +178,10 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         .await?
         .unwrap();
     assert_eq!(tab.settlement_status, SettlementStatus::Settled);
-    let u = user::Entity::find_by_id(user_addr.clone())
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
-    assert_eq!(U256::from_str(&u.collateral).unwrap(), U256::ZERO);
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
 
     Ok(())
 }
@@ -182,12 +196,9 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
 
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -198,24 +209,42 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         id: Set(u256_to_string(tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
         ttl: Set(300),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
         .await?;
 
     // Fund for the first remuneration to succeed
-    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await?;
 
-    repo::remunerate_recipient(&ctx, tab_id, U256::from(10u64)).await?;
+    repo::remunerate_recipient(
+        &ctx,
+        tab_id,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await?;
     // Second call is a no-op (idempotent), even if amount differs
-    repo::remunerate_recipient(&ctx, tab_id, U256::from(20u64)).await?;
+    repo::remunerate_recipient(
+        &ctx,
+        tab_id,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(20u64),
+    )
+    .await?;
 
     let events = collateral_event::Entity::find()
         .filter(collateral_event::Column::TabId.eq(u256_to_string(tab_id)))
@@ -230,11 +259,10 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         .await?
         .unwrap();
     assert_eq!(tab.settlement_status, SettlementStatus::Settled);
-    let u = user::Entity::find_by_id(user_addr.clone())
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
-    assert_eq!(U256::from_str(&u.collateral).unwrap(), U256::ZERO);
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
 
     Ok(())
 }
@@ -253,12 +281,9 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
 
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -269,21 +294,33 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
         id: Set(u256_to_string(tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
         ttl: Set(300),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
         .await?;
 
     // Give the user only 5, then try to remunerate 10
-    repo::deposit(&ctx, user_addr.clone(), U256::from(5u64)).await?;
-    let res = repo::remunerate_recipient(&ctx, tab_id, U256::from(10u64)).await;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(5u64),
+    )
+    .await?;
+    let res = repo::remunerate_recipient(
+        &ctx,
+        tab_id,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await;
     assert!(res.is_err());
 
     // No event
@@ -299,11 +336,10 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
         .await?
         .unwrap();
     assert_eq!(tab.settlement_status, SettlementStatus::Pending);
-    let u = user::Entity::find_by_id(user_addr.clone())
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
-    assert_eq!(U256::from_str(&u.collateral).unwrap(), U256::from(5u64));
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(5u64)
+    );
 
     Ok(())
 }
@@ -319,12 +355,9 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
 
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -335,25 +368,41 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
         id: Set(u256_to_string(tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
         ttl: Set(300),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
         .await?;
 
     // Fund enough for a single remuneration
-    repo::deposit(&ctx, user_addr.clone(), U256::from(10u64)).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await?;
 
     // Race two calls
     let (r1, r2) = tokio::join!(
-        repo::remunerate_recipient(&ctx, tab_id, U256::from(10u64)),
-        repo::remunerate_recipient(&ctx, tab_id, U256::from(10u64))
+        repo::remunerate_recipient(
+            &ctx,
+            tab_id,
+            DEFAULT_ASSET_ADDRESS.to_string(),
+            U256::from(10u64)
+        ),
+        repo::remunerate_recipient(
+            &ctx,
+            tab_id,
+            DEFAULT_ASSET_ADDRESS.to_string(),
+            U256::from(10u64)
+        )
     );
     // One should succeed, the other should be Ok(()) as a no-op (depending on impl),
     // but neither should error.
@@ -373,11 +422,10 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
         .await?
         .unwrap();
     assert_eq!(tab.settlement_status, SettlementStatus::Settled);
-    let u = user::Entity::find_by_id(user_addr.clone())
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
-    assert_eq!(U256::from_str(&u.collateral).unwrap(), U256::ZERO);
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
 
     Ok(())
 }

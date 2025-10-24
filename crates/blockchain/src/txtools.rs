@@ -11,8 +11,7 @@ use alloy::{
 
 use crate::error::{Result, TxProcessingError};
 
-/// Simple, structured representation of a tab payment discovered on-chain.
-/// No persistence or side-effects here.
+/// Simple representation of a tab payment discovered on-chain.
 #[derive(Debug, Clone)]
 pub struct PaymentTx {
     pub block_number: u64,
@@ -22,6 +21,7 @@ pub struct PaymentTx {
     pub amount: U256,
     pub tab_id: U256,
     pub req_id: U256,
+    pub erc20_token: Option<Address>,
 }
 
 /// Fetch a transaction by hash.
@@ -108,7 +108,7 @@ pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Resu
             };
 
             // convert to our PaymentTx type
-            let Some(rec) = to_payment_tx(&tx, num, tab_id, req_id)? else {
+            let Some(rec) = parse_eth_transfer(&tx, num, tab_id, req_id)? else {
                 continue; // not an EIP-7702 tx
             };
 
@@ -172,7 +172,7 @@ fn extract_tab_req(tx: &Transaction) -> Result<Option<(U256, U256)>> {
     })
 }
 
-fn to_payment_tx(
+fn parse_eth_transfer(
     tx: &Transaction,
     block_number: u64,
     tab_id: U256,
@@ -193,5 +193,6 @@ fn to_payment_tx(
         amount,
         tab_id,
         req_id,
+        erc20_token: None,
     }))
 }

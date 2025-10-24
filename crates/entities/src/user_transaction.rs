@@ -12,6 +12,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub recipient_address: String,
     #[sea_orm(column_type = "Text")]
+    pub asset_address: String,
+    #[sea_orm(column_type = "Text")]
     pub amount: String,
     #[sea_orm(column_type = "Text", nullable)]
     pub verified: bool,

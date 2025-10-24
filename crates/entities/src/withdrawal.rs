@@ -11,6 +11,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub user_address: String,
     #[sea_orm(column_type = "Text")]
+    pub asset_address: String,
+    #[sea_orm(column_type = "Text")]
     pub requested_amount: String,
     pub executed_amount: String,
     pub request_ts: DateTime,

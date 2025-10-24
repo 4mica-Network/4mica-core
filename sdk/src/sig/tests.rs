@@ -25,6 +25,7 @@ fn create_test_claims(user_addr: &str, recipient_addr: &str) -> PaymentGuarantee
         req_id: U256::from(1u64),
         amount: U256::from(100u64),
         timestamp: Utc::now().timestamp() as u64,
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     }
 }
 

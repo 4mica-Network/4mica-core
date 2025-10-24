@@ -27,7 +27,7 @@ library BlsHelper {
 
     function encodeGuarantee(Core4Mica core, Core4Mica.Guarantee memory g) public view returns (bytes memory) {
         bytes32 domain = core.guaranteeDomainSeparator();
-        return abi.encodePacked(domain, g.tab_id, g.req_id, g.client, g.recipient, g.amount, g.tab_timestamp);
+        return abi.encodePacked(domain, g.tab_id, g.req_id, g.client, g.recipient, g.amount, g.asset, g.tab_timestamp);
     }
 
     function blsSign(bytes memory message, bytes32 privateKey) public view returns (BLS.G2Point memory) {
