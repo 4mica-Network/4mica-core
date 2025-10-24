@@ -8,11 +8,15 @@ use rpc::{
 };
 
 use crate::{
+    client::model::{
+        AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, PendingRemunerationInfo,
+        RecipientPaymentInfo, TabInfo,
+    },
     client::{ClientCtx, model::TabPaymentStatus},
     contract::Core4Mica::Guarantee,
     error::{
-        CreateTabError, IssuePaymentGuaranteeError, RemunerateError, TabPaymentStatusError,
-        VerifyGuaranteeError,
+        CreateTabError, IssuePaymentGuaranteeError, RecipientQueryError, RemunerateError,
+        TabPaymentStatusError, VerifyGuaranteeError,
     },
 };
 
@@ -160,5 +164,140 @@ impl RecipientClient {
             .map_err(RemunerateError::from)?;
 
         Ok(receipt)
+    }
+
+    pub async fn list_settled_tabs(&self) -> Result<Vec<TabInfo>, RecipientQueryError> {
+        let address = self.ctx.signer().address().to_string();
+        let tabs = self
+            .ctx
+            .rpc_proxy()
+            .list_settled_tabs(address)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(tabs)
+    }
+
+    pub async fn list_pending_remunerations(
+        &self,
+    ) -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError> {
+        let address = self.ctx.signer().address().to_string();
+        let items = self
+            .ctx
+            .rpc_proxy()
+            .list_pending_remunerations(address)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(items)
+    }
+
+    pub async fn get_tab(&self, tab_id: U256) -> Result<Option<TabInfo>, RecipientQueryError> {
+        let result = self.ctx.rpc_proxy().get_tab(tab_id).await?;
+        Ok(result.map(Into::into))
+    }
+
+    pub async fn list_recipient_tabs(
+        &self,
+        settlement_statuses: Option<Vec<String>>,
+    ) -> Result<Vec<TabInfo>, RecipientQueryError> {
+        let address = self.ctx.signer().address().to_string();
+        let tabs = self
+            .ctx
+            .rpc_proxy()
+            .list_recipient_tabs(address, settlement_statuses)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(tabs)
+    }
+
+    pub async fn get_tab_guarantees(
+        &self,
+        tab_id: U256,
+    ) -> Result<Vec<GuaranteeInfo>, RecipientQueryError> {
+        let guarantees = self
+            .ctx
+            .rpc_proxy()
+            .get_tab_guarantees(tab_id)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(guarantees)
+    }
+
+    pub async fn get_latest_guarantee(
+        &self,
+        tab_id: U256,
+    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError> {
+        let result = self
+            .ctx
+            .rpc_proxy()
+            .get_latest_guarantee(tab_id)
+            .await?
+            .map(Into::into);
+        Ok(result)
+    }
+
+    pub async fn get_guarantee(
+        &self,
+        tab_id: U256,
+        req_id: U256,
+    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError> {
+        let result = self
+            .ctx
+            .rpc_proxy()
+            .get_guarantee(tab_id, req_id)
+            .await?
+            .map(Into::into);
+        Ok(result)
+    }
+
+    pub async fn list_recipient_payments(
+        &self,
+    ) -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError> {
+        let address = self.ctx.signer().address().to_string();
+        let payments = self
+            .ctx
+            .rpc_proxy()
+            .list_recipient_payments(address)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(payments)
+    }
+
+    pub async fn get_collateral_events_for_tab(
+        &self,
+        tab_id: U256,
+    ) -> Result<Vec<CollateralEventInfo>, RecipientQueryError> {
+        let events = self
+            .ctx
+            .rpc_proxy()
+            .get_collateral_events_for_tab(tab_id)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(events)
+    }
+
+    pub async fn get_user_asset_balance(
+        &self,
+        user_address: String,
+        asset_address: String,
+    ) -> Result<Option<AssetBalanceInfo>, RecipientQueryError> {
+        let balance = self
+            .ctx
+            .rpc_proxy()
+            .get_user_asset_balance(user_address, asset_address)
+            .await?
+            .map(Into::into);
+        Ok(balance)
     }
 }

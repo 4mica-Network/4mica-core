@@ -200,6 +200,12 @@ pub enum IssuePaymentGuaranteeError {
 }
 
 #[derive(Debug, Error)]
+pub enum RecipientQueryError {
+    #[error(transparent)]
+    Rpc(#[from] jsonrpsee::core::ClientError),
+}
+
+#[derive(Debug, Error)]
 pub enum VerifyGuaranteeError {
     #[error("invalid BLS certificate")]
     InvalidCertificate(#[source] Error),

@@ -86,7 +86,7 @@ pub async fn clear_tables(ctx: &PersistCtx, tables: &[&str]) -> Result<()> {
 
 pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
     clear_tables(
-        &ctx,
+        ctx,
         &[
             "UserTransaction",
             "Withdrawal",
