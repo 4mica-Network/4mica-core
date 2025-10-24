@@ -949,11 +949,11 @@ pub async fn get_tabs_for_recipient(
     let mut condition =
         Condition::all().add(entities::tabs::Column::ServerAddress.eq(recipient_address));
 
-    if let Some(statuses) = settlement_statuses {
-        if !statuses.is_empty() {
-            let status_list: Vec<SettlementStatus> = statuses.to_vec();
-            condition = condition.add(entities::tabs::Column::SettlementStatus.is_in(status_list));
-        }
+    if let Some(statuses) = settlement_statuses
+        && !statuses.is_empty()
+    {
+        let status_list: Vec<SettlementStatus> = statuses.to_vec();
+        condition = condition.add(entities::tabs::Column::SettlementStatus.is_in(status_list));
     }
 
     let rows = entities::tabs::Entity::find()
