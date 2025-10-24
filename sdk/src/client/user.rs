@@ -4,10 +4,7 @@ use alloy::{
     providers::Provider,
     rpc::types::{TransactionReceipt, TransactionRequest},
 };
-use rpc::{
-    common::{PaymentGuaranteeClaims, SigningScheme},
-    core::CoreApiClient,
-};
+use rpc::common::{PaymentGuaranteeClaims, SigningScheme};
 
 use crate::{
     PaymentSignature,

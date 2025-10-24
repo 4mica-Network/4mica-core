@@ -18,11 +18,8 @@ crypto = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-jsonrpsee = { workspace = true, features = [
-    "macros",
-    "server",
-    "ws-client",
-    "http-client",
-] }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+thiserror = { workspace = true }
+url = { workspace = true }

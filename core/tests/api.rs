@@ -12,11 +12,11 @@ use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
 use rand::random;
 use rpc::{
+    RpcProxy,
     common::{
         CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme,
     },
-    core::{CoreApiClient, CorePublicParameters},
-    proxy::RpcProxy,
+    core::CorePublicParameters,
 };
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
 use std::str::FromStr;
@@ -1026,6 +1026,109 @@ async fn core_api_list_recipient_tabs_case_insensitive_filter() {
         .await
         .expect("list tabs failed");
     assert!(empty.is_empty());
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn core_api_list_recipient_tabs_http_query_variants() {
+    let Some((config, core_client, ctx)) = setup_clean_db().await else {
+        return;
+    };
+
+    let user_addr = random_address();
+    let recipient_addr = random_address();
+    if common::fixtures::ensure_user(&ctx, &user_addr)
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let tab_id = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(600),
+        })
+        .await
+        .expect("create tab")
+        .id;
+
+    let base_addr = format!(
+        "http://{}:{}",
+        config.server_config.host, config.server_config.port
+    );
+    let http_client = reqwest::Client::new();
+
+    let single_url = format!(
+        "{base}/core/recipients/{recipient}/tabs?settlement_status=pending",
+        base = base_addr,
+        recipient = recipient_addr
+    );
+    let resp = http_client
+        .get(&single_url)
+        .send()
+        .await
+        .expect("single status request");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let tabs: Vec<rpc::common::TabInfo> = resp.json().await.expect("decode single response");
+    assert!(
+        tabs.iter().any(|tab| tab.tab_id == tab_id),
+        "expected tab_id {tab_id} in single-status response"
+    );
+
+    let multi_url = format!(
+        "{base}/core/recipients/{recipient}/tabs?settlement_status=pending&settlement_status=settled",
+        base = base_addr,
+        recipient = recipient_addr
+    );
+    let resp = http_client
+        .get(&multi_url)
+        .send()
+        .await
+        .expect("multi status request");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let tabs: Vec<rpc::common::TabInfo> = resp.json().await.expect("decode multi response");
+    assert!(
+        tabs.iter().any(|tab| tab.tab_id == tab_id),
+        "expected tab_id {tab_id} in multi-status response"
+    );
+
+    let invalid_url = format!(
+        "{base}/core/recipients/{recipient}/tabs?settlement_status=unknown",
+        base = base_addr,
+        recipient = recipient_addr
+    );
+    let resp = http_client
+        .get(&invalid_url)
+        .send()
+        .await
+        .expect("invalid status request");
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let err_json: serde_json::Value = resp.json().await.expect("decode invalid response");
+    assert!(
+        err_json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid settlement status"),
+        "unexpected error payload: {err_json:?}"
+    );
+
+    let bad_body = http_client
+        .post(format!("{base}/core/payment-tabs", base = base_addr))
+        .json(&serde_json::json!({
+            "recipient_address": recipient_addr,
+            "ttl": 1200
+        }))
+        .send()
+        .await
+        .expect("send invalid body");
+    assert_eq!(
+        bad_body.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 for malformed request body"
+    );
 }
 
 #[test_log::test(tokio::test)]

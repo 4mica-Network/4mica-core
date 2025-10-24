@@ -1,10 +1,7 @@
 use alloy::{primitives::U256, rpc::types::TransactionReceipt};
 use crypto::bls::BLSCert;
-use rpc::{
-    common::{
-        CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme,
-    },
-    core::CoreApiClient,
+use rpc::common::{
+    CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme,
 };
 
 use crate::{
