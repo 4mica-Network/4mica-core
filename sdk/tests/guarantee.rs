@@ -1,5 +1,5 @@
 use rust_sdk_4mica::{
-    error::VerifyGuaranteeError, Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
+    Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256, error::VerifyGuaranteeError,
 };
 use std::time::Duration;
 
@@ -94,10 +94,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         verified_claims.amount,
         U256::from(1_000_000_000_000_000_000u128)
     );
-    assert_eq!(
-        verified_claims.asset_address,
-        ETH_ASSET_ADDRESS.to_string()
-    );
+    assert_eq!(verified_claims.asset_address, ETH_ASSET_ADDRESS.to_string());
 
     let mut tampered = bls_cert.clone();
     if let Some(last) = tampered.claims.pop() {
