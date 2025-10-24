@@ -17,7 +17,8 @@ use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, IntoActiveModel, QueryFilter, Set,
+    TransactionTrait,
 };
 use std::str::FromStr;
 
@@ -681,6 +682,18 @@ pub async fn get_guarantee(
     Ok(res)
 }
 
+pub async fn get_guarantees_for_tab(
+    ctx: &PersistCtx,
+    tab_id: U256,
+) -> Result<Vec<guarantee::Model>, PersistDbError> {
+    let rows = guarantee::Entity::find()
+        .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .order_by_asc(guarantee::Column::ReqId)
+        .all(ctx.db.as_ref())
+        .await?;
+    Ok(rows)
+}
+
 //
 // ────────────────────── REMUNERATION / PAYMENTS ──────────────────────
 //
@@ -784,6 +797,18 @@ pub async fn get_user_transactions(
     Ok(rows)
 }
 
+pub async fn get_recipient_transactions(
+    ctx: &PersistCtx,
+    recipient_address: &str,
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
+    let rows = user_transaction::Entity::find()
+        .filter(user_transaction::Column::RecipientAddress.eq(recipient_address))
+        .order_by_desc(user_transaction::Column::CreatedAt)
+        .all(ctx.db.as_ref())
+        .await?;
+    Ok(rows)
+}
+
 /// Return the most recent guarantee for a tab (by created_at DESC)
 pub async fn get_last_guarantee_for_tab(
     ctx: &PersistCtx,
@@ -822,6 +847,31 @@ pub async fn get_pending_withdrawals_for_user(
         .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
+}
+
+pub async fn get_collateral_events_for_tab(
+    ctx: &PersistCtx,
+    tab_id: U256,
+) -> Result<Vec<collateral_event::Model>, PersistDbError> {
+    let rows = collateral_event::Entity::find()
+        .filter(collateral_event::Column::TabId.eq(u256_to_string(tab_id)))
+        .order_by_desc(collateral_event::Column::CreatedAt)
+        .all(ctx.db.as_ref())
+        .await?;
+    Ok(rows)
+}
+
+pub async fn get_user_asset_balance(
+    ctx: &PersistCtx,
+    user_address: &str,
+    asset_address: &str,
+) -> Result<Option<user_asset_balance::Model>, PersistDbError> {
+    let row = user_asset_balance::Entity::find()
+        .filter(user_asset_balance::Column::UserAddress.eq(user_address))
+        .filter(user_asset_balance::Column::AssetAddress.eq(asset_address))
+        .one(ctx.db.as_ref())
+        .await?;
+    Ok(row)
 }
 
 pub async fn create_pending_tab(
@@ -888,6 +938,31 @@ pub async fn get_tab_by_id(
         .one(ctx.db.as_ref())
         .await?;
     Ok(res)
+}
+
+/// Fetch tabs for a recipient, optionally filtering by settlement status.
+pub async fn get_tabs_for_recipient(
+    ctx: &PersistCtx,
+    recipient_address: &str,
+    settlement_statuses: Option<&[SettlementStatus]>,
+) -> Result<Vec<entities::tabs::Model>, PersistDbError> {
+    let mut condition =
+        Condition::all().add(entities::tabs::Column::ServerAddress.eq(recipient_address));
+
+    if let Some(statuses) = settlement_statuses {
+        if !statuses.is_empty() {
+            let status_list: Vec<SettlementStatus> = statuses.to_vec();
+            condition = condition.add(entities::tabs::Column::SettlementStatus.is_in(status_list));
+        }
+    }
+
+    let rows = entities::tabs::Entity::find()
+        .filter(condition)
+        .order_by_desc(entities::tabs::Column::UpdatedAt)
+        .all(ctx.db.as_ref())
+        .await?;
+
+    Ok(rows)
 }
 
 pub async fn get_tab_by_id_on<C: ConnectionTrait>(

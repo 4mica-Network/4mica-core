@@ -1,6 +1,12 @@
+use alloy_primitives::U256;
+
 use crate::{
     RpcResult,
-    common::{CreatePaymentTabRequest, CreatePaymentTabResult, PaymentGuaranteeRequest},
+    common::{
+        AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
+        GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, TabInfo,
+        UserTransactionInfo,
+    },
 };
 use crypto::bls::BLSCert;
 use jsonrpsee::proc_macros::rpc;
@@ -28,4 +34,51 @@ pub trait CoreApi {
         &self,
         req: CreatePaymentTabRequest,
     ) -> RpcResult<CreatePaymentTabResult>;
+
+    #[method(name = "listSettledTabs")]
+    async fn list_settled_tabs(&self, recipient_address: String) -> RpcResult<Vec<TabInfo>>;
+
+    #[method(name = "listPendingRemunerations")]
+    async fn list_pending_remunerations(
+        &self,
+        recipient_address: String,
+    ) -> RpcResult<Vec<PendingRemunerationInfo>>;
+
+    #[method(name = "getTab")]
+    async fn get_tab(&self, tab_id: U256) -> RpcResult<Option<TabInfo>>;
+
+    #[method(name = "listRecipientTabs")]
+    async fn list_recipient_tabs(
+        &self,
+        recipient_address: String,
+        settlement_statuses: Option<Vec<String>>,
+    ) -> RpcResult<Vec<TabInfo>>;
+
+    #[method(name = "getTabGuarantees")]
+    async fn get_tab_guarantees(&self, tab_id: U256) -> RpcResult<Vec<GuaranteeInfo>>;
+
+    #[method(name = "getLatestGuarantee")]
+    async fn get_latest_guarantee(&self, tab_id: U256) -> RpcResult<Option<GuaranteeInfo>>;
+
+    #[method(name = "getGuarantee")]
+    async fn get_guarantee(&self, tab_id: U256, req_id: U256) -> RpcResult<Option<GuaranteeInfo>>;
+
+    #[method(name = "listRecipientPayments")]
+    async fn list_recipient_payments(
+        &self,
+        recipient_address: String,
+    ) -> RpcResult<Vec<UserTransactionInfo>>;
+
+    #[method(name = "getCollateralEventsForTab")]
+    async fn get_collateral_events_for_tab(
+        &self,
+        tab_id: U256,
+    ) -> RpcResult<Vec<CollateralEventInfo>>;
+
+    #[method(name = "getUserAssetBalance")]
+    async fn get_user_asset_balance(
+        &self,
+        user_address: String,
+        asset_address: String,
+    ) -> RpcResult<Option<AssetBalanceInfo>>;
 }

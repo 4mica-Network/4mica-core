@@ -139,3 +139,58 @@ pub enum PaymentVerificationResult {
     AlreadyVerified(PaymentGuaranteeClaims),
     InvalidCertificate,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabInfo {
+    pub tab_id: U256,
+    pub user_address: String,
+    pub recipient_address: String,
+    pub asset_address: String,
+    pub start_timestamp: i64,
+    pub ttl_seconds: i64,
+    pub status: String,
+    pub settlement_status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuaranteeInfo {
+    pub tab_id: U256,
+    pub req_id: U256,
+    pub from_address: String,
+    pub to_address: String,
+    pub asset_address: String,
+    pub amount: U256,
+    pub start_timestamp: i64,
+    pub certificate: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingRemunerationInfo {
+    pub tab: TabInfo,
+    pub latest_guarantee: Option<GuaranteeInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollateralEventInfo {
+    pub id: String,
+    pub user_address: String,
+    pub asset_address: String,
+    pub amount: U256,
+    pub event_type: String,
+    pub tab_id: Option<U256>,
+    pub req_id: Option<U256>,
+    pub tx_id: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetBalanceInfo {
+    pub user_address: String,
+    pub asset_address: String,
+    pub total: U256,
+    pub locked: U256,
+    pub version: i32,
+    pub updated_at: i64,
+}
