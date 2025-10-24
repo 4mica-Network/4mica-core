@@ -3,6 +3,7 @@ use alloy::contract as alloy_contract;
 use alloy::primitives::{Address, Bytes};
 use anyhow::Error;
 use crypto::hex::FromHexError;
+use rpc::ApiClientError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -37,7 +38,7 @@ pub enum SignPaymentError {
     Failed(String),
 
     #[error(transparent)]
-    Rpc(#[from] jsonrpsee::core::ClientError),
+    Rpc(#[from] ApiClientError),
 }
 
 #[derive(Debug, Error)]
@@ -187,7 +188,7 @@ pub enum CreateTabError {
     InvalidParams(String),
 
     #[error(transparent)]
-    Rpc(#[from] jsonrpsee::core::ClientError),
+    Rpc(#[from] ApiClientError),
 }
 
 #[derive(Debug, Error)]
@@ -196,13 +197,13 @@ pub enum IssuePaymentGuaranteeError {
     InvalidParams(String),
 
     #[error(transparent)]
-    Rpc(#[from] jsonrpsee::core::ClientError),
+    Rpc(#[from] ApiClientError),
 }
 
 #[derive(Debug, Error)]
 pub enum RecipientQueryError {
     #[error(transparent)]
-    Rpc(#[from] jsonrpsee::core::ClientError),
+    Rpc(#[from] ApiClientError),
 }
 
 #[derive(Debug, Error)]

@@ -1,6 +1,6 @@
 use crate::{
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS, EthereumConfig},
-    error::{ServiceError, ServiceResult, service_error_to_rpc},
+    error::{ServiceError, ServiceResult},
     ethereum::{CoreContractApi, CoreContractProxy, EthereumListener},
     persist::{IntoUserTxInfo, PersistCtx, repo},
 };
@@ -9,19 +9,13 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
 };
 use anyhow::anyhow;
-use async_trait::async_trait;
-use crypto::bls::BLSCert;
 use entities::{
     sea_orm_active_enums::{CollateralEventType, SettlementStatus, TabStatus},
     tabs,
 };
 use log::{error, info};
 use parking_lot::Mutex;
-use rpc::{
-    RpcResult,
-    common::*,
-    core::{CoreApiServer, CorePublicParameters},
-};
+use rpc::{common::*, core::CorePublicParameters};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::{
@@ -184,6 +178,10 @@ impl CoreService {
         &self.inner.persist_ctx
     }
 
+    pub fn public_params(&self) -> CorePublicParameters {
+        self.inner.public_params.clone()
+    }
+
     pub async fn build_ws_provider(config: EthereumConfig) -> ServiceResult<DynProvider> {
         let ws = WsConnect::new(&config.ws_rpc_url);
         let provider = ProviderBuilder::new()
@@ -198,7 +196,7 @@ impl CoreService {
         Ok(provider)
     }
 
-    async fn create_payment_tab(
+    pub async fn create_payment_tab(
         &self,
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
@@ -373,7 +371,7 @@ impl CoreService {
         })
     }
 
-    fn parse_settlement_statuses(
+    pub fn parse_settlement_statuses(
         statuses: Option<Vec<String>>,
     ) -> ServiceResult<Vec<SettlementStatus>> {
         fn parse_one(value: &str) -> Option<SettlementStatus> {
@@ -406,7 +404,7 @@ impl CoreService {
         }
     }
 
-    async fn list_tabs_for_recipient(
+    pub async fn list_tabs_for_recipient(
         &self,
         recipient_address: String,
         settlement_statuses: Vec<SettlementStatus>,
@@ -426,7 +424,7 @@ impl CoreService {
             .collect::<ServiceResult<Vec<_>>>()
     }
 
-    async fn list_pending_remunerations_internal(
+    pub async fn list_pending_remunerations(
         &self,
         recipient_address: String,
     ) -> ServiceResult<Vec<PendingRemunerationInfo>> {
@@ -455,27 +453,24 @@ impl CoreService {
         Ok(items)
     }
 
-    async fn get_tab_info(&self, tab_id: U256) -> ServiceResult<Option<TabInfo>> {
+    pub async fn get_tab(&self, tab_id: U256) -> ServiceResult<Option<TabInfo>> {
         let maybe_tab = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await?;
         maybe_tab.map(Self::tab_model_to_info).transpose()
     }
 
-    async fn get_tab_guarantees_internal(&self, tab_id: U256) -> ServiceResult<Vec<GuaranteeInfo>> {
+    pub async fn get_tab_guarantees(&self, tab_id: U256) -> ServiceResult<Vec<GuaranteeInfo>> {
         let rows = repo::get_guarantees_for_tab(&self.inner.persist_ctx, tab_id).await?;
         rows.into_iter()
             .map(Self::guarantee_model_to_info)
             .collect::<ServiceResult<Vec<_>>>()
     }
 
-    async fn get_latest_guarantee_internal(
-        &self,
-        tab_id: U256,
-    ) -> ServiceResult<Option<GuaranteeInfo>> {
+    pub async fn get_latest_guarantee(&self, tab_id: U256) -> ServiceResult<Option<GuaranteeInfo>> {
         let maybe = repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, tab_id).await?;
         maybe.map(Self::guarantee_model_to_info).transpose()
     }
 
-    async fn get_specific_guarantee_internal(
+    pub async fn get_guarantee(
         &self,
         tab_id: U256,
         req_id: U256,
@@ -484,7 +479,7 @@ impl CoreService {
         maybe.map(Self::guarantee_model_to_info).transpose()
     }
 
-    async fn list_recipient_payments_internal(
+    pub async fn list_recipient_payments(
         &self,
         recipient_address: String,
     ) -> ServiceResult<Vec<UserTransactionInfo>> {
@@ -496,7 +491,7 @@ impl CoreService {
             .collect())
     }
 
-    async fn get_collateral_events_for_tab_internal(
+    pub async fn get_collateral_events_for_tab(
         &self,
         tab_id: U256,
     ) -> ServiceResult<Vec<CollateralEventInfo>> {
@@ -506,7 +501,7 @@ impl CoreService {
             .collect::<ServiceResult<Vec<_>>>()
     }
 
-    async fn get_user_asset_balance_internal(
+    pub async fn get_user_asset_balance(
         &self,
         user_address: String,
         asset_address: String,
@@ -515,104 +510,5 @@ impl CoreService {
             repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
                 .await?;
         maybe.map(Self::asset_balance_model_to_info).transpose()
-    }
-}
-
-#[async_trait]
-impl CoreApiServer for CoreService {
-    async fn get_public_params(&self) -> RpcResult<CorePublicParameters> {
-        Ok(self.inner.public_params.clone())
-    }
-
-    async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert> {
-        self.handle_promise(req).await.map_err(service_error_to_rpc)
-    }
-
-    async fn create_payment_tab(
-        &self,
-        req: CreatePaymentTabRequest,
-    ) -> RpcResult<CreatePaymentTabResult> {
-        self.create_payment_tab(req)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn list_settled_tabs(&self, recipient_address: String) -> RpcResult<Vec<TabInfo>> {
-        self.list_tabs_for_recipient(recipient_address, vec![SettlementStatus::Settled])
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn list_pending_remunerations(
-        &self,
-        recipient_address: String,
-    ) -> RpcResult<Vec<PendingRemunerationInfo>> {
-        self.list_pending_remunerations_internal(recipient_address)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn get_tab(&self, tab_id: U256) -> RpcResult<Option<TabInfo>> {
-        self.get_tab_info(tab_id)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn list_recipient_tabs(
-        &self,
-        recipient_address: String,
-        settlement_statuses: Option<Vec<String>>,
-    ) -> RpcResult<Vec<TabInfo>> {
-        let parsed =
-            Self::parse_settlement_statuses(settlement_statuses).map_err(service_error_to_rpc)?;
-        self.list_tabs_for_recipient(recipient_address, parsed)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn get_tab_guarantees(&self, tab_id: U256) -> RpcResult<Vec<GuaranteeInfo>> {
-        self.get_tab_guarantees_internal(tab_id)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn get_latest_guarantee(&self, tab_id: U256) -> RpcResult<Option<GuaranteeInfo>> {
-        self.get_latest_guarantee_internal(tab_id)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn get_guarantee(&self, tab_id: U256, req_id: U256) -> RpcResult<Option<GuaranteeInfo>> {
-        self.get_specific_guarantee_internal(tab_id, req_id)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn list_recipient_payments(
-        &self,
-        recipient_address: String,
-    ) -> RpcResult<Vec<UserTransactionInfo>> {
-        self.list_recipient_payments_internal(recipient_address)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn get_collateral_events_for_tab(
-        &self,
-        tab_id: U256,
-    ) -> RpcResult<Vec<CollateralEventInfo>> {
-        self.get_collateral_events_for_tab_internal(tab_id)
-            .await
-            .map_err(service_error_to_rpc)
-    }
-
-    async fn get_user_asset_balance(
-        &self,
-        user_address: String,
-        asset_address: String,
-    ) -> RpcResult<Option<AssetBalanceInfo>> {
-        self.get_user_asset_balance_internal(user_address, asset_address)
-            .await
-            .map_err(service_error_to_rpc)
     }
 }
