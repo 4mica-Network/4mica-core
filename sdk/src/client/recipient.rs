@@ -108,28 +108,34 @@ impl RecipientClient {
         Ok(cert)
     }
 
-    pub fn verify_payment_guarantee(&self, cert: &BLSCert) -> Result<bool, VerifyGuaranteeError> {
-        cert.verify(self.ctx.operator_public_key())
+    pub fn verify_payment_guarantee(
+        &self,
+        cert: &BLSCert,
+    ) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError> {
+        let is_valid = cert
+            .verify(self.ctx.operator_public_key())
+            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
+        if !is_valid {
+            return Err(VerifyGuaranteeError::CertificateMismatch);
+        }
+
+        let claims_bytes = cert
+            .claims_bytes()
+            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
+        PaymentGuaranteeClaims::try_from(claims_bytes.as_slice())
             .map_err(VerifyGuaranteeError::InvalidCertificate)
     }
 
     pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError> {
-        let is_valid = self
+        let guarantee_claims = self
             .verify_payment_guarantee(&cert)
             .map_err(|err| match err {
                 VerifyGuaranteeError::InvalidCertificate(source) => {
                     RemunerateError::CertificateInvalid(source)
                 }
+                VerifyGuaranteeError::CertificateMismatch => RemunerateError::CertificateMismatch,
             })?;
-        if !is_valid {
-            return Err(RemunerateError::CertificateMismatch);
-        }
-
-        let claims = crypto::hex::decode_hex(&cert.claims).map_err(RemunerateError::ClaimsHex)?;
-        let claims = PaymentGuaranteeClaims::try_from(claims.as_slice())
-            .map_err(RemunerateError::ClaimsDecode)?;
-
-        let guarantee: Guarantee = claims
+        let guarantee: Guarantee = guarantee_claims
             .try_into()
             .map_err(RemunerateError::GuaranteeConversion)?;
 

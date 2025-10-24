@@ -203,6 +203,8 @@ pub enum IssuePaymentGuaranteeError {
 pub enum VerifyGuaranteeError {
     #[error("invalid BLS certificate")]
     InvalidCertificate(#[source] Error),
+    #[error("certificate signature mismatch")]
+    CertificateMismatch,
 }
 
 fn extract_selector_and_data(e: &alloy_contract::Error) -> Option<(u32, Vec<u8>)> {
