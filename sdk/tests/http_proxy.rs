@@ -53,7 +53,7 @@ async fn rpc_proxy_get_public_params_round_trip() {
 #[tokio::test]
 async fn rpc_proxy_surfaces_api_errors() {
     let router = Router::new().route(
-        "/core/recipients/:recipient/tabs",
+        "/core/recipients/{recipient}/tabs",
         get(|| async {
             (
                 axum::http::StatusCode::BAD_REQUEST,
