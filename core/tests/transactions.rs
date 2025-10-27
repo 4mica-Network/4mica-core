@@ -1,15 +1,15 @@
 use alloy::primitives::U256;
-use core_service::error::PersistDbError;
 use core_service::persist::repo;
+use core_service::{config::DEFAULT_ASSET_ADDRESS, error::PersistDbError};
 use entities::user_transaction;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use test_log::test;
 use uuid::Uuid;
 
 mod common;
-use common::fixtures::{
-    ensure_user, ensure_user_with_collateral, fetch_user, init_test_env, random_address,
-};
+use common::fixtures::{ensure_user, ensure_user_with_collateral, init_test_env, random_address};
+
+use crate::common::fixtures::read_collateral;
 
 #[test(tokio::test)]
 async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
@@ -25,6 +25,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
         &ctx,
         user_addr.clone(),
         recipient.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id.clone(),
         U256::from(2u64),
     )
@@ -33,6 +34,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
         &ctx,
         user_addr.clone(),
         recipient,
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id.clone(),
         U256::from(2u64),
     )
@@ -59,6 +61,7 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
         &ctx,
         user_addr.clone(),
         recipient,
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id.clone(),
         U256::from(3u64),
     )
@@ -67,8 +70,10 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
     repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
     repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
 
-    let user = fetch_user(&ctx, &user_addr).await?;
-    assert_eq!(user.collateral, U256::from(7u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(7u64)
+    );
     Ok(())
 }
 
@@ -86,6 +91,7 @@ async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
             &ctx,
             user_addr.clone(),
             recipient.clone(),
+            DEFAULT_ASSET_ADDRESS.to_string(),
             tx_id.clone(),
             U256::from(2u64),
         )
@@ -137,6 +143,7 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
         &ctx,
         owner_addr.clone(),
         recipient,
+        DEFAULT_ASSET_ADDRESS.to_string(),
         tx_id.clone(),
         U256::from(3u64),
     )
@@ -158,11 +165,15 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
     assert!(!row.finalized, "tx should not be finalized");
 
     // Collateral should be unchanged for both users
-    let owner = fetch_user(&ctx, &owner_addr).await?;
-    assert_eq!(owner.collateral, U256::from(10u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &owner_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(10u64)
+    );
 
-    let other = fetch_user(&ctx, &other_addr).await?;
-    assert_eq!(other.collateral, U256::from(10u64).to_string());
+    assert_eq!(
+        read_collateral(&ctx, &other_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(10u64)
+    );
 
     Ok(())
 }

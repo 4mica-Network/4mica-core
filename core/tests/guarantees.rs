@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use chrono::Utc;
-use core_service::config::AppConfig;
+use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::error::PersistDbError;
 use core_service::persist::*;
 use core_service::util::u256_to_string;
@@ -11,6 +11,9 @@ use rpc::common::PaymentGuaranteeClaims;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::str::FromStr;
 use test_log::test;
+
+mod common;
+use common::fixtures::read_locked_collateral;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
@@ -44,13 +47,13 @@ async fn insert_test_tab(
         id: Set(u256_to_string(id)),
         user_address: Set(user_address.to_owned()),
         server_address: Set(recipient_address.to_owned()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         ttl: Set(300),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
 
     entities::tabs::Entity::insert(new_tab)
@@ -72,12 +75,9 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let tab_id = random_u256();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -94,6 +94,7 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
         req_id,
         from: from_addr.clone(),
         to: to_addr.clone(),
+        asset: DEFAULT_ASSET_ADDRESS.to_string(),
         value: U256::from(42u64),
         start_ts: now,
         cert: "cert".into(),
@@ -128,12 +129,9 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 
     let from_user = entities::user::ActiveModel {
         address: Set(from_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(from_user)
         .exec(ctx.db.as_ref())
@@ -144,13 +142,13 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         id: Set(u256_to_string(tab_id)),
         user_address: Set(from_addr.clone()),
         server_address: Set(from_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
         ttl: Set(300),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
@@ -162,6 +160,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         req_id,
         from: from_addr.clone(),
         to: to_addr.clone(),
+        asset: DEFAULT_ASSET_ADDRESS.to_string(),
         value: U256::from(100u64),
         start_ts: now,
         cert: "cert".into(),
@@ -174,6 +173,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         req_id,
         from: from_addr,
         to: to_addr,
+        asset: DEFAULT_ASSET_ADDRESS.to_string(),
         value: U256::from(200u64),
         start_ts: now,
         cert: "cert2".into(),
@@ -214,12 +214,9 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     let recipient_addr = random_eth_address();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -233,6 +230,7 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
         req_id: U256::from(1u64),
         from: user_addr.clone(),
         to: random_eth_address(),
+        asset: DEFAULT_ASSET_ADDRESS.to_string(),
         value: U256::from(10u64),
         start_ts: now,
         cert: "cert1".into(),
@@ -245,6 +243,7 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
         req_id: U256::from(2u64),
         from: user_addr,
         to: random_eth_address(),
+        asset: DEFAULT_ASSET_ADDRESS.to_string(),
         value: U256::from(20u64),
         start_ts: now,
         cert: "cert2".into(),
@@ -270,12 +269,9 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
 
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -287,13 +283,13 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         id: Set(u256_to_string(tab_id)),
         user_address: Set(user_addr.clone()),
         server_address: Set(user_addr),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         ttl: Set(123),
-        ..Default::default()
     };
     entities::tabs::Entity::insert(tab_am)
         .exec(ctx.db.as_ref())
@@ -321,12 +317,9 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     let recipient_addr = random_eth_address();
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
-        collateral: Set("0".into()),
-        locked_collateral: Set("0".into()),
         version: Set(0),
         created_at: Set(now),
         updated_at: Set(now),
-        ..Default::default()
     };
     entities::user::Entity::insert(u_am)
         .exec(ctx.db.as_ref())
@@ -340,6 +333,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
         req_id: U256::from(0xA),
         from: user_addr.clone(),
         to: random_eth_address(),
+        asset: DEFAULT_ASSET_ADDRESS.to_string(),
         value: U256::from(10u64),
         start_ts: now,
         cert: "cert-A".into(),
@@ -350,6 +344,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
         req_id: U256::from(0xB),
         from: user_addr,
         to: random_eth_address(),
+        asset: DEFAULT_ASSET_ADDRESS.to_string(),
         value: U256::from(20u64),
         start_ts: now,
         cert: "cert-B".into(),
@@ -374,7 +369,13 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
     // create a user with some collateral
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
     repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
-    repo::deposit(&ctx, user_addr.clone(), U256::from(100u64)).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
 
     // recipient + tab
     let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
@@ -387,6 +388,7 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
         req_id: U256::from(0u64),
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
         amount: U256::from(40u64),
         timestamp: Utc::now().timestamp() as u64,
     };
@@ -400,11 +402,10 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
     repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
 
     // check locked collateral updated
-    let u = user::Entity::find_by_id(&user_addr)
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
-    assert_eq!(u.locked_collateral.parse::<U256>()?, U256::from(40u64));
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(40u64)
+    );
 
     // check guarantee row inserted
     let g = entities::guarantee::Entity::find()
@@ -423,7 +424,13 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     let ctx = PersistCtx::new().await?;
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
     repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
-    repo::deposit(&ctx, user_addr.clone(), U256::from(50u64)).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(50u64),
+    )
+    .await?;
 
     let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
     let tab_id = random_u256();
@@ -434,6 +441,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
         req_id: random_u256(),
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
         amount: U256::from(10u64),
         // deliberately invalid: chrono cannot represent this
         timestamp: i64::MAX as u64,
@@ -448,11 +456,10 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));
 
     // locked collateral unchanged
-    let u = user::Entity::find_by_id(&user_addr)
-        .one(ctx.db.as_ref())
-        .await?
-        .unwrap();
-    assert_eq!(u.locked_collateral.parse::<U256>()?, U256::ZERO);
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
 
     // no guarantee row inserted
     let g = entities::guarantee::Entity::find()

@@ -3,6 +3,7 @@ use alloy::contract as alloy_contract;
 use alloy::primitives::{Address, Bytes};
 use anyhow::Error;
 use crypto::hex::FromHexError;
+use rpc::ApiClientError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -37,7 +38,7 @@ pub enum SignPaymentError {
     Failed(String),
 
     #[error(transparent)]
-    Rpc(#[from] jsonrpsee::core::ClientError),
+    Rpc(#[from] ApiClientError),
 }
 
 #[derive(Debug, Error)]
@@ -72,6 +73,10 @@ pub enum RemunerateError {
     AmountZero,
     #[error("transfer failed")]
     TransferFailed,
+    #[error("certificate verification failed: {0}")]
+    CertificateInvalid(#[source] Error),
+    #[error("certificate signature mismatch before submission")]
+    CertificateMismatch,
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
@@ -138,9 +143,25 @@ pub enum DepositError {
 }
 
 #[derive(Debug, Error)]
+pub enum ApproveErc20Error {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+
+    #[error("unknown revert (selector {selector:#x})")]
+    UnknownRevert { selector: u32, data: Vec<u8> },
+    #[error("provider/transport error: {0}")]
+    Transport(String),
+}
+
+#[derive(Debug, Error)]
 pub enum PayTabError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
+    #[error("invalid asset")]
+    InvalidAsset,
+
+    #[error("unknown revert (selector {selector:#x})")]
+    UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
 }
@@ -167,7 +188,7 @@ pub enum CreateTabError {
     InvalidParams(String),
 
     #[error(transparent)]
-    Rpc(#[from] jsonrpsee::core::ClientError),
+    Rpc(#[from] ApiClientError),
 }
 
 #[derive(Debug, Error)]
@@ -176,7 +197,21 @@ pub enum IssuePaymentGuaranteeError {
     InvalidParams(String),
 
     #[error(transparent)]
-    Rpc(#[from] jsonrpsee::core::ClientError),
+    Rpc(#[from] ApiClientError),
+}
+
+#[derive(Debug, Error)]
+pub enum RecipientQueryError {
+    #[error(transparent)]
+    Rpc(#[from] ApiClientError),
+}
+
+#[derive(Debug, Error)]
+pub enum VerifyGuaranteeError {
+    #[error("invalid BLS certificate")]
+    InvalidCertificate(#[source] Error),
+    #[error("certificate signature mismatch")]
+    CertificateMismatch,
 }
 
 fn extract_selector_and_data(e: &alloy_contract::Error) -> Option<(u32, Vec<u8>)> {
@@ -256,6 +291,12 @@ impl_from_alloy_error!(CancelWithdrawalError, {
 impl_from_alloy_error!(DepositError, {
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
 });
+
+impl_from_alloy_error!(PayTabError, {
+    Core4Mica::Core4MicaErrors::InvalidAsset(_) => Self::InvalidAsset,
+});
+
+impl_from_alloy_error!(ApproveErc20Error);
 
 impl_from_alloy_error!(GetUserError);
 

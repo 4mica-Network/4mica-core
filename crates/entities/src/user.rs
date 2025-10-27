@@ -10,10 +10,6 @@ pub struct Model {
     pub version: i32,
     pub created_at: DateTime,
     pub updated_at: DateTime,
-    #[sea_orm(column_type = "Text")]
-    pub collateral: String,
-    #[sea_orm(column_type = "Text")]
-    pub locked_collateral: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

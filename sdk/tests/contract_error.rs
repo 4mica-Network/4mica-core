@@ -29,7 +29,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     // Step 1: User deposits collateral (2 ETH)
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let _receipt = user_client.user.deposit(deposit_amount).await?;
+    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
     // Wait for transaction to settle
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -37,7 +37,12 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
         .recipient
-        .create_tab(user_address.clone(), recipient_address.clone(), Some(3600))
+        .create_tab(
+            user_address.clone(),
+            recipient_address.clone(),
+            None,
+            Some(3600),
+        )
         .await?;
 
     // Step 3: User signs a payment (1 ETH)
@@ -50,6 +55,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
+        asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     let payment_sig = user_client
         .user
@@ -61,6 +67,42 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
+
+    let mut mismatched = bls_cert.clone();
+    if let Some(last) = mismatched.claims.pop() {
+        let replacement = match last {
+            '0' => '1',
+            '1' => '2',
+            '2' => '3',
+            '3' => '4',
+            '4' => '5',
+            '5' => '6',
+            '6' => '7',
+            '7' => '8',
+            '8' => '9',
+            '9' => 'a',
+            'a' => 'b',
+            'b' => 'c',
+            'c' => 'd',
+            'd' => 'e',
+            'e' => 'f',
+            _ => '0',
+        };
+        mismatched.claims.push(replacement);
+    } else {
+        panic!("certificate claims unexpectedly empty");
+    }
+
+    let result = recipient_client.recipient.remunerate(mismatched).await;
+    assert!(matches!(result, Err(RemunerateError::CertificateMismatch)));
+
+    let mut malformed = bls_cert.clone();
+    malformed.signature.pop();
+    let result = recipient_client.recipient.remunerate(malformed).await;
+    assert!(matches!(
+        result,
+        Err(RemunerateError::CertificateInvalid(_))
+    ));
 
     // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
     let result = recipient_client.recipient.remunerate(bls_cert).await;

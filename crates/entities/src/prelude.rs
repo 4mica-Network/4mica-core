@@ -4,5 +4,6 @@ pub use super::collateral_event::Entity as CollateralEvent;
 pub use super::guarantee::Entity as Guarantee;
 pub use super::tabs::Entity as Tabs;
 pub use super::user::Entity as User;
+pub use super::user_asset_balance::Entity as UserAssetBalance;
 pub use super::user_transaction::Entity as UserTransaction;
 pub use super::withdrawal::Entity as Withdrawal;

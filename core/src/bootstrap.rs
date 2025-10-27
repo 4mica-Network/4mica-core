@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use core_service::{
     config::{AppConfig, ServerConfig},
+    http,
     scheduler::TaskScheduler,
     service::{CoreService, payment::ScanPaymentsTask},
 };
 use env_logger::Env;
-use jsonrpsee::server::Server;
 use log::info;
-use rpc::core::CoreApiServer;
-use tower::ServiceBuilder;
+use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 
 fn load_config() -> AppConfig {
@@ -30,20 +29,14 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         host,
         port,
         log_level,
-    } = &app_config.server_config;
+    } = app_config.server_config.clone();
 
     env_logger::Builder::from_env(Env::default().default_filter_or(log_level.as_str())).init();
 
-    let cors = CorsLayer::new()
+    let cors_layer = CorsLayer::new()
         .allow_methods(Any)
         .allow_origin(Any)
         .allow_headers(Any);
-    let middleware = ServiceBuilder::new().layer(cors);
-
-    let server = Server::builder()
-        .set_http_middleware(middleware)
-        .build(format!("{host}:{port}"))
-        .await?;
 
     let service = CoreService::new(app_config).await?;
 
@@ -53,9 +46,12 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         .await?;
     scheduler.start().await?;
 
-    info!("Running server on {}...", server.local_addr()?);
-    let handle = server.start(service.into_rpc());
-    handle.stopped().await;
+    let app = http::router(service).layer(cors_layer);
+    let addr = format!("{host}:{port}");
+    let listener = TcpListener::bind(&addr).await?;
+    let local_addr = listener.local_addr()?;
+    info!("Running server on {}...", local_addr);
+    axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
 }

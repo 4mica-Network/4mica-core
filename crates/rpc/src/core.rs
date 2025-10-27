@@ -1,31 +1,18 @@
-use crate::{
-    RpcResult,
-    common::{CreatePaymentTabRequest, CreatePaymentTabResult, PaymentGuaranteeRequest},
-};
-use crypto::bls::BLSCert;
-use jsonrpsee::proc_macros::rpc;
 use serde::{Deserialize, Serialize};
+
+/// Static parameters exposed by the core service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
 pub struct CorePublicParameters {
-    pub public_key: Vec<u8>, // BLS pubkey
+    /// Operator BLS public key.
+    pub public_key: Vec<u8>,
+    /// Address of the on-chain core contract.
     pub contract_address: String,
+    /// Ethereum RPC endpoint URL.
     pub ethereum_http_rpc_url: String,
-    pub eip712_name: String,    // e.g., "4mica"
-    pub eip712_version: String, // e.g., "1"
-    pub chain_id: u64,          // Ethereum chain id used for signing domain
-}
-#[rpc(server, client, namespace = "core")]
-pub trait CoreApi {
-    #[method(name = "getPublicParams")]
-    async fn get_public_params(&self) -> RpcResult<CorePublicParameters>;
-
-    #[method(name = "issueGuarantee")]
-    async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert>;
-
-    #[method(name = "createPaymentTab")]
-    async fn create_payment_tab(
-        &self,
-        req: CreatePaymentTabRequest,
-    ) -> RpcResult<CreatePaymentTabResult>;
+    /// EIP-712 domain name.
+    pub eip712_name: String,
+    /// EIP-712 domain version.
+    pub eip712_version: String,
+    /// Chain identifier used for the signing domain.
+    pub chain_id: u64,
 }
