@@ -14,6 +14,10 @@ use crate::{
 };
 use crypto::bls::BLSCert;
 
+fn serialize_tab_id(val: U256) -> String {
+    format!("{:#x}", val)
+}
+
 #[derive(Debug, Clone)]
 pub struct RpcProxy {
     client: Client,
@@ -106,7 +110,7 @@ impl RpcProxy {
     }
 
     pub async fn get_tab(&self, tab_id: U256) -> Result<Option<TabInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}", tab_id);
+        let path = format!("/core/tabs/{}", serialize_tab_id(tab_id));
         let url = self.url(&path)?;
         self.get(url).await
     }
@@ -133,7 +137,7 @@ impl RpcProxy {
         &self,
         tab_id: U256,
     ) -> Result<Vec<GuaranteeInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}/guarantees", tab_id);
+        let path = format!("/core/tabs/{}/guarantees", serialize_tab_id(tab_id));
         let url = self.url(&path)?;
         self.get(url).await
     }
@@ -142,7 +146,7 @@ impl RpcProxy {
         &self,
         tab_id: U256,
     ) -> Result<Option<GuaranteeInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}/guarantees/latest", tab_id);
+        let path = format!("/core/tabs/{}/guarantees/latest", serialize_tab_id(tab_id));
         let url = self.url(&path)?;
         self.get(url).await
     }
@@ -152,7 +156,11 @@ impl RpcProxy {
         tab_id: U256,
         req_id: U256,
     ) -> Result<Option<GuaranteeInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}/guarantees/{}", tab_id, req_id);
+        let path = format!(
+            "/core/tabs/{}/guarantees/{}",
+            serialize_tab_id(tab_id),
+            req_id
+        );
         let url = self.url(&path)?;
         self.get(url).await
     }
@@ -170,7 +178,7 @@ impl RpcProxy {
         &self,
         tab_id: U256,
     ) -> Result<Vec<CollateralEventInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}/collateral-events", tab_id);
+        let path = format!("/core/tabs/{}/collateral-events", serialize_tab_id(tab_id));
         let url = self.url(&path)?;
         self.get(url).await
     }
