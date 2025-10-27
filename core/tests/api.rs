@@ -26,6 +26,7 @@ use uuid::Uuid;
 mod common;
 use common::fixtures::{
     clear_all_tables, ensure_user_with_collateral, init_test_env, random_address,
+    set_locked_collateral,
 };
 
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
@@ -1189,6 +1190,10 @@ async fn core_api_recipient_payments_and_events() {
     .await
     .expect("submit payment tx");
 
+    set_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS, U256::from(5u64))
+        .await
+        .expect("lock collateral before remuneration");
+
     repo::remunerate_recipient(
         &ctx,
         tab_id,
@@ -1617,6 +1622,10 @@ async fn list_settled_tabs_returns_only_settled_entries() {
         .await
         .expect("create tab")
         .id;
+
+    set_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS, U256::from(10u64))
+        .await
+        .expect("lock collateral before remuneration");
 
     repo::remunerate_recipient(
         &ctx,

@@ -457,6 +457,19 @@ pub async fn submit_payment_transaction(
     Ok(rows_affected)
 }
 
+pub async fn delete_unfinalized_payment_transaction(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<(), PersistDbError> {
+    user_transaction::Entity::delete_many()
+        .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .filter(user_transaction::Column::Finalized.eq(false))
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    Ok(())
+}
+
 pub async fn fail_transaction(
     ctx: &PersistCtx,
     user_address: String,
@@ -747,16 +760,26 @@ pub async fn remunerate_recipient(
                 if amount > U256::ZERO {
                     let locked = U256::from_str(&asset_balance.locked)
                         .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                    if amount > locked {
+                        return Err(PersistDbError::InvariantViolation(
+                            "remunerate amount exceeds locked collateral".into(),
+                        ));
+                    }
                     let new_collateral = collateral
                         .checked_sub(amount)
                         .ok_or(PersistDbError::InsufficientCollateral)?;
+                    let new_locked = locked.checked_sub(amount).ok_or_else(|| {
+                        PersistDbError::InvariantViolation(
+                            "locked collateral underflow during remuneration".into(),
+                        )
+                    })?;
                     update_user_balance_and_version_on(
                         txn,
                         &tab.user_address,
                         &asset_address,
                         asset_balance.version,
                         new_collateral,
-                        locked,
+                        new_locked,
                     )
                     .await?;
                 }
