@@ -6,6 +6,7 @@ use crate::{
     persist::repo,
     util::u256_to_string,
 };
+use alloy::primitives::Address;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
@@ -43,6 +44,25 @@ impl CoreService {
                 warn!(
                     "Recipient address does not match payment recipient for tab {}. Skipping.",
                     tab_id_str
+                );
+                continue;
+            }
+
+            let tab_user_address = match tab.user_address.parse::<Address>() {
+                Ok(addr) => addr,
+                Err(err) => {
+                    warn!(
+                        "Invalid user address {} for tab {} (err: {}). Skipping.",
+                        tab.user_address, tab_id_str, err
+                    );
+                    continue;
+                }
+            };
+
+            if tab_user_address != payment.from {
+                warn!(
+                    "Payment sender {} does not match tab user {} for tab {}. Skipping.",
+                    payment.from, tab.user_address, tab_id_str
                 );
                 continue;
             }
