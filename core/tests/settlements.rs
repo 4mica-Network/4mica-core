@@ -2,7 +2,8 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::U256;
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
+use blockchain::txtools::PaymentTx;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::{PersistCtx, repo};
 use entities::{
@@ -15,11 +16,10 @@ use std::{str::FromStr, time::Duration};
 use test_log::test;
 
 mod common;
-use crate::common::fixtures::{read_collateral, read_locked_collateral};
+use crate::common::fixtures::{clear_all_tables, read_collateral, read_locked_collateral};
 use crate::common::setup::{E2eEnvironment, setup_e2e_environment};
 
 static NUMBER_OF_TRIALS: u32 = 60;
-
 //
 // ────────────────────── HELPERS ──────────────────────
 //
@@ -230,6 +230,60 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
     assert_eq!(parse_u256(&txs[0].amount), amount);
     assert_eq!(txs[0].tx_id, tx_record.tx_id);
 
+    Ok(())
+}
+
+/// Payments originating from a non-tab user must be ignored by the scanner.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial]
+async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
+    let E2eEnvironment {
+        core_service,
+        signer_addr,
+        scheduler: _scheduler,
+        ..
+    } = setup_e2e_environment().await?;
+    let persist_ctx = core_service.persist_ctx();
+
+    let expected_user = unique_addr();
+    let server_addr = unique_addr();
+
+    repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &expected_user).await?;
+    let tab_id = U256::from(rand::random::<u64>());
+    insert_tab(&persist_ctx, tab_id, &expected_user, &server_addr).await?;
+
+    let payment = PaymentTx {
+        block_number: 1,
+        tx_hash: B256::ZERO,
+        from: signer_addr,
+        to: Address::from_str(&server_addr)?,
+        amount: U256::from(42u64),
+        tab_id,
+        req_id: U256::ZERO,
+        erc20_token: None,
+    };
+
+    core_service
+        .handle_discovered_payments(vec![payment])
+        .await?;
+
+    let tx_rows = user_transaction::Entity::find()
+        .filter(user_transaction::Column::UserAddress.eq(expected_user.clone()))
+        .all(persist_ctx.db.as_ref())
+        .await?;
+    assert!(
+        tx_rows.is_empty(),
+        "unexpected user transactions recorded: {:?}",
+        tx_rows
+    );
+
+    let tab = tabs::Entity::find_by_id(format!("{tab_id:#x}"))
+        .one(persist_ctx.db.as_ref())
+        .await?
+        .expect("tab not found");
+    assert_eq!(tab.settlement_status, SettlementStatus::Pending);
+
+    clear_all_tables(persist_ctx).await?;
     Ok(())
 }
 
