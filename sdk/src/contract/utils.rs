@@ -18,6 +18,8 @@ impl TryFrom<PaymentGuaranteeClaims> for Guarantee {
                 .map_err(|e| anyhow::anyhow!("Invalid recipient address: {}", e))?,
             req_id: claims.req_id,
             amount: claims.amount,
+            asset: Address::from_str(&claims.asset_address)
+                .map_err(|e| anyhow::anyhow!("Invalid asset address: {}", e))?,
         };
         Ok(guarantee)
     }

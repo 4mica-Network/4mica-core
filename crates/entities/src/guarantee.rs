@@ -13,6 +13,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub to_address: String,
     #[sea_orm(column_type = "Text")]
+    pub asset_address: String,
+    #[sea_orm(column_type = "Text")]
     pub value: String,
     pub start_ts: DateTime,
     #[sea_orm(column_type = "Text", nullable)]

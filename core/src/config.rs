@@ -3,6 +3,8 @@ use envconfig::Envconfig;
 
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
+pub const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
 #[derive(Debug, Clone, Envconfig)]
 pub struct ServerConfig {
     #[envconfig(from = "SERVER_HOST", default = "127.0.0.1")]

@@ -4,6 +4,7 @@ use rpc::common::UserTransactionInfo;
 use sea_orm::{Database, DatabaseConnection};
 use std::sync::Arc;
 
+pub mod mapper;
 pub mod repo;
 
 #[derive(Clone)]
@@ -16,6 +17,7 @@ pub struct GuaranteeData {
     pub req_id: U256,
     pub from: String,
     pub to: String,
+    pub asset: String,
     pub value: U256,
     pub start_ts: chrono::NaiveDateTime,
     pub cert: String,

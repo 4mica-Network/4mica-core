@@ -1,8 +1,11 @@
-use std::sync::Arc;
+use std::{convert::TryInto, sync::Arc};
 
 use crate::{
     config::Config,
-    contract::Core4Mica::{self, Core4MicaInstance},
+    contract::{
+        Core4Mica::{self, Core4MicaInstance},
+        ERC20::{self, ERC20Instance},
+    },
     error::ClientError,
     validators::{validate_address, validate_url},
 };
@@ -11,7 +14,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use rpc::{core::CoreApiClient, proxy::RpcProxy};
+use rpc::RpcProxy;
 
 use self::{recipient::RecipientClient, user::UserClient};
 
@@ -24,6 +27,7 @@ struct Inner {
     rpc_proxy: RpcProxy,
     provider: DynProvider,
     contract_address: Address,
+    operator_public_key: [u8; 48],
 }
 
 #[derive(Clone)]
@@ -65,6 +69,18 @@ impl ClientCtx {
             )));
         }
 
+        let operator_public_key: [u8; 48] =
+            public_params
+                .public_key
+                .clone()
+                .try_into()
+                .map_err(|pk: Vec<u8>| {
+                    ClientError::Initialization(format!(
+                        "invalid operator public key length: expected 48 bytes, got {}",
+                        pk.len()
+                    ))
+                })?;
+
         let contract_address = cfg.contract_address.unwrap_or(
             validate_address(&public_params.contract_address)
                 .expect("Invalid contract address received from server"),
@@ -85,11 +101,20 @@ impl ClientCtx {
             rpc_proxy,
             provider,
             contract_address,
+            operator_public_key,
         })))
+    }
+
+    fn contract_address(&self) -> Address {
+        self.0.contract_address
     }
 
     fn get_contract(&self) -> Core4MicaInstance<DynProvider> {
         Core4Mica::new(self.0.contract_address, self.0.provider.clone())
+    }
+
+    fn get_erc20_contract(&self, token_address: Address) -> ERC20Instance<DynProvider> {
+        ERC20::new(token_address, self.0.provider.clone())
     }
 
     fn provider(&self) -> &DynProvider {
@@ -102,6 +127,10 @@ impl ClientCtx {
 
     fn signer(&self) -> &PrivateKeySigner {
         &self.0.cfg.wallet_private_key
+    }
+
+    fn operator_public_key(&self) -> &[u8; 48] {
+        &self.0.operator_public_key
     }
 }
 

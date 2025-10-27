@@ -1,25 +1,26 @@
+use crate::persist::mapper;
 use crate::{
-    config::{AppConfig, DEFAULT_TTL_SECS, EthereumConfig},
-    error::{ServiceError, ServiceResult, service_error_to_rpc},
+    config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS, EthereumConfig},
+    error::{ServiceError, ServiceResult},
     ethereum::{CoreContractApi, CoreContractProxy, EthereumListener},
-    persist::{PersistCtx, repo},
+    persist::{IntoUserTxInfo, PersistCtx, repo},
 };
-use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
+use alloy::{
+    primitives::U256,
+    providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
+};
 use anyhow::anyhow;
-use async_trait::async_trait;
-use crypto::bls::BLSCert;
+use entities::sea_orm_active_enums::SettlementStatus;
 use log::{error, info};
-use rpc::{
-    RpcResult,
-    common::*,
-    core::{CoreApiServer, CorePublicParameters},
-};
+use parking_lot::Mutex;
+use rpc::{common::*, core::CorePublicParameters};
 use std::sync::Arc;
 use tokio::{
-    spawn,
+    task::JoinHandle,
     time::{Duration, sleep},
 };
 
+pub mod event_handler;
 mod guarantee;
 pub mod payment;
 
@@ -29,6 +30,15 @@ pub struct Inner {
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
+    listener_handle: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if let Some(handle) = self.listener_handle.lock().take() {
+            handle.abort();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -43,7 +53,6 @@ impl CoreService {
         }
 
         let persist_ctx = PersistCtx::new().await?;
-        let persist_ctx_clone = persist_ctx.clone();
         let eth_cfg = config.ethereum_config.clone();
         let listener_cfg = eth_cfg.clone();
 
@@ -66,20 +75,35 @@ impl CoreService {
         crypto::guarantee::set_guarantee_domain_separator(on_chain_domain)
             .map_err(|e| anyhow!("failed to set guarantee domain: {e}"))?;
 
-        let read_provider_clone = read_provider.clone();
-        spawn(async move {
+        let core_service = Self::new_with_dependencies(
+            config,
+            persist_ctx.clone(),
+            contract_api,
+            actual_chain_id,
+            read_provider.clone(),
+        )?;
+
+        let core_service_clone = core_service.clone();
+        tokio::spawn(async move {
             let mut delay = Duration::from_secs(1);
             loop {
                 match EthereumListener::new(
                     listener_cfg.clone(),
-                    persist_ctx_clone.clone(),
-                    read_provider_clone.clone(),
+                    persist_ctx.clone(),
+                    read_provider.clone(),
+                    Arc::new(core_service_clone.clone()),
                 )
                 .run()
                 .await
                 {
-                    Ok(_) => {
+                    Ok(handle) => {
                         info!("EthereumListener connected successfully.");
+                        core_service_clone
+                            .inner
+                            .listener_handle
+                            .lock()
+                            .replace(handle);
+
                         break;
                     }
                     Err(e) => {
@@ -91,16 +115,9 @@ impl CoreService {
             }
         });
 
-        Self::new_with_dependencies(
-            config,
-            persist_ctx,
-            contract_api,
-            actual_chain_id,
-            read_provider,
-        )
+        Ok(core_service)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new_with_dependencies(
         config: AppConfig,
         persist_ctx: PersistCtx,
@@ -136,6 +153,7 @@ impl CoreService {
             persist_ctx,
             read_provider,
             contract_api,
+            listener_handle: Mutex::default(),
         };
 
         Ok(Self {
@@ -153,6 +171,14 @@ impl CoreService {
             .expect("BLS private key must be 32 bytes")
     }
 
+    pub fn persist_ctx(&self) -> &PersistCtx {
+        &self.inner.persist_ctx
+    }
+
+    pub fn public_params(&self) -> CorePublicParameters {
+        self.inner.public_params.clone()
+    }
+
     pub async fn build_ws_provider(config: EthereumConfig) -> ServiceResult<DynProvider> {
         let ws = WsConnect::new(&config.ws_rpc_url);
         let provider = ProviderBuilder::new()
@@ -167,7 +193,7 @@ impl CoreService {
         Ok(provider)
     }
 
-    async fn create_payment_tab(
+    pub async fn create_payment_tab(
         &self,
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
@@ -179,11 +205,17 @@ impl CoreService {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
 
+        let asset_address = req
+            .erc20_token
+            .clone()
+            .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
+
         repo::create_pending_tab(
             &self.inner.persist_ctx,
             tab_id,
             &req.user_address,
             &req.recipient_address,
+            &asset_address,
             now,
             ttl as i64,
         )
@@ -193,26 +225,115 @@ impl CoreService {
             id: tab_id,
             user_address: req.user_address,
             recipient_address: req.recipient_address,
+            erc20_token: req.erc20_token,
         })
     }
-}
 
-#[async_trait]
-impl CoreApiServer for CoreService {
-    async fn get_public_params(&self) -> RpcResult<CorePublicParameters> {
-        Ok(self.inner.public_params.clone())
-    }
-
-    async fn issue_guarantee(&self, req: PaymentGuaranteeRequest) -> RpcResult<BLSCert> {
-        self.handle_promise(req).await.map_err(service_error_to_rpc)
-    }
-
-    async fn create_payment_tab(
+    pub async fn list_tabs_for_recipient(
         &self,
-        req: CreatePaymentTabRequest,
-    ) -> RpcResult<CreatePaymentTabResult> {
-        self.create_payment_tab(req)
-            .await
-            .map_err(service_error_to_rpc)
+        recipient_address: String,
+        settlement_statuses: Vec<SettlementStatus>,
+    ) -> ServiceResult<Vec<TabInfo>> {
+        let status_refs = if settlement_statuses.is_empty() {
+            None
+        } else {
+            Some(settlement_statuses.as_slice())
+        };
+
+        let tabs =
+            repo::get_tabs_for_recipient(&self.inner.persist_ctx, &recipient_address, status_refs)
+                .await?;
+
+        tabs.into_iter()
+            .map(mapper::tab_model_to_info)
+            .collect::<ServiceResult<Vec<_>>>()
+    }
+
+    pub async fn list_pending_remunerations(
+        &self,
+        recipient_address: String,
+    ) -> ServiceResult<Vec<PendingRemunerationInfo>> {
+        let tabs = repo::get_tabs_for_recipient(
+            &self.inner.persist_ctx,
+            &recipient_address,
+            Some(&[SettlementStatus::Pending]),
+        )
+        .await?;
+
+        let mut items = Vec::with_capacity(tabs.len());
+        for tab in tabs {
+            let tab_info = mapper::tab_model_to_info(tab)?;
+            let latest_guarantee =
+                repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, tab_info.tab_id)
+                    .await?
+                    .map(mapper::guarantee_model_to_info)
+                    .transpose()?;
+
+            items.push(PendingRemunerationInfo {
+                tab: tab_info,
+                latest_guarantee,
+            });
+        }
+
+        Ok(items)
+    }
+
+    pub async fn get_tab(&self, tab_id: U256) -> ServiceResult<Option<TabInfo>> {
+        let maybe_tab = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await?;
+        maybe_tab.map(mapper::tab_model_to_info).transpose()
+    }
+
+    pub async fn get_tab_guarantees(&self, tab_id: U256) -> ServiceResult<Vec<GuaranteeInfo>> {
+        let rows = repo::get_guarantees_for_tab(&self.inner.persist_ctx, tab_id).await?;
+        rows.into_iter()
+            .map(mapper::guarantee_model_to_info)
+            .collect::<ServiceResult<Vec<_>>>()
+    }
+
+    pub async fn get_latest_guarantee(&self, tab_id: U256) -> ServiceResult<Option<GuaranteeInfo>> {
+        let maybe = repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, tab_id).await?;
+        maybe.map(mapper::guarantee_model_to_info).transpose()
+    }
+
+    pub async fn get_guarantee(
+        &self,
+        tab_id: U256,
+        req_id: U256,
+    ) -> ServiceResult<Option<GuaranteeInfo>> {
+        let maybe = repo::get_guarantee(&self.inner.persist_ctx, tab_id, req_id).await?;
+        maybe.map(mapper::guarantee_model_to_info).transpose()
+    }
+
+    pub async fn list_recipient_payments(
+        &self,
+        recipient_address: String,
+    ) -> ServiceResult<Vec<UserTransactionInfo>> {
+        let rows =
+            repo::get_recipient_transactions(&self.inner.persist_ctx, &recipient_address).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.into_user_tx_info())
+            .collect())
+    }
+
+    pub async fn get_collateral_events_for_tab(
+        &self,
+        tab_id: U256,
+    ) -> ServiceResult<Vec<CollateralEventInfo>> {
+        let rows = repo::get_collateral_events_for_tab(&self.inner.persist_ctx, tab_id).await?;
+        rows.into_iter()
+            .map(mapper::collateral_event_model_to_info)
+            .collect::<ServiceResult<Vec<_>>>()
+    }
+
+    pub async fn get_user_asset_balance(
+        &self,
+        user_address: String,
+        asset_address: String,
+    ) -> ServiceResult<Option<AssetBalanceInfo>> {
+        let maybe =
+            repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
+                .await?;
+        maybe.map(mapper::asset_balance_model_to_info).transpose()
     }
 }

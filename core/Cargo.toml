@@ -20,22 +20,26 @@ dotenv = { workspace = true }
 envconfig = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 tokio-cron-scheduler = { workspace = true }
-jsonrpsee = { workspace = true, features = ["server"] }
+axum = { workspace = true, features = ["macros", "json"] }
 alloy = { workspace = true, features = ["provider-ws"] }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
 hyper = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
+http = { workspace = true }
 rand = "0.9.0"
 sea-orm = { workspace = true }
 entities = { workspace = true }
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 sha2 = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }
 test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }
 chrono = { workspace = true }
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+reqwest = { workspace = true }

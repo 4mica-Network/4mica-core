@@ -4,6 +4,10 @@ use rust_sdk_4mica::{
 };
 use std::time::Duration;
 
+mod common;
+
+use crate::common::ETH_ASSET_ADDRESS;
+
 #[tokio::test]
 #[test_log::test]
 async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
@@ -19,8 +23,11 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
 
     // Step 1: User deposits collateral (1 ETH)
     let user_info_initial = user_client.user.get_user().await?;
+    let eth_asset_before = common::extract_asset_info(&user_info_initial, ETH_ASSET_ADDRESS)
+        .expect("ETH asset not found");
+
     let deposit_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
-    let _receipt = user_client.user.deposit(deposit_amount).await?;
+    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -28,36 +35,42 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     let withdrawal_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
     let _receipt = user_client
         .user
-        .request_withdrawal(withdrawal_amount)
+        .request_withdrawal(withdrawal_amount, None)
         .await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Step 3: Check withdrawal request was recorded
     let user_info_after_request = user_client.user.get_user().await?;
+    let eth_asset_after_request =
+        common::extract_asset_info(&user_info_after_request, ETH_ASSET_ADDRESS)
+            .expect("ETH asset not found");
     assert_eq!(
-        user_info_after_request.withdrawal_request_amount,
+        eth_asset_after_request.withdrawal_request_amount,
         withdrawal_amount
     );
-    assert!(user_info_after_request.withdrawal_request_timestamp > 0);
+    assert!(eth_asset_after_request.withdrawal_request_timestamp > 0);
 
     // Step 4: Cancel the withdrawal
-    let _receipt = user_client.user.cancel_withdrawal().await?;
+    let _receipt = user_client.user.cancel_withdrawal(None).await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Step 5: Verify withdrawal was cancelled
     let user_info_after_cancel = user_client.user.get_user().await?;
+    let eth_asset_after_cancel =
+        common::extract_asset_info(&user_info_after_cancel, ETH_ASSET_ADDRESS)
+            .expect("ETH asset not found");
     assert_eq!(
-        user_info_after_cancel.withdrawal_request_amount,
+        eth_asset_after_cancel.withdrawal_request_amount,
         U256::from(0)
     );
-    assert_eq!(user_info_after_cancel.withdrawal_request_timestamp, 0);
+    assert_eq!(eth_asset_after_cancel.withdrawal_request_timestamp, 0);
 
     // Collateral should remain unchanged
     assert_eq!(
-        user_info_after_cancel.collateral,
-        user_info_initial.collateral + deposit_amount
+        eth_asset_after_cancel.collateral,
+        eth_asset_before.collateral + deposit_amount
     );
 
     Ok(())
@@ -78,7 +91,7 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
 
     // Step 1: User deposits collateral (2 ETH)
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let _receipt = user_client.user.deposit(deposit_amount).await?;
+    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -86,13 +99,13 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
     let withdrawal_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
     let _receipt = user_client
         .user
-        .request_withdrawal(withdrawal_amount)
+        .request_withdrawal(withdrawal_amount, None)
         .await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Step 3: Finalize withdrawal
-    let result = user_client.user.finalize_withdrawal().await;
+    let result = user_client.user.finalize_withdrawal(None).await;
 
     // Should fail with GracePeriodNotElapsed error
     assert!(
@@ -118,15 +131,20 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
 
     // Step 1: User deposits collateral (0.5 ETH)
     let deposit_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
-    let _receipt = user_client.user.deposit(deposit_amount).await?;
+    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Step 2: Try to request withdrawal for more than deposited
     let user_info = user_client.user.get_user().await?;
+    let eth_asset =
+        common::extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
 
-    let withdrawal_amount = user_info.collateral + U256::from(1_000_000_000_000_000_000u128);
-    let result = user_client.user.request_withdrawal(withdrawal_amount).await;
+    let withdrawal_amount = eth_asset.collateral + U256::from(1_000_000_000_000_000_000u128);
+    let result = user_client
+        .user
+        .request_withdrawal(withdrawal_amount, None)
+        .await;
 
     // Should fail with InsufficientAvailable error
     assert!(

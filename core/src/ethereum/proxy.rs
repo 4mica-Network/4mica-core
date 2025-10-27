@@ -20,7 +20,12 @@ pub trait CoreContractApi: Send + Sync {
 
     async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError>;
 
-    async fn record_payment(&self, tab_id: U256, amount: U256) -> Result<(), CoreContractApiError>;
+    async fn record_payment(
+        &self,
+        tab_id: U256,
+        asset: Address,
+        amount: U256,
+    ) -> Result<(), CoreContractApiError>;
 }
 
 impl CoreContractProxy {
@@ -66,9 +71,14 @@ impl CoreContractApi for CoreContractProxy {
         Ok(domain_separator.into())
     }
 
-    async fn record_payment(&self, tab_id: U256, amount: U256) -> Result<(), CoreContractApiError> {
+    async fn record_payment(
+        &self,
+        tab_id: U256,
+        asset: Address,
+        amount: U256,
+    ) -> Result<(), CoreContractApiError> {
         let contract = self.build_contract();
-        let tx = contract.recordPayment(tab_id, amount);
+        let tx = contract.recordPayment(tab_id, asset, amount);
 
         let receipt = tx.send().await?.get_receipt().await?;
 

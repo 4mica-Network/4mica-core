@@ -4,10 +4,16 @@ pragma solidity ^0.8.29;
 import "forge-std/Script.sol";
 import "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import {BlsHelper} from "../src/BlsHelpers.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract Core4MicaScript is Script {
     AccessManager manager;
+    bytes4 private constant RECORD_PAYMENT_SELECTOR =
+        bytes4(keccak256("recordPayment(uint256,address,uint256)"));
+    bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
+        bytes4(
+            keccak256("setTimingParameters(uint256,uint256,uint256,uint256)")
+        );
 
     // Roles
     uint64 public constant CALLER_ROLE = 1;
@@ -40,6 +46,12 @@ contract Core4MicaScript is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
+        address usdc = vm.envAddress("USDC_TOKEN");
+        address usdt = vm.envAddress("USDT_TOKEN");
+        require(
+            usdc != address(0) && usdt != address(0),
+            "Stablecoin addresses required"
+        );
 
         BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),
@@ -54,23 +66,26 @@ contract Core4MicaScript is Script {
         manager = new AccessManager(deployer);
         Core4Mica core4Mica = new Core4Mica(
             address(manager),
-            guaranteeVerificationKey
+            guaranteeVerificationKey,
+            usdc,
+            usdt
         );
 
         // 2. Map Core4Mica functions to roles
         // Operator functions → OPERATOR_ROLE
         manager.setTargetFunctionRole(
             address(core4Mica),
-            _asSingletonArray(Core4Mica.recordPayment.selector),
+            _asSingletonArray(RECORD_PAYMENT_SELECTOR),
             OPERATOR_ROLE
         );
 
         // Admin-only config functions → USER_ADMIN_ROLE
-        bytes4[] memory adminSelectors = new bytes4[](4);
+        bytes4[] memory adminSelectors = new bytes4[](5);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
         adminSelectors[3] = Core4Mica.setGuaranteeVerificationKey.selector;
+        adminSelectors[4] = SET_TIMING_PARAMETERS_SELECTOR;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),

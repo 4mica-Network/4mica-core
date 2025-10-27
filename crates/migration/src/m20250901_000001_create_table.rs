@@ -1,6 +1,5 @@
-use entities::{
-    collateral_event, guarantee, sea_orm_active_enums, tabs, user, user_transaction, withdrawal,
-};
+use entities::sea_orm_active_enums;
+use sea_orm::entity::prelude::DeriveIden;
 use sea_orm_migration::prelude::extension::postgres::Type;
 use sea_orm_migration::sea_orm::ActiveEnum;
 use sea_orm_migration::{prelude::*, sea_orm::Schema};
@@ -39,34 +38,23 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(user::Entity)
+                    .table(User::Table)
                     .if_not_exists()
                     .col(
-                        ColumnDef::new(user::Column::Address)
+                        ColumnDef::new(User::Address)
                             .string()
                             .not_null()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(user::Column::Version).integer().not_null())
-                    .col(
-                        ColumnDef::new(user::Column::CreatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(user::Column::UpdatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .col(ColumnDef::new(user::Column::Collateral).string().not_null())
-                    .col(
-                        ColumnDef::new(user::Column::LockedCollateral)
-                            .string()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(User::Version).integer().not_null())
+                    .col(ColumnDef::new(User::CreatedAt).timestamp().not_null())
+                    .col(ColumnDef::new(User::UpdatedAt).timestamp().not_null())
+                    .col(ColumnDef::new(User::Collateral).string().not_null())
+                    .col(ColumnDef::new(User::LockedCollateral).string().not_null())
                     .to_owned(),
             )
             .await?;
+
         manager
             .get_connection()
             .execute_unprepared(
@@ -77,59 +65,39 @@ impl MigrationTrait for Migration {
         "#,
             )
             .await?;
+
         // ----- Tabs -----
         manager
             .create_table(
                 Table::create()
-                    .table(tabs::Entity)
+                    .table(Tabs::Table)
                     .if_not_exists()
+                    .col(ColumnDef::new(Tabs::Id).string().not_null().primary_key())
+                    .col(ColumnDef::new(Tabs::UserAddress).string().not_null())
+                    .col(ColumnDef::new(Tabs::ServerAddress).string().not_null())
+                    .col(ColumnDef::new(Tabs::StartTs).timestamp().not_null())
                     .col(
-                        ColumnDef::new(tabs::Column::Id)
-                            .string()
-                            .not_null()
-                            .primary_key(),
-                    )
-                    .col(
-                        ColumnDef::new(tabs::Column::UserAddress)
-                            .string()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(tabs::Column::ServerAddress)
-                            .string()
-                            .not_null(),
-                    )
-                    .col(ColumnDef::new(tabs::Column::StartTs).timestamp().not_null())
-                    .col(
-                        ColumnDef::new(tabs::Column::Status)
+                        ColumnDef::new(Tabs::Status)
                             .custom(Alias::new(
                                 sea_orm_active_enums::TabStatus::name().to_string(),
                             ))
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(tabs::Column::SettlementStatus)
+                        ColumnDef::new(Tabs::SettlementStatus)
                             .custom(Alias::new(
                                 sea_orm_active_enums::SettlementStatus::name().to_string(),
                             ))
                             .not_null(),
                     )
-                    .col(ColumnDef::new(tabs::Column::Ttl).big_integer().not_null())
-                    .col(
-                        ColumnDef::new(tabs::Column::CreatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(tabs::Column::UpdatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(Tabs::Ttl).big_integer().not_null())
+                    .col(ColumnDef::new(Tabs::CreatedAt).timestamp().not_null())
+                    .col(ColumnDef::new(Tabs::UpdatedAt).timestamp().not_null())
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_tabs_user_address")
-                            .from(tabs::Entity, tabs::Column::UserAddress)
-                            .to(user::Entity, user::Column::Address)
+                            .from(Tabs::Table, Tabs::UserAddress)
+                            .to(User::Table, User::Address)
                             .on_delete(ForeignKeyAction::Restrict)
                             .on_update(ForeignKeyAction::Cascade),
                     )
@@ -141,53 +109,29 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(guarantee::Entity)
+                    .table(Guarantee::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(guarantee::Column::TabId).string().not_null())
-                    .col(ColumnDef::new(guarantee::Column::ReqId).string().not_null())
-                    .col(
-                        ColumnDef::new(guarantee::Column::FromAddress)
-                            .string()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(guarantee::Column::ToAddress)
-                            .string()
-                            .not_null(),
-                    )
-                    .col(ColumnDef::new(guarantee::Column::Value).string().not_null())
-                    .col(
-                        ColumnDef::new(guarantee::Column::StartTs)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .col(ColumnDef::new(guarantee::Column::Cert).string().null())
-                    .col(
-                        ColumnDef::new(guarantee::Column::CreatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(guarantee::Column::UpdatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .primary_key(
-                        Index::create()
-                            .col(guarantee::Column::TabId)
-                            .col(guarantee::Column::ReqId),
-                    )
+                    .col(ColumnDef::new(Guarantee::TabId).string().not_null())
+                    .col(ColumnDef::new(Guarantee::ReqId).string().not_null())
+                    .col(ColumnDef::new(Guarantee::FromAddress).string().not_null())
+                    .col(ColumnDef::new(Guarantee::ToAddress).string().not_null())
+                    .col(ColumnDef::new(Guarantee::Value).string().not_null())
+                    .col(ColumnDef::new(Guarantee::StartTs).timestamp().not_null())
+                    .col(ColumnDef::new(Guarantee::Cert).string().null())
+                    .col(ColumnDef::new(Guarantee::CreatedAt).timestamp().not_null())
+                    .col(ColumnDef::new(Guarantee::UpdatedAt).timestamp().not_null())
+                    .primary_key(Index::create().col(Guarantee::TabId).col(Guarantee::ReqId))
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_guarantee_tabs")
-                            .from(guarantee::Entity, guarantee::Column::TabId)
-                            .to(tabs::Entity, tabs::Column::Id),
+                            .from(Guarantee::Table, Guarantee::TabId)
+                            .to(Tabs::Table, Tabs::Id),
                     )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_guarantee_user_from")
-                            .from(guarantee::Entity, guarantee::Column::FromAddress)
-                            .to(user::Entity, user::Column::Address),
+                            .from(Guarantee::Table, Guarantee::FromAddress)
+                            .to(User::Table, User::Address),
                     )
                     .to_owned(),
             )
@@ -197,62 +141,51 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(user_transaction::Entity)
+                    .table(UserTransaction::Table)
                     .if_not_exists()
                     .col(
-                        ColumnDef::new(user_transaction::Column::TxId)
+                        ColumnDef::new(UserTransaction::TxId)
                             .string()
                             .not_null()
                             .primary_key(),
                     )
                     .col(
-                        ColumnDef::new(user_transaction::Column::UserAddress)
+                        ColumnDef::new(UserTransaction::UserAddress)
                             .string()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(user_transaction::Column::RecipientAddress)
+                        ColumnDef::new(UserTransaction::RecipientAddress)
                             .string()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(UserTransaction::Amount).string().not_null())
                     .col(
-                        ColumnDef::new(user_transaction::Column::Amount)
-                            .string()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(user_transaction::Column::Verified)
+                        ColumnDef::new(UserTransaction::Verified)
                             .boolean()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(user_transaction::Column::Finalized)
+                        ColumnDef::new(UserTransaction::Finalized)
                             .boolean()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(UserTransaction::Failed).boolean().not_null())
                     .col(
-                        ColumnDef::new(user_transaction::Column::Failed)
-                            .boolean()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(user_transaction::Column::CreatedAt)
+                        ColumnDef::new(UserTransaction::CreatedAt)
                             .timestamp()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(user_transaction::Column::UpdatedAt)
+                        ColumnDef::new(UserTransaction::UpdatedAt)
                             .timestamp()
                             .not_null(),
                     )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_user_tx_user")
-                            .from(
-                                user_transaction::Entity,
-                                user_transaction::Column::UserAddress,
-                            )
-                            .to(user::Entity, user::Column::Address),
+                            .from(UserTransaction::Table, UserTransaction::UserAddress)
+                            .to(User::Table, User::Address),
                     )
                     .to_owned(),
             )
@@ -262,56 +195,40 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(withdrawal::Entity)
+                    .table(Withdrawal::Table)
                     .if_not_exists()
                     .col(
-                        ColumnDef::new(withdrawal::Column::Id)
+                        ColumnDef::new(Withdrawal::Id)
                             .string()
                             .not_null()
                             .primary_key(),
                     )
+                    .col(ColumnDef::new(Withdrawal::UserAddress).string().not_null())
                     .col(
-                        ColumnDef::new(withdrawal::Column::UserAddress)
+                        ColumnDef::new(Withdrawal::RequestedAmount)
                             .string()
                             .not_null(),
                     )
                     .col(
-                        ColumnDef::new(withdrawal::Column::RequestedAmount)
+                        ColumnDef::new(Withdrawal::ExecutedAmount)
                             .string()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(Withdrawal::RequestTs).timestamp().not_null())
                     .col(
-                        ColumnDef::new(withdrawal::Column::ExecutedAmount)
-                            .string()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(withdrawal::Column::RequestTs)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(withdrawal::Column::Status)
+                        ColumnDef::new(Withdrawal::Status)
                             .custom(Alias::new(
                                 sea_orm_active_enums::WithdrawalStatus::name().to_string(),
                             ))
                             .not_null(),
                     )
-                    .col(
-                        ColumnDef::new(withdrawal::Column::CreatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(withdrawal::Column::UpdatedAt)
-                            .timestamp()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(Withdrawal::CreatedAt).timestamp().not_null())
+                    .col(ColumnDef::new(Withdrawal::UpdatedAt).timestamp().not_null())
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_withdrawal_user")
-                            .from(withdrawal::Entity, withdrawal::Column::UserAddress)
-                            .to(user::Entity, user::Column::Address),
+                            .from(Withdrawal::Table, Withdrawal::UserAddress)
+                            .to(User::Table, User::Address),
                     )
                     .to_owned(),
             )
@@ -334,59 +251,40 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(collateral_event::Entity)
+                    .table(CollateralEvent::Table)
                     .if_not_exists()
                     .col(
-                        ColumnDef::new(collateral_event::Column::Id)
+                        ColumnDef::new(CollateralEvent::Id)
                             .string()
                             .not_null()
                             .primary_key(),
                     )
                     .col(
-                        ColumnDef::new(collateral_event::Column::UserAddress)
+                        ColumnDef::new(CollateralEvent::UserAddress)
                             .string()
                             .not_null(),
                     )
+                    .col(ColumnDef::new(CollateralEvent::Amount).string().not_null())
                     .col(
-                        ColumnDef::new(collateral_event::Column::Amount)
-                            .string()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(collateral_event::Column::EventType)
+                        ColumnDef::new(CollateralEvent::EventType)
                             .custom(Alias::new(
                                 sea_orm_active_enums::CollateralEventType::name().to_string(),
                             ))
                             .not_null(),
                     )
+                    .col(ColumnDef::new(CollateralEvent::TabId).string().null())
+                    .col(ColumnDef::new(CollateralEvent::ReqId).string().null())
+                    .col(ColumnDef::new(CollateralEvent::TxId).string().null())
                     .col(
-                        ColumnDef::new(collateral_event::Column::TabId)
-                            .string()
-                            .null(),
-                    )
-                    .col(
-                        ColumnDef::new(collateral_event::Column::ReqId)
-                            .string()
-                            .null(),
-                    )
-                    .col(
-                        ColumnDef::new(collateral_event::Column::TxId)
-                            .string()
-                            .null(),
-                    )
-                    .col(
-                        ColumnDef::new(collateral_event::Column::CreatedAt)
+                        ColumnDef::new(CollateralEvent::CreatedAt)
                             .timestamp()
                             .not_null(),
                     )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_collateral_user")
-                            .from(
-                                collateral_event::Entity,
-                                collateral_event::Column::UserAddress,
-                            )
-                            .to(user::Entity, user::Column::Address),
+                            .from(CollateralEvent::Table, CollateralEvent::UserAddress)
+                            .to(User::Table, User::Address),
                     )
                     .to_owned(),
             )
@@ -407,22 +305,22 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(Table::drop().table(collateral_event::Entity).to_owned())
+            .drop_table(Table::drop().table(CollateralEvent::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(withdrawal::Entity).to_owned())
+            .drop_table(Table::drop().table(Withdrawal::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(user_transaction::Entity).to_owned())
+            .drop_table(Table::drop().table(UserTransaction::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(guarantee::Entity).to_owned())
+            .drop_table(Table::drop().table(Guarantee::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(tabs::Entity).to_owned())
+            .drop_table(Table::drop().table(Tabs::Table).to_owned())
             .await?;
         manager
-            .drop_table(Table::drop().table(user::Entity).to_owned())
+            .drop_table(Table::drop().table(User::Table).to_owned())
             .await?;
         manager
             .get_connection()
@@ -478,4 +376,89 @@ impl MigrationTrait for Migration {
             .await?;
         Ok(())
     }
+}
+
+#[derive(DeriveIden)]
+pub enum User {
+    #[sea_orm(iden = "User")]
+    Table,
+    Address,
+    Version,
+    CreatedAt,
+    UpdatedAt,
+    Collateral,
+    LockedCollateral,
+}
+
+#[derive(DeriveIden)]
+pub enum Tabs {
+    #[sea_orm(iden = "Tabs")]
+    Table,
+    Id,
+    UserAddress,
+    ServerAddress,
+    StartTs,
+    Status,
+    SettlementStatus,
+    Ttl,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+pub enum Guarantee {
+    #[sea_orm(iden = "Guarantee")]
+    Table,
+    TabId,
+    ReqId,
+    FromAddress,
+    ToAddress,
+    Value,
+    StartTs,
+    Cert,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+pub enum UserTransaction {
+    #[sea_orm(iden = "UserTransaction")]
+    Table,
+    TxId,
+    UserAddress,
+    RecipientAddress,
+    Amount,
+    Verified,
+    Finalized,
+    Failed,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+pub enum Withdrawal {
+    #[sea_orm(iden = "Withdrawal")]
+    Table,
+    Id,
+    UserAddress,
+    RequestedAmount,
+    ExecutedAmount,
+    RequestTs,
+    Status,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+pub enum CollateralEvent {
+    #[sea_orm(iden = "CollateralEvent")]
+    Table,
+    Id,
+    UserAddress,
+    Amount,
+    EventType,
+    TabId,
+    ReqId,
+    TxId,
+    CreatedAt,
 }

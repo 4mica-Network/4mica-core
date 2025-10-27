@@ -1,6 +1,5 @@
 use alloy::signers::local::LocalSignerError;
 use anyhow::anyhow;
-use rpc;
 use sea_orm::TransactionError as SeaTransactionError;
 use thiserror::Error;
 // ---------- SeaORM transaction error conversions ----------
@@ -48,6 +47,9 @@ pub enum BlockchainListenerError {
 
     #[error("Database operation failed: {0}")]
     DatabaseFailure(#[from] sea_orm::DbErr),
+
+    #[error("Event handler error: {0}")]
+    EventHandlerError(String),
 
     #[error("Tab not found: {0}")]
     TabNotFound(String),
@@ -112,14 +114,24 @@ pub enum PersistDbError {
     #[error("Insufficient collateral")]
     InsufficientCollateral,
 
-    #[error("No pending withdrawal found for user {user}")]
-    WithdrawalNotFound { user: String },
+    #[error("No pending withdrawal found for user {user}, asset {asset}")]
+    WithdrawalNotFound { user: String, asset: String },
 
-    #[error("Multiple pending withdrawals for user {user} (found {count})")]
-    MultiplePendingWithdrawals { user: String, count: usize },
+    #[error("Multiple pending withdrawals for user {user}, asset {asset} (found {count})")]
+    MultiplePendingWithdrawals {
+        user: String,
+        asset: String,
+        count: usize,
+    },
 
-    #[error("optimistic lock conflict for user {user}, expected version {expected_version}")]
-    OptimisticLockConflict { user: String, expected_version: i32 },
+    #[error(
+        "optimistic lock conflict for user {user}, asset {asset_address}, expected version {expected_version}"
+    )]
+    OptimisticLockConflict {
+        user: String,
+        asset_address: String,
+        expected_version: i32,
+    },
 
     #[error("invariant violation: {0}")]
     InvariantViolation(String),
@@ -181,12 +193,12 @@ impl From<PersistDbError> for ServiceError {
             PersistDbError::InsufficientCollateral => {
                 ServiceError::InvalidParams("Not enough free collateral".into())
             }
-            PersistDbError::WithdrawalNotFound { user } => {
-                ServiceError::NotFound(format!("No pending withdrawal found for user {user}"))
-            }
-            PersistDbError::MultiplePendingWithdrawals { user, count } => {
+            PersistDbError::WithdrawalNotFound { user, asset } => ServiceError::NotFound(format!(
+                "No pending withdrawal found for user {user}, asset {asset}"
+            )),
+            PersistDbError::MultiplePendingWithdrawals { user, asset, count } => {
                 ServiceError::InvalidParams(format!(
-                    "Multiple pending withdrawals for user {user} (found {count})"
+                    "Multiple pending withdrawals for user {user}, asset {asset} (found {count})"
                 ))
             }
             PersistDbError::OptimisticLockConflict { .. } => ServiceError::OptimisticLockConflict,
@@ -218,29 +230,5 @@ impl From<alloy::contract::Error> for CoreContractApiError {
 impl From<alloy::providers::PendingTransactionError> for CoreContractApiError {
     fn from(e: alloy::providers::PendingTransactionError) -> Self {
         CoreContractApiError::PendingTxFailure(e.to_string())
-    }
-}
-
-// ---------- Transport adapter ----------
-pub fn service_error_to_rpc(err: ServiceError) -> jsonrpsee::types::ErrorObjectOwned {
-    match err {
-        ServiceError::InvalidParams(msg) => rpc::invalid_params_error(&msg),
-        ServiceError::NotFound(msg) => rpc::invalid_params_error(&msg),
-        ServiceError::UserNotRegistered => rpc::invalid_params_error("User not registered"),
-        ServiceError::TabClosed => rpc::invalid_params_error("Tab is closed"),
-        ServiceError::FutureTimestamp => rpc::invalid_params_error("Timestamp is in the future"),
-        ServiceError::InvalidRequestID => rpc::invalid_params_error("req_id not valid"),
-        ServiceError::ModifiedStartTs => rpc::invalid_params_error("start timestamp modified"),
-        ServiceError::OptimisticLockConflict => {
-            rpc::invalid_params_error("Optimistic lock conflict")
-        }
-        ServiceError::Db(e) => {
-            log::error!("DB error: {e}");
-            rpc::internal_error()
-        }
-        ServiceError::Other(e) => {
-            log::error!("Internal error: {e:#}");
-            rpc::internal_error()
-        }
     }
 }
