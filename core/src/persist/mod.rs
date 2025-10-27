@@ -4,6 +4,7 @@ use rpc::common::UserTransactionInfo;
 use sea_orm::{Database, DatabaseConnection};
 use std::sync::Arc;
 
+pub mod mapper;
 pub mod repo;
 
 #[derive(Clone)]

@@ -1,6 +1,6 @@
 use std::{str::FromStr, sync::Arc};
 
-use crate::{error::ServiceError, service::CoreService};
+use crate::{error::ServiceError, persist::mapper, service::CoreService};
 use alloy_primitives::U256;
 use axum::{
     Json, Router,
@@ -207,7 +207,7 @@ async fn list_recipient_tabs(
     let parsed = if statuses.is_empty() {
         Vec::new()
     } else {
-        CoreService::parse_settlement_statuses(Some(statuses)).map_err(ApiError::from)?
+        mapper::parse_settlement_statuses(Some(statuses)).map_err(ApiError::from)?
     };
     let tabs = service
         .list_tabs_for_recipient(recipient, parsed)
