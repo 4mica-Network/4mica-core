@@ -8,7 +8,7 @@ rpc = { workspace = true }
 crypto = { workspace = true }
 blockchain = { workspace = true }
 
-rand = { version = "0.9.0" }
+rand = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -28,9 +28,10 @@ alloy-sol-types = { workspace = true }
 hyper = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
+http = { workspace = true }
 sea-orm = { workspace = true }
 entities = { workspace = true }
-chrono.workspace = true
+chrono = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 sha2 = { workspace = true }
 parking_lot = { workspace = true }
@@ -39,5 +40,4 @@ parking_lot = { workspace = true }
 serial_test = { workspace = true }
 test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }
-chrono = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom"] }
