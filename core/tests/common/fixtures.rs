@@ -86,7 +86,7 @@ pub async fn clear_tables(ctx: &PersistCtx, tables: &[&str]) -> Result<()> {
 
 pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
     clear_tables(
-        &ctx,
+        ctx,
         &[
             "UserTransaction",
             "Withdrawal",
@@ -138,4 +138,33 @@ pub async fn read_locked_collateral(
         return Ok(U256::ZERO);
     };
     U256::from_str(&balance.locked).map_err(|e| anyhow!("invalid locked collateral: {}", e))
+}
+
+/// Force the user's locked collateral to the provided amount (keeping total constant).
+pub async fn set_locked_collateral(
+    ctx: &PersistCtx,
+    user_address: &str,
+    asset_address: &str,
+    amount: U256,
+) -> Result<()> {
+    let balance = repo::get_user_balance_on(ctx.db.as_ref(), user_address, asset_address).await?;
+    let total = U256::from_str(&balance.total)
+        .map_err(|e| anyhow!("invalid collateral {}: {}", balance.total, e))?;
+    if amount > total {
+        return Err(anyhow!(
+            "locked collateral {} exceeds total {}",
+            amount,
+            total
+        ));
+    }
+    repo::update_user_balance_and_version_on(
+        ctx.db.as_ref(),
+        user_address,
+        asset_address,
+        balance.version,
+        total,
+        amount,
+    )
+    .await?;
+    Ok(())
 }

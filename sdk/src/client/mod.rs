@@ -14,7 +14,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use rpc::{core::CoreApiClient, proxy::RpcProxy};
+use rpc::RpcProxy;
 
 use self::{recipient::RecipientClient, user::UserClient};
 

@@ -1,6 +1,5 @@
 use alloy::signers::local::LocalSignerError;
 use anyhow::anyhow;
-use rpc;
 use sea_orm::TransactionError as SeaTransactionError;
 use thiserror::Error;
 // ---------- SeaORM transaction error conversions ----------
@@ -231,29 +230,5 @@ impl From<alloy::contract::Error> for CoreContractApiError {
 impl From<alloy::providers::PendingTransactionError> for CoreContractApiError {
     fn from(e: alloy::providers::PendingTransactionError) -> Self {
         CoreContractApiError::PendingTxFailure(e.to_string())
-    }
-}
-
-// ---------- Transport adapter ----------
-pub fn service_error_to_rpc(err: ServiceError) -> jsonrpsee::types::ErrorObjectOwned {
-    match err {
-        ServiceError::InvalidParams(msg) => rpc::invalid_params_error(&msg),
-        ServiceError::NotFound(msg) => rpc::invalid_params_error(&msg),
-        ServiceError::UserNotRegistered => rpc::invalid_params_error("User not registered"),
-        ServiceError::TabClosed => rpc::invalid_params_error("Tab is closed"),
-        ServiceError::FutureTimestamp => rpc::invalid_params_error("Timestamp is in the future"),
-        ServiceError::InvalidRequestID => rpc::invalid_params_error("req_id not valid"),
-        ServiceError::ModifiedStartTs => rpc::invalid_params_error("start timestamp modified"),
-        ServiceError::OptimisticLockConflict => {
-            rpc::invalid_params_error("Optimistic lock conflict")
-        }
-        ServiceError::Db(e) => {
-            log::error!("DB error: {e}");
-            rpc::internal_error()
-        }
-        ServiceError::Other(e) => {
-            log::error!("Internal error: {e:#}");
-            rpc::internal_error()
-        }
     }
 }
