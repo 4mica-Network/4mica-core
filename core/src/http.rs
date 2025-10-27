@@ -29,37 +29,37 @@ pub fn router(service: CoreService) -> Router {
         .route("/core/payment-tabs", post(create_payment_tab))
         .route("/core/guarantees", post(issue_guarantee))
         .route(
-            "/core/recipients/:recipient_address/settled-tabs",
+            "/core/recipients/{recipient_address}/settled-tabs",
             get(list_settled_tabs),
         )
         .route(
-            "/core/recipients/:recipient_address/pending-remunerations",
+            "/core/recipients/{recipient_address}/pending-remunerations",
             get(list_pending_remunerations),
         )
-        .route("/core/tabs/:tab_id", get(get_tab))
+        .route("/core/tabs/{tab_id}", get(get_tab))
         .route(
-            "/core/recipients/:recipient_address/tabs",
+            "/core/recipients/{recipient_address}/tabs",
             get(list_recipient_tabs),
         )
-        .route("/core/tabs/:tab_id/guarantees", get(get_tab_guarantees))
+        .route("/core/tabs/{tab_id}/guarantees", get(get_tab_guarantees))
         .route(
-            "/core/tabs/:tab_id/guarantees/latest",
+            "/core/tabs/{tab_id}/guarantees/latest",
             get(get_latest_guarantee),
         )
         .route(
-            "/core/tabs/:tab_id/guarantees/:req_id",
+            "/core/tabs/{tab_id}/guarantees/{req_id}",
             get(get_specific_guarantee),
         )
         .route(
-            "/core/recipients/:recipient_address/payments",
+            "/core/recipients/{recipient_address}/payments",
             get(list_recipient_payments),
         )
         .route(
-            "/core/tabs/:tab_id/collateral-events",
+            "/core/tabs/{tab_id}/collateral-events",
             get(get_collateral_events_for_tab),
         )
         .route(
-            "/core/users/:user_address/assets/:asset_address",
+            "/core/users/{user_address}/assets/{asset_address}",
             get(get_user_asset_balance),
         )
         .with_state(shared)
