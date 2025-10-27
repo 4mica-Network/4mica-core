@@ -1,6 +1,6 @@
 [package]
 name = "rust-sdk-4mica"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 authors = ["4Mica Network <cto@4mica.xyz>"]
 description = "Official Rust SDK for interacting with the 4Mica payment network."
