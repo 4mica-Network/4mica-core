@@ -108,7 +108,18 @@ The SDK provides two client interfaces: `UserClient` for payers and `RecipientCl
 - `create_tab(user_address: String, recipient_address: String, erc20_token: Option<String>, ttl: Option<u64>) -> Result<U256, CreateTabError>`: Create a new payment tab in ETH or ERC20 token
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `issue_payment_guarantee(claims: PaymentGuaranteeClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
+- `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
 - `remunerate(cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>`: Claim from user collateral using BLS certificate
+- `list_settled_tabs() -> Result<Vec<TabInfo>, RecipientQueryError>`: List all settled tabs for the recipient
+- `list_pending_remunerations() -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError>`: List pending remunerations for the recipient
+- `get_tab(tab_id: U256) -> Result<Option<TabInfo>, RecipientQueryError>`: Get tab information by ID
+- `list_recipient_tabs(settlement_statuses: Option<Vec<String>>) -> Result<Vec<TabInfo>, RecipientQueryError>`: List tabs for the recipient with optional status filter
+- `get_tab_guarantees(tab_id: U256) -> Result<Vec<GuaranteeInfo>, RecipientQueryError>`: Get all guarantees for a tab
+- `get_latest_guarantee(tab_id: U256) -> Result<Option<GuaranteeInfo>, RecipientQueryError>`: Get the latest guarantee for a tab
+- `get_guarantee(tab_id: U256, req_id: U256) -> Result<Option<GuaranteeInfo>, RecipientQueryError>`: Get a specific guarantee by tab ID and request ID
+- `list_recipient_payments() -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>`: List all payments for the recipient
+- `get_collateral_events_for_tab(tab_id: U256) -> Result<Vec<CollateralEventInfo>, RecipientQueryError>`: Get collateral events for a specific tab
+- `get_user_asset_balance(user_address: String, asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get user's asset balance
 
 > **Note:** Each method returns a specific error type that provides detailed information about what went wrong. See the [Error Handling](#error-handling) section for comprehensive documentation and examples.
 
@@ -537,6 +548,7 @@ The SDK provides comprehensive, type-safe error handling with specific error typ
 use rust_sdk_4mica::error::{
     ApproveErc20Error, DepositError, RemunerateError, RequestWithdrawalError,
     SignPaymentError, FinalizeWithdrawalError, CreateTabError, PayTabError,
+    IssuePaymentGuaranteeError, VerifyGuaranteeError, RecipientQueryError,
     // ... other error types as needed
 };
 ```
@@ -566,7 +578,7 @@ use rust_sdk_4mica::error::{
 - `InvalidUserAddress`: User address in claims is invalid
 - `InvalidRecipientAddress`: Recipient address in claims is invalid
 - `Failed(String)`: Failed to sign the payment (includes digest computation and signing errors)
-- `Rpc(jsonrpsee::core::ClientError)`: RPC communication error
+- `Rpc(rpc::ApiClientError)`: RPC communication error
 
 #### Deposit Errors
 
@@ -614,7 +626,7 @@ use rust_sdk_4mica::error::{
 **`CreateTabError`**
 
 - `InvalidParams(String)`: Invalid parameters (e.g., signer address mismatch)
-- `Rpc(jsonrpsee::core::ClientError)`: RPC communication error
+- `Rpc(rpc::ApiClientError)`: RPC communication error
 
 **`PayTabError`**
 
@@ -631,7 +643,16 @@ use rust_sdk_4mica::error::{
 **`IssuePaymentGuaranteeError`**
 
 - `InvalidParams(String)`: Invalid parameters (e.g., signer address mismatch)
-- `Rpc(jsonrpsee::core::ClientError)`: RPC communication error
+- `Rpc(rpc::ApiClientError)`: RPC communication error
+
+**`VerifyGuaranteeError`**
+
+- `InvalidCertificate(anyhow::Error)`: Invalid BLS certificate
+- `CertificateMismatch`: Certificate signature mismatch
+
+**`RecipientQueryError`**
+
+- `Rpc(rpc::ApiClientError)`: RPC communication error
 
 **`RemunerateError`**
 

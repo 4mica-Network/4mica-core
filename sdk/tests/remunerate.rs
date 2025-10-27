@@ -1,8 +1,5 @@
 use alloy::{hex, primitives::Address, providers::ProviderBuilder, sol};
-use rpc::{
-    core::{CoreApiClient, CorePublicParameters},
-    proxy::RpcProxy,
-};
+use rpc::{RpcProxy, core::CorePublicParameters};
 use rust_sdk_4mica::{
     Client, Config, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
     error::RemunerateError,
