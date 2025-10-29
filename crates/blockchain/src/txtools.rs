@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use log::{debug, info};
+use log::info;
 
 use alloy::{
     consensus::{Transaction as AlloyTransaction, TxEnvelope},
@@ -22,19 +22,6 @@ pub struct PaymentTx {
     pub tab_id: U256,
     pub req_id: U256,
     pub erc20_token: Option<Address>,
-}
-
-/// Fetch a transaction by hash.
-pub async fn fetch_transaction<P: Provider>(
-    provider: &P,
-    tx_hash: impl Into<B256>,
-) -> Result<Transaction> {
-    let hash: B256 = tx_hash.into();
-    provider
-        .get_transaction_by_hash(hash)
-        .await
-        .map_err(|e| TxProcessingError::Rpc(e.into()))?
-        .ok_or(TxProcessingError::NotFound)
 }
 
 /// Validate basic transaction fields.
@@ -87,21 +74,7 @@ pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Resu
         };
 
         // iterate over tx hashes
-        for tx_hash_bytes in block.transactions.hashes() {
-            // &[u8; 32] -> B256
-            let tx_hash: B256 = B256::from(*tx_hash_bytes);
-
-            let tx = match fetch_transaction(provider, tx_hash).await {
-                Ok(t) => t,
-                Err(err) => {
-                    debug!(
-                        "block {}: skip tx {:?}, fetch failed: {err}",
-                        num, tx_hash_bytes
-                    );
-                    continue;
-                }
-            };
-
+        for tx in block.transactions.into_transactions() {
             // look for tab_id / req_id
             let Some((tab_id, req_id)) = extract_tab_req(&tx)? else {
                 continue;
@@ -125,9 +98,10 @@ pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Resu
     Ok(found)
 }
 
-async fn get_block<P: Provider>(provider: &P, num: u64) -> Result<Option<Block<Transaction>>> {
+async fn get_block<P: Provider>(provider: &P, num: u64) -> Result<Option<Block>> {
     provider
         .get_block_by_number(BlockNumberOrTag::Number(num))
+        .full()
         .await
         .map_err(|e| TxProcessingError::Rpc(e.into()))
 }
