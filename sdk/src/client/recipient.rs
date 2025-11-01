@@ -1,7 +1,8 @@
 use alloy::{primitives::U256, rpc::types::TransactionReceipt};
 use crypto::bls::BLSCert;
-use rpc::common::{
-    CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest, SigningScheme,
+use rpc::{
+    CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1, SigningScheme,
 };
 
 use crate::{
@@ -10,7 +11,6 @@ use crate::{
         RecipientPaymentInfo, TabInfo,
     },
     client::{ClientCtx, model::TabPaymentStatus},
-    contract::Core4Mica::Guarantee,
     error::{
         CreateTabError, IssuePaymentGuaranteeError, RecipientQueryError, RemunerateError,
         TabPaymentStatusError, VerifyGuaranteeError,
@@ -30,6 +30,10 @@ impl RecipientClient {
     fn check_signer_address(&self, expected: &str) -> bool {
         let signer_address = self.ctx.signer().address();
         signer_address.to_string() == expected
+    }
+
+    pub fn guarantee_domain(&self) -> &[u8; 32] {
+        self.ctx.guarantee_domain()
     }
 
     /// Creates a new payment tab and returns the tab id
@@ -87,7 +91,7 @@ impl RecipientClient {
 
     pub async fn issue_payment_guarantee(
         &self,
-        claims: PaymentGuaranteeClaims,
+        claims: PaymentGuaranteeRequestClaimsV1,
         signature: String,
         scheme: SigningScheme,
     ) -> Result<BLSCert, IssuePaymentGuaranteeError> {
@@ -100,11 +104,11 @@ impl RecipientClient {
         let cert = self
             .ctx
             .rpc_proxy()
-            .issue_guarantee(PaymentGuaranteeRequest {
-                claims,
+            .issue_guarantee(PaymentGuaranteeRequest::new(
+                PaymentGuaranteeRequestClaims::V1(claims),
                 signature,
                 scheme,
-            })
+            ))
             .await?;
         Ok(cert)
     }
@@ -123,22 +127,29 @@ impl RecipientClient {
         let claims_bytes = cert
             .claims_bytes()
             .map_err(VerifyGuaranteeError::InvalidCertificate)?;
-        PaymentGuaranteeClaims::try_from(claims_bytes.as_slice())
-            .map_err(VerifyGuaranteeError::InvalidCertificate)
+        let claims = PaymentGuaranteeClaims::try_from(claims_bytes.as_slice())
+            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
+
+        if claims.domain != *self.guarantee_domain() {
+            return Err(VerifyGuaranteeError::GuaranteeDomainMismatch);
+        }
+        Ok(claims)
     }
 
     pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError> {
-        let guarantee_claims = self
-            .verify_payment_guarantee(&cert)
+        self.verify_payment_guarantee(&cert)
             .map_err(|err| match err {
                 VerifyGuaranteeError::InvalidCertificate(source) => {
                     RemunerateError::CertificateInvalid(source)
                 }
                 VerifyGuaranteeError::CertificateMismatch => RemunerateError::CertificateMismatch,
+                VerifyGuaranteeError::GuaranteeDomainMismatch => {
+                    RemunerateError::GuaranteeDomainMismatch
+                }
+                VerifyGuaranteeError::UnsupportedGuaranteeVersion(version) => {
+                    RemunerateError::UnsupportedGuaranteeVersion(version)
+                }
             })?;
-        let guarantee: Guarantee = guarantee_claims
-            .try_into()
-            .map_err(RemunerateError::GuaranteeConversion)?;
 
         let sig =
             crypto::hex::decode_hex(&cert.signature).map_err(RemunerateError::SignatureHex)?;
@@ -149,7 +160,12 @@ impl RecipientClient {
         let send_result = self
             .ctx
             .get_contract()
-            .remunerate(guarantee, sig_words.into())
+            .remunerate(
+                cert.claims_bytes()
+                    .map_err(RemunerateError::ClaimsHex)?
+                    .into(),
+                sig_words.into(),
+            )
             .send()
             .await
             .map_err(RemunerateError::from)?;

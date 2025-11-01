@@ -13,7 +13,10 @@ use anyhow::anyhow;
 use entities::sea_orm_active_enums::SettlementStatus;
 use log::{error, info};
 use parking_lot::Mutex;
-use rpc::{common::*, core::CorePublicParameters};
+use rpc::{
+    AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
+    CreatePaymentTabResult, GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserTransactionInfo,
+};
 use std::sync::Arc;
 use tokio::{
     task::JoinHandle,
@@ -27,6 +30,7 @@ pub mod payment;
 pub struct Inner {
     config: AppConfig,
     public_params: CorePublicParameters,
+    guarantee_domain: [u8; 32],
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
@@ -70,10 +74,11 @@ impl CoreService {
         }
 
         let read_provider = Self::build_ws_provider(eth_cfg.clone()).await?;
-
         let on_chain_domain = contract_api.get_guarantee_domain_separator().await?;
-        crypto::guarantee::set_guarantee_domain_separator(on_chain_domain)
-            .map_err(|e| anyhow!("failed to set guarantee domain: {e}"))?;
+        info!(
+            "on-chain guarantee domain separator: 0x{}",
+            crypto::hex::encode_hex(&on_chain_domain)
+        );
 
         let core_service = Self::new_with_dependencies(
             config,
@@ -81,6 +86,7 @@ impl CoreService {
             contract_api,
             actual_chain_id,
             read_provider.clone(),
+            on_chain_domain,
         )?;
 
         let core_service_clone = core_service.clone();
@@ -124,6 +130,7 @@ impl CoreService {
         contract_api: Arc<dyn CoreContractApi>,
         chain_id: u64,
         read_provider: DynProvider,
+        guarantee_domain: [u8; 32],
     ) -> anyhow::Result<Self> {
         let bls_private_key = config.secrets.bls_private_key.bytes();
         if bls_private_key.len() != 32 {
@@ -150,6 +157,7 @@ impl CoreService {
                 eip712_version,
                 chain_id,
             },
+            guarantee_domain,
             persist_ctx,
             read_provider,
             contract_api,

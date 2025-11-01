@@ -12,12 +12,9 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
 use http::StatusCode;
 use rpc::{
-    common::{
-        AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
-        GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, TabInfo,
-        UserTransactionInfo,
-    },
-    core::CorePublicParameters,
+    AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
+    CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo,
+    TabInfo, UserTransactionInfo,
 };
 
 type SharedService = Arc<CoreService>;
@@ -139,7 +136,10 @@ async fn issue_guarantee(
     State(service): State<SharedService>,
     Json(req): Json<PaymentGuaranteeRequest>,
 ) -> Result<Json<BLSCert>, ApiError> {
-    let cert = service.handle_promise(req).await.map_err(ApiError::from)?;
+    let cert = service
+        .issue_payment_guarantee(req)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(cert))
 }
 

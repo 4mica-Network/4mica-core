@@ -1,5 +1,5 @@
 use axum::{Json, Router, routing::get};
-use rpc::{RpcProxy, core::CorePublicParameters};
+use rpc::{CorePublicParameters, RpcProxy};
 use serde_json::json;
 use tokio::net::TcpListener;
 

@@ -1,4 +1,5 @@
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, keccak256};
+use alloy::sol_types::SolValue;
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use core_service::{
@@ -15,11 +16,7 @@ use std::str::FromStr;
 pub fn init_config() -> Result<AppConfig> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
-    let cfg = AppConfig::fetch();
-    let contract = Address::from_str(&cfg.ethereum_config.contract_address)
-        .map_err(|e| anyhow!("invalid contract address: {e}"))?;
-    crypto::guarantee::init_guarantee_domain_separator(cfg.ethereum_config.chain_id, contract)?;
-    Ok(cfg)
+    Ok(AppConfig::fetch())
 }
 
 pub async fn init_test_env() -> Result<(AppConfig, PersistCtx)> {
@@ -167,4 +164,19 @@ pub async fn set_locked_collateral(
     )
     .await?;
     Ok(())
+}
+
+pub fn compute_guarantee_domain_separator(
+    chain_id: u64,
+    contract: Address,
+) -> anyhow::Result<[u8; 32]> {
+    // Solidity: keccak256(abi.encode("4MICA_CORE_GUARANTEE_V1", block.chainid, address(this)))
+    let encoded = (
+        String::from("4MICA_CORE_GUARANTEE_V1"),
+        U256::from(chain_id),
+        contract,
+    )
+        .abi_encode_sequence();
+
+    Ok(keccak256(encoded).into())
 }

@@ -30,6 +30,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error IllegalValue();
     error UnsupportedAsset(address asset);
     error InvalidAsset(address asset);
+    error UnsupportedGuaranteeVersion(uint64 version);
+    error InvalidGuaranteeDomain();
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -128,13 +130,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
     // ========= Helper structs =========
     struct Guarantee {
+        bytes32 domain;
         uint256 tab_id;
-        uint256 tab_timestamp;
+        uint256 req_id;
         address client;
         address recipient;
-        uint256 req_id;
         uint256 amount;
+        uint256 total_amount;
         address asset;
+        uint64 timestamp;
+        uint64 version;
     }
 
     // ========= Constructor =========
@@ -361,15 +366,23 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     /// TODO(#20): compress signature
     /// TODO(#21): permit batch verification
     function remunerate(
-        Guarantee calldata g,
+        bytes calldata guaranteeData,
         BLS.G2Point calldata signature
-    ) external nonReentrant nonZero(g.amount) validRecipient(g.recipient) {
+    ) external nonReentrant {
+        // Verify and decode the guarantee
+        Guarantee memory g = verifyAndDecodeGuarantee(guaranteeData, signature);
+
+        // Validate amount and recipient
+        if (g.amount == 0) revert AmountZero();
+        if (g.total_amount == 0) revert AmountZero();
+        if (g.recipient == address(0)) revert InvalidRecipient();
+
         // Tab must be overdue
-        if (block.timestamp < g.tab_timestamp + remunerationGracePeriod)
+        if (block.timestamp < g.timestamp + remunerationGracePeriod)
             revert TabNotYetOverdue();
 
         // Tab must not be expired
-        if (g.tab_timestamp + tabExpirationTime < block.timestamp)
+        if (g.timestamp + tabExpirationTime < block.timestamp)
             revert TabExpired();
 
         address asset = requireSupportedAsset(g.asset);
@@ -387,16 +400,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         if (status.remunerated) revert TabPreviouslyRemunerated();
 
         // Tab must not be paid
-        if (status.paid >= g.amount) revert TabAlreadyPaid();
-
-        // Verify signature
-        if (!verifyGuaranteeSignature(g, signature)) revert InvalidSignature();
+        if (status.paid >= g.total_amount) revert TabAlreadyPaid();
 
         // Client must have sufficient funds
-        if (collateralBalances[g.client][asset] < g.amount)
+        if (collateralBalances[g.client][asset] < g.total_amount)
             revert DoubleSpendingDetected();
 
-        collateralBalances[g.client][asset] -= g.amount;
+        collateralBalances[g.client][asset] -= g.total_amount;
         status.remunerated = true;
 
         // Subtract the remunerated value from the withdrawal request
@@ -405,20 +415,20 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         WithdrawalRequest storage wr = withdrawalRequests[g.client][asset];
         if (
             wr.timestamp != 0 &&
-            g.tab_timestamp < wr.timestamp + synchronizationDelay
+            g.timestamp < wr.timestamp + synchronizationDelay
         ) {
-            uint256 deduction = Math.min(wr.amount, g.amount);
+            uint256 deduction = Math.min(wr.amount, g.total_amount);
             wr.amount -= deduction;
         }
 
         if (asset == ETH_ASSET) {
-            (bool ok, ) = payable(g.recipient).call{value: g.amount}("");
+            (bool ok, ) = payable(g.recipient).call{value: g.total_amount}("");
             if (!ok) revert TransferFailed();
         } else {
-            IERC20(asset).safeTransfer(g.recipient, g.amount);
+            IERC20(asset).safeTransfer(g.recipient, g.total_amount);
         }
 
-        emit RecipientRemunerated(g.tab_id, asset, g.amount);
+        emit RecipientRemunerated(g.tab_id, asset, g.total_amount);
     }
 
     // ========= Operator / Manager flows =========
@@ -526,36 +536,30 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         return tokens;
     }
 
-    // === Signature verification ===
-    function encodeGuarantee(
-        Guarantee memory g
-    ) public view returns (bytes memory) {
-        return
-            abi.encodePacked(
-                guaranteeDomainSeparator,
-                g.tab_id,
-                g.req_id,
-                g.client,
-                g.recipient,
-                g.amount,
-                g.asset,
-                g.tab_timestamp
-            );
-    }
-
-    function verifyGuaranteeSignature(
-        Guarantee memory guarantee,
+    function verifyAndDecodeGuarantee(
+        bytes memory guarantee,
         BLS.G2Point memory signature
-    ) public view returns (bool) {
+    ) public view returns (Guarantee memory) {
+        (uint64 version, bytes memory encodedGuarantee) = abi.decode(
+            guarantee,
+            (uint64, bytes)
+        );
+        if (version != 1) revert UnsupportedGuaranteeVersion(version);
+
         BLS.G1Point[] memory g1Points = new BLS.G1Point[](2);
         g1Points[0] = NEGATED_G1_GENERATOR;
         g1Points[1] = GUARANTEE_VERIFICATION_KEY;
 
         BLS.G2Point[] memory g2Points = new BLS.G2Point[](2);
         g2Points[0] = signature;
-        g2Points[1] = BLS.hashToG2(encodeGuarantee(guarantee));
+        g2Points[1] = BLS.hashToG2(guarantee);
 
-        return BLS.pairing(g1Points, g2Points);
+        if (!BLS.pairing(g1Points, g2Points)) revert InvalidSignature();
+
+        Guarantee memory g = abi.decode(encodedGuarantee, (Guarantee));
+        if (g.domain != guaranteeDomainSeparator)
+            revert InvalidGuaranteeDomain();
+        return g;
     }
 
     // ========= Fallbacks =========

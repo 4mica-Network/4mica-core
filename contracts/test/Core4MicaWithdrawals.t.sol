@@ -294,12 +294,10 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
             17,
             3 ether
         );
-        BLS.G2Point memory signature = _signGuarantee(
-            g,
-            TEST_PRIVATE_KEY
-        );
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        core4Mica.remunerate(g, signature);
+        core4Mica.remunerate(guaranteeData, signature);
         (
             uint256 collateral,
             uint256 storedTimestamp,
@@ -344,12 +342,10 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
             17,
             5 ether
         );
-        BLS.G2Point memory signature = _signGuarantee(
-            g,
-            TEST_PRIVATE_KEY
-        );
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        core4Mica.remunerate(g, signature);
+        core4Mica.remunerate(guaranteeData, signature);
 
         vm.warp(tabTimestamp + core4Mica.withdrawalGracePeriod());
 

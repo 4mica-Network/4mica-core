@@ -1,18 +1,12 @@
-use alloy::primitives::{Address, U256};
-use anyhow::anyhow;
+use alloy::primitives::U256;
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::error::PersistDbError;
 use core_service::persist::{PersistCtx, repo};
-use std::str::FromStr;
 use test_log::test;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    let cfg = AppConfig::fetch();
-    let contract = Address::from_str(&cfg.ethereum_config.contract_address)
-        .map_err(|e| anyhow!("invalid contract address: {}", e))?;
-    crypto::guarantee::init_guarantee_domain_separator(cfg.ethereum_config.chain_id, contract)?;
-    Ok(cfg)
+    Ok(AppConfig::fetch())
 }
 
 #[test(tokio::test)]

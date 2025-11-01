@@ -1,5 +1,6 @@
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256, error::RemunerateError,
+    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
+    error::RemunerateError,
 };
 use std::time::Duration;
 
@@ -46,7 +47,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         .await?;
 
     // Step 3: User signs a payment (1 ETH)
-    let claims = PaymentGuaranteeClaims {
+    let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,

@@ -5,8 +5,7 @@ use alloy::primitives::{Address, B256};
 use alloy::signers::Signer;
 
 use async_trait::async_trait;
-use rpc::common::{PaymentGuaranteeClaims, SigningScheme};
-use rpc::core::CorePublicParameters;
+use rpc::{CorePublicParameters, PaymentGuaranteeRequestClaimsV1, SigningScheme};
 
 #[cfg(test)]
 mod tests;
@@ -26,7 +25,7 @@ pub trait PaymentSigner: Send + Sync {
     async fn sign_request(
         &self,
         params: &CorePublicParameters,
-        claims: PaymentGuaranteeClaims,
+        claims: PaymentGuaranteeRequestClaimsV1,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError>;
 }
@@ -39,7 +38,7 @@ where
     async fn sign_request(
         &self,
         params: &CorePublicParameters,
-        claims: PaymentGuaranteeClaims,
+        claims: PaymentGuaranteeRequestClaimsV1,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError> {
         let signer_addr = self.address();

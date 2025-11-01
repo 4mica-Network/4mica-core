@@ -5,7 +5,7 @@ use entities::{
     sea_orm_active_enums::{CollateralEventType, SettlementStatus, TabStatus},
     tabs,
 };
-use rpc::common::*;
+use rpc::{AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, TabInfo};
 use std::str::FromStr;
 
 pub fn tab_status_to_str(status: TabStatus) -> &'static str {

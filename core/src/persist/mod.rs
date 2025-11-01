@@ -1,6 +1,6 @@
 use alloy::primitives::U256;
 use entities::user_transaction;
-use rpc::common::UserTransactionInfo;
+use rpc::UserTransactionInfo;
 use sea_orm::{Database, DatabaseConnection};
 use std::sync::Arc;
 

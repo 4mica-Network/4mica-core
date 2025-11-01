@@ -4,7 +4,7 @@ use alloy::{
     providers::Provider,
     rpc::types::{TransactionReceipt, TransactionRequest},
 };
-use rpc::common::{PaymentGuaranteeClaims, SigningScheme};
+use rpc::{PaymentGuaranteeRequestClaimsV1, SigningScheme};
 
 use crate::{
     PaymentSignature,
@@ -28,6 +28,10 @@ pub struct UserClient {
 impl UserClient {
     pub(super) fn new(ctx: ClientCtx) -> Self {
         Self { ctx }
+    }
+
+    pub fn guarantee_domain(&self) -> &[u8; 32] {
+        self.ctx.guarantee_domain()
     }
 
     /// Allows the 4mica contract to spend ERC20 tokens on behalf of the user
@@ -134,7 +138,7 @@ impl UserClient {
 
     pub async fn sign_payment(
         &self,
-        claims: PaymentGuaranteeClaims,
+        claims: PaymentGuaranteeRequestClaimsV1,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError> {
         // TODO: Cache public parameters for a while

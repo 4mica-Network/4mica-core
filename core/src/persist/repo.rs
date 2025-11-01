@@ -12,7 +12,7 @@ use entities::{
     tabs, user, user_transaction, withdrawal,
 };
 use log::info;
-use rpc::common::PaymentGuaranteeClaims;
+use rpc::PaymentGuaranteeClaims;
 use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
 use sea_orm::sea_query::OnConflict;
