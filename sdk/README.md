@@ -107,7 +107,7 @@ The SDK provides two client interfaces: `UserClient` for payers and `RecipientCl
 
 - `create_tab(user_address: String, recipient_address: String, erc20_token: Option<String>, ttl: Option<u64>) -> Result<U256, CreateTabError>`: Create a new payment tab in ETH or ERC20 token
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
-- `issue_payment_guarantee(claims: PaymentGuaranteeClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
+- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
 - `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
 - `remunerate(cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>`: Claim from user collateral using BLS certificate
 - `list_settled_tabs() -> Result<Vec<TabInfo>, RecipientQueryError>`: List all settled tabs for the recipient
@@ -357,7 +357,7 @@ println!("Asset: {}", status.asset);
 #### Issue Payment Guarantee
 
 ```rust
-use rust_sdk_4mica::{PaymentGuaranteeClaims, SigningScheme, U256};
+use rust_sdk_4mica::{PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims, SigningScheme, U256};
 
 // First, the user signs the payment (see User Client example above)
 let claims = PaymentGuaranteeClaims::new(
@@ -373,8 +373,18 @@ let claims = PaymentGuaranteeClaims::new(
 let payment_sig = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
 
 // Then, the recipient requests a guarantee
+let guarantee_claims = PaymentGuaranteeRequestClaims {
+    user_address: claims.user_address,
+    recipient_address: claims.recipient_address,
+    tab_id: claims.tab_id,
+    req_id: claims.req_id,
+    amount: claims.amount,
+    timestamp: claims.timestamp,
+    erc20_token: claims.erc20_token,
+};
+
 let bls_cert = client.recipient.issue_payment_guarantee(
-    claims,
+    guarantee_claims,
     payment_sig.signature,
     payment_sig.scheme,
 ).await?;
@@ -397,7 +407,8 @@ Here's a complete example showing a payment flow with ETH:
 
 ```rust
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
+    Client, ConfigBuilder, PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims,
+    SigningScheme, U256,
 };
 
 #[tokio::main]
@@ -443,9 +454,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Payment signed");
 
     // 5. Recipient issues guarantee
+    let guarantee_claims = PaymentGuaranteeRequestClaims {
+        user_address: claims.user_address,
+        recipient_address: claims.recipient_address,
+        tab_id: claims.tab_id,
+        req_id: claims.req_id,
+        amount: claims.amount,
+        timestamp: claims.timestamp,
+        erc20_token: claims.erc20_token,
+    };
+
     let bls_cert = recipient_client
         .recipient
-        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
+        .issue_payment_guarantee(guarantee_claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
 
@@ -464,7 +485,8 @@ Here's a complete example showing a payment flow with an ERC20 token:
 
 ```rust
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
+    Client, ConfigBuilder, PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims,
+    SigningScheme, U256,
 };
 
 #[tokio::main]
@@ -522,9 +544,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Payment signed");
 
     // 5. Recipient issues guarantee
+    let guarantee_claims = PaymentGuaranteeRequestClaims {
+        user_address: claims.user_address,
+        recipient_address: claims.recipient_address,
+        tab_id: claims.tab_id,
+        req_id: claims.req_id,
+        amount: claims.amount,
+        timestamp: claims.timestamp,
+        erc20_token: claims.erc20_token,
+    };
+
     let bls_cert = recipient_client
         .recipient
-        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
+        .issue_payment_guarantee(guarantee_claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
 
@@ -649,6 +681,8 @@ use rust_sdk_4mica::error::{
 
 - `InvalidCertificate(anyhow::Error)`: Invalid BLS certificate
 - `CertificateMismatch`: Certificate signature mismatch
+- `GuaranteeDomainMismatch`: Guarantee domain mismatch
+- `UnsupportedGuaranteeVersion(u64)`: Unsupported guarantee version
 
 **`RecipientQueryError`**
 
@@ -657,7 +691,7 @@ use rust_sdk_4mica::error::{
 **`RemunerateError`**
 
 - `InvalidParams(String)`: Invalid parameters provided
-- `ClaimsHex(FromHexError)`: Failed to decode the hex-encoded guarantee claims blob
+- `ClaimsHex(anyhow::Error)`: Failed to decode the hex-encoded guarantee claims blob
 - `ClaimsDecode(anyhow::Error)`: Failed to deserialize guarantee claims after decoding
 - `GuaranteeConversion(anyhow::Error)`: Failed to convert decoded claims into the contract call type
 - `SignatureHex(FromHexError)`: Failed to decode the hex-encoded BLS signature
@@ -671,6 +705,10 @@ use rust_sdk_4mica::error::{
 - `InvalidRecipient`: Caller is not the recipient of this tab
 - `AmountZero`: Guarantee amount is zero
 - `TransferFailed`: Transfer of funds failed
+- `CertificateInvalid(anyhow::Error)`: Certificate verification failed
+- `CertificateMismatch`: Certificate signature mismatch before submission
+- `GuaranteeDomainMismatch`: Guarantee domain mismatch
+- `UnsupportedGuaranteeVersion(u64)`: Unsupported guarantee version
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
