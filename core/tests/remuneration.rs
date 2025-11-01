@@ -1,5 +1,4 @@
-use alloy::primitives::{Address, U256};
-use anyhow::anyhow;
+use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::AppConfig;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
@@ -13,7 +12,6 @@ use entities::{
     tabs,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
-use std::str::FromStr;
 use test_log::test;
 
 mod common;
@@ -21,11 +19,7 @@ use common::fixtures::{read_collateral, read_locked_collateral, set_locked_colla
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    let cfg = AppConfig::fetch();
-    let contract = Address::from_str(&cfg.ethereum_config.contract_address)
-        .map_err(|e| anyhow!("invalid contract address: {}", e))?;
-    crypto::guarantee::init_guarantee_domain_separator(cfg.ethereum_config.chain_id, contract)?;
-    Ok(cfg)
+    Ok(AppConfig::fetch())
 }
 
 #[test(tokio::test)]

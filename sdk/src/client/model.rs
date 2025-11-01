@@ -1,5 +1,5 @@
 use alloy::primitives::U256;
-use rpc::common::{
+use rpc::{
     AssetBalanceInfo as RpcAssetBalanceInfo, CollateralEventInfo as RpcCollateralEventInfo,
     GuaranteeInfo as RpcGuaranteeInfo, PendingRemunerationInfo as RpcPendingRemunerationInfo,
     TabInfo as RpcTabInfo, UserTransactionInfo as RpcUserTransactionInfo,
@@ -72,7 +72,7 @@ pub struct GuaranteeInfo {
     pub to_address: String,
     pub asset_address: String,
     pub amount: U256,
-    pub start_timestamp: i64,
+    pub timestamp: u64,
     pub certificate: Option<String>,
 }
 
@@ -85,7 +85,7 @@ impl From<RpcGuaranteeInfo> for GuaranteeInfo {
             to_address: value.to_address,
             asset_address: value.asset_address,
             amount: value.amount,
-            start_timestamp: value.start_timestamp,
+            timestamp: value.start_timestamp as u64,
             certificate: value.certificate,
         }
     }

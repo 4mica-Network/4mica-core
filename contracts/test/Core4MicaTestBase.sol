@@ -18,7 +18,11 @@ contract MockERC20 {
     mapping(address => mapping(address => uint256)) public allowance;
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
-    event Approval(address indexed owner, address indexed spender, uint256 amount);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 amount
+    );
 
     constructor(string memory name_, string memory symbol_) {
         name = name_;
@@ -121,7 +125,13 @@ abstract contract Core4MicaTestBase is Test {
         Core4Mica.Guarantee memory g,
         bytes32 privKey
     ) internal view returns (BLS.G2Point memory) {
-        return BlsHelper.signGuarantee(core4Mica, g, privKey);
+        return BlsHelper.signGuarantee(g, privKey);
+    }
+
+    function _encodeGuaranteeWithVersion(
+        Core4Mica.Guarantee memory g
+    ) internal pure returns (bytes memory) {
+        return BlsHelper.encodeGuaranteeWithVersion(g);
     }
 
     function _guarantee(
@@ -132,16 +142,19 @@ abstract contract Core4MicaTestBase is Test {
         uint256 reqId,
         uint256 amount,
         address asset
-    ) internal pure returns (Core4Mica.Guarantee memory) {
+    ) internal view returns (Core4Mica.Guarantee memory) {
         return
             Core4Mica.Guarantee({
+                domain: core4Mica.guaranteeDomainSeparator(),
                 tab_id: tabId,
-                tab_timestamp: tabTimestamp,
+                req_id: reqId,
                 client: client,
                 recipient: recipient,
-                req_id: reqId,
                 amount: amount,
-                asset: asset
+                total_amount: amount,
+                asset: asset,
+                timestamp: uint64(tabTimestamp),
+                version: 1
             });
     }
 
@@ -152,7 +165,7 @@ abstract contract Core4MicaTestBase is Test {
         address recipient,
         uint256 reqId,
         uint256 amount
-    ) internal pure returns (Core4Mica.Guarantee memory) {
+    ) internal view returns (Core4Mica.Guarantee memory) {
         return
             _guarantee(
                 tabId,
