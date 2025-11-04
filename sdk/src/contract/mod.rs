@@ -138,6 +138,7 @@ sol! {
         function setSynchronizationDelay(uint256 _synchronizationDelay) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
         function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
+        function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
         function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
 
         // ========= Views =========
