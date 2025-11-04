@@ -142,6 +142,71 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
         );
     }
 
+    function test_configureGuaranteeVersion_revertUnauthorizedCaller() public {
+        bytes32 domainV2 = keccak256("DOMAIN_V2");
+        BLS.G1Point memory publicKeyV2 = BlsHelper.getPublicKey(
+            TEST_PRIVATE_KEY_V2
+        );
+
+        vm.prank(USER1);
+        vm.expectRevert(AccessUnauthorizedError(USER1));
+        core4Mica.configureGuaranteeVersion(
+            2,
+            publicKeyV2,
+            domainV2,
+            address(decoder),
+            true
+        );
+    }
+
+    function test_configureGuaranteeVersion_revertVersionZero() public {
+        BLS.G1Point memory publicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Core4Mica.UnsupportedGuaranteeVersion.selector,
+                uint64(0)
+            )
+        );
+        core4Mica.configureGuaranteeVersion(
+            0,
+            publicKey,
+            keccak256("DOMAIN_V2"),
+            address(decoder),
+            true
+        );
+    }
+
+    function test_configureGuaranteeVersion_revertVersionOneWithDecoder() public {
+        BLS.G1Point memory newKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
+        uint64 initialVersion = core4Mica.INITIAL_GUARANTEE_VERSION();
+        bytes32 currentDomain = core4Mica.guaranteeDomainSeparator();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Core4Mica.UnsupportedGuaranteeVersion.selector,
+                initialVersion
+            )
+        );
+        core4Mica.configureGuaranteeVersion(
+            initialVersion,
+            newKey,
+            currentDomain,
+            address(0x123),
+            true
+        );
+    }
+
+    function test_configureGuaranteeVersion_revertMissingDomainWhenEnabled() public {
+        BLS.G1Point memory publicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
+        vm.expectRevert(Core4Mica.InvalidGuaranteeDomain.selector);
+        core4Mica.configureGuaranteeVersion(
+            2,
+            publicKey,
+            bytes32(0),
+            address(decoder),
+            true
+        );
+    }
+
     function test_verifyAndDecodeGuarantee_revertWhenVersionDisabled() public {
         bytes32 domainV2 = keccak256("DOMAIN_V2");
         BLS.G1Point memory publicKeyV2 = BlsHelper.getPublicKey(

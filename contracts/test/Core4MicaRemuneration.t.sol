@@ -3,6 +3,12 @@ pragma solidity ^0.8.29;
 
 import "./Core4MicaTestBase.sol";
 
+contract RevertingRecipient {
+    receive() external payable {
+        revert("REJECT_ETH");
+    }
+}
+
 contract Core4MicaRemunerationTest is Core4MicaTestBase {
     function test_Remunerate() public {
         vm.prank(USER1);
@@ -300,6 +306,29 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.expectRevert(Core4Mica.InvalidRecipient.selector);
         vm.prank(USER2);
+        core4Mica.remunerate(guaranteeData, signature);
+    }
+
+    function test_Remunerate_Revert_TransferFailed() public {
+        vm.prank(USER1);
+        core4Mica.deposit{value: 2 ether}();
+
+        RevertingRecipient revertRecipient = new RevertingRecipient();
+        uint256 grace = core4Mica.remunerationGracePeriod();
+        vm.warp(grace + 100);
+
+        Guarantee memory g = _ethGuarantee(
+            0x1234,
+            block.timestamp - grace - 1,
+            USER1,
+            address(revertRecipient),
+            17,
+            1 ether
+        );
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
+
+        vm.expectRevert(Core4Mica.TransferFailed.selector);
         core4Mica.remunerate(guaranteeData, signature);
     }
 

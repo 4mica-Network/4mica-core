@@ -80,12 +80,14 @@ contract Core4MicaScript is Script {
         );
 
         // Admin-only config functions → USER_ADMIN_ROLE
-        bytes4[] memory adminSelectors = new bytes4[](5);
+        bytes4[] memory adminSelectors = new bytes4[](7);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
         adminSelectors[3] = Core4Mica.setGuaranteeVerificationKey.selector;
         adminSelectors[4] = SET_TIMING_PARAMETERS_SELECTOR;
+        adminSelectors[5] = Core4Mica.setSynchronizationDelay.selector;
+        adminSelectors[6] = Core4Mica.configureGuaranteeVersion.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),

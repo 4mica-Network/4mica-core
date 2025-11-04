@@ -3,6 +3,27 @@ pragma solidity ^0.8.29;
 
 import "./Core4MicaTestBase.sol";
 
+contract RevertingWithdrawalUser {
+    Core4Mica internal immutable core;
+
+    constructor(Core4Mica core_) {
+        core = core_;
+    }
+
+    function depositAndRequest() external payable {
+        core.deposit{value: msg.value}();
+        core.requestWithdrawal(msg.value);
+    }
+
+    receive() external payable {
+        revert("REJECT_ETH");
+    }
+
+    function finalize() external {
+        core.finalizeWithdrawal();
+    }
+}
+
 contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
     function test_RequestWithdrawal() public {
         vm.startPrank(USER1);
@@ -399,6 +420,17 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
 
         vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
         core4Mica.finalizeWithdrawal();
+    }
+
+    function test_FinalizeWithdrawal_Revert_TransferFailed() public {
+        RevertingWithdrawalUser revertUser = new RevertingWithdrawalUser(core4Mica);
+        vm.deal(address(revertUser), 1 ether);
+        revertUser.depositAndRequest{value: 1 ether}();
+
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+
+        vm.expectRevert(Core4Mica.TransferFailed.selector);
+        revertUser.finalize();
     }
 
     function test_FinalizeWithdrawal_Stablecoin_Revert_NoWithdrawalRequested()

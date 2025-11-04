@@ -80,6 +80,7 @@ abstract contract Core4MicaTestBase is Test {
     address internal constant USER2 = address(0x222);
     address internal constant OPERATOR = address(0x333);
 
+    uint64 internal constant USER_ADMIN_ROLE = 4;
     uint64 internal constant OPERATOR_ROLE = 9;
     address internal constant ETH_ASSET = address(0);
 
@@ -119,6 +120,18 @@ abstract contract Core4MicaTestBase is Test {
             OPERATOR_ROLE
         );
 
+        bytes4[] memory adminSelectors = new bytes4[](2);
+        adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
+        adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
+        for (uint256 i = 0; i < adminSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(adminSelectors[i]),
+                USER_ADMIN_ROLE
+            );
+        }
+
+        manager.grantRole(USER_ADMIN_ROLE, address(this), 0);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
     }
 
