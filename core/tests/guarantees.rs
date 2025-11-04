@@ -1,5 +1,6 @@
+use std::str::FromStr;
+
 use alloy::primitives::{Address, U256};
-use anyhow::anyhow;
 use chrono::Utc;
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::error::PersistDbError;
@@ -7,9 +8,8 @@ use core_service::persist::*;
 use core_service::util::u256_to_string;
 use crypto::bls::BLSCert;
 use entities::{guarantee, user};
-use rpc::common::PaymentGuaranteeClaims;
+use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
-use std::str::FromStr;
 use test_log::test;
 
 mod common;
@@ -17,11 +17,7 @@ use common::fixtures::read_locked_collateral;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    let cfg = AppConfig::fetch();
-    let contract = Address::from_str(&cfg.ethereum_config.contract_address)
-        .map_err(|e| anyhow!("invalid contract address: {}", e))?;
-    crypto::guarantee::init_guarantee_domain_separator(cfg.ethereum_config.chain_id, contract)?;
-    Ok(cfg)
+    Ok(AppConfig::fetch())
 }
 
 // helper to build a random valid 0x… address
@@ -61,6 +57,16 @@ async fn insert_test_tab(
         .await?;
 
     Ok(())
+}
+
+#[test]
+fn domain_separator_matches_contract_logic() {
+    let addr = Address::from_str("0xA15BB66138824a1c7167f5E85b957d04Dd34E468").unwrap();
+    let domain = common::fixtures::compute_guarantee_domain_separator(31337, addr).unwrap();
+    assert_eq!(
+        crypto::hex::encode_hex(&domain),
+        "0xeec6b300414b6ac9eee0690bac03714ce16850fc71bd815b15f85beba53f16b1"
+    );
 }
 
 #[test(tokio::test)]
@@ -377,21 +383,30 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
     )
     .await?;
 
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+
     // recipient + tab
     let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
     let tab_id = random_u256();
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     // build a minimal PaymentGuaranteeClaims and dummy cert
-    let promise = PaymentGuaranteeClaims {
-        tab_id,
-        req_id: U256::from(0u64),
-        user_address: user_addr.clone(),
-        recipient_address: recipient_addr.clone(),
-        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-        amount: U256::from(40u64),
-        timestamp: Utc::now().timestamp() as u64,
-    };
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            tab_id,
+            req_id: U256::from(0u64),
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            amount: U256::from(40u64),
+            timestamp: Utc::now().timestamp() as u64,
+        }),
+        domain,
+        U256::from(40u64),
+    );
 
     // BLSCert::new requires an exact 32-byte scalar
     let mut sk_be32 = [0u8; 32];
@@ -436,16 +451,25 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     let tab_id = random_u256();
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
-    let promise = PaymentGuaranteeClaims {
-        tab_id,
-        req_id: random_u256(),
-        user_address: user_addr.clone(),
-        recipient_address: recipient_addr.clone(),
-        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-        amount: U256::from(10u64),
-        // deliberately invalid: chrono cannot represent this
-        timestamp: i64::MAX as u64,
-    };
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            tab_id,
+            req_id: random_u256(),
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            amount: U256::from(10u64),
+            // deliberately invalid: chrono cannot represent this
+            timestamp: i64::MAX as u64,
+        }),
+        domain,
+        U256::from(10u64),
+    );
 
     // BLSCert::new requires an exact 32-byte scalar
     let mut sk_be32 = [0u8; 32];

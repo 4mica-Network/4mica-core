@@ -1,7 +1,7 @@
 use alloy::{hex, primitives::Address, providers::ProviderBuilder, sol};
-use rpc::{RpcProxy, core::CorePublicParameters};
+use rpc::{CorePublicParameters, RpcProxy};
 use rust_sdk_4mica::{
-    Client, Config, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256,
+    Client, Config, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
     error::RemunerateError,
 };
 use std::{str::FromStr, time::Duration};
@@ -41,23 +41,7 @@ async fn log_signature_environment(
         hex::encode(&public_params.public_key)
     );
 
-    let stored_domain = crypto::guarantee::guarantee_domain_separator()?;
-    println!(
-        "[{}] SDK stored domain separator=0x{}",
-        tag,
-        hex::encode(stored_domain)
-    );
-
     let contract_address = Address::from_str(&public_params.contract_address)?;
-    let recomputed_domain = crypto::guarantee::compute_guarantee_domain_separator(
-        public_params.chain_id,
-        contract_address,
-    )?;
-    println!(
-        "[{}] SDK recomputed domain separator=0x{}",
-        tag,
-        hex::encode(recomputed_domain)
-    );
 
     let provider = ProviderBuilder::new()
         .connect(&public_params.ethereum_http_rpc_url)
@@ -95,7 +79,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 
     let user_address = user_config_clone.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
-    log_signature_environment("user", &user_config_clone).await?;
+    // log_signature_environment("user", &user_config_clone).await?;
 
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
@@ -110,7 +94,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .address()
         .to_string();
     let recipient_client = Client::new(recipient_config).await?;
-    log_signature_environment("recipient", &recipient_config_clone).await?;
+    // log_signature_environment("recipient", &recipient_config_clone).await?;
 
     let user_info = user_client.user.get_user().await?;
     let eth_asset_before =
@@ -140,7 +124,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .await?;
 
     let guarantee_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
-    let claims = PaymentGuaranteeClaims {
+    let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
@@ -149,7 +133,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         timestamp: common::get_now().as_secs() - 3600 * 24 * 15,
         asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
-    println!("[recipient] claims struct: {:?}", claims);
+    // println!("[recipient] claims struct: {:?}", claims);
 
     let payment_sig = user_client
         .user
@@ -161,28 +145,26 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .issue_payment_guarantee(claims.clone(), payment_sig.signature, payment_sig.scheme)
         .await?;
     println!(
-        "[recipient] issued cert: claims=0x{} signature=0x{}",
+        "[recipient] issued cert:\nclaims=0x{}\nsignature=0x{}",
         bls_cert.claims, bls_cert.signature
     );
 
+    let guarantee = recipient_client
+        .recipient
+        .verify_payment_guarantee(&bls_cert)?;
+
+    println!("[recipient] verified guarantee:\n{:?}", guarantee);
+
     let claims_bytes = crypto::hex::decode_hex(&bls_cert.claims)?;
-    println!(
-        "[recipient] encoded claims bytes=0x{}",
-        hex::encode(&claims_bytes)
-    );
-    let expected_bytes = crypto::guarantee::encode_guarantee_bytes(
-        claims.tab_id,
-        claims.req_id,
-        &claims.user_address,
-        &claims.recipient_address,
-        claims.amount,
-        &claims.asset_address,
-        claims.timestamp,
-    )?;
-    println!(
-        "[recipient] expected claims bytes=0x{}",
-        hex::encode(&expected_bytes)
-    );
+    // println!(
+    //     "[recipient] encoded claims bytes=0x{}",
+    //     hex::encode(&claims_bytes)
+    // );
+    let expected_bytes: Vec<u8> = guarantee.try_into()?;
+    // println!(
+    //     "[recipient] expected claims bytes=0x{}",
+    //     hex::encode(&expected_bytes)
+    // );
     assert_eq!(claims_bytes, expected_bytes);
 
     recipient_client
@@ -258,7 +240,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .await?;
 
     let guarantee_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
-    let claims = PaymentGuaranteeClaims {
+    let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
@@ -283,20 +265,16 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         bls_cert.claims, bls_cert.signature
     );
 
+    let guarantee = recipient_client
+        .recipient
+        .verify_payment_guarantee(&bls_cert)?;
+
     let claims_bytes = crypto::hex::decode_hex(&bls_cert.claims)?;
     println!(
         "[double] encoded claims bytes=0x{}",
         hex::encode(&claims_bytes)
     );
-    let expected_bytes = crypto::guarantee::encode_guarantee_bytes(
-        claims.tab_id,
-        claims.req_id,
-        &claims.user_address,
-        &claims.recipient_address,
-        claims.amount,
-        &claims.asset_address,
-        claims.timestamp,
-    )?;
+    let expected_bytes: Vec<u8> = guarantee.try_into()?;
     println!(
         "[double] expected claims bytes=0x{}",
         hex::encode(&expected_bytes)

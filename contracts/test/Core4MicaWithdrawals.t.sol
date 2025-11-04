@@ -3,6 +3,27 @@ pragma solidity ^0.8.29;
 
 import "./Core4MicaTestBase.sol";
 
+contract RevertingWithdrawalUser {
+    Core4Mica internal immutable core;
+
+    constructor(Core4Mica core_) {
+        core = core_;
+    }
+
+    function depositAndRequest() external payable {
+        core.deposit{value: msg.value}();
+        core.requestWithdrawal(msg.value);
+    }
+
+    receive() external payable {
+        revert("REJECT_ETH");
+    }
+
+    function finalize() external {
+        core.finalizeWithdrawal();
+    }
+}
+
 contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
     function test_RequestWithdrawal() public {
         vm.startPrank(USER1);
@@ -286,7 +307,7 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
         core4Mica.requestWithdrawal(4 ether);
 
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             tabTimestamp,
             USER1,
@@ -294,12 +315,10 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
             17,
             3 ether
         );
-        BLS.G2Point memory signature = _signGuarantee(
-            g,
-            TEST_PRIVATE_KEY
-        );
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        core4Mica.remunerate(g, signature);
+        core4Mica.remunerate(guaranteeData, signature);
         (
             uint256 collateral,
             uint256 storedTimestamp,
@@ -336,7 +355,7 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
 
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             tabTimestamp,
             USER1,
@@ -344,12 +363,10 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
             17,
             5 ether
         );
-        BLS.G2Point memory signature = _signGuarantee(
-            g,
-            TEST_PRIVATE_KEY
-        );
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        core4Mica.remunerate(g, signature);
+        core4Mica.remunerate(guaranteeData, signature);
 
         vm.warp(tabTimestamp + core4Mica.withdrawalGracePeriod());
 
@@ -403,6 +420,17 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
 
         vm.expectRevert(Core4Mica.GracePeriodNotElapsed.selector);
         core4Mica.finalizeWithdrawal();
+    }
+
+    function test_FinalizeWithdrawal_Revert_TransferFailed() public {
+        RevertingWithdrawalUser revertUser = new RevertingWithdrawalUser(core4Mica);
+        vm.deal(address(revertUser), 1 ether);
+        revertUser.depositAndRequest{value: 1 ether}();
+
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+
+        vm.expectRevert(Core4Mica.TransferFailed.selector);
+        revertUser.finalize();
     }
 
     function test_FinalizeWithdrawal_Stablecoin_Revert_NoWithdrawalRequested()

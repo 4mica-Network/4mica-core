@@ -81,6 +81,9 @@ pub enum CoreContractApiError {
     #[error("Pending transaction failed: {0}")]
     PendingTxFailure(String),
 
+    #[error("Guarantee version {0} is disabled")]
+    GuaranteeVersionDisabled(u64),
+
     #[error("Unexpected core contract api error: {0}")]
     Other(#[from] anyhow::Error),
 }

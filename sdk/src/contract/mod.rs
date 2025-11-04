@@ -22,6 +22,8 @@ sol! {
         error IllegalValue();
         error UnsupportedAsset(address asset);
         error InvalidAsset(address asset);
+        error UnsupportedGuaranteeVersion(uint64 version);
+        error InvalidGuaranteeDomain();
 
         // ========= Storage =========
         function remunerationGracePeriod() external view returns (uint256);
@@ -69,13 +71,16 @@ sol! {
         }
 
         struct Guarantee {
+            bytes32 domain;
             uint256 tab_id;
-            uint256 tab_timestamp;
+            uint256 req_id;
             address client;
             address recipient;
-            uint256 req_id;
             uint256 amount;
+            uint256 total_amount;
             address asset;
+            uint64 timestamp;
+            uint64 version;
         }
 
         struct G1Point {
@@ -122,8 +127,8 @@ sol! {
 
         /// Remunerate a recipient based on a signed guarantee
         function remunerate(
-            Guarantee calldata g,
-            G2Point signature
+            bytes calldata guaranteeData,
+            G2Point calldata signature
         ) external;
 
         // ========= Admin / Manager =========
@@ -133,6 +138,7 @@ sol! {
         function setSynchronizationDelay(uint256 _synchronizationDelay) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
         function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
+        function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
         function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
 
         // ========= Views =========
@@ -149,11 +155,24 @@ sol! {
         function getERC20Tokens() external view returns (address[] memory);
 
         function guaranteeDomainSeparator() external view returns (bytes32);
-        function encodeGuarantee(Guarantee memory g) external view returns (bytes memory);
-        function verifyGuaranteeSignature(
-            Guarantee memory g,
-            G2Point signature
-        ) external view returns (bool);
+        function verifyAndDecodeGuarantee(
+            bytes memory guarantee,
+            G2Point memory signature
+        ) external view returns (Guarantee memory);
+
+        function collateral(address userAddr) external view returns (uint256);
+        function collateral(address userAddr, address asset) external view returns (uint256);
+
+        function getUser(address userAddr) external view returns (
+            uint256 assetCollateral,
+            uint256 withdrawalRequestTimestamp,
+            uint256 withdrawalRequestAmount
+        );
+        function getUser(address userAddr, address asset) external view returns (
+            uint256 assetCollateral,
+            uint256 withdrawalRequestTimestamp,
+            uint256 withdrawalRequestAmount
+        );
     }
 }
 

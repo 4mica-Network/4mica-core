@@ -4,8 +4,8 @@ pragma solidity ^0.8.29;
 import "./Core4MicaTestBase.sol";
 
 contract Core4MicaMiscTest is Core4MicaTestBase {
-    function test_VerifyGuaranteeSignature() public view {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+    function test_VerifyAndDecodeGuarantee() public view {
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -14,11 +14,17 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
             3 ether
         );
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
-        assertTrue(core4Mica.verifyGuaranteeSignature(g, signature));
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
+
+        Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(
+            guaranteeData,
+            signature
+        );
+        assertEq(keccak256(abi.encode(decoded)), keccak256(abi.encode(g)));
     }
 
-    function test_VerifyGuaranteeSignature_InvalidGuarantee() public view {
-        Core4Mica.Guarantee memory g1 = _ethGuarantee(
+    function test_VerifyAndDecodeGuarantee_InvalidGuarantee() public {
+        Guarantee memory g1 = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -28,7 +34,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         );
         BLS.G2Point memory signature = _signGuarantee(g1, TEST_PRIVATE_KEY);
 
-        Core4Mica.Guarantee memory g2 = _ethGuarantee(
+        Guarantee memory g2 = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -36,11 +42,14 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
             17,
             4 ether
         );
-        assertFalse(core4Mica.verifyGuaranteeSignature(g2, signature));
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g2);
+
+        vm.expectRevert(Core4Mica.InvalidSignature.selector);
+        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
-    function test_VerifyGuaranteeSignature_InvalidSigningKey() public view {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+    function test_VerifyAndDecodeGuarantee_InvalidSigningKey() public {
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -53,11 +62,14 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
             0x5B85C3922AB2E2738F196576D00A8583CBE4A1C6BCA85DDFC65438574F42377C
         );
         BLS.G2Point memory signature = _signGuarantee(g, otherKey);
-        assertFalse(core4Mica.verifyGuaranteeSignature(g, signature));
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
+
+        vm.expectRevert(Core4Mica.InvalidSignature.selector);
+        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
-    function test_VerifyGuaranteeSignature_InvalidAssetField() public view {
-        Core4Mica.Guarantee memory g = _guarantee(
+    function test_VerifyAndDecodeGuarantee_InvalidAssetField() public {
+        Guarantee memory g = _guarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -68,15 +80,61 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         );
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
 
-        Core4Mica.Guarantee memory tampered = _ethGuarantee(
+        Guarantee memory tampered = _ethGuarantee(
             g.tab_id,
-            g.tab_timestamp,
+            g.timestamp,
             g.client,
             g.recipient,
             g.req_id,
             g.amount
         );
-        assertFalse(core4Mica.verifyGuaranteeSignature(tampered, signature));
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(tampered);
+
+        vm.expectRevert(Core4Mica.InvalidSignature.selector);
+        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+    }
+
+    function test_VerifyAndDecodeGuarantee_UnsupportedVersion() public {
+        Guarantee memory g = _ethGuarantee(
+            0x1234,
+            block.timestamp,
+            USER1,
+            USER2,
+            17,
+            3 ether
+        );
+
+        // Create guarantee with unsupported version
+        g.version = 99;
+        bytes memory guaranteeData = abi.encode(uint64(99), abi.encode(g));
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Core4Mica.UnsupportedGuaranteeVersion.selector,
+                uint64(99)
+            )
+        );
+        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+    }
+
+    function test_VerifyAndDecodeGuarantee_InvalidDomain() public {
+        Guarantee memory g = _ethGuarantee(
+            0x1234,
+            block.timestamp,
+            USER1,
+            USER2,
+            17,
+            3 ether
+        );
+
+        // Modify the guarantee to have a different domain
+        g.domain = keccak256("WRONG_DOMAIN");
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
+
+        vm.expectRevert(Core4Mica.InvalidGuaranteeDomain.selector);
+        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
     function test_Receive_Reverts_TransferFailed() public {
@@ -87,9 +145,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         assertFalse(ok);
         assertEq(
             data,
-            abi.encodeWithSelector(
-                Core4Mica.DirectTransferNotAllowed.selector
-            )
+            abi.encodeWithSelector(Core4Mica.DirectTransferNotAllowed.selector)
         );
     }
 
