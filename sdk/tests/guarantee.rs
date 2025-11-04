@@ -1,5 +1,6 @@
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeClaims, SigningScheme, U256, error::VerifyGuaranteeError,
+    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
+    error::VerifyGuaranteeError,
 };
 use std::time::Duration;
 
@@ -62,7 +63,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .await?;
 
     // Step 3: User signs a payment (1 ETH)
-    let claims = PaymentGuaranteeClaims {
+    let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,

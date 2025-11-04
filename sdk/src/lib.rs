@@ -7,7 +7,10 @@ mod sig;
 mod validators;
 
 pub use alloy::primitives::{Address, U256};
-pub use rpc::common::{PaymentGuaranteeClaims, SigningScheme};
+pub use rpc::{
+    PaymentGuaranteeClaims, PaymentGuaranteeRequestClaimsV1 as PaymentGuaranteeRequestClaims,
+    SigningScheme,
+};
 
 pub use crate::error::RecipientQueryError;
 pub use client::Client;

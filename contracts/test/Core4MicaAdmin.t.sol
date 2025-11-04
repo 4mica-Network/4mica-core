@@ -218,6 +218,20 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         core4Mica.setGuaranteeVerificationKey(newKey);
     }
 
+    function test_SetTimingParameters_Revert_ZeroValues() public {
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setTimingParameters(0, 15 days, 1 days, 25 days);
+
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setTimingParameters(10 days, 0, 1 days, 25 days);
+
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setTimingParameters(10 days, 15 days, 0, 25 days);
+
+        vm.expectRevert(Core4Mica.AmountZero.selector);
+        core4Mica.setTimingParameters(10 days, 15 days, 1 days, 0);
+    }
+
     function test_SetTimingParameters() public {
         uint256 newRem = 10 days;
         uint256 newTab = 15 days;

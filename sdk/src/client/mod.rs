@@ -28,6 +28,7 @@ struct Inner {
     provider: DynProvider,
     contract_address: Address,
     operator_public_key: [u8; 48],
+    guarantee_domain: [u8; 32],
 }
 
 #[derive(Clone)]
@@ -92,9 +93,6 @@ impl ClientCtx {
             .call()
             .await
             .map_err(|e| ClientError::Initialization(e.to_string()))?;
-        let domain_bytes: [u8; 32] = on_chain_domain.into();
-        crypto::guarantee::set_guarantee_domain_separator(domain_bytes)
-            .map_err(|e| ClientError::Initialization(e.to_string()))?;
 
         Ok(Self(Arc::new(Inner {
             cfg,
@@ -102,6 +100,7 @@ impl ClientCtx {
             provider,
             contract_address,
             operator_public_key,
+            guarantee_domain: on_chain_domain.into(),
         })))
     }
 
@@ -131,6 +130,10 @@ impl ClientCtx {
 
     fn operator_public_key(&self) -> &[u8; 48] {
         &self.0.operator_public_key
+    }
+
+    fn guarantee_domain(&self) -> &[u8; 32] {
+        &self.0.guarantee_domain
     }
 }
 
