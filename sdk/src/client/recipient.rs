@@ -157,15 +157,20 @@ impl RecipientClient {
         let sig_words = crypto::bls::g2_words_from_signature(sig.as_slice())
             .map_err(RemunerateError::SignatureDecode)?;
 
+        let claims_bytes = cert.claims_bytes().map_err(RemunerateError::ClaimsHex)?;
+
+        // Static call first to surface a revert without submitting a transaction
+        self.ctx
+            .get_contract()
+            .remunerate(claims_bytes.clone().into(), sig_words.into())
+            .call()
+            .await
+            .map_err(RemunerateError::from)?;
+
         let send_result = self
             .ctx
             .get_contract()
-            .remunerate(
-                cert.claims_bytes()
-                    .map_err(RemunerateError::ClaimsHex)?
-                    .into(),
-                sig_words.into(),
-            )
+            .remunerate(claims_bytes.into(), sig_words.into())
             .send()
             .await
             .map_err(RemunerateError::from)?;

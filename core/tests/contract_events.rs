@@ -306,7 +306,9 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
         fn_selector("setRemunerationGracePeriod(uint256)"),
         fn_selector("setTabExpirationTime(uint256)"),
         fn_selector("setSynchronizationDelay(uint256)"),
-        fn_selector("configureGuaranteeVersion(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)"),
+        fn_selector(
+            "configureGuaranteeVersion(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
+        ),
     ];
     access_manager
         .setTargetFunctionRole(*contract.address(), selectors, 4u64)
