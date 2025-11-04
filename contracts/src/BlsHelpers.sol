@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import {Core4Mica} from "../src/Core4Mica.sol";
+import {Guarantee} from "../src/Core4Mica.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 library BlsHelper {
@@ -30,7 +30,7 @@ library BlsHelper {
     }
 
     function signGuarantee(
-        Core4Mica.Guarantee memory g,
+        Guarantee memory g,
         bytes32 privateKey
     ) public view returns (BLS.G2Point memory) {
         return blsSign(encodeGuaranteeWithVersion(g), privateKey);
@@ -39,13 +39,13 @@ library BlsHelper {
     // === Helpers ===
 
     function encodeGuarantee(
-        Core4Mica.Guarantee memory g
+        Guarantee memory g
     ) public pure returns (bytes memory) {
         return abi.encode(g);
     }
 
     function encodeGuaranteeWithVersion(
-        Core4Mica.Guarantee memory g
+        Guarantee memory g
     ) public pure returns (bytes memory) {
         return abi.encode(g.version, abi.encode(g));
     }

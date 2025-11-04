@@ -8,6 +8,23 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
+struct Guarantee {
+    bytes32 domain;
+    uint256 tab_id;
+    uint256 req_id;
+    address client;
+    address recipient;
+    uint256 amount;
+    uint256 total_amount;
+    address asset;
+    uint64 timestamp;
+    uint64 version;
+}
+
+interface IGuaranteeDecoder {
+    function decode(bytes calldata data) external view returns (Guarantee memory);
+}
+
 /// @title Core4Mica
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
 contract Core4Mica is AccessManaged, ReentrancyGuard {
@@ -32,6 +49,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     error InvalidAsset(address asset);
     error UnsupportedGuaranteeVersion(uint64 version);
     error InvalidGuaranteeDomain();
+    error MissingGuaranteeDecoder(uint64 version);
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -42,6 +60,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     /// TODO(#22): move key to registry
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
     bytes32 public guaranteeDomainSeparator;
+
+    struct VersionConfig {
+        BLS.G1Point verificationKey;
+        bytes32 domainSeparator;
+        address decoder;
+        bool enabled;
+    }
+
+    mapping(uint64 => VersionConfig) private guaranteeVersions;
+    uint64 public constant INITIAL_GUARANTEE_VERSION = 1;
 
     address public immutable USDC;
     address public immutable USDT;
@@ -127,20 +155,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         address indexed user,
         uint256 amount
     );
-
-    // ========= Helper structs =========
-    struct Guarantee {
-        bytes32 domain;
-        uint256 tab_id;
-        uint256 req_id;
-        address client;
-        address recipient;
-        uint256 amount;
-        uint256 total_amount;
-        address asset;
-        uint64 timestamp;
-        uint64 version;
-    }
+    event GuaranteeVersionUpdated(
+        uint64 indexed version,
+        BLS.G1Point verificationKey,
+        bytes32 domainSeparator,
+        address decoder,
+        bool enabled
+    );
 
     // ========= Constructor =========
     constructor(
@@ -158,6 +179,19 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         GUARANTEE_VERIFICATION_KEY = verificationKey;
         guaranteeDomainSeparator = keccak256(
             abi.encode("4MICA_CORE_GUARANTEE_V1", block.chainid, address(this))
+        );
+        guaranteeVersions[INITIAL_GUARANTEE_VERSION] = VersionConfig({
+            verificationKey: verificationKey,
+            domainSeparator: guaranteeDomainSeparator,
+            decoder: address(0),
+            enabled: true
+        });
+        emit GuaranteeVersionUpdated(
+            INITIAL_GUARANTEE_VERSION,
+            verificationKey,
+            guaranteeDomainSeparator,
+            address(0),
+            true
         );
     }
 
@@ -254,7 +288,82 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         BLS.G1Point calldata verificationKey
     ) external restricted {
         GUARANTEE_VERIFICATION_KEY = verificationKey;
+        VersionConfig storage config = guaranteeVersions[INITIAL_GUARANTEE_VERSION];
+        config.verificationKey = verificationKey;
         emit VerificationKeyUpdated(verificationKey);
+        emit GuaranteeVersionUpdated(
+            INITIAL_GUARANTEE_VERSION,
+            verificationKey,
+            config.domainSeparator,
+            config.decoder,
+            config.enabled
+        );
+    }
+
+    function configureGuaranteeVersion(
+        uint64 version,
+        BLS.G1Point calldata verificationKey,
+        bytes32 domainSeparator,
+        address decoder,
+        bool enabled
+    ) external restricted {
+        if (version == 0) revert UnsupportedGuaranteeVersion(version);
+        if (version == INITIAL_GUARANTEE_VERSION && decoder != address(0)) {
+            // Version 1 decoding remains inline for gas efficiency.
+            revert UnsupportedGuaranteeVersion(version);
+        }
+        VersionConfig storage config = guaranteeVersions[version];
+        address decoderToUse = decoder;
+        if (version != INITIAL_GUARANTEE_VERSION && decoderToUse == address(0)) {
+            if (enabled) revert MissingGuaranteeDecoder(version);
+            decoderToUse = config.decoder;
+        }
+        bytes32 domainSeparatorToUse = domainSeparator;
+        if (enabled && domainSeparatorToUse == bytes32(0)) {
+            revert InvalidGuaranteeDomain();
+        }
+        if (!enabled && domainSeparatorToUse == bytes32(0)) {
+            domainSeparatorToUse = config.domainSeparator;
+        }
+
+        config.verificationKey = verificationKey;
+        config.domainSeparator = domainSeparatorToUse;
+        config.decoder = decoderToUse;
+        config.enabled = enabled;
+
+        if (version == INITIAL_GUARANTEE_VERSION) {
+            GUARANTEE_VERIFICATION_KEY = verificationKey;
+            guaranteeDomainSeparator = domainSeparatorToUse;
+        }
+
+        emit GuaranteeVersionUpdated(
+            version,
+            verificationKey,
+            domainSeparatorToUse,
+            decoderToUse,
+            enabled
+        );
+    }
+
+    function getGuaranteeVersionConfig(
+        uint64 version
+    )
+        external
+        view
+        returns (
+            BLS.G1Point memory verificationKey,
+            bytes32 domainSeparator,
+            address decoder,
+            bool enabled
+        )
+    {
+        VersionConfig storage config = guaranteeVersions[version];
+        return (
+            config.verificationKey,
+            config.domainSeparator,
+            config.decoder,
+            config.enabled
+        );
     }
 
     // ========= User flows =========
@@ -544,11 +653,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
             guarantee,
             (uint64, bytes)
         );
-        if (version != 1) revert UnsupportedGuaranteeVersion(version);
+        VersionConfig storage config = guaranteeVersions[version];
+        if (!config.enabled) revert UnsupportedGuaranteeVersion(version);
 
         BLS.G1Point[] memory g1Points = new BLS.G1Point[](2);
         g1Points[0] = NEGATED_G1_GENERATOR;
-        g1Points[1] = GUARANTEE_VERIFICATION_KEY;
+        g1Points[1] = config.verificationKey;
 
         BLS.G2Point[] memory g2Points = new BLS.G2Point[](2);
         g2Points[0] = signature;
@@ -556,8 +666,18 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
 
         if (!BLS.pairing(g1Points, g2Points)) revert InvalidSignature();
 
-        Guarantee memory g = abi.decode(encodedGuarantee, (Guarantee));
-        if (g.domain != guaranteeDomainSeparator)
+        Guarantee memory g;
+        if (
+            version == INITIAL_GUARANTEE_VERSION && config.decoder == address(0)
+        ) {
+            g = abi.decode(encodedGuarantee, (Guarantee));
+        } else {
+            if (config.decoder == address(0))
+                revert MissingGuaranteeDecoder(version);
+            g = IGuaranteeDecoder(config.decoder).decode(encodedGuarantee);
+        }
+
+        if (g.domain != config.domainSeparator)
             revert InvalidGuaranteeDomain();
         return g;
     }

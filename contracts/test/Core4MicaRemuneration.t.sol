@@ -13,7 +13,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             tabId,
             tabTimestamp,
             USER1,
@@ -55,7 +55,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             tabId,
             tabTimestamp,
             USER1,
@@ -88,7 +88,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             tabId,
             tabTimestamp,
             USER1,
@@ -125,7 +125,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             tabId,
             tabTimestamp,
             USER1,
@@ -162,7 +162,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             tabId,
             tabTimestamp,
             USER1,
@@ -195,7 +195,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.requestWithdrawal(0.75 ether);
 
         vm.warp(block.timestamp + core4Mica.synchronizationDelay() - 1);
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -236,7 +236,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(block.timestamp + core4Mica.synchronizationDelay() + 1);
         uint256 amount = 0.24 ether;
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -270,7 +270,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
     }
 
     function test_Remunerate_Revert_AmountZero() public {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             0,
             USER1,
@@ -287,7 +287,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
     }
 
     function test_Remunerate_Revert_InvalidRecipient() public {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             0,
             USER1,
@@ -307,7 +307,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -329,7 +329,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(core4Mica.tabExpirationTime() + 5);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             0,
             USER1,
@@ -352,7 +352,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(core4Mica.remunerationGracePeriod() + 5);
 
         uint256 tabId = 0x1234;
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             tabId,
             0,
             USER1,
@@ -384,7 +384,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(OPERATOR);
         core4Mica.recordPayment(tabId, ETH_ASSET, 0.6 ether);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             tabId,
             0,
             USER1,
@@ -406,7 +406,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             0,
             USER1,
@@ -432,7 +432,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             0,
             USER1,
@@ -456,7 +456,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
         uint256 tabTimestamp = block.timestamp -
             (core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             0xBEEF,
             tabTimestamp,
             USER1,
@@ -481,7 +481,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
         uint256 tabTimestamp = block.timestamp -
             (core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0xC0FFEE,
             tabTimestamp,
             USER1,
@@ -501,7 +501,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.depositStablecoin(address(usdc), 500 ether);
 
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             0xAAAA,
             10,
             USER1,
@@ -532,7 +532,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             0xCCDD,
             tabTimestamp,
             USER1,
@@ -565,7 +565,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(requestTimestamp + core4Mica.remunerationGracePeriod() + 5);
         uint256 tabTimestamp = block.timestamp -
             (core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             0xDD01,
             tabTimestamp,
             USER1,
@@ -608,7 +608,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(requestTimestamp + core4Mica.remunerationGracePeriod() + 5);
         uint256 tabTimestamp = block.timestamp -
             (core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0xDD02,
             tabTimestamp,
             USER1,
@@ -646,7 +646,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         assertEq(withdrawalAmount, 400 ether);
 
         uint256 tabTimestamp = withdrawalTimestamp - 1;
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             0xAA01,
             tabTimestamp,
             USER1,
@@ -688,7 +688,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         uint256 delay = 2 days;
         vm.warp(block.timestamp + delay);
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -730,7 +730,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
         // Create a guarantee where amount differs from total_amount
-        Core4Mica.Guarantee memory g = Core4Mica.Guarantee({
+        Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
             tab_id: tabId,
             req_id: reqId,
@@ -771,7 +771,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
         // User has enough for amount (0.3 ether) but not for total_amount (0.8 ether)
-        Core4Mica.Guarantee memory g = Core4Mica.Guarantee({
+        Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
             tab_id: 0x8888,
             req_id: 55,
@@ -799,7 +799,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
         // amount is non-zero but total_amount is zero
-        Core4Mica.Guarantee memory g = Core4Mica.Guarantee({
+        Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
             tab_id: 0x7777,
             req_id: 66,

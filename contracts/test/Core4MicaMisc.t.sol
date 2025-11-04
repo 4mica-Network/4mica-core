@@ -5,7 +5,7 @@ import "./Core4MicaTestBase.sol";
 
 contract Core4MicaMiscTest is Core4MicaTestBase {
     function test_VerifyAndDecodeGuarantee() public view {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -16,7 +16,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        Core4Mica.Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(
+        Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(
             guaranteeData,
             signature
         );
@@ -24,7 +24,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     }
 
     function test_VerifyAndDecodeGuarantee_InvalidGuarantee() public {
-        Core4Mica.Guarantee memory g1 = _ethGuarantee(
+        Guarantee memory g1 = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -34,7 +34,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         );
         BLS.G2Point memory signature = _signGuarantee(g1, TEST_PRIVATE_KEY);
 
-        Core4Mica.Guarantee memory g2 = _ethGuarantee(
+        Guarantee memory g2 = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -49,7 +49,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     }
 
     function test_VerifyAndDecodeGuarantee_InvalidSigningKey() public {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -69,7 +69,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     }
 
     function test_VerifyAndDecodeGuarantee_InvalidAssetField() public {
-        Core4Mica.Guarantee memory g = _guarantee(
+        Guarantee memory g = _guarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -80,7 +80,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         );
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
 
-        Core4Mica.Guarantee memory tampered = _ethGuarantee(
+        Guarantee memory tampered = _ethGuarantee(
             g.tab_id,
             g.timestamp,
             g.client,
@@ -95,7 +95,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     }
 
     function test_VerifyAndDecodeGuarantee_UnsupportedVersion() public {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,
@@ -119,7 +119,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     }
 
     function test_VerifyAndDecodeGuarantee_InvalidDomain() public {
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             block.timestamp,
             USER1,

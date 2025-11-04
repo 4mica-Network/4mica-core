@@ -3,6 +3,7 @@ pragma solidity ^0.8.29;
 
 import "forge-std/Test.sol";
 import "../src/Core4Mica.sol";
+import {Guarantee} from "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -122,14 +123,14 @@ abstract contract Core4MicaTestBase is Test {
     }
 
     function _signGuarantee(
-        Core4Mica.Guarantee memory g,
+        Guarantee memory g,
         bytes32 privKey
     ) internal view returns (BLS.G2Point memory) {
         return BlsHelper.signGuarantee(g, privKey);
     }
 
     function _encodeGuaranteeWithVersion(
-        Core4Mica.Guarantee memory g
+        Guarantee memory g
     ) internal pure returns (bytes memory) {
         return BlsHelper.encodeGuaranteeWithVersion(g);
     }
@@ -142,9 +143,9 @@ abstract contract Core4MicaTestBase is Test {
         uint256 reqId,
         uint256 amount,
         address asset
-    ) internal view returns (Core4Mica.Guarantee memory) {
+    ) internal view returns (Guarantee memory) {
         return
-            Core4Mica.Guarantee({
+            Guarantee({
                 domain: core4Mica.guaranteeDomainSeparator(),
                 tab_id: tabId,
                 req_id: reqId,
@@ -165,7 +166,7 @@ abstract contract Core4MicaTestBase is Test {
         address recipient,
         uint256 reqId,
         uint256 amount
-    ) internal view returns (Core4Mica.Guarantee memory) {
+    ) internal view returns (Guarantee memory) {
         return
             _guarantee(
                 tabId,

@@ -286,7 +286,7 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
         core4Mica.requestWithdrawal(4 ether);
 
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             tabTimestamp,
             USER1,
@@ -334,7 +334,7 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
 
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Core4Mica.Guarantee memory g = _ethGuarantee(
+        Guarantee memory g = _ethGuarantee(
             0x1234,
             tabTimestamp,
             USER1,
