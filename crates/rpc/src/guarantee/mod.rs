@@ -5,7 +5,7 @@ pub mod codec;
 
 const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
-const GUARANTEE_CLAIMS_VERSION: u64 = 1;
+pub const GUARANTEE_CLAIMS_VERSION: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentGuaranteeClaims {

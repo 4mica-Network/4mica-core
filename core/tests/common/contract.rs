@@ -74,15 +74,45 @@ sol! {
         struct PaymentStatus {
             uint256 paid;
             bool remunerated;
+            address asset;
+        }
+
+        struct UserAssetInfo {
+            address asset;
+            uint256 collateral;
+            uint256 withdrawalRequestTimestamp;
+            uint256 withdrawalRequestAmount;
         }
 
         struct Guarantee {
+            bytes32 domain;
             uint256 tab_id;
-            uint256 tab_timestamp;
+            uint256 req_id;
             address client;
             address recipient;
-            uint256 req_id;
             uint256 amount;
+            uint256 total_amount;
+            address asset;
+            uint64 timestamp;
+            uint64 version;
+        }
+
+        struct G1Point {
+            bytes32 x_a;
+            bytes32 x_b;
+            bytes32 y_a;
+            bytes32 y_b;
+        }
+
+        struct G2Point {
+            bytes32 x_c0_a;
+            bytes32 x_c0_b;
+            bytes32 x_c1_a;
+            bytes32 x_c1_b;
+            bytes32 y_c0_a;
+            bytes32 y_c0_b;
+            bytes32 y_c1_a;
+            bytes32 y_c1_b;
         }
 
         // ========= Constructor =========
@@ -125,8 +155,8 @@ sol! {
 
         /// Remunerate a recipient based on a signed guarantee
         function remunerate(
-            Guarantee calldata g,
-            (bytes32,bytes32,bytes32,bytes32,bytes32,bytes32) signature
+            bytes calldata guaranteeData,
+            G2Point calldata signature
         ) external;
 
         // ========= Admin / Manager =========
@@ -134,10 +164,10 @@ sol! {
         function setWithdrawalGracePeriod(uint256 _gracePeriod) external;
         function setTabExpirationTime(uint256 _expirationTime) external;
         function setSynchronizationDelay(uint256 _synchronizationDelay) external;
-        function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
+        function setGuaranteeVerificationKey(G1Point verificationKey) external;
         function configureGuaranteeVersion(
             uint64 version,
-            (bytes32,bytes32,bytes32,bytes32) verificationKey,
+            G1Point verificationKey,
             bytes32 domainSeparator,
             address decoder,
             bool enabled
@@ -145,11 +175,6 @@ sol! {
         function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
 
         function guaranteeDomainSeparator() external view returns (bytes32);
-        function encodeGuarantee(Guarantee memory g) external view returns (bytes memory);
-        function verifyGuaranteeSignature(
-            Guarantee memory g,
-            (bytes32,bytes32,bytes32,bytes32,bytes32,bytes32) signature
-        ) external view returns (bool);
     }
 }
 
