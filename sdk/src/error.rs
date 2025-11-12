@@ -46,7 +46,7 @@ pub enum RemunerateError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
     #[error("failed to decode guarantee claims hex")]
-    ClaimsHex(#[source] FromHexError),
+    ClaimsHex(#[source] Error),
     #[error("failed to decode guarantee claims")]
     ClaimsDecode(#[source] Error),
     #[error("failed to convert guarantee claims into contract type")]
@@ -77,6 +77,10 @@ pub enum RemunerateError {
     CertificateInvalid(#[source] Error),
     #[error("certificate signature mismatch before submission")]
     CertificateMismatch,
+    #[error("guarantee domain mismatch")]
+    GuaranteeDomainMismatch,
+    #[error("unsupported guarantee version: {0}")]
+    UnsupportedGuaranteeVersion(u64),
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
@@ -212,6 +216,10 @@ pub enum VerifyGuaranteeError {
     InvalidCertificate(#[source] Error),
     #[error("certificate signature mismatch")]
     CertificateMismatch,
+    #[error("guarantee domain mismatch")]
+    GuaranteeDomainMismatch,
+    #[error("unsupported guarantee version: {0}")]
+    UnsupportedGuaranteeVersion(u64),
 }
 
 fn extract_selector_and_data(e: &alloy_contract::Error) -> Option<(u32, Vec<u8>)> {
@@ -271,6 +279,8 @@ impl_from_alloy_error!(RemunerateError, {
     Core4Mica::Core4MicaErrors::InvalidRecipient(_) => Self::InvalidRecipient,
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
     Core4Mica::Core4MicaErrors::TransferFailed(_) => Self::TransferFailed,
+    Core4Mica::Core4MicaErrors::InvalidGuaranteeDomain(_) => Self::GuaranteeDomainMismatch,
+    Core4Mica::Core4MicaErrors::UnsupportedGuaranteeVersion(err) => Self::UnsupportedGuaranteeVersion(err.version),
 });
 
 impl_from_alloy_error!(FinalizeWithdrawalError, {

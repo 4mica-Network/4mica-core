@@ -121,6 +121,13 @@ pub fn is_known_event_topic(topic0: &B256) -> bool {
 pub mod contract_abi {
     use alloy::sol;
     sol! {
+        struct G1Point {
+            bytes32 x_a;
+            bytes32 x_b;
+            bytes32 y_a;
+            bytes32 y_b;
+        }
+
         #[sol(rpc)]
         contract Core4Mica {
             /// Records a successful off-chain payment for a given tab.
@@ -131,8 +138,17 @@ pub mod contract_abi {
                 uint256 amount
             ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant;
 
-            /// View: guarantee domain separator used for BLS signatures.
-            function guaranteeDomainSeparator() external view returns (bytes32);
+            function getGuaranteeVersionConfig(
+                uint64 version
+            )
+                external
+                view
+                returns (
+                    G1Point memory verificationKey,
+                    bytes32 domainSeparator,
+                    address decoder,
+                    bool enabled
+                );
 
             /// View: current BLS verification key.
             function GUARANTEE_VERIFICATION_KEY() external view returns (bytes32,bytes32,bytes32,bytes32);

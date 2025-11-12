@@ -93,7 +93,7 @@ async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
 
     let tab_id = U256::from(rand::random::<u64>());
     insert_tab(
-        &persist_ctx,
+        persist_ctx,
         tab_id,
         &user_address,
         &recipient_address,
@@ -220,8 +220,7 @@ async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     // wait until the user collateral shows the reduced balance
     let mut tries = 0;
     loop {
-        let current =
-            read_collateral(&persist_ctx, &user_addr, &usdc.address().to_string()).await?;
+        let current = read_collateral(persist_ctx, &user_addr, &usdc.address().to_string()).await?;
         if current == deposit_amount - withdraw_amount {
             break;
         }

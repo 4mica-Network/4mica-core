@@ -5,22 +5,22 @@ use alloy::sol;
 use alloy::sol_types::{SolStruct, SolValue};
 use alloy::{primitives::B256, sol_types::eip712_domain};
 use anyhow::anyhow;
-use rpc::{common::PaymentGuaranteeClaims, core::CorePublicParameters};
+use rpc::{CorePublicParameters, PaymentGuaranteeRequestClaimsV1};
 
 sol! {
-  struct PaymentGuarantee {
-      address user;
-      address recipient;
-      uint256  tabId;
-      uint256  reqId;
-      uint256 amount;
-      uint64  timestamp;
-  }
+    struct SolGuaranteeRequestClaimsV1 {
+        address user;
+        address recipient;
+        uint256  tabId;
+        uint256 amount;
+        address asset;
+        uint64  timestamp;
+    }
 }
 
 pub fn eip712_digest(
     params: &CorePublicParameters,
-    claims: &PaymentGuaranteeClaims,
+    claims: &PaymentGuaranteeRequestClaimsV1,
 ) -> anyhow::Result<B256> {
     let domain = eip712_domain!(
         name:     params.eip712_name.clone(),
@@ -28,14 +28,15 @@ pub fn eip712_digest(
         chain_id: params.chain_id,
     );
 
-    let message = PaymentGuarantee {
+    let message = SolGuaranteeRequestClaimsV1 {
         user: Address::from_str(&claims.user_address)
             .map_err(|_| anyhow!("invalid claims.user_address"))?,
         recipient: Address::from_str(&claims.recipient_address)
             .map_err(|_| anyhow!("invalid claims.recipient_address"))?,
         tabId: claims.tab_id,
-        reqId: claims.req_id,
         amount: claims.amount,
+        asset: Address::from_str(&claims.asset_address)
+            .map_err(|_| anyhow!("invalid claims.asset_address"))?,
         timestamp: claims.timestamp,
     };
 
@@ -43,16 +44,17 @@ pub fn eip712_digest(
 }
 
 pub fn eip191_digest(
-    claims: &PaymentGuaranteeClaims,
+    claims: &PaymentGuaranteeRequestClaimsV1,
     user: Address,
     recipient: Address,
 ) -> anyhow::Result<B256> {
-    let data = PaymentGuarantee {
+    let data = SolGuaranteeRequestClaimsV1 {
         user,
         recipient,
         tabId: claims.tab_id,
-        reqId: claims.req_id,
         amount: claims.amount,
+        asset: Address::from_str(&claims.asset_address)
+            .map_err(|_| anyhow!("invalid claims.asset_address"))?,
         timestamp: claims.timestamp,
     }
     .abi_encode();

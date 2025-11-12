@@ -67,8 +67,18 @@ impl CoreContractApi for CoreContractProxy {
 
     async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
         let contract = self.build_contract();
-        let domain_separator = contract.guaranteeDomainSeparator().call().await?;
-        Ok(domain_separator.into())
+        let version_config = contract
+            .getGuaranteeVersionConfig(rpc::GUARANTEE_CLAIMS_VERSION)
+            .call()
+            .await?;
+
+        if !version_config.enabled {
+            return Err(CoreContractApiError::GuaranteeVersionDisabled(
+                rpc::GUARANTEE_CLAIMS_VERSION,
+            ));
+        }
+
+        Ok(version_config.domainSeparator.into())
     }
 
     async fn record_payment(

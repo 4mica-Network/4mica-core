@@ -7,10 +7,10 @@ use crate::{
     ApiClientError,
     common::{
         AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
-        GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, TabInfo,
-        UserTransactionInfo,
+        GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserTransactionInfo,
     },
     core::CorePublicParameters,
+    guarantee::PaymentGuaranteeRequest,
 };
 use crypto::bls::BLSCert;
 
