@@ -16,6 +16,7 @@ yarn.lock
 npm-debug.log*
 pnpm-lock.yaml
 *.env
+*.env_*
 out/
 cache/
 .cargo/

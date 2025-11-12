@@ -185,9 +185,6 @@ async fn get_tab(
     Ok(Json(tab))
 }
 
-#[cfg(test)]
-mod tests {}
-
 async fn list_recipient_tabs(
     State(service): State<SharedService>,
     Path(recipient): Path<String>,
@@ -286,3 +283,6 @@ async fn get_user_asset_balance(
         .map_err(ApiError::from)?;
     Ok(Json(balance))
 }
+
+#[cfg(test)]
+mod tests {}

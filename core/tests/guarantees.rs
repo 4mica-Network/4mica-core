@@ -397,7 +397,6 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
     let promise = PaymentGuaranteeClaims::from_request(
         &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             tab_id,
-            req_id: U256::from(0u64),
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -405,6 +404,7 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
             timestamp: Utc::now().timestamp() as u64,
         }),
         domain,
+        U256::from(0u64),
         U256::from(40u64),
     );
 
@@ -459,7 +459,6 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     let promise = PaymentGuaranteeClaims::from_request(
         &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             tab_id,
-            req_id: random_u256(),
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -468,6 +467,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
             timestamp: i64::MAX as u64,
         }),
         domain,
+        random_u256(),
         U256::from(10u64),
     );
 

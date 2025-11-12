@@ -4,9 +4,9 @@ use alloy::{
     sol_types::{SolStruct, eip712_domain, sol},
 };
 use alloy_sol_types::SolValue;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
-use core_service::persist::{PersistCtx, repo};
+use core_service::persist::{GuaranteeData, PersistCtx, repo};
 use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
 use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
@@ -60,7 +60,6 @@ sol! {
         address user;
         address recipient;
         uint256  tabId;
-        uint256  reqId;
         uint256 amount;
         address asset;
         uint64  timestamp;
@@ -73,7 +72,6 @@ async fn build_signed_req(
     user_addr: &str,
     recipient_addr: &str,
     tab_id: U256,
-    req_id: U256,
     amount: U256,
     wallet: &alloy::signers::local::PrivateKeySigner,
     timestamp: Option<u64>,
@@ -89,7 +87,6 @@ async fn build_signed_req(
         user: Address::from_str(user_addr).unwrap(),
         recipient: Address::from_str(recipient_addr).unwrap(),
         tabId: tab_id,
-        reqId: req_id,
         amount,
         asset: Address::from_str(asset_address).unwrap(),
         timestamp: ts,
@@ -101,7 +98,6 @@ async fn build_signed_req(
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
             tab_id,
-            req_id,
             amount,
             timestamp: ts,
             asset_address: asset_address.to_string(),
@@ -116,7 +112,6 @@ async fn build_eip712_signed_request(
     wallet: &alloy::signers::local::PrivateKeySigner,
 ) -> PaymentGuaranteeRequest {
     let timestamp = Utc::now().timestamp() as u64;
-    let req_id_u64 = 0u64;
 
     let domain = eip712_domain!(
         name:     params.eip712_name.clone(),
@@ -129,7 +124,6 @@ async fn build_eip712_signed_request(
         user: wallet.address(),
         recipient,
         tabId: U256::from(0x7461622d6f6b32u128),
-        reqId: U256::from(req_id_u64),
         amount: U256::from(42u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
         timestamp,
@@ -143,7 +137,6 @@ async fn build_eip712_signed_request(
             user_address: wallet.address().to_string(),
             recipient_address: recipient.to_string(),
             tab_id: U256::from(0x7461622d6f6b32u128),
-            req_id: U256::from(0u64),
             amount: U256::from(42u64),
             timestamp,
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -170,7 +163,6 @@ async fn issue_guarantee_rejects_future_timestamp() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         U256::from(0x7461622d667574757265u128),
-        U256::from(0u64),
         U256::from(1u64),
         &wallet,
         Some(future_ts),
@@ -200,7 +192,6 @@ async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()>
         &user_addr,
         &recipient_addr,
         U256::from(0x7461622d6e6f636f6c6c61746572616cu128),
-        U256::ZERO,
         U256::from(10u64),
         &wallet,
         None,
@@ -219,7 +210,7 @@ async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()>
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn issue_guarantee_rejects_wrong_req_id_sequence() -> anyhow::Result<()> {
+async fn issue_guarantee_assigns_sequential_req_ids() -> anyhow::Result<()> {
     let (_, core_client, ctx) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -239,35 +230,41 @@ async fn issue_guarantee_rejects_wrong_req_id_sequence() -> anyhow::Result<()> {
         .await
         .expect("create tab");
 
+    let start_ts = chrono::Utc::now().timestamp() as u64;
     let req0 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
         tab.id,
-        U256::ZERO,
         U256::from(1u64),
         &wallet,
-        None,
+        Some(start_ts),
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
     core_client.issue_guarantee(req0).await.expect("first ok");
 
-    let req2 = build_signed_req(
+    let req1 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
         tab.id,
         U256::from(2u64),
-        U256::from(1u64),
         &wallet,
-        None,
+        Some(start_ts),
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
 
-    let result = core_client.issue_guarantee(req2).await;
-    assert!(result.is_err(), "must reject non-sequential req_id");
+    core_client.issue_guarantee(req1).await.expect("second ok");
+
+    let guarantees = core_client
+        .get_tab_guarantees(tab.id)
+        .await
+        .expect("list guarantees");
+    assert_eq!(guarantees.len(), 2);
+    assert_eq!(guarantees[0].req_id, U256::ZERO);
+    assert_eq!(guarantees[1].req_id, U256::from(1u64));
 
     Ok(())
 }
@@ -300,7 +297,6 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::ZERO,
         U256::from(5u64),
         &wallet,
         None,
@@ -362,15 +358,15 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         .id;
 
     let public_params = core_client.get_public_params().await.unwrap();
+    let shared_ts = Utc::now().timestamp() as u64;
     let req0 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::ZERO,
         U256::from(5u64),
         &wallet,
-        None,
+        Some(shared_ts),
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
@@ -384,10 +380,9 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::from(1u64),
         U256::from(7u64),
         &wallet,
-        None,
+        Some(shared_ts),
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
@@ -484,7 +479,6 @@ async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Resu
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::ZERO,
         U256::from(3u64),
         &wallet,
         None,
@@ -542,15 +536,15 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
         .await
         .expect("create tab");
 
+    let start_ts = chrono::Utc::now().timestamp() as u64;
     let req0 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
         tab.id,
-        U256::ZERO,
         U256::from(1u64),
         &wallet,
-        None,
+        Some(start_ts),
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
@@ -562,9 +556,8 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
         &recipient_addr,
         tab.id,
         U256::from(1u64),
-        U256::from(1u64),
         &wallet,
-        Some(chrono::Utc::now().timestamp() as u64 + 5),
+        Some(start_ts + 5),
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
@@ -603,7 +596,6 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::ZERO,
         U256::from(1u64),
         &wallet,
         Some(start_ts),
@@ -617,7 +609,6 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::from(1u64),
         U256::from(1u64),
         &wallet,
         Some(start_ts),
@@ -668,7 +659,6 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::ZERO,
         amount1,
         &wallet,
         Some(start_ts),
@@ -696,7 +686,6 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::from(1u64),
         amount2,
         &wallet,
         Some(start_ts),
@@ -741,7 +730,6 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,
@@ -781,7 +769,6 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_result.id,
-        U256::ZERO,
         U256::ONE,
         &wallet,
         None,
@@ -799,6 +786,88 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
         .expect("get tab")
         .expect("tab exists");
     assert_eq!(tab.status, entities::sea_orm_active_enums::TabStatus::Open);
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()> {
+    let (_, core_client, ctx) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let tab = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(7200),
+        })
+        .await
+        .expect("create tab");
+    let tab_id = tab.id;
+
+    let start_ts = chrono::Utc::now().timestamp() as u64;
+    let req0 = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_id,
+        U256::from(4u64),
+        &wallet,
+        Some(start_ts),
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+    core_client.issue_guarantee(req0).await.expect("first ok");
+
+    // Manually insert a guarantee with a higher req_id to emulate a gap.
+    let forced_req_id = U256::from(5u64);
+    let start_dt = DateTime::from_timestamp(start_ts as i64, 0)
+        .ok_or_else(|| anyhow::anyhow!("invalid timestamp"))?
+        .naive_utc();
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
+        GuaranteeData {
+            tab_id,
+            req_id: forced_req_id,
+            from: user_addr.clone(),
+            to: recipient_addr.clone(),
+            asset: DEFAULT_ASSET_ADDRESS.to_string(),
+            value: U256::from(2u64),
+            start_ts: start_dt,
+            cert: "{}".into(),
+        },
+    )
+    .await?;
+
+    let req_next = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_id,
+        U256::from(3u64),
+        &wallet,
+        Some(start_ts),
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+    core_client
+        .issue_guarantee(req_next)
+        .await
+        .expect("next guarantee ok");
+
+    let latest = core_client
+        .get_latest_guarantee(tab_id)
+        .await
+        .expect("latest guarantee")
+        .expect("exists");
+    assert_eq!(latest.req_id, forced_req_id + U256::from(1u64));
 
     Ok(())
 }
@@ -830,7 +899,6 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab.id,
-        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,
@@ -882,7 +950,6 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
         &user_addr,
         &recipient_addr,
         tab.id,
-        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,
@@ -898,7 +965,7 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() -> anyhow::Result<()> {
+async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::Result<()> {
     let (_, core_client, ctx) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -916,6 +983,23 @@ async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() -> anyhow:
         .await
         .expect("create tab");
 
+    // Simulate a bad state where a pending tab already has a guarantee history.
+    let fake_start = chrono::Utc::now().naive_utc();
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
+        GuaranteeData {
+            tab_id: tab_result.id,
+            req_id: U256::ZERO,
+            from: user_addr.clone(),
+            to: recipient_addr.clone(),
+            asset: DEFAULT_ASSET_ADDRESS.to_string(),
+            value: U256::from(1u64),
+            start_ts: fake_start,
+            cert: "{}".into(),
+        },
+    )
+    .await?;
+
     let public_params = core_client.get_public_params().await.unwrap();
     let req = build_signed_req(
         &public_params,
@@ -923,15 +1007,17 @@ async fn issue_guarantee_rejects_invalid_req_id_when_tab_is_pending() -> anyhow:
         &recipient_addr,
         tab_result.id,
         U256::from(1u64),
-        U256::from(1u64),
         &wallet,
-        None,
+        Some(fake_start.and_utc().timestamp() as u64),
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
 
     let result = core_client.issue_guarantee(req).await;
-    assert!(result.is_err(), "must reject if tab is pending");
+    assert!(
+        result.is_err(),
+        "must reject if pending tab already has history"
+    );
 
     Ok(())
 }
@@ -1444,7 +1530,6 @@ async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
-        U256::ZERO,
         U256::from(12u64),
         &wallet,
         None,
@@ -1524,7 +1609,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
             address user;
             address recipient;
             uint256  tabId;
-            uint256  reqId;
             uint256 amount;
             address asset;
             uint64  timestamp;
@@ -1550,7 +1634,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         user,
         recipient,
         tabId: tab_id,
-        reqId: U256::from(0u64),
         amount: U256::from(1u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
         timestamp,
@@ -1567,7 +1650,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
             user_address: user.to_string(),
             recipient_address: recipient.to_string(),
             tab_id,
-            req_id: U256::from(0u64),
             amount: U256::from(1u64),
             timestamp,
             asset_address: "0x0000000000000000000000000000000000000000".into(),

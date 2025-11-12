@@ -21,25 +21,16 @@ impl CoreService {
     async fn verify_guarantee_request_claims_v1(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV1,
-    ) -> ServiceResult<()> {
+    ) -> ServiceResult<U256> {
         let last_opt = repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, claims.tab_id)
             .await
             .map_err(ServiceError::from)?;
 
-        let cur_req_id = claims.req_id;
-        match last_opt {
+        let next_req_id = match last_opt {
             Some(ref last) => {
                 let prev_req_id = U256::from_str(&last.req_id).map_err(|e| {
                     ServiceError::InvalidParams(format!("Invalid prev_req_id: {}", e))
                 })?;
-
-                if cur_req_id.wrapping_sub(prev_req_id) != U256::from(1u8) {
-                    info!(
-                        "Invalid req_id: current={}, previous={}",
-                        cur_req_id, prev_req_id
-                    );
-                    return Err(ServiceError::InvalidRequestID);
-                }
 
                 let prev_ts_i64 = last.start_ts.and_utc().timestamp();
                 if prev_ts_i64 < 0 {
@@ -50,17 +41,19 @@ impl CoreService {
                 if claims.timestamp != prev_start_ts {
                     return Err(ServiceError::ModifiedStartTs);
                 }
+
+                prev_req_id
+                    .checked_add(U256::from(1u8))
+                    .ok_or(ServiceError::InvalidRequestID)?
             }
             None => {
                 info!(
-                    "No previous guarantee found for tab_id={}. This must be the first request. req_id = {}",
-                    claims.tab_id, claims.req_id
+                    "No previous guarantee found for tab_id={}. This must be the first request.",
+                    claims.tab_id,
                 );
-                if claims.req_id != U256::ZERO {
-                    return Err(ServiceError::InvalidRequestID);
-                }
+                U256::ZERO
             }
-        }
+        };
 
         let now_i64 = chrono::Utc::now().timestamp();
         if now_i64 < 0 {
@@ -76,7 +69,7 @@ impl CoreService {
             return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
         };
 
-        if (tab.status == TabStatus::Pending) != (claims.req_id == U256::ZERO) {
+        if (tab.status == TabStatus::Pending) != (next_req_id == U256::ZERO) {
             return Err(ServiceError::InvalidRequestID);
         }
 
@@ -102,7 +95,7 @@ impl CoreService {
             return Err(ServiceError::TabClosed);
         }
 
-        Ok(())
+        Ok(next_req_id)
     }
 
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
@@ -115,21 +108,20 @@ impl CoreService {
         req: PaymentGuaranteeRequest,
     ) -> ServiceResult<BLSCert> {
         let tab_id = req.claims.tab_id();
-        let req_id = req.claims.req_id();
         let amount = req.claims.amount();
 
         info!(
-            "Received guarantee request v1; tab_id={}, req_id={}, amount={}",
-            tab_id, req_id, amount
+            "Received guarantee request v1; tab_id={}, amount={}",
+            tab_id, amount
         );
 
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
 
-        match &req.claims {
+        let req_id = match &req.claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
-                self.verify_guarantee_request_claims_v1(claims).await?;
+                self.verify_guarantee_request_claims_v1(claims).await?
             }
-        }
+        };
 
         let total_amount = {
             let tab_guarantees =
@@ -150,6 +142,7 @@ impl CoreService {
         let guarantee_claims = PaymentGuaranteeClaims::from_request(
             &req.claims,
             self.inner.guarantee_domain,
+            req_id,
             total_amount,
         );
         let cert: BLSCert = self.create_bls_cert(guarantee_claims.clone()).await?;
