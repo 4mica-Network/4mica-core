@@ -25,6 +25,7 @@ impl PaymentGuaranteeClaims {
     pub fn from_request(
         request: &PaymentGuaranteeRequestClaims,
         domain: [u8; 32],
+        req_id: U256,
         total_amount: U256,
     ) -> Self {
         match request {
@@ -33,7 +34,7 @@ impl PaymentGuaranteeClaims {
                 user_address: claims.user_address.clone(),
                 recipient_address: claims.recipient_address.clone(),
                 tab_id: claims.tab_id,
-                req_id: claims.req_id,
+                req_id,
                 amount: claims.amount,
                 total_amount,
                 asset_address: claims.asset_address.clone(),
@@ -67,7 +68,6 @@ pub struct PaymentGuaranteeRequestClaimsV1 {
     pub user_address: String,
     pub recipient_address: String,
     pub tab_id: U256,
-    pub req_id: U256,
     pub amount: U256,
     pub asset_address: String,
     pub timestamp: u64,
@@ -78,7 +78,6 @@ impl PaymentGuaranteeRequestClaimsV1 {
         user_address: String,
         recipient_address: String,
         tab_id: U256,
-        req_id: U256,
         amount: U256,
         timestamp: u64,
         erc20_token: Option<String>,
@@ -88,7 +87,6 @@ impl PaymentGuaranteeRequestClaimsV1 {
             user_address,
             recipient_address,
             tab_id,
-            req_id,
             amount,
             asset_address,
             timestamp,
@@ -102,8 +100,6 @@ pub trait PaymentGuaranteeRequestEssentials {
     fn recipient_address(&self) -> &str;
 
     fn tab_id(&self) -> U256;
-
-    fn req_id(&self) -> U256;
 
     fn amount(&self) -> U256;
 }
@@ -124,12 +120,6 @@ impl PaymentGuaranteeRequestEssentials for PaymentGuaranteeRequestClaims {
     fn tab_id(&self) -> U256 {
         match self {
             PaymentGuaranteeRequestClaims::V1(claims) => claims.tab_id,
-        }
-    }
-
-    fn req_id(&self) -> U256 {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(claims) => claims.req_id,
         }
     }
 

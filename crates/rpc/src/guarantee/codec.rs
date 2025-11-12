@@ -65,12 +65,10 @@ pub fn decode_guarantee_claims(data: &[u8]) -> anyhow::Result<PaymentGuaranteeCl
                 version,
             })
         }
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported guarantee claims version: {}",
-                version
-            ));
-        }
+        _ => Err(anyhow::anyhow!(
+            "Unsupported guarantee claims version: {}",
+            version
+        )),
     }
 }
 

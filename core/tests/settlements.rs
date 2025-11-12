@@ -81,7 +81,7 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
 
     repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_addr).await?;
     repo::deposit(
-        &persist_ctx,
+        persist_ctx,
         user_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
         U256::from(1000u64),
@@ -90,7 +90,7 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
 
     // Insert dummy tab so the listener can match it
     let tab_id = U256::from(rand::random::<u64>());
-    insert_tab(&persist_ctx, tab_id, &user_addr, &server_addr).await?;
+    insert_tab(persist_ctx, tab_id, &user_addr, &server_addr).await?;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -157,7 +157,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 
     repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_addr).await?;
     repo::deposit(
-        &persist_ctx,
+        persist_ctx,
         user_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
         U256::from(1000u64),
@@ -166,7 +166,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 
     // Insert dummy tab
     let tab_id = U256::from(rand::random::<u64>());
-    insert_tab(&persist_ctx, tab_id, &user_addr, &server_addr).await?;
+    insert_tab(persist_ctx, tab_id, &user_addr, &server_addr).await?;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -213,7 +213,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 
     // Simulate the same blockchain event being processed again (e.g. due to a reorg)
     repo::submit_payment_transaction(
-        &persist_ctx,
+        persist_ctx,
         user_addr.clone(),
         server_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
@@ -250,7 +250,7 @@ async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
 
     repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &expected_user).await?;
     let tab_id = U256::from(rand::random::<u64>());
-    insert_tab(&persist_ctx, tab_id, &expected_user, &server_addr).await?;
+    insert_tab(persist_ctx, tab_id, &expected_user, &server_addr).await?;
 
     let payment = PaymentTx {
         block_number: 1,
@@ -307,7 +307,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 
     let start_collateral = U256::from(500u64);
     repo::deposit(
-        &persist_ctx,
+        persist_ctx,
         user_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
         start_collateral,
@@ -316,7 +316,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 
     // Insert dummy tab
     let tab_id = U256::from(rand::random::<u64>());
-    insert_tab(&persist_ctx, tab_id, &user_addr, &server_addr).await?;
+    insert_tab(persist_ctx, tab_id, &user_addr, &server_addr).await?;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -345,7 +345,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 
     let mut tries = 0;
     loop {
-        let collateral = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let collateral = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
         // recordPayment should NOT alter collateral
         if collateral == start_collateral {
             break;
@@ -379,7 +379,7 @@ async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
 
     let start_collateral = U256::from(500u64);
     repo::deposit(
-        &persist_ctx,
+        persist_ctx,
         user_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
         start_collateral,
@@ -388,7 +388,7 @@ async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
 
     // Insert dummy tab
     let tab_id = U256::from(rand::random::<u64>());
-    insert_tab(&persist_ctx, tab_id, &user_addr, &server_addr).await?;
+    insert_tab(persist_ctx, tab_id, &user_addr, &server_addr).await?;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -417,8 +417,7 @@ async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
 
     let mut tries = 0;
     loop {
-        let locked =
-            read_locked_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
 
         // locked should now be 40 ETH (100 - 60)
         if locked == U256::from(40u64) {

@@ -12,7 +12,6 @@ sol! {
         address user;
         address recipient;
         uint256  tabId;
-        uint256  reqId;
         uint256 amount;
         address asset;
         uint64  timestamp;
@@ -94,7 +93,6 @@ fn eip712_digest_v1(
         recipient: Address::from_str(&claims.recipient_address)
             .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?,
         tabId: claims.tab_id,
-        reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)
             .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
@@ -113,7 +111,6 @@ fn eip191_digest_v1(
         user,
         recipient,
         tabId: claims.tab_id,
-        reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)
             .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
