@@ -12,12 +12,9 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
 use http::StatusCode;
 use rpc::{
-    common::{
-        AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
-        GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, TabInfo,
-        UserTransactionInfo,
-    },
-    core::CorePublicParameters,
+    AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
+    CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo,
+    TabInfo, UserTransactionInfo,
 };
 
 type SharedService = Arc<CoreService>;
@@ -139,7 +136,10 @@ async fn issue_guarantee(
     State(service): State<SharedService>,
     Json(req): Json<PaymentGuaranteeRequest>,
 ) -> Result<Json<BLSCert>, ApiError> {
-    let cert = service.handle_promise(req).await.map_err(ApiError::from)?;
+    let cert = service
+        .issue_payment_guarantee(req)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(cert))
 }
 
@@ -184,9 +184,6 @@ async fn get_tab(
     let tab = service.get_tab(tab_id).await.map_err(ApiError::from)?;
     Ok(Json(tab))
 }
-
-#[cfg(test)]
-mod tests {}
 
 async fn list_recipient_tabs(
     State(service): State<SharedService>,
@@ -286,3 +283,6 @@ async fn get_user_asset_balance(
         .map_err(ApiError::from)?;
     Ok(Json(balance))
 }
+
+#[cfg(test)]
+mod tests {}

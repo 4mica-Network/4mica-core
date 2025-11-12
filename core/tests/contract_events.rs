@@ -60,7 +60,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     let user_addr = signer_addr.to_string();
     let persist_ctx = core_service.persist_ctx();
 
-    ensure_user(&persist_ctx, &user_addr).await?;
+    ensure_user(persist_ctx, &user_addr).await?;
 
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
     contract
@@ -73,7 +73,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 
     let mut tries = 0;
     loop {
-        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
         if current == deposit_amount {
             break;
         }
@@ -107,7 +107,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // strictly ensure user exists before deposit events
-    ensure_user(&persist_ctx, &user_addr).await?;
+    ensure_user(persist_ctx, &user_addr).await?;
 
     let amount = U256::from(1_000_000_000_000_000_000u128);
     let expected = amount * U256::from(2u8);
@@ -131,7 +131,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     // poll until the accumulated balance is visible
     let mut tries = 0;
     loop {
-        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
         if current == expected {
             break;
         }
@@ -166,7 +166,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     let persist_ctx = core_service.persist_ctx();
 
     // ensure user exists before deposit/withdrawal events
-    ensure_user(&persist_ctx, &user_addr).await?;
+    ensure_user(persist_ctx, &user_addr).await?;
 
     let deposit_amount = U256::from(1_000_000_000_000_000_000u128);
     contract
@@ -238,7 +238,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let persist_ctx = core_service.persist_ctx();
 
     // ensure user exists before deposit/withdrawal events
-    ensure_user(&persist_ctx, &user_addr).await?;
+    ensure_user(persist_ctx, &user_addr).await?;
 
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
     contract
@@ -271,7 +271,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     // wait until the user collateral shows the reduced balance
     let mut tries = 0;
     loop {
-        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
         if current == deposit_amount - withdraw_amount {
             break;
         }
@@ -306,6 +306,9 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
         fn_selector("setRemunerationGracePeriod(uint256)"),
         fn_selector("setTabExpirationTime(uint256)"),
         fn_selector("setSynchronizationDelay(uint256)"),
+        fn_selector(
+            "configureGuaranteeVersion(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
+        ),
     ];
     access_manager
         .setTargetFunctionRole(*contract.address(), selectors, 4u64)
@@ -376,7 +379,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     )
     .await?;
 
-    ensure_user(&persist_ctx, &user_addr).await?;
+    ensure_user(persist_ctx, &user_addr).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -392,7 +395,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
 
     // Give the listener a moment; user balance should still be zero.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
     assert_eq!(
         current,
         U256::ZERO,
@@ -412,7 +415,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     // Poll until applied
     let mut tries = 0;
     loop {
-        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
         if current == tracked_amount {
             break;
         }

@@ -114,7 +114,6 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
         number_of_pending_blocks: 1,
         ethereum_private_key: operator_key,
-        ..cfg.ethereum_config
     };
 
     debug!(

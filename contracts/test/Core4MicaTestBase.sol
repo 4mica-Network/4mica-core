@@ -3,6 +3,7 @@ pragma solidity ^0.8.29;
 
 import "forge-std/Test.sol";
 import "../src/Core4Mica.sol";
+import {Guarantee} from "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -18,7 +19,11 @@ contract MockERC20 {
     mapping(address => mapping(address => uint256)) public allowance;
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
-    event Approval(address indexed owner, address indexed spender, uint256 amount);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 amount
+    );
 
     constructor(string memory name_, string memory symbol_) {
         name = name_;
@@ -75,6 +80,7 @@ abstract contract Core4MicaTestBase is Test {
     address internal constant USER2 = address(0x222);
     address internal constant OPERATOR = address(0x333);
 
+    uint64 internal constant USER_ADMIN_ROLE = 4;
     uint64 internal constant OPERATOR_ROLE = 9;
     address internal constant ETH_ASSET = address(0);
 
@@ -114,14 +120,32 @@ abstract contract Core4MicaTestBase is Test {
             OPERATOR_ROLE
         );
 
+        bytes4[] memory adminSelectors = new bytes4[](2);
+        adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
+        adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
+        for (uint256 i = 0; i < adminSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica),
+                _asSingletonArray(adminSelectors[i]),
+                USER_ADMIN_ROLE
+            );
+        }
+
+        manager.grantRole(USER_ADMIN_ROLE, address(this), 0);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
     }
 
     function _signGuarantee(
-        Core4Mica.Guarantee memory g,
+        Guarantee memory g,
         bytes32 privKey
     ) internal view returns (BLS.G2Point memory) {
-        return BlsHelper.signGuarantee(core4Mica, g, privKey);
+        return BlsHelper.signGuarantee(g, privKey);
+    }
+
+    function _encodeGuaranteeWithVersion(
+        Guarantee memory g
+    ) internal pure returns (bytes memory) {
+        return BlsHelper.encodeGuaranteeWithVersion(g);
     }
 
     function _guarantee(
@@ -132,16 +156,19 @@ abstract contract Core4MicaTestBase is Test {
         uint256 reqId,
         uint256 amount,
         address asset
-    ) internal pure returns (Core4Mica.Guarantee memory) {
+    ) internal view returns (Guarantee memory) {
         return
-            Core4Mica.Guarantee({
+            Guarantee({
+                domain: core4Mica.guaranteeDomainSeparator(),
                 tab_id: tabId,
-                tab_timestamp: tabTimestamp,
+                req_id: reqId,
                 client: client,
                 recipient: recipient,
-                req_id: reqId,
                 amount: amount,
-                asset: asset
+                total_amount: amount,
+                asset: asset,
+                timestamp: uint64(tabTimestamp),
+                version: 1
             });
     }
 
@@ -152,7 +179,7 @@ abstract contract Core4MicaTestBase is Test {
         address recipient,
         uint256 reqId,
         uint256 amount
-    ) internal pure returns (Core4Mica.Guarantee memory) {
+    ) internal view returns (Guarantee memory) {
         return
             _guarantee(
                 tabId,

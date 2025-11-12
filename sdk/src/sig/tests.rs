@@ -1,10 +1,15 @@
-use super::*;
 use alloy::hex;
 use alloy::primitives::{Address, Signature, U256};
 use alloy::signers::local::PrivateKeySigner;
 use chrono::Utc;
-use rpc::common::PaymentGuaranteeRequest;
+use rpc::{
+    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
+    PaymentGuaranteeRequestClaimsV1, SigningScheme,
+};
 use std::str::FromStr;
+
+use crate::error::SignPaymentError;
+use crate::sig::PaymentSigner;
 
 fn create_test_params() -> CorePublicParameters {
     CorePublicParameters {
@@ -17,12 +22,11 @@ fn create_test_params() -> CorePublicParameters {
     }
 }
 
-fn create_test_claims(user_addr: &str, recipient_addr: &str) -> PaymentGuaranteeClaims {
-    PaymentGuaranteeClaims {
+fn create_test_claims(user_addr: &str, recipient_addr: &str) -> PaymentGuaranteeRequestClaimsV1 {
+    PaymentGuaranteeRequestClaimsV1 {
         user_address: user_addr.to_string(),
         recipient_address: recipient_addr.to_string(),
         tab_id: U256::from(12345u64),
-        req_id: U256::from(1u64),
         amount: U256::from(100u64),
         timestamp: Utc::now().timestamp() as u64,
         asset_address: "0x0000000000000000000000000000000000000000".into(),
@@ -33,7 +37,10 @@ fn verify_promise_signature(
     params: &CorePublicParameters,
     req: &PaymentGuaranteeRequest,
 ) -> Result<(), String> {
-    let claims = &req.claims;
+    #[allow(irrefutable_let_patterns)]
+    let PaymentGuaranteeRequestClaims::V1(claims) = &req.claims else {
+        return Err("Expected V1 claims".into());
+    };
     let user_addr =
         Address::from_str(&claims.user_address).map_err(|_| "invalid user address".to_string())?;
     let recipient_addr = Address::from_str(&claims.recipient_address)
@@ -77,11 +84,11 @@ async fn test_eip712_sign_and_verify_success() {
     let payment_sig = result.unwrap();
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip712));
 
-    let request = PaymentGuaranteeRequest {
-        claims,
-        signature: payment_sig.signature,
-        scheme: payment_sig.scheme,
-    };
+    let request = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(claims),
+        payment_sig.signature,
+        payment_sig.scheme,
+    );
 
     let verify_result = verify_promise_signature(&params, &request);
     assert!(
@@ -107,11 +114,11 @@ async fn test_eip191_sign_and_verify_success() {
     let payment_sig = result.unwrap();
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip191));
 
-    let request = PaymentGuaranteeRequest {
-        claims,
-        signature: payment_sig.signature,
-        scheme: payment_sig.scheme,
-    };
+    let request = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(claims),
+        payment_sig.signature,
+        payment_sig.scheme,
+    );
 
     let verify_result = verify_promise_signature(&params, &request);
     assert!(
@@ -139,11 +146,11 @@ async fn test_eip712_signature_fails_with_tampered_claims() {
     let mut tampered_claims = claims;
     tampered_claims.amount = U256::from(999u64);
 
-    let request = PaymentGuaranteeRequest {
-        claims: tampered_claims,
-        signature: result.signature,
-        scheme: result.scheme,
-    };
+    let request = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(tampered_claims),
+        result.signature,
+        result.scheme,
+    );
 
     // Verification should fail
     let verify_result = verify_promise_signature(&params, &request);
@@ -179,11 +186,11 @@ async fn test_eip191_signature_fails_with_tampered_claims() {
     let mut tampered_claims = claims;
     tampered_claims.recipient_address = "0x9999999999999999999999999999999999999999".to_string();
 
-    let request = PaymentGuaranteeRequest {
-        claims: tampered_claims,
-        signature: result.signature,
-        scheme: result.scheme,
-    };
+    let request = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(tampered_claims),
+        result.signature,
+        result.scheme,
+    );
 
     // Verification should fail
     let verify_result = verify_promise_signature(&params, &request);
@@ -258,11 +265,11 @@ async fn test_eip712_and_eip191_produce_different_signatures() {
     );
 
     // EIP-712 signature should not validate with EIP-191 scheme
-    let request = PaymentGuaranteeRequest {
-        claims: claims.clone(),
-        signature: sig_eip712.signature.clone(),
-        scheme: SigningScheme::Eip191,
-    };
+    let request = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(claims.clone()),
+        sig_eip712.signature,
+        SigningScheme::Eip191,
+    );
 
     let result = verify_promise_signature(&params, &request);
     assert!(
@@ -271,12 +278,11 @@ async fn test_eip712_and_eip191_produce_different_signatures() {
     );
 
     // EIP-191 signature should not validate with EIP-712 scheme
-    let request = PaymentGuaranteeRequest {
-        claims,
-        signature: sig_eip191.signature,
-        scheme: SigningScheme::Eip712,
-    };
-
+    let request = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(claims),
+        sig_eip191.signature,
+        SigningScheme::Eip712,
+    );
     let result = verify_promise_signature(&params, &request);
     assert!(
         result.is_err(),
