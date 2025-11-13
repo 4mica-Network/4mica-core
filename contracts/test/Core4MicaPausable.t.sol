@@ -9,6 +9,19 @@ contract Core4MicaPausableTest is Core4MicaTestBase {
     event Paused(address account);
     event Unpaused(address account);
 
+    function test_UserAdminRoleCanPauseAndUnpause() public {
+        address secondaryAdmin = address(0xAAA);
+        manager.grantRole(USER_ADMIN_ROLE, secondaryAdmin, 0);
+
+        vm.prank(secondaryAdmin);
+        core4Mica.pause();
+        assertTrue(core4Mica.paused());
+
+        vm.prank(secondaryAdmin);
+        core4Mica.unpause();
+        assertFalse(core4Mica.paused());
+    }
+
     function test_PauseBlocksDeposits_AndUnpauseRestoresFlow() public {
         vm.expectEmit(true, false, false, true);
         emit Paused(address(this));
