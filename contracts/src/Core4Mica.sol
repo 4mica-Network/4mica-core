@@ -5,6 +5,7 @@ import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManage
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
@@ -27,7 +28,7 @@ interface IGuaranteeDecoder {
 
 /// @title Core4Mica
 /// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
-contract Core4Mica is AccessManaged, ReentrancyGuard {
+contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // ========= Errors =========
@@ -217,6 +218,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= Admin / Manager configuration =========
+    function pause() external restricted {
+        _pause();
+    }
+
+    function unpause() external restricted {
+        _unpause();
+    }
+
     function setRemunerationGracePeriod(
         uint256 _gracePeriod
     ) external restricted nonZero(_gracePeriod) {
@@ -367,7 +376,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     }
 
     // ========= User flows =========
-    function deposit() external payable nonReentrant nonZero(msg.value) {
+    function deposit()
+        external
+        payable
+        nonReentrant
+        nonZero(msg.value)
+        whenNotPaused
+    {
         collateralBalances[msg.sender][ETH_ASSET] += msg.value;
         emit CollateralDeposited(msg.sender, ETH_ASSET, msg.value);
     }
@@ -375,20 +390,24 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     function depositStablecoin(
         address asset,
         uint256 amount
-    ) external nonReentrant stablecoin(asset) nonZero(amount) {
+    ) external nonReentrant stablecoin(asset) nonZero(amount) whenNotPaused {
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
         collateralBalances[msg.sender][asset] += amount;
         emit CollateralDeposited(msg.sender, asset, amount);
     }
 
-    function requestWithdrawal(uint256 amount) external nonZero(amount) {
+    function requestWithdrawal(uint256 amount)
+        external
+        nonZero(amount)
+        whenNotPaused
+    {
         requestWithdrawalInternal(msg.sender, ETH_ASSET, amount);
     }
 
     function requestWithdrawal(
         address asset,
         uint256 amount
-    ) external supportedAsset(asset) nonZero(amount) {
+    ) external supportedAsset(asset) nonZero(amount) whenNotPaused {
         requestWithdrawalInternal(msg.sender, asset, amount);
     }
 
@@ -407,11 +426,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit WithdrawalRequested(user, asset, block.timestamp, amount);
     }
 
-    function cancelWithdrawal() external {
+    function cancelWithdrawal() external whenNotPaused {
         cancelWithdrawalInternal(msg.sender, ETH_ASSET);
     }
 
-    function cancelWithdrawal(address asset) external supportedAsset(asset) {
+    function cancelWithdrawal(address asset)
+        external
+        supportedAsset(asset)
+        whenNotPaused
+    {
         cancelWithdrawalInternal(msg.sender, asset);
     }
 
@@ -422,13 +445,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         emit WithdrawalCanceled(user, asset);
     }
 
-    function finalizeWithdrawal() external nonReentrant {
+    function finalizeWithdrawal() external nonReentrant whenNotPaused {
         finalizeWithdrawalInternal(msg.sender, ETH_ASSET);
     }
 
     function finalizeWithdrawal(
         address asset
-    ) external nonReentrant supportedAsset(asset) {
+    ) external nonReentrant supportedAsset(asset) whenNotPaused {
         finalizeWithdrawalInternal(msg.sender, asset);
     }
 
@@ -467,6 +490,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
         stablecoin(asset)
         nonZero(amount)
         validRecipient(recipient)
+        whenNotPaused
     {
         IERC20(asset).safeTransferFrom(msg.sender, recipient, amount);
         emit TabPaid(tab_id, asset, msg.sender, amount);
@@ -477,7 +501,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard {
     function remunerate(
         bytes calldata guaranteeData,
         BLS.G2Point calldata signature
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         // Verify and decode the guarantee
         Guarantee memory g = verifyAndDecodeGuarantee(guaranteeData, signature);
 

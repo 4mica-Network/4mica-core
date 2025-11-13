@@ -120,9 +120,11 @@ abstract contract Core4MicaTestBase is Test {
             OPERATOR_ROLE
         );
 
-        bytes4[] memory adminSelectors = new bytes4[](2);
+        bytes4[] memory adminSelectors = new bytes4[](4);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
+        adminSelectors[2] = Core4Mica.pause.selector;
+        adminSelectors[3] = Core4Mica.unpause.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica),
