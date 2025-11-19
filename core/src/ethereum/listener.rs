@@ -2,7 +2,7 @@ use crate::{
     config::EthereumConfig,
     error::BlockchainListenerError,
     ethereum::{contract::*, event_handler::EthereumEventHandler},
-    persist::PersistCtx,
+    persist::{PersistCtx, repo},
 };
 use alloy::{
     eips::BlockNumberOrTag,
@@ -11,7 +11,7 @@ use alloy::{
     rpc::types::{Filter, Log},
     sol_types::SolEvent,
 };
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use log::{error, info, warn};
 use std::{sync::Arc, time::Duration};
 use tokio::{self, task::JoinHandle};
@@ -38,7 +38,6 @@ impl EthereumListener {
         }
     }
 
-    /// Entry point — runs forever, reconnecting with exponential backoff.
     pub async fn run(&self) -> Result<JoinHandle<()>, BlockchainListenerError> {
         let address: Address = self
             .config
@@ -46,15 +45,14 @@ impl EthereumListener {
             .parse()
             .map_err(anyhow::Error::from)?;
 
-        let filter = Filter::new()
+        let base_filter = Filter::new()
             .address(address)
-            .events(all_event_signatures())
-            .from_block(BlockNumberOrTag::Latest);
+            .events(all_event_signatures());
 
         let persist_ctx = self.persist_ctx.clone();
         let handle = tokio::spawn(Self::listen_loop(
             self.provider.clone(),
-            filter,
+            base_filter,
             address,
             persist_ctx,
             self.handler.clone(),
@@ -64,7 +62,7 @@ impl EthereumListener {
 
     async fn listen_loop(
         provider: impl alloy::providers::Provider + 'static,
-        filter: Filter,
+        base_filter: Filter,
         address: Address,
         persist_ctx: PersistCtx,
         handler: Arc<dyn EthereumEventHandler>,
@@ -72,12 +70,62 @@ impl EthereumListener {
         let mut delay = Duration::from_secs(5);
 
         loop {
-            match provider.subscribe_logs(&filter).await {
-                Ok(sub) => {
-                    info!("Listening for events from {address:?}");
-                    let mut stream = sub.into_stream();
+            let last_event = match repo::get_last_processed_blockchain_event(&persist_ctx).await {
+                Ok(event) => event,
+                Err(e) => {
+                    error!("Failed to get the last processed blockchain event: {}", e);
+                    warn!("Restarting listener in {delay:?}...");
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+            };
 
-                    if let Err(e) = Self::process_events(&persist_ctx, &handler, &mut stream).await
+            let sub_filter = base_filter.clone().from_block(BlockNumberOrTag::Latest);
+            match provider.subscribe_logs(&sub_filter).await {
+                Ok(sub) => {
+                    info!(
+                        "Subscribed to new events from address {address:?} starting at latest block"
+                    );
+
+                    // Fetch historical logs from last processed event to latest
+                    let last_processed_block = last_event.map(|e| e.block_number as u64);
+                    let historical_logs = if let Some(last_processed_block) = last_processed_block {
+                        let historical_filter = base_filter
+                            .clone()
+                            .from_block(last_processed_block)
+                            .to_block(BlockNumberOrTag::Latest);
+
+                        info!(
+                            "Fetching historical logs from block {last_processed_block:?} to latest"
+                        );
+
+                        match provider.get_logs(&historical_filter).await {
+                            Ok(logs) => {
+                                info!("Fetched {} historical log(s)", logs.len());
+                                logs
+                            }
+                            Err(e) => {
+                                error!("Failed to fetch historical logs: {e}");
+                                warn!("Restarting listener in {delay:?}...");
+                                tokio::time::sleep(delay).await;
+                                delay = (delay * 2).min(Duration::from_secs(300));
+                                continue;
+                            }
+                        }
+                    } else {
+                        vec![]
+                    };
+
+                    // Chain historical logs with live subscription stream
+                    let historical_stream = stream::iter(historical_logs);
+                    let live_stream = sub.into_stream();
+                    let mut combined_stream = historical_stream.chain(live_stream);
+
+                    // Reset the delay to 5 seconds on successful subscription
+                    delay = Duration::from_secs(5);
+
+                    if let Err(e) =
+                        Self::process_events(&handler, &persist_ctx, &mut combined_stream).await
                     {
                         error!("Listener crashed: {e:?}");
                     }
@@ -94,11 +142,46 @@ impl EthereumListener {
     }
 
     async fn process_events(
-        _persist_ctx: &PersistCtx,
         handler: &Arc<dyn EthereumEventHandler>,
+        persist_ctx: &PersistCtx,
         stream: &mut (impl futures_util::Stream<Item = Log> + Unpin),
     ) -> Result<(), BlockchainListenerError> {
         while let Some(log) = stream.next().await {
+            let Some(block_number) = log.block_number else {
+                warn!("Log has no block number, skipping...");
+                continue;
+            };
+            let Some(log_index) = log.log_index else {
+                warn!("Log has no log index, skipping...");
+                continue;
+            };
+
+            let Some(signature) = log.topic0().map(|hash| format!("{:x}", hash)) else {
+                warn!("Log has no signature, skipping...");
+                continue;
+            };
+
+            info!(
+                "Storing blockchain event: {signature} at block {block_number} with log index {log_index}"
+            );
+
+            match repo::store_blockchain_event(persist_ctx, &signature, block_number, log_index)
+                .await
+            {
+                Ok(inserted) => {
+                    if !inserted {
+                        info!(
+                            "Blockchain event already stored: {signature} at block {block_number} with log index {log_index}, skipping..."
+                        );
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to store blockchain event: {e}");
+                    return Err(e.into());
+                }
+            }
+
             let result = match log.topic0() {
                 Some(&CollateralDeposited::SIGNATURE_HASH) => {
                     handler.handle_collateral_deposited(log).await

@@ -7,7 +7,7 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::user_asset_balance;
 use entities::{
-    collateral_event, guarantee,
+    blockchain_event, collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     tabs, user, user_transaction, withdrawal,
 };
@@ -1053,4 +1053,45 @@ pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
             n, user_address
         ))),
     }
+}
+
+pub async fn get_last_processed_blockchain_event(
+    ctx: &PersistCtx,
+) -> Result<Option<blockchain_event::Model>, PersistDbError> {
+    blockchain_event::Entity::find()
+        .order_by_desc(blockchain_event::Column::BlockNumber)
+        .order_by_desc(blockchain_event::Column::LogIndex)
+        .one(ctx.db.as_ref())
+        .await
+        .map_err(Into::into)
+}
+
+pub async fn store_blockchain_event(
+    ctx: &PersistCtx,
+    signature: &str,
+    block_number: u64,
+    log_index: u64,
+) -> Result<bool, PersistDbError> {
+    let now = Utc::now().naive_utc();
+
+    let event = blockchain_event::ActiveModel {
+        block_number: Set(block_number as i64),
+        log_index: Set(log_index as i64),
+        signature: Set(signature.to_string()),
+        created_at: Set(now),
+    };
+
+    let affected = blockchain_event::Entity::insert(event)
+        .on_conflict(
+            OnConflict::columns([
+                blockchain_event::Column::BlockNumber,
+                blockchain_event::Column::LogIndex,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .exec_without_returning(ctx.db.as_ref())
+        .await?;
+
+    Ok(affected == 1)
 }
