@@ -1,9 +1,10 @@
+use anyhow::bail;
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
-    error::VerifyGuaranteeError,
+    Address, Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
+    client::recipient::RecipientClient, error::VerifyGuaranteeError,
 };
 use serial_test::serial;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod common;
 
@@ -35,6 +36,13 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     let recipient_client = Client::new(recipient_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
+    let core_total_before = recipient_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
+
     let user_info = user_client.user.get_user().await?;
     let eth_asset_before =
         common::extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
@@ -50,8 +58,14 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         eth_asset_before.collateral + deposit_amount
     );
 
-    // Wait for transaction to settle
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &recipient_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
@@ -201,10 +215,24 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     let recipient_client = Client::new(recipient_config).await?;
 
     // Ensure sufficient collateral for two guarantees.
+    let core_total_before = recipient_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
+
     let deposit_amount = U256::from(3_000_000_000_000_000_000u128); // 3 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &recipient_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Recipient creates a payment tab.
     let tab_id = recipient_client
@@ -271,4 +299,37 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     assert_eq!(guarantees[1].req_id, parsed_second.req_id);
 
     Ok(())
+}
+
+async fn wait_for_collateral_increase(
+    recipient_client: &RecipientClient,
+    user_address: &str,
+    asset_address: Address,
+    starting_total: U256,
+    increase_by: U256,
+) -> anyhow::Result<()> {
+    let poll_interval = Duration::from_millis(250);
+    let timeout = Duration::from_secs(20);
+    let start = Instant::now();
+    let user_address = user_address.to_string();
+    let asset_address = asset_address.to_string();
+    let target_total = starting_total + increase_by;
+
+    loop {
+        if recipient_client
+            .get_user_asset_balance(user_address.clone(), asset_address.clone())
+            .await?
+            .is_some_and(|balance| balance.total >= target_total)
+        {
+            return Ok(());
+        }
+
+        if start.elapsed() > timeout {
+            bail!(
+                "timed out waiting for collateral increase to {target_total:?} for user {user_address}"
+            );
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
 }
