@@ -95,3 +95,15 @@ pub struct AssetBalanceInfo {
     pub version: i32,
     pub updated_at: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateUserSuspensionRequest {
+    pub suspended: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSuspensionStatus {
+    pub user_address: String,
+    pub suspended: bool,
+    pub updated_at: i64,
+}

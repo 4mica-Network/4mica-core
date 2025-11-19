@@ -33,6 +33,33 @@ pub async fn get_user(ctx: &PersistCtx, user_address: &str) -> Result<user::Mode
         .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
 }
 
+pub async fn ensure_user_is_active(
+    ctx: &PersistCtx,
+    user_address: &str,
+) -> Result<(), PersistDbError> {
+    let user = get_user(ctx, user_address).await?;
+    if user.is_suspended {
+        Err(PersistDbError::UserSuspended(user_address.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+pub async fn update_user_suspension(
+    ctx: &PersistCtx,
+    user_address: &str,
+    suspended: bool,
+) -> Result<user::Model, PersistDbError> {
+    let mut model = get_user(ctx, user_address).await?.into_active_model();
+    model.is_suspended = Set(suspended);
+    model.updated_at = Set(Utc::now().naive_utc());
+
+    model
+        .update(ctx.db.as_ref())
+        .await
+        .map_err(PersistDbError::from)
+}
+
 pub async fn ensure_user_exists_on<C: ConnectionTrait>(
     conn: &C,
     addr: &str,
@@ -41,6 +68,7 @@ pub async fn ensure_user_exists_on<C: ConnectionTrait>(
     let insert_user = user::ActiveModel {
         address: Set(addr.to_owned()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -906,7 +934,7 @@ pub async fn create_pending_tab(
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
 ) -> Result<(), PersistDbError> {
-    get_user(ctx, user_address).await?;
+    ensure_user_is_active(ctx, user_address).await?;
 
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();

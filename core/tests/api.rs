@@ -12,7 +12,7 @@ use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
 use rand::random;
 use rpc::{
-    CorePublicParameters, CreatePaymentTabRequest, PaymentGuaranteeRequest,
+    ApiClientError, CorePublicParameters, CreatePaymentTabRequest, PaymentGuaranteeRequest,
     PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1, RpcProxy, SigningScheme,
     TabInfo,
 };
@@ -1784,6 +1784,116 @@ async fn list_settled_tabs_ignores_pending_tabs() -> anyhow::Result<()> {
         .await
         .expect("list tabs");
     assert!(all_tabs.iter().any(|tab| tab.tab_id == tab_id));
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
+    let (_, core_client, ctx) = setup_clean_db().await?;
+
+    let user_addr = random_address();
+    let recipient_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
+
+    let status = core_client
+        .update_user_suspension(user_addr.clone(), true)
+        .await
+        .expect("suspend user");
+    assert!(status.suspended);
+
+    let err = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(600),
+        })
+        .await
+        .expect_err("suspended user should not create tabs");
+    match err {
+        ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+            assert!(
+                message.contains("user suspended"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {:?}", other),
+    }
+
+    let status = core_client
+        .update_user_suspension(user_addr.clone(), false)
+        .await
+        .expect("unsuspend user");
+    assert!(!status.suspended);
+
+    core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr,
+            recipient_address: recipient_addr,
+            erc20_token: None,
+            ttl: Some(600),
+        })
+        .await
+        .expect("create tab after unsuspending");
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
+    let (_, core_client, ctx) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
+
+    let tab_id = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(600),
+        })
+        .await?
+        .id;
+
+    let public_params = core_client.get_public_params().await?;
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_id,
+        U256::from(1u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    core_client
+        .update_user_suspension(user_addr.clone(), true)
+        .await
+        .expect("suspend user");
+
+    let err = core_client
+        .issue_guarantee(req)
+        .await
+        .expect_err("suspended user should not receive guarantees");
+    match err {
+        ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+            assert!(
+                message.contains("user suspended"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {:?}", other),
+    }
 
     Ok(())
 }

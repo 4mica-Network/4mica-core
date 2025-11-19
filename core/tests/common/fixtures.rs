@@ -34,6 +34,7 @@ pub async fn ensure_user(ctx: &PersistCtx, addr: &str) -> Result<()> {
     let am = user::ActiveModel {
         address: Set(addr.to_string()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };

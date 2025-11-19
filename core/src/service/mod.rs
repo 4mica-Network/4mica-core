@@ -15,7 +15,8 @@ use log::{error, info};
 use parking_lot::Mutex;
 use rpc::{
     AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
-    CreatePaymentTabResult, GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserTransactionInfo,
+    CreatePaymentTabResult, GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserSuspensionStatus,
+    UserTransactionInfo,
 };
 use std::sync::Arc;
 use tokio::{
@@ -343,5 +344,15 @@ impl CoreService {
             repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
                 .await?;
         maybe.map(mapper::asset_balance_model_to_info).transpose()
+    }
+
+    pub async fn set_user_suspension(
+        &self,
+        user_address: String,
+        suspended: bool,
+    ) -> ServiceResult<UserSuspensionStatus> {
+        let updated =
+            repo::update_user_suspension(&self.inner.persist_ctx, &user_address, suspended).await?;
+        Ok(mapper::user_model_to_suspension_status(updated))
     }
 }

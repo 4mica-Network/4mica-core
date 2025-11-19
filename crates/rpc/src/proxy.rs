@@ -7,7 +7,8 @@ use crate::{
     ApiClientError,
     common::{
         AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
-        GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserTransactionInfo,
+        GuaranteeInfo, PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest,
+        UserSuspensionStatus, UserTransactionInfo,
     },
     core::CorePublicParameters,
     guarantee::PaymentGuaranteeRequest,
@@ -191,6 +192,17 @@ impl RpcProxy {
         let path = format!("/core/users/{user_address}/assets/{asset_address}");
         let url = self.url(&path)?;
         self.get(url).await
+    }
+
+    pub async fn update_user_suspension(
+        &self,
+        user_address: String,
+        suspended: bool,
+    ) -> Result<UserSuspensionStatus, ApiClientError> {
+        let path = format!("/core/users/{user_address}/suspension");
+        let url = self.url(&path)?;
+        let body = UpdateUserSuspensionRequest { suspended };
+        self.post(url, &body).await
     }
 }
 

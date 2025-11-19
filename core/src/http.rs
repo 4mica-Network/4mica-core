@@ -14,7 +14,7 @@ use http::StatusCode;
 use rpc::{
     AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
     CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo,
-    TabInfo, UserTransactionInfo,
+    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
 };
 
 type SharedService = Arc<CoreService>;
@@ -59,6 +59,10 @@ pub fn router(service: CoreService) -> Router {
             "/core/users/{user_address}/assets/{asset_address}",
             get(get_user_asset_balance),
         )
+        .route(
+            "/core/users/{user_address}/suspension",
+            post(update_user_suspension),
+        )
         .with_state(shared)
 }
 
@@ -95,6 +99,7 @@ impl From<ServiceError> for ApiError {
             ServiceError::UserNotRegistered => {
                 ApiError::new(StatusCode::BAD_REQUEST, "user not registered")
             }
+            ServiceError::UserSuspended => ApiError::new(StatusCode::FORBIDDEN, "user suspended"),
             ServiceError::TabClosed => ApiError::new(StatusCode::CONFLICT, "tab already closed"),
             ServiceError::FutureTimestamp => {
                 ApiError::new(StatusCode::BAD_REQUEST, "timestamp is in the future")
@@ -282,6 +287,18 @@ async fn get_user_asset_balance(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(balance))
+}
+
+async fn update_user_suspension(
+    State(service): State<SharedService>,
+    Path(user): Path<String>,
+    Json(req): Json<UpdateUserSuspensionRequest>,
+) -> Result<Json<UserSuspensionStatus>, ApiError> {
+    let status = service
+        .set_user_suspension(user, req.suspended)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(status))
 }
 
 #[cfg(test)]

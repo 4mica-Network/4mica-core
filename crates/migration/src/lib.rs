@@ -2,6 +2,7 @@ pub use sea_orm_migration::prelude::*;
 
 mod m20250901_000001_create_table;
 mod m20250901_000002_multi_asset;
+mod m20250901_000003_user_suspension;
 
 pub struct Migrator;
 
@@ -11,6 +12,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20250901_000001_create_table::Migration),
             Box::new(m20250901_000002_multi_asset::Migration),
+            Box::new(m20250901_000003_user_suspension::Migration),
         ]
     }
 }
