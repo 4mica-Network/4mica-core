@@ -15,7 +15,10 @@ use test_log::test;
 mod common;
 use crate::common::contract::Core4Mica;
 use crate::common::fixtures::read_collateral;
-use crate::common::setup::{E2eEnvironment, dummy_verification_key, setup_e2e_environment};
+use crate::common::setup::{
+    E2eEnvironment, dummy_verification_key, setup_e2e_environment,
+    spawn_core_service_in_existing_environment,
+};
 
 static NUMBER_OF_TRIALS: u32 = 120;
 
@@ -425,6 +428,117 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
         tries += 1;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+
+    Ok(())
+}
+
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial]
+async fn listener_catches_up_on_missed_events() -> anyhow::Result<()> {
+    // Setup environment with fresh DB and make first deposit
+    let mut test_env = setup_e2e_environment().await?;
+    let user_addr = test_env.signer_addr.to_string();
+    let persist_ctx = test_env.core_service.persist_ctx();
+
+    ensure_user(&persist_ctx, &user_addr).await?;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // First deposit while service is running
+    let deposit_amount_1 = U256::from(1_000_000_000_000_000_000u128);
+    test_env
+        .contract
+        .deposit()
+        .value(deposit_amount_1)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    // Wait for first deposit to be processed
+    let mut tries = 0;
+    loop {
+        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == deposit_amount_1 {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("First deposit not processed");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // Kill the listener
+    test_env.core_service.kill_listener();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Make 2 deposits while service is down
+    let deposit_amount_2 = U256::from(2_000_000_000_000_000_000u128);
+    test_env
+        .contract
+        .deposit()
+        .value(deposit_amount_2)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    let deposit_amount_3 = U256::from(3_000_000_000_000_000_000u128);
+    test_env
+        .contract
+        .deposit()
+        .value(deposit_amount_3)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    let core_service = spawn_core_service_in_existing_environment(&mut test_env).await?;
+    let persist_ctx = core_service.persist_ctx();
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // Make 4th deposit while service is running
+    let deposit_amount_4 = U256::from(4_000_000_000_000_000_000u128);
+    test_env
+        .contract
+        .deposit()
+        .value(deposit_amount_4)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    // Wait for the service to catch up and process the missed events
+    let expected_total = deposit_amount_1 + deposit_amount_2 + deposit_amount_3 + deposit_amount_4;
+    let mut tries = 0;
+    loop {
+        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == expected_total {
+            break;
+        }
+        if tries > 5 {
+            panic!(
+                "Service did not catch up on missed events. Expected: {}, Got: {}",
+                expected_total, current
+            );
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // Verify there are 4 blockchain events in the DB
+    let event_count = blockchain_event::Entity::find()
+        .all(persist_ctx.db.as_ref())
+        .await?
+        .len();
+    assert_eq!(
+        event_count, 4,
+        "Expected 4 blockchain events, found {}",
+        event_count
+    );
 
     Ok(())
 }

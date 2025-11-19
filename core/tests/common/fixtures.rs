@@ -92,6 +92,7 @@ pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
             "CollateralEvent",
             "UserAssetBalance",
             "User",
+            "BlockchainEvent",
         ],
     )
     .await?;

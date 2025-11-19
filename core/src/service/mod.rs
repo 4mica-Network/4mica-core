@@ -187,6 +187,12 @@ impl CoreService {
         self.inner.public_params.clone()
     }
 
+    pub fn kill_listener(&self) {
+        if let Some(handle) = self.inner.listener_handle.lock().take() {
+            handle.abort();
+        }
+    }
+
     pub async fn build_ws_provider(config: EthereumConfig) -> ServiceResult<DynProvider> {
         let ws = WsConnect::new(&config.ws_rpc_url);
         let provider = ProviderBuilder::new()

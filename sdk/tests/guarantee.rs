@@ -204,6 +204,8 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     let deposit_amount = U256::from(3_000_000_000_000_000_000u128); // 3 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
     // Recipient creates a payment tab.
     let tab_id = recipient_client
         .recipient
