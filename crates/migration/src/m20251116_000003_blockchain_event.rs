@@ -62,4 +62,3 @@ pub enum BlockchainEvent {
     Signature,
     CreatedAt,
 }
-
