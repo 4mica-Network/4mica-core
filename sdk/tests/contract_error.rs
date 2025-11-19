@@ -5,6 +5,7 @@ use rust_sdk_4mica::{
 use std::time::Duration;
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     // These wallet keys are picked from the default accounts in anvil test node
 
