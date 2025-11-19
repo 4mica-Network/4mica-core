@@ -67,6 +67,7 @@ async fn log_signature_environment(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[test_log::test]
 async fn test_recipient_remuneration() -> anyhow::Result<()> {
     let user_config = ConfigBuilder::default()
@@ -194,6 +195,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[test_log::test]
 async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     let user_config = ConfigBuilder::default()
