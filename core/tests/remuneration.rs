@@ -19,7 +19,7 @@ use common::fixtures::{read_collateral, read_locked_collateral, set_locked_colla
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    Ok(AppConfig::fetch())
+    AppConfig::fetch()
 }
 
 #[test(tokio::test)]

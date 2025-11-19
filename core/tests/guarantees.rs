@@ -17,7 +17,7 @@ use common::fixtures::read_locked_collateral;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    Ok(AppConfig::fetch())
+    AppConfig::fetch()
 }
 
 // helper to build a random valid 0x… address

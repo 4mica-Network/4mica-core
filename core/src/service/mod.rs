@@ -32,6 +32,7 @@ pub use api_keys::AdminApiKeyScope;
 
 pub struct Inner {
     config: AppConfig,
+    bls_private_key: [u8; 32],
     public_params: CorePublicParameters,
     guarantee_domain: [u8; 32],
     persist_ctx: PersistCtx,
@@ -55,10 +56,6 @@ pub struct CoreService {
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        if config.secrets.bls_private_key.bytes().len() != 32 {
-            anyhow::bail!("BLS private key must be 32 bytes");
-        }
-
         let persist_ctx = PersistCtx::new().await?;
         let eth_cfg = config.ethereum_config.clone();
         let listener_cfg = eth_cfg.clone();
@@ -135,12 +132,14 @@ impl CoreService {
         read_provider: DynProvider,
         guarantee_domain: [u8; 32],
     ) -> anyhow::Result<Self> {
-        let bls_private_key = config.secrets.bls_private_key.bytes();
-        if bls_private_key.len() != 32 {
-            anyhow::bail!("BLS private key must be 32 bytes");
-        }
+        let bls_private_key: [u8; 32] = config
+            .secrets
+            .bls_private_key
+            .bytes()
+            .try_into()
+            .map_err(|_| anyhow!("BLS private key must be 32 bytes"))?;
 
-        let public_key = crypto::bls::pub_key_from_scalar(bls_private_key.try_into()?)?;
+        let public_key = crypto::bls::pub_key_from_scalar(&bls_private_key)?;
         info!(
             "Operator started with BLS Public Key: {}",
             crypto::hex::encode_hex(&public_key)
@@ -152,6 +151,7 @@ impl CoreService {
 
         let inner = Inner {
             config,
+            bls_private_key,
             public_params: CorePublicParameters {
                 public_key,
                 contract_address: eth_config.contract_address.clone(),
@@ -173,13 +173,7 @@ impl CoreService {
     }
 
     fn bls_private_key(&self) -> [u8; 32] {
-        self.inner
-            .config
-            .secrets
-            .bls_private_key
-            .bytes()
-            .try_into()
-            .expect("BLS private key must be 32 bytes")
+        self.inner.bls_private_key
     }
 
     pub fn persist_ctx(&self) -> &PersistCtx {
@@ -321,10 +315,9 @@ impl CoreService {
     ) -> ServiceResult<Vec<UserTransactionInfo>> {
         let rows =
             repo::get_recipient_transactions(&self.inner.persist_ctx, &recipient_address).await?;
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| row.into_user_tx_info())
-            .collect())
+            .collect::<ServiceResult<Vec<_>>>()
     }
 
     pub async fn get_collateral_events_for_tab(

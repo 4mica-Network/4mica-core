@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crypto::hex::HexBytes;
 use envconfig::Envconfig;
 
@@ -61,18 +62,19 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn fetch() -> Self {
-        let server_config = ServerConfig::init_from_env().expect("Failed to load server config");
+    pub fn fetch() -> anyhow::Result<Self> {
+        let server_config =
+            ServerConfig::init_from_env().context("Failed to load server config")?;
         let ethereum_config =
-            EthereumConfig::init_from_env().expect("Failed to load ethereum config");
-        let secrets = Secrets::init_from_env().expect("Failed to load secrets");
-        let eip712 = Eip712Config::init_from_env().expect("Failed to load EIP712 config");
+            EthereumConfig::init_from_env().context("Failed to load ethereum config")?;
+        let secrets = Secrets::init_from_env().context("Failed to load secrets")?;
+        let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
 
-        Self {
+        Ok(Self {
             server_config,
             ethereum_config,
             secrets,
             eip712,
-        }
+        })
     }
 }

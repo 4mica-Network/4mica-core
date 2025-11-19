@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub fn init_config() -> Result<AppConfig> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
-    Ok(AppConfig::fetch())
+    AppConfig::fetch()
 }
 
 pub async fn init_test_env() -> Result<(AppConfig, PersistCtx)> {

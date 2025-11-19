@@ -48,7 +48,7 @@ fn init_config() -> AppConfig {
     dotenv::dotenv().ok();
     // also try parent folder when running from core/tests
     dotenv::from_filename("../.env").ok();
-    AppConfig::fetch()
+    AppConfig::fetch().expect("Failed to load test config")
 }
 
 async fn deploy_contracts(
