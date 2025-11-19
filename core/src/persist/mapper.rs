@@ -2,10 +2,14 @@ use crate::error::{ServiceError, ServiceResult};
 use alloy::primitives::U256;
 use anyhow::anyhow;
 use entities::{
+    admin_api_key,
     sea_orm_active_enums::{CollateralEventType, SettlementStatus, TabStatus},
     tabs, user,
 };
-use rpc::{AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, TabInfo, UserSuspensionStatus};
+use rpc::{
+    AdminApiKeyInfo, AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, TabInfo,
+    UserSuspensionStatus,
+};
 use std::str::FromStr;
 
 pub fn tab_status_to_str(status: TabStatus) -> &'static str {
@@ -160,6 +164,23 @@ pub fn user_model_to_suspension_status(model: user::Model) -> UserSuspensionStat
         suspended: model.is_suspended,
         updated_at: model.updated_at.and_utc().timestamp(),
     }
+}
+
+pub fn admin_api_key_model_to_info(model: admin_api_key::Model) -> ServiceResult<AdminApiKeyInfo> {
+    let scopes: Vec<String> = serde_json::from_value(model.scopes).map_err(|e| {
+        ServiceError::Other(anyhow!(
+            "invalid scopes for admin api key {}: {e}",
+            model.id
+        ))
+    })?;
+
+    Ok(AdminApiKeyInfo {
+        id: model.id.to_string(),
+        name: model.name,
+        scopes,
+        created_at: model.created_at.and_utc().timestamp(),
+        revoked_at: model.revoked_at.map(|ts| ts.and_utc().timestamp()),
+    })
 }
 
 pub fn parse_settlement_statuses(

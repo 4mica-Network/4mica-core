@@ -4,11 +4,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    ApiClientError,
+    ADMIN_API_KEY_HEADER, ApiClientError,
     common::{
-        AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
-        GuaranteeInfo, PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest,
-        UserSuspensionStatus, UserTransactionInfo,
+        AdminApiKeyInfo, AdminApiKeySecret, AssetBalanceInfo, CollateralEventInfo,
+        CreateAdminApiKeyRequest, CreatePaymentTabRequest, CreatePaymentTabResult, GuaranteeInfo,
+        PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus,
+        UserTransactionInfo,
     },
     core::CorePublicParameters,
     guarantee::PaymentGuaranteeRequest,
@@ -23,6 +24,7 @@ fn serialize_tab_id(val: U256) -> String {
 pub struct RpcProxy {
     client: Client,
     base_url: Url,
+    admin_api_key: Option<String>,
 }
 
 impl RpcProxy {
@@ -32,11 +34,28 @@ impl RpcProxy {
         if base_url.path().is_empty() {
             base_url.set_path("/");
         }
-        Ok(Self { client, base_url })
+        Ok(Self {
+            client,
+            base_url,
+            admin_api_key: None,
+        })
+    }
+
+    pub fn with_admin_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.admin_api_key = Some(api_key.into());
+        self
     }
 
     fn url(&self, path: &str) -> Result<Url, ApiClientError> {
         self.base_url.join(path).map_err(ApiClientError::InvalidUrl)
+    }
+
+    fn apply_admin_header(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(key) = &self.admin_api_key {
+            builder.header(ADMIN_API_KEY_HEADER, key)
+        } else {
+            builder
+        }
     }
 
     async fn get<T>(&self, url: Url) -> Result<T, ApiClientError>
@@ -202,7 +221,37 @@ impl RpcProxy {
         let path = format!("/core/users/{user_address}/suspension");
         let url = self.url(&path)?;
         let body = UpdateUserSuspensionRequest { suspended };
-        self.post(url, &body).await
+        let request = self.apply_admin_header(self.client.post(url).json(&body));
+        let response = request.send().await?;
+        Self::decode_response(response).await
+    }
+
+    pub async fn create_admin_api_key(
+        &self,
+        req: CreateAdminApiKeyRequest,
+    ) -> Result<AdminApiKeySecret, ApiClientError> {
+        let url = self.url("/core/admin/api-keys")?;
+        let request = self.apply_admin_header(self.client.post(url).json(&req));
+        let response = request.send().await?;
+        Self::decode_response(response).await
+    }
+
+    pub async fn list_admin_api_keys(&self) -> Result<Vec<AdminApiKeyInfo>, ApiClientError> {
+        let url = self.url("/core/admin/api-keys")?;
+        let request = self.apply_admin_header(self.client.get(url));
+        let response = request.send().await?;
+        Self::decode_response(response).await
+    }
+
+    pub async fn revoke_admin_api_key(
+        &self,
+        id: String,
+    ) -> Result<AdminApiKeyInfo, ApiClientError> {
+        let path = format!("/core/admin/api-keys/{id}/revoke");
+        let url = self.url(&path)?;
+        let request = self.apply_admin_header(self.client.post(url));
+        let response = request.send().await?;
+        Self::decode_response(response).await
     }
 }
 

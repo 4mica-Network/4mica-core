@@ -107,3 +107,27 @@ pub struct UserSuspensionStatus {
     pub suspended: bool,
     pub updated_at: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateAdminApiKeyRequest {
+    pub name: String,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminApiKeyInfo {
+    pub id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub created_at: i64,
+    pub revoked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminApiKeySecret {
+    pub id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub created_at: i64,
+    pub api_key: String,
+}

@@ -15,8 +15,9 @@ use crate::common::{
         Core4Mica::{self, Core4MicaInstance},
         MockERC20::{self, MockERC20Instance},
     },
-    fixtures::clear_all_tables,
+    fixtures::{self, clear_all_tables},
 };
+use rpc::{ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS};
 
 pub struct E2eEnvironment {
     pub provider: DynProvider,
@@ -123,6 +124,12 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
 
     let core_service = CoreService::new(cfg).await?;
     clear_all_tables(core_service.persist_ctx()).await?;
+    fixtures::create_admin_api_key(
+        core_service.persist_ctx(),
+        "e2e-admin",
+        &[ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS],
+    )
+    .await?;
 
     let mut scheduler = TaskScheduler::new().await?;
     scheduler

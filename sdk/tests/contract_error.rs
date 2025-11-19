@@ -21,7 +21,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
-            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".to_string(),
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
         )
         .build()?;
 

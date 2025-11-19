@@ -24,9 +24,11 @@ use tokio::{
     time::{Duration, sleep},
 };
 
+mod api_keys;
 pub mod event_handler;
 mod guarantee;
 pub mod payment;
+pub use api_keys::AdminApiKeyScope;
 
 pub struct Inner {
     config: AppConfig,

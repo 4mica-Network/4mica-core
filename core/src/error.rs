@@ -163,6 +163,9 @@ pub enum ServiceError {
     #[error("tab already closed")]
     TabClosed,
 
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("promise timestamp is in the future")]
     FutureTimestamp,
 
