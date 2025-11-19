@@ -9,6 +9,7 @@ mod common;
 use crate::common::ETH_ASSET_ADDRESS;
 
 #[tokio::test]
+#[serial_test::serial]
 #[test_log::test]
 async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     // Setup user client
@@ -77,6 +78,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[test_log::test]
 async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Result<()> {
     // Setup user client
@@ -117,6 +119,7 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[test_log::test]
 async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     // Setup user client

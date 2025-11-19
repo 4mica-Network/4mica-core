@@ -7,7 +7,7 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::user_asset_balance;
 use entities::{
-    admin_api_key, collateral_event, guarantee,
+    admin_api_key, blockchain_event, collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     tabs, user, user_transaction, withdrawal,
 };
@@ -17,8 +17,8 @@ use sea_orm::ConnectionTrait;
 use sea_orm::QueryOrder;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, DbErr, EntityTrait, IntoActiveModel, QueryFilter,
-    Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, IntoActiveModel, QueryFilter, Set,
+    TransactionTrait,
 };
 use std::str::FromStr;
 use uuid::Uuid;
@@ -156,6 +156,79 @@ fn validate_address(addr: &str) -> Result<(), PersistDbError> {
         return Err(PersistDbError::InvariantViolation("invalid address".into()));
     }
     Ok(())
+}
+
+//
+// ────────────────────── ADMIN API KEYS ──────────────────────
+//
+
+pub async fn insert_admin_api_key(
+    ctx: &PersistCtx,
+    id: Uuid,
+    name: &str,
+    key_hash: &str,
+    scopes: &[String],
+) -> Result<admin_api_key::Model, PersistDbError> {
+    let now = Utc::now().naive_utc();
+    let scopes_value = serde_json::to_value(scopes).map_err(|e| {
+        PersistDbError::InvariantViolation(format!("invalid admin api key scopes: {e}"))
+    })?;
+
+    let model = admin_api_key::ActiveModel {
+        id: Set(id),
+        name: Set(name.to_owned()),
+        key_hash: Set(key_hash.to_owned()),
+        scopes: Set(scopes_value),
+        created_at: Set(now),
+        revoked_at: Set(None),
+    };
+
+    admin_api_key::Entity::insert(model)
+        .exec_with_returning(ctx.db.as_ref())
+        .await
+        .map_err(PersistDbError::from)
+}
+
+pub async fn list_admin_api_keys(
+    ctx: &PersistCtx,
+) -> Result<Vec<admin_api_key::Model>, PersistDbError> {
+    admin_api_key::Entity::find()
+        .order_by_desc(admin_api_key::Column::CreatedAt)
+        .all(ctx.db.as_ref())
+        .await
+        .map_err(PersistDbError::from)
+}
+
+pub async fn revoke_admin_api_key(
+    ctx: &PersistCtx,
+    id: Uuid,
+) -> Result<Option<admin_api_key::Model>, PersistDbError> {
+    let Some(model) = admin_api_key::Entity::find_by_id(id)
+        .one(ctx.db.as_ref())
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    if model.revoked_at.is_some() {
+        return Ok(Some(model));
+    }
+
+    let mut active = model.into_active_model();
+    active.revoked_at = Set(Some(Utc::now().naive_utc()));
+    let updated = active.update(ctx.db.as_ref()).await?;
+
+    Ok(Some(updated))
+}
+
+pub async fn get_admin_api_key(
+    ctx: &PersistCtx,
+    id: Uuid,
+) -> Result<Option<admin_api_key::Model>, PersistDbError> {
+    let model = admin_api_key::Entity::find_by_id(id)
+        .one(ctx.db.as_ref())
+        .await?;
+    Ok(model)
 }
 
 //
@@ -1084,73 +1157,43 @@ pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
     }
 }
 
-//
-// ────────────────────── ADMIN API KEYS ──────────────────────
-//
-
-pub async fn insert_admin_api_key(
+pub async fn get_last_processed_blockchain_event(
     ctx: &PersistCtx,
-    id: Uuid,
-    name: &str,
-    key_hash: &str,
-    scopes: &[String],
-) -> Result<admin_api_key::Model, PersistDbError> {
-    let scopes_json = serde_json::to_value(scopes).map_err(|e| {
-        PersistDbError::DatabaseFailure(DbErr::Custom(format!("failed to serialize scopes: {e}")))
-    })?;
-    let now = Utc::now().naive_utc();
-    let model = admin_api_key::ActiveModel {
-        id: Set(id),
-        name: Set(name.to_owned()),
-        key_hash: Set(key_hash.to_owned()),
-        scopes: Set(scopes_json),
-        created_at: Set(now),
-        revoked_at: Set(None),
-    };
-
-    model
-        .insert(ctx.db.as_ref())
-        .await
-        .map_err(PersistDbError::from)
-}
-
-pub async fn list_admin_api_keys(
-    ctx: &PersistCtx,
-) -> Result<Vec<admin_api_key::Model>, PersistDbError> {
-    let rows = admin_api_key::Entity::find()
-        .order_by_desc(admin_api_key::Column::CreatedAt)
-        .all(ctx.db.as_ref())
-        .await?;
-    Ok(rows)
-}
-
-pub async fn get_admin_api_key(
-    ctx: &PersistCtx,
-    id: Uuid,
-) -> Result<Option<admin_api_key::Model>, PersistDbError> {
-    let row = admin_api_key::Entity::find_by_id(id)
+) -> Result<Option<blockchain_event::Model>, PersistDbError> {
+    blockchain_event::Entity::find()
+        .order_by_desc(blockchain_event::Column::BlockNumber)
+        .order_by_desc(blockchain_event::Column::LogIndex)
         .one(ctx.db.as_ref())
-        .await?;
-    Ok(row)
+        .await
+        .map_err(Into::into)
 }
 
-pub async fn revoke_admin_api_key(
+pub async fn store_blockchain_event(
     ctx: &PersistCtx,
-    id: Uuid,
-) -> Result<Option<admin_api_key::Model>, PersistDbError> {
-    let Some(model) = get_admin_api_key(ctx, id).await? else {
-        return Ok(None);
+    signature: &str,
+    block_number: u64,
+    log_index: u64,
+) -> Result<bool, PersistDbError> {
+    let now = Utc::now().naive_utc();
+
+    let event = blockchain_event::ActiveModel {
+        block_number: Set(block_number as i64),
+        log_index: Set(log_index as i64),
+        signature: Set(signature.to_string()),
+        created_at: Set(now),
     };
-    if model.revoked_at.is_some() {
-        return Ok(Some(model));
-    }
 
-    let mut active = model.into_active_model();
-    active.revoked_at = Set(Some(Utc::now().naive_utc()));
+    let affected = blockchain_event::Entity::insert(event)
+        .on_conflict(
+            OnConflict::columns([
+                blockchain_event::Column::BlockNumber,
+                blockchain_event::Column::LogIndex,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .exec_without_returning(ctx.db.as_ref())
+        .await?;
 
-    let updated = active
-        .update(ctx.db.as_ref())
-        .await
-        .map_err(PersistDbError::from)?;
-    Ok(Some(updated))
+    Ok(affected == 1)
 }

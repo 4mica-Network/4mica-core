@@ -98,6 +98,7 @@ pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
             "UserAssetBalance",
             "User",
             "AdminApiKey",
+            "BlockchainEvent",
         ],
     )
     .await?;
