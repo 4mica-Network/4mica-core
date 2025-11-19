@@ -40,6 +40,7 @@ impl MigrationTrait for Migration {
 
 #[derive(DeriveIden)]
 enum User {
+    #[sea_orm(iden = "User")]
     Table,
     IsSuspended,
 }

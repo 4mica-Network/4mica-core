@@ -11,7 +11,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let user_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
-            "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
         )
         .build()?;
 
@@ -21,7 +21,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
-            "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356".to_string(),
+            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".to_string(),
         )
         .build()?;
 
@@ -106,7 +106,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
     let result = recipient_client.recipient.remunerate(bls_cert).await;
-
+    dbg!(&result);
     assert!(matches!(result, Err(RemunerateError::TabNotYetOverdue)));
     Ok(())
 }
