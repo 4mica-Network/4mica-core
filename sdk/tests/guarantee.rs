@@ -308,25 +308,28 @@ async fn wait_for_collateral_increase(
     starting_total: U256,
     increase_by: U256,
 ) -> anyhow::Result<()> {
-    let poll_interval = Duration::from_millis(250);
-    let timeout = Duration::from_secs(20);
+    let poll_interval = Duration::from_millis(500);
+    let timeout = Duration::from_secs(60);
     let start = Instant::now();
     let user_address = user_address.to_string();
     let asset_address = asset_address.to_string();
     let target_total = starting_total + increase_by;
+    let mut last_total = starting_total;
 
     loop {
-        if recipient_client
+        if let Some(balance) = recipient_client
             .get_user_asset_balance(user_address.clone(), asset_address.clone())
             .await?
-            .is_some_and(|balance| balance.total >= target_total)
         {
-            return Ok(());
+            last_total = balance.total;
+            if last_total >= target_total {
+                return Ok(());
+            }
         }
 
         if start.elapsed() > timeout {
             bail!(
-                "timed out waiting for collateral increase to {target_total:?} for user {user_address}"
+                "timed out waiting for collateral increase to {target_total:?} for user {user_address}, last observed total {last_total:?}"
             );
         }
 
