@@ -2,16 +2,20 @@ use rust_sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
     error::RemunerateError,
 };
-use std::time::Duration;
+
+mod common;
+
+use crate::common::{ETH_ASSET_ADDRESS, wait_for_collateral_increase};
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     // These wallet keys are picked from the default accounts in anvil test node
 
     let user_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
-            "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
         )
         .build()?;
 
@@ -21,7 +25,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
-            "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356".to_string(),
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
         )
         .build()?;
 
@@ -29,11 +33,23 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let recipient_client = Client::new(recipient_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
+    let core_total_before = recipient_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
-    // Wait for transaction to settle
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &recipient_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
@@ -55,7 +71,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
-        asset_address: "0x0000000000000000000000000000000000000000".into(),
+        asset_address: ETH_ASSET_ADDRESS.to_string(),
     };
     let payment_sig = user_client
         .user
@@ -106,7 +122,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
     let result = recipient_client.recipient.remunerate(bls_cert).await;
-
+    dbg!(&result);
     assert!(matches!(result, Err(RemunerateError::TabNotYetOverdue)));
     Ok(())
 }

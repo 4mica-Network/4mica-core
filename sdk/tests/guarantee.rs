@@ -7,7 +7,7 @@ use std::time::Duration;
 
 mod common;
 
-use crate::common::ETH_ASSET_ADDRESS;
+use crate::common::{ETH_ASSET_ADDRESS, wait_for_collateral_increase};
 
 #[tokio::test]
 #[serial]
@@ -35,6 +35,13 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     let recipient_client = Client::new(recipient_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
+    let core_total_before = recipient_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
+
     let user_info = user_client.user.get_user().await?;
     let eth_asset_before =
         common::extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
@@ -50,8 +57,14 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         eth_asset_before.collateral + deposit_amount
     );
 
-    // Wait for transaction to settle
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &recipient_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
@@ -201,8 +214,24 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     let recipient_client = Client::new(recipient_config).await?;
 
     // Ensure sufficient collateral for two guarantees.
+    let core_total_before = recipient_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
+
     let deposit_amount = U256::from(3_000_000_000_000_000_000u128); // 3 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
+
+    wait_for_collateral_increase(
+        &recipient_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Recipient creates a payment tab.
     let tab_id = recipient_client

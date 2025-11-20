@@ -19,7 +19,7 @@ use common::fixtures::{read_collateral, read_locked_collateral, set_locked_colla
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    Ok(AppConfig::fetch())
+    AppConfig::fetch()
 }
 
 #[test(tokio::test)]
@@ -33,6 +33,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -114,6 +115,7 @@ async fn remuneration_reduces_locked_collateral() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -196,6 +198,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -259,6 +262,7 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -346,6 +350,7 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -420,6 +425,7 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };

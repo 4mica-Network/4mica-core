@@ -95,3 +95,39 @@ pub struct AssetBalanceInfo {
     pub version: i32,
     pub updated_at: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateUserSuspensionRequest {
+    pub suspended: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSuspensionStatus {
+    pub user_address: String,
+    pub suspended: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateAdminApiKeyRequest {
+    pub name: String,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminApiKeyInfo {
+    pub id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub created_at: i64,
+    pub revoked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminApiKeySecret {
+    pub id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub created_at: i64,
+    pub api_key: String,
+}

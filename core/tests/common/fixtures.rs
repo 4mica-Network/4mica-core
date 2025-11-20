@@ -7,16 +7,20 @@ use core_service::{
     persist::{PersistCtx, repo},
 };
 use entities::{user, user_asset_balance};
+use hex;
 use rand::random;
+use rpc::ADMIN_API_KEY_PREFIX;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, Statement, sea_query::OnConflict,
 };
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
+use uuid::Uuid;
 
 pub fn init_config() -> Result<AppConfig> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
-    Ok(AppConfig::fetch())
+    AppConfig::fetch()
 }
 
 pub async fn init_test_env() -> Result<(AppConfig, PersistCtx)> {
@@ -34,6 +38,7 @@ pub async fn ensure_user(ctx: &PersistCtx, addr: &str) -> Result<()> {
     let am = user::ActiveModel {
         address: Set(addr.to_string()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -92,11 +97,31 @@ pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
             "CollateralEvent",
             "UserAssetBalance",
             "User",
+            "AdminApiKey",
+            "BlockchainEvent",
         ],
     )
     .await?;
 
     Ok(())
+}
+
+pub async fn create_admin_api_key(ctx: &PersistCtx, name: &str, scopes: &[&str]) -> Result<String> {
+    let secret = {
+        let bytes: [u8; 32] = random();
+        hex::encode(bytes)
+    };
+    let id = Uuid::new_v4();
+    let mut hasher = Sha256::new();
+    hasher.update(secret.as_bytes());
+    let hash = hex::encode(hasher.finalize());
+    let api_key = format!("{}{}.{}", ADMIN_API_KEY_PREFIX, id.simple(), secret);
+    let scope_vec = scopes
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    repo::insert_admin_api_key(ctx, id, name, &hash, &scope_vec).await?;
+    Ok(api_key)
 }
 
 pub async fn read_user_asset_balance(

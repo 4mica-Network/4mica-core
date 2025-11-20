@@ -7,7 +7,7 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::user_asset_balance;
 use entities::{
-    collateral_event, guarantee,
+    admin_api_key, blockchain_event, collateral_event, guarantee,
     sea_orm_active_enums::{CollateralEventType, WithdrawalStatus},
     tabs, user, user_transaction, withdrawal,
 };
@@ -21,6 +21,7 @@ use sea_orm::{
     TransactionTrait,
 };
 use std::str::FromStr;
+use uuid::Uuid;
 
 //
 // ────────────────────── USER FUNCTIONS ──────────────────────
@@ -33,6 +34,33 @@ pub async fn get_user(ctx: &PersistCtx, user_address: &str) -> Result<user::Mode
         .ok_or_else(|| PersistDbError::UserNotFound(user_address.to_owned()))
 }
 
+pub async fn ensure_user_is_active(
+    ctx: &PersistCtx,
+    user_address: &str,
+) -> Result<(), PersistDbError> {
+    let user = get_user(ctx, user_address).await?;
+    if user.is_suspended {
+        Err(PersistDbError::UserSuspended(user_address.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+pub async fn update_user_suspension(
+    ctx: &PersistCtx,
+    user_address: &str,
+    suspended: bool,
+) -> Result<user::Model, PersistDbError> {
+    let mut model = get_user(ctx, user_address).await?.into_active_model();
+    model.is_suspended = Set(suspended);
+    model.updated_at = Set(Utc::now().naive_utc());
+
+    model
+        .update(ctx.db.as_ref())
+        .await
+        .map_err(PersistDbError::from)
+}
+
 pub async fn ensure_user_exists_on<C: ConnectionTrait>(
     conn: &C,
     addr: &str,
@@ -41,6 +69,7 @@ pub async fn ensure_user_exists_on<C: ConnectionTrait>(
     let insert_user = user::ActiveModel {
         address: Set(addr.to_owned()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -127,6 +156,79 @@ fn validate_address(addr: &str) -> Result<(), PersistDbError> {
         return Err(PersistDbError::InvariantViolation("invalid address".into()));
     }
     Ok(())
+}
+
+//
+// ────────────────────── ADMIN API KEYS ──────────────────────
+//
+
+pub async fn insert_admin_api_key(
+    ctx: &PersistCtx,
+    id: Uuid,
+    name: &str,
+    key_hash: &str,
+    scopes: &[String],
+) -> Result<admin_api_key::Model, PersistDbError> {
+    let now = Utc::now().naive_utc();
+    let scopes_value = serde_json::to_value(scopes).map_err(|e| {
+        PersistDbError::InvariantViolation(format!("invalid admin api key scopes: {e}"))
+    })?;
+
+    let model = admin_api_key::ActiveModel {
+        id: Set(id),
+        name: Set(name.to_owned()),
+        key_hash: Set(key_hash.to_owned()),
+        scopes: Set(scopes_value),
+        created_at: Set(now),
+        revoked_at: Set(None),
+    };
+
+    admin_api_key::Entity::insert(model)
+        .exec_with_returning(ctx.db.as_ref())
+        .await
+        .map_err(PersistDbError::from)
+}
+
+pub async fn list_admin_api_keys(
+    ctx: &PersistCtx,
+) -> Result<Vec<admin_api_key::Model>, PersistDbError> {
+    admin_api_key::Entity::find()
+        .order_by_desc(admin_api_key::Column::CreatedAt)
+        .all(ctx.db.as_ref())
+        .await
+        .map_err(PersistDbError::from)
+}
+
+pub async fn revoke_admin_api_key(
+    ctx: &PersistCtx,
+    id: Uuid,
+) -> Result<Option<admin_api_key::Model>, PersistDbError> {
+    let Some(model) = admin_api_key::Entity::find_by_id(id)
+        .one(ctx.db.as_ref())
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    if model.revoked_at.is_some() {
+        return Ok(Some(model));
+    }
+
+    let mut active = model.into_active_model();
+    active.revoked_at = Set(Some(Utc::now().naive_utc()));
+    let updated = active.update(ctx.db.as_ref()).await?;
+
+    Ok(Some(updated))
+}
+
+pub async fn get_admin_api_key(
+    ctx: &PersistCtx,
+    id: Uuid,
+) -> Result<Option<admin_api_key::Model>, PersistDbError> {
+    let model = admin_api_key::Entity::find_by_id(id)
+        .one(ctx.db.as_ref())
+        .await?;
+    Ok(model)
 }
 
 //
@@ -906,7 +1008,7 @@ pub async fn create_pending_tab(
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
 ) -> Result<(), PersistDbError> {
-    get_user(ctx, user_address).await?;
+    ensure_user_is_active(ctx, user_address).await?;
 
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();
@@ -1053,4 +1155,45 @@ pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
             n, user_address
         ))),
     }
+}
+
+pub async fn get_last_processed_blockchain_event(
+    ctx: &PersistCtx,
+) -> Result<Option<blockchain_event::Model>, PersistDbError> {
+    blockchain_event::Entity::find()
+        .order_by_desc(blockchain_event::Column::BlockNumber)
+        .order_by_desc(blockchain_event::Column::LogIndex)
+        .one(ctx.db.as_ref())
+        .await
+        .map_err(Into::into)
+}
+
+pub async fn store_blockchain_event(
+    ctx: &PersistCtx,
+    signature: &str,
+    block_number: u64,
+    log_index: u64,
+) -> Result<bool, PersistDbError> {
+    let now = Utc::now().naive_utc();
+
+    let event = blockchain_event::ActiveModel {
+        block_number: Set(block_number as i64),
+        log_index: Set(log_index as i64),
+        signature: Set(signature.to_string()),
+        created_at: Set(now),
+    };
+
+    let affected = blockchain_event::Entity::insert(event)
+        .on_conflict(
+            OnConflict::columns([
+                blockchain_event::Column::BlockNumber,
+                blockchain_event::Column::LogIndex,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .exec_without_returning(ctx.db.as_ref())
+        .await?;
+
+    Ok(affected == 1)
 }
