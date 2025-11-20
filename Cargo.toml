@@ -14,11 +14,11 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-rpc = { version = "0.3.0", path = "crates/rpc", package = "rpc-4mica" }
-crypto = { version = "0.3.0", path = "crates/crypto", package = "crypto-4mica" }
-blockchain = { version = "0.3.0", path = "crates/blockchain" }
-migration = { version = "0.3.0", path = "crates/migration" }
-entities = { version = "0.3.0", path = "crates/entities" }
+rpc = { version = "0.3.1", path = "crates/rpc", package = "rpc-4mica" }
+crypto = { version = "0.3.1", path = "crates/crypto", package = "crypto-4mica" }
+blockchain = { version = "0.3.1", path = "crates/blockchain" }
+migration = { version = "0.3.1", path = "crates/migration" }
+entities = { version = "0.3.1", path = "crates/entities" }
 chrono = "0.4.42"
 anyhow = "1.0.95"
 async-trait = "0.1.86"
@@ -36,10 +36,10 @@ tokio-cron-scheduler = "0.15.1"
 bls-signatures = "0.15.0"
 hex = "0.4.3"
 uuid = { version = "1.18", features = ["v4"] }
-hyper = "1.8.0"
+hyper = "1.8.1"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
-axum = { version = "0.8.6", features = ["macros", "json"] }
+axum = { version = "0.8.7", features = ["macros", "json"] }
 http = "1.1.0"
 reqwest = { version = "0.12.8", default-features = false, features = [
     "json",
@@ -49,10 +49,10 @@ sea-orm = { version = "1.1.19", features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",
 ] }
-alloy = "1.1.0"
+alloy = "1.1.1"
 alloy-primitives = { version = "1.4.0" }
 alloy-sol-types = "1.4.0"
-alloy-provider = { version = "1.1.0" }
+alloy-provider = { version = "1.1.1" }
 serial_test = "3.2.0"
 sha2 = "0.10.9"
 blst = "0.3.16"
