@@ -6,7 +6,7 @@ use std::time::Duration;
 
 mod common;
 
-use crate::common::ETH_ASSET_ADDRESS;
+use crate::common::{ETH_ASSET_ADDRESS, wait_for_collateral_increase};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -20,6 +20,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
         )
         .build()?;
 
+    let user_address = user_config.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     // Step 1: User deposits collateral (1 ETH)
@@ -27,10 +28,23 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     let eth_asset_before = common::extract_asset_info(&user_info_initial, ETH_ASSET_ADDRESS)
         .expect("ETH asset not found");
 
+    let core_total_before = user_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &user_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Step 2: User requests withdrawal (0.5 ETH)
     let withdrawal_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
@@ -89,13 +103,27 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
         )
         .build()?;
 
+    let user_address = user_config.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
+    let core_total_before = user_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &user_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Step 2: User requests withdrawal (1 ETH)
     let withdrawal_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
@@ -130,13 +158,27 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
         )
         .build()?;
 
+    let user_address = user_config.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     // Step 1: User deposits collateral (0.5 ETH)
+    let core_total_before = user_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &user_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Step 2: Try to request withdrawal for more than deposited
     let user_info = user_client.user.get_user().await?;

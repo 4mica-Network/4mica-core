@@ -11,7 +11,7 @@ use log::info;
 use tokio::net::TcpListener;
 use tower_http::cors::{Any, CorsLayer};
 
-fn load_config() -> AppConfig {
+fn load_config() -> anyhow::Result<AppConfig> {
     dotenv::dotenv()
         .map_err(|err| {
             eprintln!(".env file error: {err}");
@@ -23,7 +23,7 @@ fn load_config() -> AppConfig {
 }
 
 pub async fn bootstrap() -> anyhow::Result<()> {
-    let app_config = load_config();
+    let app_config = load_config()?;
 
     let ServerConfig {
         host,

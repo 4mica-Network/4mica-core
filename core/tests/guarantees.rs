@@ -17,7 +17,7 @@ use common::fixtures::read_locked_collateral;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    Ok(AppConfig::fetch())
+    AppConfig::fetch()
 }
 
 // helper to build a random valid 0x… address
@@ -82,6 +82,7 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -136,6 +137,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     let from_user = entities::user::ActiveModel {
         address: Set(from_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -221,6 +223,7 @@ async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> 
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -276,6 +279,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -324,6 +328,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     let u_am = entities::user::ActiveModel {
         address: Set(user_addr.clone()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };

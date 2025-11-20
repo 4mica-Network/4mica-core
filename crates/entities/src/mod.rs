@@ -2,6 +2,7 @@
 
 pub mod prelude;
 
+pub mod admin_api_key;
 pub mod blockchain_event;
 pub mod collateral_event;
 pub mod guarantee;

@@ -8,6 +8,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
     pub address: String,
     pub version: i32,
+    pub is_suspended: bool,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }

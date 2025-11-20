@@ -96,6 +96,9 @@ pub enum PersistDbError {
     #[error("User not found: {0}")]
     UserNotFound(String),
 
+    #[error("User suspended: {0}")]
+    UserSuspended(String),
+
     #[error("Tab not found: {0}")]
     TabNotFound(String),
 
@@ -154,8 +157,14 @@ pub enum ServiceError {
     #[error("user not registered")]
     UserNotRegistered,
 
+    #[error("user suspended")]
+    UserSuspended,
+
     #[error("tab already closed")]
     TabClosed,
+
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
 
     #[error("promise timestamp is in the future")]
     FutureTimestamp,
@@ -179,6 +188,7 @@ impl From<PersistDbError> for ServiceError {
     fn from(e: PersistDbError) -> Self {
         match e {
             PersistDbError::UserNotFound(_) => ServiceError::UserNotRegistered,
+            PersistDbError::UserSuspended(_) => ServiceError::UserSuspended,
             PersistDbError::TabNotFound(tab) => {
                 ServiceError::NotFound(format!("Tab {tab} not found"))
             }
