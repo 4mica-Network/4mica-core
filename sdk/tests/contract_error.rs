@@ -2,7 +2,10 @@ use rust_sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
     error::RemunerateError,
 };
-use std::time::Duration;
+
+mod common;
+
+use crate::common::{ETH_ASSET_ADDRESS, wait_for_collateral_increase};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -30,11 +33,23 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let recipient_client = Client::new(recipient_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
+    let core_total_before = recipient_client
+        .recipient
+        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .await?
+        .map(|info| info.total)
+        .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
 
-    // Wait for transaction to settle
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_collateral_increase(
+        &recipient_client.recipient,
+        &user_address,
+        ETH_ASSET_ADDRESS,
+        core_total_before,
+        deposit_amount,
+    )
+    .await?;
 
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
@@ -56,7 +71,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
-        asset_address: "0x0000000000000000000000000000000000000000".into(),
+        asset_address: ETH_ASSET_ADDRESS.to_string(),
     };
     let payment_sig = user_client
         .user
