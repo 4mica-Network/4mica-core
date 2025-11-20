@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crypto::hex::HexBytes;
 use envconfig::Envconfig;
 
@@ -50,6 +51,9 @@ pub struct Eip712Config {
 pub struct Secrets {
     #[envconfig(from = "BLS_PRIVATE_KEY")]
     pub bls_private_key: HexBytes,
+
+    #[envconfig(from = "CORE_ADMIN_SEED_KEY")]
+    pub core_admin_seed_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,18 +65,19 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn fetch() -> Self {
-        let server_config = ServerConfig::init_from_env().expect("Failed to load server config");
+    pub fn fetch() -> anyhow::Result<Self> {
+        let server_config =
+            ServerConfig::init_from_env().context("Failed to load server config")?;
         let ethereum_config =
-            EthereumConfig::init_from_env().expect("Failed to load ethereum config");
-        let secrets = Secrets::init_from_env().expect("Failed to load secrets");
-        let eip712 = Eip712Config::init_from_env().expect("Failed to load EIP712 config");
+            EthereumConfig::init_from_env().context("Failed to load ethereum config")?;
+        let secrets = Secrets::init_from_env().context("Failed to load secrets")?;
+        let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
 
-        Self {
+        Ok(Self {
             server_config,
             ethereum_config,
             secrets,
             eip712,
-        }
+        })
     }
 }

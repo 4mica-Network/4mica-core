@@ -11,11 +11,12 @@ use alloy::{
 };
 use anyhow::anyhow;
 use entities::sea_orm_active_enums::SettlementStatus;
-use log::{error, info};
+use log::{error, info, warn};
 use parking_lot::Mutex;
 use rpc::{
     AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
-    CreatePaymentTabResult, GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserTransactionInfo,
+    CreatePaymentTabResult, GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserSuspensionStatus,
+    UserTransactionInfo,
 };
 use std::sync::Arc;
 use tokio::{
@@ -23,12 +24,15 @@ use tokio::{
     time::{Duration, sleep},
 };
 
+mod api_keys;
 pub mod event_handler;
 mod guarantee;
 pub mod payment;
+pub use api_keys::AdminApiKeyScope;
 
 pub struct Inner {
     config: AppConfig,
+    bls_private_key: [u8; 32],
     public_params: CorePublicParameters,
     guarantee_domain: [u8; 32],
     persist_ctx: PersistCtx,
@@ -52,10 +56,6 @@ pub struct CoreService {
 
 impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
-        if config.secrets.bls_private_key.bytes().len() != 32 {
-            anyhow::bail!("BLS private key must be 32 bytes");
-        }
-
         let persist_ctx = PersistCtx::new().await?;
         let eth_cfg = config.ethereum_config.clone();
         let listener_cfg = eth_cfg.clone();
@@ -88,6 +88,13 @@ impl CoreService {
             read_provider.clone(),
             on_chain_domain,
         )?;
+        match core_service.bootstrap_admin_api_key().await {
+            Ok(Some(api_key)) => info!(
+                "Bootstrap admin API key initialized with SuspendUsers+ManageKeys scopes: {api_key}"
+            ),
+            Ok(None) => {}
+            Err(err) => warn!("Failed to initialize bootstrap admin API key: {err:?}"),
+        }
 
         let core_service_clone = core_service.clone();
         tokio::spawn(async move {
@@ -132,12 +139,14 @@ impl CoreService {
         read_provider: DynProvider,
         guarantee_domain: [u8; 32],
     ) -> anyhow::Result<Self> {
-        let bls_private_key = config.secrets.bls_private_key.bytes();
-        if bls_private_key.len() != 32 {
-            anyhow::bail!("BLS private key must be 32 bytes");
-        }
+        let bls_private_key: [u8; 32] = config
+            .secrets
+            .bls_private_key
+            .bytes()
+            .try_into()
+            .map_err(|_| anyhow!("BLS private key must be 32 bytes"))?;
 
-        let public_key = crypto::bls::pub_key_from_scalar(bls_private_key.try_into()?)?;
+        let public_key = crypto::bls::pub_key_from_scalar(&bls_private_key)?;
         info!(
             "Operator started with BLS Public Key: {}",
             crypto::hex::encode_hex(&public_key)
@@ -149,6 +158,7 @@ impl CoreService {
 
         let inner = Inner {
             config,
+            bls_private_key,
             public_params: CorePublicParameters {
                 public_key,
                 contract_address: eth_config.contract_address.clone(),
@@ -170,13 +180,7 @@ impl CoreService {
     }
 
     fn bls_private_key(&self) -> [u8; 32] {
-        self.inner
-            .config
-            .secrets
-            .bls_private_key
-            .bytes()
-            .try_into()
-            .expect("BLS private key must be 32 bytes")
+        self.inner.bls_private_key
     }
 
     pub fn persist_ctx(&self) -> &PersistCtx {
@@ -324,10 +328,9 @@ impl CoreService {
     ) -> ServiceResult<Vec<UserTransactionInfo>> {
         let rows =
             repo::get_recipient_transactions(&self.inner.persist_ctx, &recipient_address).await?;
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| row.into_user_tx_info())
-            .collect())
+            .collect::<ServiceResult<Vec<_>>>()
     }
 
     pub async fn get_collateral_events_for_tab(
@@ -349,5 +352,15 @@ impl CoreService {
             repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
                 .await?;
         maybe.map(mapper::asset_balance_model_to_info).transpose()
+    }
+
+    pub async fn set_user_suspension(
+        &self,
+        user_address: String,
+        suspended: bool,
+    ) -> ServiceResult<UserSuspensionStatus> {
+        let updated =
+            repo::update_user_suspension(&self.inner.persist_ctx, &user_address, suspended).await?;
+        Ok(mapper::user_model_to_suspension_status(updated))
     }
 }

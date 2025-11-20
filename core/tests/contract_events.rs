@@ -33,6 +33,7 @@ async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()>
     let am = user::ActiveModel {
         address: Set(addr.to_string()),
         version: Set(0),
+        is_suspended: Set(false),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -440,7 +441,7 @@ async fn listener_catches_up_on_missed_events() -> anyhow::Result<()> {
     let user_addr = test_env.signer_addr.to_string();
     let persist_ctx = test_env.core_service.persist_ctx();
 
-    ensure_user(&persist_ctx, &user_addr).await?;
+    ensure_user(persist_ctx, &user_addr).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -458,7 +459,7 @@ async fn listener_catches_up_on_missed_events() -> anyhow::Result<()> {
     // Wait for first deposit to be processed
     let mut tries = 0;
     loop {
-        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
         if current == deposit_amount_1 {
             break;
         }
@@ -515,7 +516,7 @@ async fn listener_catches_up_on_missed_events() -> anyhow::Result<()> {
     let expected_total = deposit_amount_1 + deposit_amount_2 + deposit_amount_3 + deposit_amount_4;
     let mut tries = 0;
     loop {
-        let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
         if current == expected_total {
             break;
         }
