@@ -1,10 +1,16 @@
 use std::{str::FromStr, sync::Arc};
+use uuid::Uuid;
 
-use crate::{error::ServiceError, persist::mapper, service::CoreService};
+use crate::{
+    error::ServiceError,
+    persist::mapper,
+    service::{AdminApiKeyScope, CoreService},
+};
 use alloy_primitives::U256;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -12,9 +18,10 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
 use http::StatusCode;
 use rpc::{
-    AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
+    ADMIN_API_KEY_HEADER, AdminApiKeyInfo, AdminApiKeySecret, AssetBalanceInfo,
+    CollateralEventInfo, CorePublicParameters, CreateAdminApiKeyRequest, CreatePaymentTabRequest,
     CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo,
-    TabInfo, UserTransactionInfo,
+    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
 };
 
 type SharedService = Arc<CoreService>;
@@ -59,6 +66,18 @@ pub fn router(service: CoreService) -> Router {
             "/core/users/{user_address}/assets/{asset_address}",
             get(get_user_asset_balance),
         )
+        .route(
+            "/core/users/{user_address}/suspension",
+            post(update_user_suspension),
+        )
+        .route(
+            "/core/admin/api-keys",
+            get(list_admin_api_keys).post(create_admin_api_key),
+        )
+        .route(
+            "/core/admin/api-keys/{id}/revoke",
+            post(revoke_admin_api_key),
+        )
         .with_state(shared)
 }
 
@@ -95,7 +114,9 @@ impl From<ServiceError> for ApiError {
             ServiceError::UserNotRegistered => {
                 ApiError::new(StatusCode::BAD_REQUEST, "user not registered")
             }
+            ServiceError::UserSuspended => ApiError::new(StatusCode::FORBIDDEN, "user suspended"),
             ServiceError::TabClosed => ApiError::new(StatusCode::CONFLICT, "tab already closed"),
+            ServiceError::Unauthorized(msg) => ApiError::new(StatusCode::UNAUTHORIZED, msg),
             ServiceError::FutureTimestamp => {
                 ApiError::new(StatusCode::BAD_REQUEST, "timestamp is in the future")
             }
@@ -284,5 +305,75 @@ async fn get_user_asset_balance(
     Ok(Json(balance))
 }
 
-#[cfg(test)]
-mod tests {}
+async fn update_user_suspension(
+    State(service): State<SharedService>,
+    Path(user): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<UpdateUserSuspensionRequest>,
+) -> Result<Json<UserSuspensionStatus>, ApiError> {
+    require_admin_api_key(&service, &headers, AdminApiKeyScope::SuspendUsers).await?;
+    let status = service
+        .set_user_suspension(user, req.suspended)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(status))
+}
+
+async fn create_admin_api_key(
+    State(service): State<SharedService>,
+    headers: HeaderMap,
+    Json(req): Json<CreateAdminApiKeyRequest>,
+) -> Result<Json<AdminApiKeySecret>, ApiError> {
+    require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
+    let secret = service
+        .create_admin_api_key(req)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(secret))
+}
+
+async fn list_admin_api_keys(
+    State(service): State<SharedService>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AdminApiKeyInfo>>, ApiError> {
+    require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
+    let keys = service
+        .list_admin_api_keys()
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(keys))
+}
+
+async fn revoke_admin_api_key(
+    State(service): State<SharedService>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<AdminApiKeyInfo>, ApiError> {
+    require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid api key id"))?;
+    let info = service
+        .revoke_admin_api_key(uuid)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(info))
+}
+
+async fn require_admin_api_key(
+    service: &CoreService,
+    headers: &HeaderMap,
+    scope: AdminApiKeyScope,
+) -> Result<(), ApiError> {
+    let value = headers
+        .get(ADMIN_API_KEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "missing api key"))?;
+
+    service
+        .authenticate_admin_api_key(value, scope)
+        .await
+        .map_err(|err| match err {
+            ServiceError::Unauthorized(msg) => ApiError::new(StatusCode::UNAUTHORIZED, msg),
+            other => ApiError::from(other),
+        })
+}

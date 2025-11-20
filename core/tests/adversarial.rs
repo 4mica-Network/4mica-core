@@ -6,7 +6,7 @@ use test_log::test;
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
-    Ok(AppConfig::fetch())
+    AppConfig::fetch()
 }
 
 #[test(tokio::test)]

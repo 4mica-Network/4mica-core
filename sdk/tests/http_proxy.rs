@@ -17,6 +17,7 @@ async fn spawn_router(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn rpc_proxy_get_public_params_round_trip() {
     let params = CorePublicParameters {
         public_key: vec![1, 2, 3],
@@ -51,6 +52,7 @@ async fn rpc_proxy_get_public_params_round_trip() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn rpc_proxy_surfaces_api_errors() {
     let router = Router::new().route(
         "/core/recipients/{recipient}/tabs",
@@ -86,6 +88,7 @@ async fn rpc_proxy_surfaces_api_errors() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn rpc_proxy_returns_decode_error_on_invalid_json() {
     let router = Router::new().route(
         "/core/public-params",

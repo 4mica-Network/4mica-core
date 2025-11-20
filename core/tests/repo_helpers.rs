@@ -3,11 +3,13 @@ use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::error::PersistDbError;
 use core_service::persist::{PersistCtx, repo};
+use entities::blockchain_event;
 use entities::collateral_event;
 use entities::sea_orm_active_enums::CollateralEventType;
 use entities::sea_orm_active_enums::WithdrawalStatus;
 use entities::user_transaction;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
+use serial_test::serial;
 use test_log::test;
 
 mod common;
@@ -34,6 +36,7 @@ pub async fn get_unfinalized_transactions_for_user(
 
 /// Ensure get_user_transactions only returns transactions for the given user.
 #[test(tokio::test)]
+#[serial]
 async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -73,6 +76,7 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
 
 /// Ensure get_unfinalized_transactions_for_user excludes the passed tx_id.
 #[test(tokio::test)]
+#[serial]
 async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -123,6 +127,7 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
 
 /// Ensure get_pending_withdrawals_for_user finds only pending ones.
 #[test(tokio::test)]
+#[serial]
 async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -154,6 +159,7 @@ async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()
 
 /// Ensure get_tab_by_id returns None for unknown id (simple smoke test)
 #[test(tokio::test)]
+#[serial]
 async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let res = repo::get_tab_by_id(&ctx, U256::from(12345u64)).await?;
@@ -162,6 +168,7 @@ async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial]
 async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -211,6 +218,7 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
 }
 
 #[test(tokio::test)]
+#[serial]
 async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let nonexistent_user = random_address();
@@ -230,6 +238,66 @@ async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> 
         }
         other => panic!("Expected UserNotFound error, got: {:?}", other),
     }
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial]
+async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+
+    blockchain_event::Entity::delete_many()
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    let signature = "Transfer(address,address,uint256)";
+    let block_number = 12345u64;
+    let log_index = 0u64;
+
+    // First insert should return true
+    let first_insert =
+        repo::store_blockchain_event(&ctx, signature, block_number, log_index).await?;
+    assert!(first_insert, "First insert should return true");
+
+    // Second insert with same block_number and log_index should return false
+    let second_insert =
+        repo::store_blockchain_event(&ctx, signature, block_number, log_index).await?;
+    assert!(!second_insert, "Duplicate insert should return false");
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial]
+async fn get_last_processed_blockchain_event_returns_latest() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+
+    blockchain_event::Entity::delete_many()
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    let signature1 = "Transfer(address,address,uint256)";
+    let signature2 = "Approval(address,address,uint256)";
+
+    // Insert first event
+    let block_number1 = 10000u64;
+    let log_index1 = 5u64;
+    repo::store_blockchain_event(&ctx, signature1, block_number1, log_index1).await?;
+
+    // Insert second event with higher block_number (this should be the last one)
+    let block_number2 = 10001u64;
+    let log_index2 = 3u64;
+    repo::store_blockchain_event(&ctx, signature2, block_number2, log_index2).await?;
+
+    // Get the last processed event
+    let last_event = repo::get_last_processed_blockchain_event(&ctx).await?;
+
+    assert!(last_event.is_some(), "Should find a last event");
+    let event = last_event.unwrap();
+    assert_eq!(event.block_number, block_number2 as i64);
+    assert_eq!(event.log_index, log_index2 as i64);
+    assert_eq!(event.signature, signature2);
 
     Ok(())
 }

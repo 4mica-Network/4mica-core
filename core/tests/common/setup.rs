@@ -4,6 +4,7 @@ use alloy::providers::{DynProvider, Provider, ProviderBuilder, WalletProvider};
 use alloy_primitives::{Address, FixedBytes};
 use core_service::{
     config::{AppConfig, EthereumConfig},
+    persist::PersistCtx,
     scheduler::TaskScheduler,
     service::{CoreService, payment::ScanPaymentsTask},
 };
@@ -15,10 +16,12 @@ use crate::common::{
         Core4Mica::{self, Core4MicaInstance},
         MockERC20::{self, MockERC20Instance},
     },
-    fixtures::clear_all_tables,
+    fixtures::{self, clear_all_tables},
 };
+use rpc::{ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS};
 
 pub struct E2eEnvironment {
+    cfg: AppConfig,
     pub provider: DynProvider,
     pub access_manager: AccessManagerInstance<DynProvider>,
     pub contract: Core4MicaInstance<DynProvider>,
@@ -47,7 +50,7 @@ fn init_config() -> AppConfig {
     dotenv::dotenv().ok();
     // also try parent folder when running from core/tests
     dotenv::from_filename("../.env").ok();
-    AppConfig::fetch()
+    AppConfig::fetch().expect("Failed to load test config")
 }
 
 async fn deploy_contracts(
@@ -121,8 +124,17 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         cfg.ethereum_config.cron_job_settings
     );
 
-    let core_service = CoreService::new(cfg).await?;
-    clear_all_tables(core_service.persist_ctx()).await?;
+    // It's important to clear the tables before the core service starts,
+    //   otherwise the listener may see a populated blockchain_event table.
+    let persist_ctx = PersistCtx::new().await?;
+    clear_all_tables(&persist_ctx).await?;
+    fixtures::create_admin_api_key(
+        &persist_ctx,
+        "test-key",
+        &[ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS],
+    )
+    .await?;
+    let core_service = CoreService::new(cfg.clone()).await?;
 
     let mut scheduler = TaskScheduler::new().await?;
     scheduler
@@ -131,6 +143,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     scheduler.start().await?;
 
     Ok(E2eEnvironment {
+        cfg,
         provider,
         access_manager,
         contract,
@@ -140,4 +153,13 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         scheduler,
         signer_addr,
     })
+}
+
+pub async fn spawn_core_service_in_existing_environment(
+    env: &mut E2eEnvironment,
+) -> anyhow::Result<CoreService> {
+    let core_service = CoreService::new(env.cfg.clone()).await?;
+    env.core_service = core_service.clone();
+
+    Ok(core_service)
 }
