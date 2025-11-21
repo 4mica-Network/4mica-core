@@ -1054,6 +1054,25 @@ pub async fn open_tab(
     Ok(())
 }
 
+pub async fn find_active_tab_by_triplet(
+    ctx: &PersistCtx,
+    user_address: &str,
+    server_address: &str,
+    asset_address: &str,
+) -> Result<Option<tabs::Model>, PersistDbError> {
+    let tab = tabs::Entity::find()
+        .filter(entities::tabs::Column::UserAddress.eq(user_address))
+        .filter(entities::tabs::Column::ServerAddress.eq(server_address))
+        .filter(entities::tabs::Column::AssetAddress.eq(asset_address))
+        .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
+        .order_by_desc(entities::tabs::Column::UpdatedAt)
+        .one(ctx.db.as_ref())
+        .await
+        .map_err(PersistDbError::DatabaseFailure)?;
+
+    Ok(tab)
+}
+
 /// Get a single tab by id
 pub async fn get_tab_by_id(
     ctx: &PersistCtx,

@@ -1,3 +1,4 @@
+use rust_sdk_4mica::client::recipient::RecipientClient;
 use rust_sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
     error::VerifyGuaranteeError,
@@ -8,6 +9,20 @@ use std::time::Duration;
 mod common;
 
 use crate::common::{ETH_ASSET_ADDRESS, wait_for_collateral_increase};
+
+async fn resolve_start_timestamp(recipient: &RecipientClient, tab_id: U256) -> anyhow::Result<u64> {
+    if let Some(latest) = recipient.get_latest_guarantee(tab_id).await? {
+        return Ok(latest.timestamp);
+    }
+
+    if let Some(tab) = recipient.get_tab(tab_id).await? {
+        if tab.start_timestamp > 0 {
+            return Ok(tab.start_timestamp as u64);
+        }
+    }
+
+    Ok(common::get_now().as_secs())
+}
 
 #[tokio::test]
 #[serial]
@@ -78,14 +93,13 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .await?;
 
     // Step 3: User signs a payment (1 ETH)
+    let start_timestamp = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
     let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
         amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs(),
+        timestamp: start_timestamp,
         asset_address: ETH_ASSET_ADDRESS.to_string(),
     };
     let payment_sig = user_client
@@ -244,9 +258,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
         )
         .await?;
 
-    let base_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
+    let base_ts = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
 
     // Issue first guarantee.
     let mut claims = PaymentGuaranteeRequestClaims {
