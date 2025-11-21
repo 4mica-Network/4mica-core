@@ -174,16 +174,11 @@ where
         let base_url = response.url().clone();
         let payload: Value = response.json().await?;
 
-        if let Some(reqs) = payload.get("paymentRequirements") {
-            return serde_json::from_value(reqs.clone())
-                .map_err(|e| FacilitatorError::InvalidPaymentRequirements(e.to_string()));
+        if let Some(reqs) = payment_requirements_from_payload(&payload) {
+            return parse_payment_requirements_value(reqs);
         }
 
-        if let Some(endpoint) = payload
-            .get("tabEndpoint")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-        {
+        if let Some(endpoint) = tab_endpoint_from_payload(&payload) {
             return self
                 .request_tab(base_url, endpoint, &request.user_address)
                 .await;
@@ -209,12 +204,11 @@ where
             .await?
             .error_for_status()?;
         let payload: Value = response.json().await?;
-        let reqs = payload.get("paymentRequirements").ok_or_else(|| {
+        let reqs = payment_requirements_from_payload(&payload).ok_or_else(|| {
             FacilitatorError::TabResolutionFailed("missing paymentRequirements".into())
         })?;
 
-        serde_json::from_value(reqs.clone())
-            .map_err(|e| FacilitatorError::InvalidPaymentRequirements(e.to_string()))
+        parse_payment_requirements_value(reqs)
     }
 
     async fn align_with_supported(
@@ -349,6 +343,22 @@ fn now_ts() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default()
+}
+
+fn payment_requirements_from_payload(payload: &Value) -> Option<Value> {
+    payload.get("paymentRequirements").cloned()
+}
+
+fn tab_endpoint_from_payload(payload: &Value) -> Option<&str> {
+    payload
+        .get("tabEndpoint")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_payment_requirements_value(value: Value) -> Result<PaymentRequirements, FacilitatorError> {
+    serde_json::from_value(value)
+        .map_err(|e| FacilitatorError::InvalidPaymentRequirements(e.to_string()))
 }
 
 fn value_to_string(value: &Value, field: &str) -> Result<String, FacilitatorError> {

@@ -72,33 +72,21 @@ impl ConfigBuilder {
     }
 
     pub fn build(self) -> Result<Config, ConfigError> {
-        let Some(rpc_url) = self.rpc_url else {
-            return Err(ConfigError::Missing("rpc_url".to_string()));
-        };
-        let Some(wallet_private_key) = self.wallet_private_key else {
-            return Err(ConfigError::Missing("wallet_private_key".to_string()));
-        };
+        let rpc_url = Self::required(self.rpc_url, "rpc_url")?;
+        let wallet_private_key = Self::required(self.wallet_private_key, "wallet_private_key")?;
 
         let rpc_url =
             validate_url(&rpc_url).map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
         let wallet_private_key = validate_wallet_private_key(&wallet_private_key)
             .map_err(|e| ConfigError::InvalidValue(e.to_string()))?;
 
-        let ethereum_http_rpc_url = self
-            .ethereum_http_rpc_url
-            .map(|url| validate_url(&url).map_err(|e| ConfigError::InvalidValue(e.to_string())));
-        if let Some(Err(e)) = ethereum_http_rpc_url {
-            return Err(e);
-        }
-        let ethereum_http_rpc_url = ethereum_http_rpc_url.map(|url| url.unwrap());
-
-        let contract_address = self.contract_address.map(|address| {
-            validate_address(&address).map_err(|e| ConfigError::InvalidValue(e.to_string()))
-        });
-        if let Some(Err(e)) = contract_address {
-            return Err(e);
-        }
-        let contract_address = contract_address.map(|address| address.unwrap());
+        let ethereum_http_rpc_url = Self::optional(
+            self.ethereum_http_rpc_url,
+            validate_url,
+            "ethereum_http_rpc_url",
+        )?;
+        let contract_address =
+            Self::optional(self.contract_address, validate_address, "contract_address")?;
 
         Ok(Config {
             rpc_url,
@@ -106,6 +94,23 @@ impl ConfigBuilder {
             ethereum_http_rpc_url,
             contract_address,
         })
+    }
+
+    fn required(value: Option<String>, field: &str) -> Result<String, ConfigError> {
+        value.ok_or_else(|| ConfigError::Missing(field.to_string()))
+    }
+
+    fn optional<T>(
+        value: Option<String>,
+        parser: impl FnOnce(&str) -> anyhow::Result<T>,
+        _field: &str,
+    ) -> Result<Option<T>, ConfigError> {
+        match value {
+            Some(raw) => parser(&raw)
+                .map(Some)
+                .map_err(|e| ConfigError::InvalidValue(e.to_string())),
+            None => Ok(None),
+        }
     }
 }
 

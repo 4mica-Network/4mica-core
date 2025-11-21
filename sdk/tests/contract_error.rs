@@ -15,7 +15,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let user_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
-            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
+            "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
         )
         .build()?;
 
@@ -25,7 +25,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
         .wallet_private_key(
-            "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6".to_string(),
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
         )
         .build()?;
 
@@ -78,11 +78,22 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
 
+    println!(
+        "Signed payment: tab_id={tab_id}, user={user_address}, recipient={recipient_address}, amount={}, asset={}, ts={}",
+        claims.amount, claims.asset_address, claims.timestamp
+    );
+
     // Step 4: Recipient issues guarantee
     let bls_cert = recipient_client
         .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
+
+    println!(
+        "Issued BLS certificate: claims_len={}, signature_len={}",
+        bls_cert.claims.len(),
+        bls_cert.signature.len()
+    );
 
     let mut mismatched = bls_cert.clone();
     if let Some(last) = mismatched.claims.pop() {
@@ -110,17 +121,24 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     }
 
     let result = recipient_client.recipient.remunerate(mismatched).await;
+    println!("Remunerate with mismatched cert -> {result:?}");
     assert!(matches!(result, Err(RemunerateError::CertificateMismatch)));
 
     let mut malformed = bls_cert.clone();
     malformed.signature.pop();
     let result = recipient_client.recipient.remunerate(malformed).await;
+    println!("Remunerate with malformed cert -> {result:?}");
     assert!(matches!(
         result,
         Err(RemunerateError::CertificateInvalid(_))
     ));
 
     // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
+    println!(
+        "Remunerating with correct cert (claims_len={}, signature_len={})",
+        bls_cert.claims.len(),
+        bls_cert.signature.len()
+    );
     let result = recipient_client.recipient.remunerate(bls_cert).await;
     dbg!(&result);
     assert!(matches!(result, Err(RemunerateError::TabNotYetOverdue)));
