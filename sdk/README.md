@@ -133,7 +133,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 What happens under the hood:
 - The helper re-fetches the resource and expects a `402 Payment Required` response.
-- If the response includes an `accepted` list, the helper will always follow a `tabEndpoint` to fetch tab data (even when `paymentRequirements` are inline); otherwise it uses inline `paymentRequirements` or follows the `tabEndpoint` to obtain them.
+- If the response includes a `tabEndpoint`, the helper follows it. When the tab response contains full `paymentRequirements`, those are used; otherwise the helper merges tab metadata (`tabId`, `userAddress`, `recipientAddress` → `pay_to`, `assetAddress` → `asset`, `ttlSeconds` → `max_timeout_seconds`, `startTimestamp`) into the inline `paymentRequirements` template.
+- If the response includes an `accepted` list, the helper requires a `tabEndpoint` and will always follow it (even when `paymentRequirements` are inline).
 - The requirements must include `extra.tabId` and `extra.userAddress`, plus `pay_to`, `asset`, `max_amount_required`, and `scheme`/`network`. The helper will align scheme/network with the X402 `/supported` list when available.
 - The resulting `PreparedPayment` contains the base64-encoded X-PAYMENT header and a `/verify` body ready for the X402 service.
 

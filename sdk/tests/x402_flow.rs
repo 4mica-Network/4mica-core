@@ -301,3 +301,91 @@ async fn complete_payment_prepares_and_settles() {
 
     handle.abort();
 }
+
+#[tokio::test]
+async fn prepare_payment_merges_tab_metadata_into_template() {
+    let user_address = "0x0000000000000000000000000000000000000005";
+    let mut template = sample_requirements(user_address);
+    template.pay_to = "0x0000000000000000000000000000000000000bad".into();
+    template.asset = "0x0000000000000000000000000000000000000bad".into();
+    template.max_timeout_seconds = None;
+    {
+        let extra = template
+            .extra
+            .as_object_mut()
+            .expect("template extra object");
+        extra.insert("tabId".into(), json!("0x0"));
+        extra.insert(
+            "userAddress".into(),
+            json!("0x0000000000000000000000000000000000000bad"),
+        );
+    }
+
+    let tab_recipient = "0x000000000000000000000000000000000000beef";
+    let tab_asset = "0x000000000000000000000000000000000000cafe";
+
+    let router = Router::new()
+        .route(
+            "/resource",
+            get({
+                let template = template.clone();
+                move || {
+                    let template = template.clone();
+                    async move {
+                        (
+                            StatusCode::PAYMENT_REQUIRED,
+                            Json(json!({
+                                "paymentRequirements": template,
+                                "tabEndpoint": "/tab"
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/tab",
+            post({
+                let tab_recipient = tab_recipient.to_string();
+                let tab_asset = tab_asset.to_string();
+                let user_address = user_address.to_string();
+                move || {
+                    let tab_recipient = tab_recipient.clone();
+                    let tab_asset = tab_asset.clone();
+                    let user_address = user_address.clone();
+                    async move {
+                        Json(json!({
+                            "tabId": "0xbeef",
+                            "userAddress": user_address,
+                            "recipientAddress": tab_recipient,
+                            "assetAddress": tab_asset,
+                            "ttlSeconds": 600,
+                            "startTimestamp": 123456,
+                        }))
+                    }
+                }
+            }),
+        );
+
+    let (base, handle) = spawn_router(router).await;
+    let flow: X402Flow<MockSigner> = X402Flow::with_signer(MockSigner, &base).expect("flow");
+    let payment = flow
+        .prepare_payment(PaymentRequest::new(
+            format!("{base}/resource"),
+            user_address,
+        ))
+        .await
+        .expect("prepare payment");
+
+    assert_eq!(payment.requirements.pay_to, tab_recipient);
+    assert_eq!(payment.requirements.asset, tab_asset);
+    assert_eq!(payment.requirements.max_timeout_seconds, Some(600));
+    assert_eq!(payment.requirements.extra["tabId"], json!("0xbeef"));
+    assert_eq!(
+        payment.requirements.extra["userAddress"],
+        json!(user_address)
+    );
+    assert_eq!(payment.requirements.extra["startTimestamp"], json!(123456));
+
+    handle.abort();
+}

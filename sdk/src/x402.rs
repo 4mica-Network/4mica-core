@@ -234,18 +234,19 @@ where
         let accepted = parse_accepted_requirements(&payload);
         let tab_endpoint = tab_endpoint_from_payload(&payload);
 
+        if let Some(endpoint) = tab_endpoint {
+            return self
+                .request_tab(
+                    base_url,
+                    endpoint,
+                    &request.user_address,
+                    payment_requirements,
+                    accepted,
+                )
+                .await;
+        }
+
         if !accepted.is_empty() {
-            if let Some(endpoint) = tab_endpoint {
-                return self
-                    .request_tab(
-                        base_url,
-                        endpoint,
-                        &request.user_address,
-                        payment_requirements,
-                        accepted,
-                    )
-                    .await;
-            }
             return Err(FacilitatorError::TabResolutionFailed(
                 "accepted returned without tabEndpoint".into(),
             ));
@@ -256,12 +257,6 @@ where
                 requirements,
                 accepted,
             });
-        }
-
-        if let Some(endpoint) = tab_endpoint {
-            return self
-                .request_tab(base_url, endpoint, &request.user_address, None, accepted)
-                .await;
         }
 
         Err(FacilitatorError::MissingPaymentRequirements)
@@ -289,7 +284,7 @@ where
         let requirements = if let Some(reqs) = payment_requirements_from_payload(&payload) {
             parse_payment_requirements_value(reqs)?
         } else if let Some(fallback) = fallback_requirements {
-            fallback
+            merge_requirements_with_tab_payload(fallback, &payload)?
         } else {
             return Err(FacilitatorError::TabResolutionFailed(
                 "missing paymentRequirements".into(),
@@ -564,4 +559,58 @@ fn validate_user_matches(
         }
     }
     Err(FacilitatorError::MissingExtra("userAddress".into()))
+}
+
+fn merge_requirements_with_tab_payload(
+    mut requirements: PaymentRequirements,
+    tab_payload: &Value,
+) -> Result<PaymentRequirements, FacilitatorError> {
+    let extra_obj = requirements
+        .extra
+        .as_object_mut()
+        .ok_or_else(|| FacilitatorError::InvalidExtra("extra must be an object".into()))?;
+
+    if let Some(tab_id_value) = tab_payload
+        .get("tabId")
+        .or_else(|| tab_payload.get("tab_id"))
+    {
+        let tab_id = value_to_string(tab_id_value, "tabId")?;
+        extra_obj.insert("tabId".into(), Value::String(tab_id));
+    }
+
+    if let Some(user_value) = tab_payload
+        .get("userAddress")
+        .or_else(|| tab_payload.get("user_address"))
+    {
+        let user = value_to_string(user_value, "userAddress")?;
+        extra_obj.insert("userAddress".into(), Value::String(user));
+    }
+
+    if let Some(start_ts) = tab_payload.get("startTimestamp") {
+        extra_obj.insert("startTimestamp".into(), start_ts.clone());
+    }
+
+    if let Some(recipient_value) = tab_payload.get("recipientAddress") {
+        requirements.pay_to = value_to_string(recipient_value, "recipientAddress")?;
+    }
+
+    if let Some(asset_value) = tab_payload.get("assetAddress") {
+        requirements.asset = value_to_string(asset_value, "assetAddress")?;
+    }
+
+    if let Some(ttl_value) = tab_payload.get("ttlSeconds")
+        && let Some(ttl) = parse_u64_value(ttl_value)
+    {
+        requirements.max_timeout_seconds = Some(ttl);
+    }
+
+    Ok(requirements)
+}
+
+fn parse_u64_value(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    }
 }
