@@ -37,9 +37,9 @@ impl FlowSigner for Client {
 
 /// High-level helper that handles the 402 → tab → signed-claim flow for a paid resource.
 #[derive(Clone)]
-pub struct FacilitatorFlow<S = Client> {
+pub struct X402Flow<S = Client> {
     http: HttpClient,
-    facilitator_url: Url,
+    base_url: Url,
     signer: S,
 }
 
@@ -59,6 +59,19 @@ pub struct PreparedPayment {
     pub requirements: PaymentRequirements,
     pub claims: PaymentGuaranteeRequestClaims,
     pub signature: PaymentSignature,
+}
+
+/// End-to-end payment that has been prepared and settled via the X402 endpoints.
+#[derive(Debug, Clone)]
+pub struct SettledPayment {
+    pub prepared: PreparedPayment,
+    settlement: Value,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRequirements {
+    requirements: PaymentRequirements,
+    accepted: Vec<PaymentRequirements>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -83,35 +96,32 @@ struct SupportedKind {
     network: String,
 }
 
-impl FacilitatorFlow<Client> {
-    /// Create a flow helper that will default to the local facilitator URL.
+impl X402Flow<Client> {
+    /// Create a flow helper that will default to the local x402 URL.
     pub fn new(core: Client) -> Result<Self, FacilitatorError> {
-        Self::with_facilitator_url(core, "http://localhost:8080/")
+        Self::with_base_url(core, "http://localhost:8080/")
     }
 
-    /// Create a flow helper with an explicit facilitator base URL (used for /supported lookup).
-    pub fn with_facilitator_url(
+    /// Create a flow helper with an explicit base URL (used for /supported lookup).
+    pub fn with_base_url(
         core: Client,
-        facilitator_url: impl AsRef<str>,
+        base_url: impl AsRef<str>,
     ) -> Result<Self, FacilitatorError> {
-        FacilitatorFlow::with_signer(core, facilitator_url)
+        X402Flow::with_signer(core, base_url)
     }
 }
 
-impl<S> FacilitatorFlow<S>
+impl<S> X402Flow<S>
 where
     S: FlowSigner,
 {
     /// Create a flow helper with a custom signer (useful for tests).
-    pub fn with_signer(
-        signer: S,
-        facilitator_url: impl AsRef<str>,
-    ) -> Result<Self, FacilitatorError> {
-        let facilitator_url = Url::parse(facilitator_url.as_ref())
+    pub fn with_signer(signer: S, base_url: impl AsRef<str>) -> Result<Self, FacilitatorError> {
+        let base_url = Url::parse(base_url.as_ref())
             .map_err(|e| FacilitatorError::InvalidUrl(e.to_string()))?;
         Ok(Self {
             http: HttpClient::new(),
-            facilitator_url,
+            base_url,
             signer,
         })
     }
@@ -121,8 +131,10 @@ where
         &self,
         request: PaymentRequest,
     ) -> Result<PreparedPayment, FacilitatorError> {
-        let requirements = self.fetch_payment_requirements(&request).await?;
-        let requirements = self.align_with_supported(requirements).await;
+        let resolved = self.fetch_payment_requirements(&request).await?;
+        let requirements = self
+            .align_with_supported(resolved.requirements, &resolved.accepted)
+            .await;
         let claims = claims_from_requirements(&requirements, &request.user_address)?;
         let signature = self
             .signer
@@ -157,10 +169,52 @@ where
         })
     }
 
+    /// Prepare and immediately settle a payment through the X402 `/settle` endpoint.
+    pub async fn complete_payment(
+        &self,
+        request: PaymentRequest,
+    ) -> Result<SettledPayment, FacilitatorError> {
+        let prepared = self.prepare_payment(request).await?;
+        self.settle_prepared_payment(prepared).await
+    }
+
+    /// Settle a previously prepared payment through the X402 /settle endpoint.
+    pub async fn settle_prepared_payment(
+        &self,
+        payment: PreparedPayment,
+    ) -> Result<SettledPayment, FacilitatorError> {
+        let url = self
+            .base_url
+            .join("settle")
+            .map_err(|e| FacilitatorError::InvalidUrl(e.to_string()))?;
+
+        let response = self
+            .http
+            .post(url)
+            .json(payment.verify_body())
+            .send()
+            .await?;
+
+        let status = response.status();
+        let settlement: Value = response.json().await?;
+
+        if !status.is_success() {
+            return Err(FacilitatorError::SettlementFailed {
+                status,
+                body: settlement,
+            });
+        }
+
+        Ok(SettledPayment {
+            prepared: payment,
+            settlement,
+        })
+    }
+
     async fn fetch_payment_requirements(
         &self,
         request: &PaymentRequest,
-    ) -> Result<PaymentRequirements, FacilitatorError> {
+    ) -> Result<ResolvedRequirements, FacilitatorError> {
         let response = self
             .http
             .request(request.method.clone(), &request.resource_url)
@@ -174,13 +228,39 @@ where
         let base_url = response.url().clone();
         let payload: Value = response.json().await?;
 
-        if let Some(reqs) = payment_requirements_from_payload(&payload) {
-            return parse_payment_requirements_value(reqs);
+        let payment_requirements = payment_requirements_from_payload(&payload)
+            .map(parse_payment_requirements_value)
+            .transpose()?;
+        let accepted = parse_accepted_requirements(&payload);
+        let tab_endpoint = tab_endpoint_from_payload(&payload);
+
+        if !accepted.is_empty() {
+            if let Some(endpoint) = tab_endpoint {
+                return self
+                    .request_tab(
+                        base_url,
+                        endpoint,
+                        &request.user_address,
+                        payment_requirements,
+                        accepted,
+                    )
+                    .await;
+            }
+            return Err(FacilitatorError::TabResolutionFailed(
+                "accepted returned without tabEndpoint".into(),
+            ));
         }
 
-        if let Some(endpoint) = tab_endpoint_from_payload(&payload) {
+        if let Some(requirements) = payment_requirements {
+            return Ok(ResolvedRequirements {
+                requirements,
+                accepted,
+            });
+        }
+
+        if let Some(endpoint) = tab_endpoint {
             return self
-                .request_tab(base_url, endpoint, &request.user_address)
+                .request_tab(base_url, endpoint, &request.user_address, None, accepted)
                 .await;
         }
 
@@ -192,7 +272,9 @@ where
         base_url: Url,
         endpoint: &str,
         user_address: &str,
-    ) -> Result<PaymentRequirements, FacilitatorError> {
+        fallback_requirements: Option<PaymentRequirements>,
+        fallback_accepted: Vec<PaymentRequirements>,
+    ) -> Result<ResolvedRequirements, FacilitatorError> {
         let tab_url = base_url
             .join(endpoint)
             .map_err(|e| FacilitatorError::InvalidUrl(e.to_string()))?;
@@ -204,21 +286,39 @@ where
             .await?
             .error_for_status()?;
         let payload: Value = response.json().await?;
-        let reqs = payment_requirements_from_payload(&payload).ok_or_else(|| {
-            FacilitatorError::TabResolutionFailed("missing paymentRequirements".into())
-        })?;
+        let requirements = if let Some(reqs) = payment_requirements_from_payload(&payload) {
+            parse_payment_requirements_value(reqs)?
+        } else if let Some(fallback) = fallback_requirements {
+            fallback
+        } else {
+            return Err(FacilitatorError::TabResolutionFailed(
+                "missing paymentRequirements".into(),
+            ));
+        };
+        let mut accepted = parse_accepted_requirements(&payload);
+        if accepted.is_empty() {
+            accepted = fallback_accepted;
+        }
 
-        parse_payment_requirements_value(reqs)
+        Ok(ResolvedRequirements {
+            requirements,
+            accepted,
+        })
     }
 
     async fn align_with_supported(
         &self,
         mut requirements: PaymentRequirements,
+        accepted: &[PaymentRequirements],
     ) -> PaymentRequirements {
-        let url = match self.facilitator_url.join("supported") {
+        if let Some(chosen) = choose_from_accepted(requirements.clone(), accepted) {
+            return chosen;
+        }
+
+        let url = match self.base_url.join("supported") {
             Ok(url) => url,
             Err(err) => {
-                warn!("failed to build facilitator /supported URL: {err}");
+                warn!("failed to build /supported URL from base: {err}");
                 return requirements;
             }
         };
@@ -227,16 +327,16 @@ where
             Ok(resp) if resp.status().is_success() => match resp.json().await {
                 Ok(parsed) => parsed,
                 Err(err) => {
-                    warn!("failed to parse facilitator /supported response: {err}");
+                    warn!("failed to parse /supported response: {err}");
                     return requirements;
                 }
             },
             Ok(resp) => {
-                warn!("facilitator /supported returned status {}", resp.status());
+                warn!("/supported returned status {}", resp.status());
                 return requirements;
             }
             Err(err) => {
-                warn!("failed to fetch facilitator /supported: {err}");
+                warn!("failed to fetch /supported: {err}");
                 return requirements;
             }
         };
@@ -294,9 +394,26 @@ impl PreparedPayment {
         &self.header
     }
 
-    /// Body expected by the facilitator /verify endpoint.
+    /// Body expected by the X402 /verify endpoint.
     pub fn verify_body(&self) -> &Value {
         &self.verify_body
+    }
+}
+
+impl SettledPayment {
+    /// Base64-encoded payment envelope suitable for the X-PAYMENT header.
+    pub fn header(&self) -> &str {
+        self.prepared.header()
+    }
+
+    /// Body expected by the X402 /verify endpoint.
+    pub fn verify_body(&self) -> &Value {
+        self.prepared.verify_body()
+    }
+
+    /// Raw settlement response returned by the X402 /settle endpoint.
+    pub fn settlement(&self) -> &Value {
+        &self.settlement
     }
 }
 
@@ -359,6 +476,45 @@ fn tab_endpoint_from_payload(payload: &Value) -> Option<&str> {
 fn parse_payment_requirements_value(value: Value) -> Result<PaymentRequirements, FacilitatorError> {
     serde_json::from_value(value)
         .map_err(|e| FacilitatorError::InvalidPaymentRequirements(e.to_string()))
+}
+
+fn parse_accepted_requirements(payload: &Value) -> Vec<PaymentRequirements> {
+    payload
+        .get("accepted")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn choose_from_accepted(
+    requirements: PaymentRequirements,
+    accepted: &[PaymentRequirements],
+) -> Option<PaymentRequirements> {
+    if accepted.is_empty() {
+        return None;
+    }
+
+    let target_scheme = requirements.scheme.to_lowercase();
+
+    if let Some(exact_match) = accepted
+        .iter()
+        .find(|r| r.scheme.to_lowercase() == target_scheme)
+    {
+        return Some(exact_match.clone());
+    }
+
+    if let Some(four_mica) = accepted
+        .iter()
+        .find(|r| r.scheme.to_lowercase().contains("4mica"))
+    {
+        return Some(four_mica.clone());
+    }
+
+    accepted.first().cloned()
 }
 
 fn value_to_string(value: &Value, field: &str) -> Result<String, FacilitatorError> {

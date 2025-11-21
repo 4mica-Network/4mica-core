@@ -3,9 +3,9 @@ pub mod config;
 mod contract;
 mod digest;
 pub mod error;
-pub mod facilitator;
 mod sig;
 mod validators;
+pub mod x402;
 
 pub use alloy::primitives::{Address, U256};
 pub use rpc::{
@@ -21,7 +21,6 @@ pub use client::model::{
 };
 pub use config::{Config, ConfigBuilder};
 pub use crypto::bls::BLSCert;
-pub use facilitator::{
-    FacilitatorFlow, FlowSigner, PaymentRequest, PaymentRequirements, PreparedPayment,
-};
 pub use sig::PaymentSignature;
+pub use x402::X402Flow;
+pub use x402::{FlowSigner, PaymentRequest, PaymentRequirements, PreparedPayment, SettledPayment};

@@ -5,6 +5,7 @@ use anyhow::Error;
 use crypto::hex::FromHexError;
 use reqwest::StatusCode;
 use rpc::ApiClientError;
+use serde_json::Value;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -247,6 +248,8 @@ pub enum FacilitatorError {
     InvalidNumber { field: String, source: Error },
     #[error("user mismatch in paymentRequirements: found {found}, expected {expected}")]
     UserMismatch { found: String, expected: String },
+    #[error("settlement failed with status {status}: {body}")]
+    SettlementFailed { status: StatusCode, body: Value },
     #[error(transparent)]
     Signing(#[from] SignPaymentError),
     #[error(transparent)]
