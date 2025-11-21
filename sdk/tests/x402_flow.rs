@@ -287,13 +287,17 @@ async fn complete_payment_prepares_and_settles() {
 
     let (base, handle) = spawn_router(router).await;
     let flow: X402Flow<MockSigner> = X402Flow::with_signer(MockSigner, &base).expect("flow");
-    let settled = flow
-        .complete_payment(PaymentRequest::new(
+    let prepared = flow
+        .prepare_payment(PaymentRequest::new(
             format!("{base}/resource"),
             user_address,
         ))
         .await
-        .expect("complete payment");
+        .expect("prepare payment");
+    let settled = flow
+        .settle_prepared_payment(prepared)
+        .await
+        .expect("settle payment");
 
     assert_eq!(settled.prepared.requirements.pay_to, requirements.pay_to);
     assert_eq!(settled.settlement()["settled"], true);

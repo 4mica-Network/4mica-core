@@ -1064,6 +1064,7 @@ pub async fn find_active_tab_by_triplet(
         .filter(entities::tabs::Column::UserAddress.eq(user_address))
         .filter(entities::tabs::Column::ServerAddress.eq(server_address))
         .filter(entities::tabs::Column::AssetAddress.eq(asset_address))
+        .filter(entities::tabs::Column::Status.eq(TabStatus::Pending))
         .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
         .order_by_desc(entities::tabs::Column::UpdatedAt)
         .one(ctx.db.as_ref())

@@ -15,10 +15,8 @@ async fn resolve_start_timestamp(recipient: &RecipientClient, tab_id: U256) -> a
         return Ok(latest.timestamp);
     }
 
-    if let Some(tab) = recipient.get_tab(tab_id).await? {
-        if tab.start_timestamp > 0 {
-            return Ok(tab.start_timestamp as u64);
-        }
+    if let Some(tab) = recipient.get_tab(tab_id).await? && tab.start_timestamp > 0 {
+        return Ok(tab.start_timestamp as u64);
     }
 
     Ok(common::get_now().as_secs())

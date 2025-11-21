@@ -169,15 +169,6 @@ where
         })
     }
 
-    /// Prepare and immediately settle a payment through the X402 `/settle` endpoint.
-    pub async fn complete_payment(
-        &self,
-        request: PaymentRequest,
-    ) -> Result<SettledPayment, FacilitatorError> {
-        let prepared = self.prepare_payment(request).await?;
-        self.settle_prepared_payment(prepared).await
-    }
-
     /// Settle a previously prepared payment through the X402 /settle endpoint.
     pub async fn settle_prepared_payment(
         &self,
