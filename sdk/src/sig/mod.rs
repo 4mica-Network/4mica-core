@@ -10,7 +10,7 @@ use rpc::{CorePublicParameters, PaymentGuaranteeRequestClaimsV1, SigningScheme};
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PaymentSignature {
     pub signature: String,
     pub scheme: SigningScheme,

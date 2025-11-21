@@ -3,6 +3,7 @@ use alloy::contract as alloy_contract;
 use alloy::primitives::{Address, Bytes};
 use anyhow::Error;
 use crypto::hex::FromHexError;
+use reqwest::StatusCode;
 use rpc::ApiClientError;
 use thiserror::Error;
 
@@ -220,6 +221,36 @@ pub enum VerifyGuaranteeError {
     GuaranteeDomainMismatch,
     #[error("unsupported guarantee version: {0}")]
     UnsupportedGuaranteeVersion(u64),
+}
+
+#[derive(Debug, Error)]
+pub enum FacilitatorError {
+    #[error("invalid url: {0}")]
+    InvalidUrl(String),
+    #[error("invalid http method: {0}")]
+    InvalidMethod(String),
+    #[error("expected 402 Payment Required but got {0}")]
+    UnexpectedStatus(StatusCode),
+    #[error("missing paymentRequirements in resource response")]
+    MissingPaymentRequirements,
+    #[error("failed to resolve tab endpoint: {0}")]
+    TabResolutionFailed(String),
+    #[error("invalid paymentRequirements: {0}")]
+    InvalidPaymentRequirements(String),
+    #[error("failed to encode payment envelope: {0}")]
+    EncodeEnvelope(String),
+    #[error("paymentRequirements.extra missing {0}")]
+    MissingExtra(String),
+    #[error("invalid paymentRequirements.extra: {0}")]
+    InvalidExtra(String),
+    #[error("invalid number for field {field}: {source}")]
+    InvalidNumber { field: String, source: Error },
+    #[error("user mismatch in paymentRequirements: found {found}, expected {expected}")]
+    UserMismatch { found: String, expected: String },
+    #[error(transparent)]
+    Signing(#[from] SignPaymentError),
+    #[error(transparent)]
+    Http(#[from] reqwest::Error),
 }
 
 fn extract_selector_and_data(e: &alloy_contract::Error) -> Option<(u32, Vec<u8>)> {

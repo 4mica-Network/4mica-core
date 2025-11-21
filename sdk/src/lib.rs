@@ -3,6 +3,7 @@ pub mod config;
 mod contract;
 mod digest;
 pub mod error;
+pub mod facilitator;
 mod sig;
 mod validators;
 
@@ -20,4 +21,7 @@ pub use client::model::{
 };
 pub use config::{Config, ConfigBuilder};
 pub use crypto::bls::BLSCert;
+pub use facilitator::{
+    FacilitatorFlow, FlowSigner, PaymentRequest, PaymentRequirements, PreparedPayment,
+};
 pub use sig::PaymentSignature;
