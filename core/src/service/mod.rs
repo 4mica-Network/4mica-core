@@ -24,6 +24,16 @@ use tokio::{
     time::{Duration, sleep},
 };
 
+fn parse_tab_id(raw: &str) -> ServiceResult<U256> {
+    let trimmed = raw.trim();
+    let parsed = if let Some(rest) = trimmed.strip_prefix("0x") {
+        U256::from_str_radix(rest, 16)
+    } else {
+        U256::from_str_radix(trimmed, 10)
+    };
+    parsed.map_err(|err| ServiceError::Other(anyhow!("invalid tab id {raw}: {err}")))
+}
+
 mod api_keys;
 pub mod event_handler;
 mod guarantee;
@@ -216,8 +226,6 @@ impl CoreService {
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
         let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
-        let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
-
         let now = crate::util::now_naive();
         if now.and_utc().timestamp() < 0 {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
@@ -227,6 +235,25 @@ impl CoreService {
             .erc20_token
             .clone()
             .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
+
+        if let Some(existing) = repo::find_active_tab_by_triplet(
+            &self.inner.persist_ctx,
+            &req.user_address,
+            &req.recipient_address,
+            &asset_address,
+        )
+        .await?
+        {
+            let id = parse_tab_id(&existing.id)?;
+            return Ok(CreatePaymentTabResult {
+                id,
+                user_address: existing.user_address,
+                recipient_address: existing.server_address,
+                erc20_token: Some(asset_address),
+            });
+        }
+
+        let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
 
         repo::create_pending_tab(
             &self.inner.persist_ctx,

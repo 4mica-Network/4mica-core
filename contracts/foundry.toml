@@ -14,6 +14,3 @@ via_ir = true
 # Override the Solidity version (this overrides `auto_detect_solc`)
 solc_version = '0.8.29'
 evm_version = 'prague'
-[rpc_endpoints]
-endpoint_url = "${HOLESKY_RPC_URL}"
-# If you encounter issues, try using endpoint_url = env("ENDPOINT_URL")

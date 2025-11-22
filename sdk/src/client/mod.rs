@@ -1,4 +1,4 @@
-use std::{convert::TryInto, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     config::Config,
@@ -14,7 +14,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use rpc::RpcProxy;
+use rpc::{CorePublicParameters, RpcProxy};
 
 use self::{recipient::RecipientClient, user::UserClient};
 
@@ -36,20 +36,42 @@ struct ClientCtx(Arc<Inner>);
 
 impl ClientCtx {
     async fn new(cfg: Config) -> Result<Self, ClientError> {
-        let rpc_proxy =
-            RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))?;
-
+        let rpc_proxy = Self::build_rpc_proxy(&cfg)?;
         let public_params = rpc_proxy
             .get_public_params()
             .await
             .map_err(|e| ClientError::Rpc(e.to_string()))?;
 
-        let expected_chain_id = public_params.chain_id;
+        let provider = Self::build_provider(&cfg, &public_params).await?;
+        let operator_public_key = Self::parse_operator_public_key(&public_params.public_key)?;
+        let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
-        let ethereum_http_rpc_url = cfg.ethereum_http_rpc_url.clone().unwrap_or(
-            validate_url(&public_params.ethereum_http_rpc_url)
-                .expect("Invalid Ethereum HTTP RPC URL received from server"),
-        );
+        let contract = Core4Mica::new(contract_address, provider.clone());
+        let on_chain_domain = Self::fetch_guarantee_domain(&contract).await?;
+
+        Ok(Self(Arc::new(Inner {
+            cfg,
+            rpc_proxy,
+            provider,
+            contract_address,
+            operator_public_key,
+            guarantee_domain: on_chain_domain,
+        })))
+    }
+
+    fn build_rpc_proxy(cfg: &Config) -> Result<RpcProxy, ClientError> {
+        RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))
+    }
+
+    async fn build_provider(
+        cfg: &Config,
+        public_params: &CorePublicParameters,
+    ) -> Result<DynProvider, ClientError> {
+        let ethereum_http_rpc_url = match &cfg.ethereum_http_rpc_url {
+            Some(url) => url.clone(),
+            None => validate_url(&public_params.ethereum_http_rpc_url)
+                .map_err(|e| ClientError::Initialization(e.to_string()))?,
+        };
 
         let provider = ProviderBuilder::new()
             .wallet(cfg.wallet_private_key.clone())
@@ -63,45 +85,49 @@ impl ClientCtx {
             .await
             .map_err(|e| ClientError::Initialization(e.to_string()))?;
 
-        if provider_chain_id != expected_chain_id {
+        if provider_chain_id != public_params.chain_id {
             return Err(ClientError::Initialization(format!(
                 "chain id mismatch between core service ({}) and Ethereum provider ({})",
-                expected_chain_id, provider_chain_id
+                public_params.chain_id, provider_chain_id
             )));
         }
 
-        let operator_public_key: [u8; 48] =
-            public_params
-                .public_key
-                .clone()
-                .try_into()
-                .map_err(|pk: Vec<u8>| {
-                    ClientError::Initialization(format!(
-                        "invalid operator public key length: expected 48 bytes, got {}",
-                        pk.len()
-                    ))
-                })?;
+        Ok(provider)
+    }
 
-        let contract_address = cfg.contract_address.unwrap_or(
-            validate_address(&public_params.contract_address)
-                .expect("Invalid contract address received from server"),
-        );
+    fn parse_operator_public_key(bytes: &[u8]) -> Result<[u8; 48], ClientError> {
+        if bytes.len() != 48 {
+            return Err(ClientError::Initialization(format!(
+                "invalid operator public key length: expected 48 bytes, got {}",
+                bytes.len()
+            )));
+        }
 
-        let contract = Core4Mica::new(contract_address, provider.clone());
-        let on_chain_domain = contract
+        let mut pk = [0u8; 48];
+        pk.copy_from_slice(bytes);
+        Ok(pk)
+    }
+
+    fn resolve_contract_address(
+        cfg: &Config,
+        public_params: &CorePublicParameters,
+    ) -> Result<Address, ClientError> {
+        match cfg.contract_address {
+            Some(address) => Ok(address),
+            None => validate_address(&public_params.contract_address)
+                .map_err(|e| ClientError::Initialization(e.to_string())),
+        }
+    }
+
+    async fn fetch_guarantee_domain(
+        contract: &Core4MicaInstance<DynProvider>,
+    ) -> Result<[u8; 32], ClientError> {
+        contract
             .guaranteeDomainSeparator()
             .call()
             .await
-            .map_err(|e| ClientError::Initialization(e.to_string()))?;
-
-        Ok(Self(Arc::new(Inner {
-            cfg,
-            rpc_proxy,
-            provider,
-            contract_address,
-            operator_public_key,
-            guarantee_domain: on_chain_domain.into(),
-        })))
+            .map(Into::into)
+            .map_err(|e| ClientError::Initialization(e.to_string()))
     }
 
     fn contract_address(&self) -> Address {
