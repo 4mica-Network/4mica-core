@@ -8,6 +8,7 @@ The official Rust SDK for interacting with the 4Mica payment network. This SDK p
 
 - **User Client**: Deposit collateral, sign payments, and manage withdrawals in ETH or ERC20 tokens (stablecoins)
 - **Recipient Client**: Create payment tabs, issue payment guarantees, and claim from user collateral when payments aren't fulfilled
+- **X402 Flow Helper**: Generate X-PAYMENT headers for 402-protected HTTP resources via an X402-compatible service
 - **Multi-Asset Support**: Full support for ETH and ERC20 token payments and collateral
 - **Comprehensive Error Handling**: Strongly-typed, specific error types for every operation with detailed context
 - **Built-in EIP-712 and EIP-191 signing support**: Type-safe cryptographic operations with automatic address validation
@@ -24,10 +25,10 @@ rust-sdk-4mica = "0.1.0"
 
 ## Configuration
 
-The SDK requires two configuration parameters:
+The SDK requires a signing key and can use sensible defaults for the rest:
 
-- `rpc_url`: URL of the 4Mica RPC server (defaults to http://localhost:3000)
-- `wallet_private_key`: Private key for signing transactions (hex string with or without `0x` prefix)
+- `wallet_private_key` (**required**): Private key for signing transactions (hex string with or without `0x` prefix)
+- `rpc_url` (optional): URL of the 4Mica RPC server. Defaults to `https://api.4mica.xyz/`; override for local development.
 
 The following parameters are **optional** and will be automatically fetched from the server if not provided:
 
@@ -63,7 +64,7 @@ Set the following environment variables:
 ```bash
 export 4MICA_WALLET_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
-# Optional (will use defaults if not set)
+# Optional (defaults to https://api.4mica.xyz/ if not set; override for local dev)
 export 4MICA_RPC_URL="http://localhost:3000"
 export 4MICA_ETHEREUM_HTTP_RPC_URL="http://localhost:8545"
 export 4MICA_CONTRACT_ADDRESS="0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
@@ -87,7 +88,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Usage
 
-The SDK provides two client interfaces: `UserClient` for payers and `RecipientClient` for payment recipients.
+The SDK provides client interfaces for both sides of the payment flow plus a helper to bridge HTTP 402 resources:
+
+- `UserClient`: payer controls collateral and signs payments
+- `RecipientClient`: payment recipient creates tabs, issues guarantees, and claims collateral
+- `X402Flow`: builds X-PAYMENT headers (and bodies for `/verify`) for X402-protected HTTP endpoints
+
+### X402 flow (HTTP 402)
+
+Use `X402Flow` when you are talking to an HTTP API that responds with `402 Payment Required` and an X402-compatible `paymentRequirements` payload. The helper handles the 402 → tab resolution → signing pipeline and gives you everything needed to pay for the resource.
+
+```rust
+use rust_sdk_4mica::{Client, ConfigBuilder, PaymentRequest, X402Flow};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize the core client (only the wallet key is required by default)
+    let core = Client::new(
+        ConfigBuilder::default()
+            .wallet_private_key(std::env::var("PAYER_KEY")?)
+            .build()?,
+    )
+    .await?;
+
+    // Point at your X402 base (defaults to http://localhost:8080/ with X402Flow::new)
+    let flow = X402Flow::with_base_url(core, "http://localhost:8080/")?;
+
+    // Describe the protected resource and HTTP method (GET by default)
+    let request = PaymentRequest::new("http://localhost:3000/protected", "0xUserAddress")
+        .with_method_str("GET")?; // or POST/PUT/etc.
+
+    // Build the signed payment envelope
+    let prepared = flow.prepare_payment(request).await?;
+
+    // Attach the header to your protected request
+    let x_payment_header = prepared.header(); // send as `X-PAYMENT: {x_payment_header}`
+
+    // And send this body to the X402 /verify endpoint (if you are proxying through it)
+    let verify_body = prepared.verify_body();
+
+    Ok(())
+}
+```
+
+What happens under the hood:
+- The helper re-fetches the resource and expects a `402 Payment Required` response.
+- If the response includes a `tabEndpoint`, the helper follows it. When the tab response contains full `paymentRequirements`, those are used; otherwise the helper merges tab metadata (`tabId`, `userAddress`, `recipientAddress` → `pay_to`, `assetAddress` → `asset`, `ttlSeconds` → `max_timeout_seconds`, `startTimestamp`) into the inline `paymentRequirements` template.
+- If the response includes an `accepted` list, the helper requires a `tabEndpoint` and will always follow it (even when `paymentRequirements` are inline).
+- The requirements must include `extra.tabId` and `extra.userAddress`, plus `pay_to`, `asset`, `max_amount_required`, and `scheme`/`network`. The helper will align scheme/network with the X402 `/supported` list when available.
+- The resulting `PreparedPayment` contains the base64-encoded X-PAYMENT header and a `/verify` body ready for the X402 service.
 
 ### API Methods Summary
 
@@ -676,6 +725,15 @@ use rust_sdk_4mica::error::{
 - `CertificateMismatch`: Certificate signature mismatch
 - `GuaranteeDomainMismatch`: Guarantee domain mismatch
 - `UnsupportedGuaranteeVersion(u64)`: Unsupported guarantee version
+
+**`FacilitatorError`**
+
+- `InvalidUrl(String)` / `InvalidMethod(String)`: Malformed X402 base URL or HTTP method on the request
+- `UnexpectedStatus(StatusCode)`: Protected resource did not return `402 Payment Required`
+- `MissingPaymentRequirements` or `TabResolutionFailed(String)`: X402 payload did not include usable payment requirements
+- `InvalidPaymentRequirements(String)` / `MissingExtra(String)` / `InvalidExtra(String)`: Schema errors such as missing `tabId`/`userAddress` in `extra`
+- `InvalidNumber { field, source }` / `UserMismatch { found, expected }`: Invalid numeric fields or wrong user in requirements
+- `Signing(SignPaymentError)` / `Http(reqwest::Error)`: Errors while signing or talking to the X402/resource endpoints
 
 **`RecipientQueryError`**
 

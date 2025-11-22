@@ -6,11 +6,12 @@ use alloy::signers::Signer;
 
 use async_trait::async_trait;
 use rpc::{CorePublicParameters, PaymentGuaranteeRequestClaimsV1, SigningScheme};
+use serde::Deserialize;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PaymentSignature {
     pub signature: String,
     pub scheme: SigningScheme,
