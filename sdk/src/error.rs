@@ -225,23 +225,15 @@ pub enum VerifyGuaranteeError {
 }
 
 #[derive(Debug, Error)]
-pub enum FacilitatorError {
-    #[error("invalid url: {0}")]
-    InvalidUrl(String),
-    #[error("invalid http method: {0}")]
-    InvalidMethod(String),
-    #[error("expected 402 Payment Required but got {0}")]
-    UnexpectedStatus(StatusCode),
-    #[error("missing paymentRequirements in resource response")]
-    MissingPaymentRequirements,
+pub enum X402Error {
+    #[error("invalid scheme: {0}")]
+    InvalidScheme(String),
+    #[error("invalid facilitator url: {0}")]
+    InvalidFacilitatorUrl(String),
     #[error("failed to resolve tab endpoint: {0}")]
     TabResolutionFailed(String),
-    #[error("invalid paymentRequirements: {0}")]
-    InvalidPaymentRequirements(String),
     #[error("failed to encode payment envelope: {0}")]
     EncodeEnvelope(String),
-    #[error("paymentRequirements.extra missing {0}")]
-    MissingExtra(String),
     #[error("invalid paymentRequirements.extra: {0}")]
     InvalidExtra(String),
     #[error("invalid number for field {field}: {source}")]

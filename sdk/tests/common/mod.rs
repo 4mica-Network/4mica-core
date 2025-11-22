@@ -4,6 +4,8 @@ use anyhow::bail;
 use rust_sdk_4mica::{Address, U256, UserInfo, client::recipient::RecipientClient};
 use std::time::{Duration, Instant};
 
+pub mod x402;
+
 pub const ETH_ASSET_ADDRESS: Address = Address::ZERO;
 
 pub fn get_now() -> Duration {

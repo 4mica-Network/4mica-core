@@ -23,6 +23,6 @@ pub use config::{Config, ConfigBuilder};
 pub use crypto::bls::BLSCert;
 pub use sig::PaymentSignature;
 pub use x402::X402Flow;
-pub use x402::{FlowSigner, PaymentRequest, PaymentRequirements, PreparedPayment, SettledPayment};
+pub use x402::{FlowSigner, X402SettledPayment, X402SignedPayment};
 // Backwards compatibility with earlier facilitator naming.
 pub use x402::X402Flow as FacilitatorFlow;
