@@ -5,19 +5,32 @@ on:
         tags:
             - "v*"
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: false
+
 jobs:
     publish:
+        name: Publish to crates.io
         runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        defaults:
+            run:
+                shell: bash
         steps:
-            - uses: actions/checkout@v4
+            - name: Checkout repository
+              uses: actions/checkout@v4
               with:
                   fetch-depth: 0
-            - uses: actions-rs/toolchain@v1
-              with:
-                  toolchain: stable
+
+            - name: Set up Rust
+              uses: dtolnay/rust-toolchain@stable
+
             - name: Ensure tag commit is on main
               id: ensure-main
               run: |
+                  set -euo pipefail
                   git fetch origin main --depth=1
                   if git merge-base --is-ancestor HEAD origin/main; then
                       echo "on_main=true" >> "$GITHUB_OUTPUT"
@@ -25,29 +38,42 @@ jobs:
                       echo "on_main=false" >> "$GITHUB_OUTPUT"
                       echo "Tag is not pointing to main; skipping publish."
                   fi
+
             - name: Build workspace
               if: steps.ensure-main.outputs.on_main == 'true'
               run: |
+                  set -euo pipefail
                   cargo build --release --workspace
-            - name: Publish crypto crate
+
+            - name: Publish crates
               if: steps.ensure-main.outputs.on_main == 'true'
-              working-directory: crates/crypto
               env:
                   CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
               run: |
-                  cargo publish --verbose --locked
-                  sleep 30
-            - name: Publish RPC crate
-              if: steps.ensure-main.outputs.on_main == 'true'
-              working-directory: crates/rpc
-              env:
-                  CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-              run: |
-                  cargo publish --verbose --locked
-                  sleep 30
-            - name: Publish SDK crate
-              if: steps.ensure-main.outputs.on_main == 'true'
-              working-directory: sdk
-              env:
-                  CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-              run: cargo publish --verbose --locked
+                  set -euo pipefail
+
+                  crates=(crates/crypto crates/rpc sdk)
+
+                  for crate_path in "${crates[@]}"; do
+                      echo "::group::Publishing ${crate_path}"
+                      pushd "$crate_path" >/dev/null
+
+                      read -r NAME VERSION <<EOF
+                      $(cargo metadata --no-deps --format-version 1 --locked | jq -r --arg manifest "$PWD/Cargo.toml" '.packages[] | select(.manifest_path==$manifest) | "\(.name) \(.version)"')
+                      EOF
+
+                      if curl -fsS "https://crates.io/api/v1/crates/${NAME}/${VERSION}" >/dev/null; then
+                          echo "crate ${NAME} v${VERSION} already published; skipping."
+                          popd >/dev/null
+                          echo "::endgroup::"
+                          sleep 10
+                          continue
+                      fi
+
+                      cargo publish --verbose --locked
+                      popd >/dev/null
+                      echo "::endgroup::"
+
+                      # Give crates.io index time to update before the next publish
+                      sleep 30
+                  done
