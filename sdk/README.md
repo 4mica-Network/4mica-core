@@ -1,18 +1,16 @@
+[![Crates.io](https://img.shields.io/crates/v/rust-sdk-4mica.svg)](https://crates.io/crates/rust-sdk-4mica)
+
 # 4Mica Rust SDK
 
-The official Rust SDK for interacting with the 4Mica payment network. This SDK provides a simple and type-safe interface for both payment users and recipients.
+The official Rust SDK for interacting with the 4Mica payment network
 
 ## Overview
 
-4Mica is a blockchain-based payment network that enables secure and cryptographically-guaranteed tab-based payments. The SDK provides:
+4Mica is a payment network that enables cryptographically-enforced line of credit of autonomos payments. The SDK provides:
 
-- **User Client**: Deposit collateral, sign payments, and manage withdrawals in ETH or ERC20 tokens (stablecoins)
-- **Recipient Client**: Create payment tabs, issue payment guarantees, and claim from user collateral when payments aren't fulfilled
+- **User Client**: Deposit collateral, sign payments, and manage withdrawals in ETH or ERC20 tokens
+- **Recipient Client**: Create payment tabs, verify payment guarantees, and claim from user collateral when payments aren't fulfilled
 - **X402 Flow Helper**: Generate X-PAYMENT headers for 402-protected HTTP resources via an X402-compatible service
-- **Multi-Asset Support**: Full support for ETH and ERC20 token payments and collateral
-- **Comprehensive Error Handling**: Strongly-typed, specific error types for every operation with detailed context
-- **Built-in EIP-712 and EIP-191 signing support**: Type-safe cryptographic operations with automatic address validation
-- **Type-safe interactions**: Full type safety for all Core4Mica smart contract operations
 
 ## Installation
 
@@ -20,17 +18,17 @@ Add the SDK to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rust-sdk-4mica = "0.1.0"
+rust-sdk-4mica = "0.3.2"
 ```
 
-## Configuration
+## Initialization and Configuration
 
 The SDK requires a signing key and can use sensible defaults for the rest:
 
 - `wallet_private_key` (**required**): Private key for signing transactions (hex string with or without `0x` prefix)
 - `rpc_url` (optional): URL of the 4Mica RPC server. Defaults to `https://api.4mica.xyz/`; override for local development.
 
-The following parameters are **optional** and will be automatically fetched from the server if not provided:
+The following parameters are **optional** and will be automatically fetched from the server if not provided.
 
 - `ethereum_http_rpc_url`: URL of the Ethereum JSON-RPC endpoint (optional)
 - `contract_address`: Address of the deployed Core4Mica smart contract (optional)
@@ -49,7 +47,7 @@ use rust_sdk_4mica::{Config, ConfigBuilder, Client};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ConfigBuilder::default()
-        .wallet_private_key("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string())
+        .wallet_private_key("your_private_key".to_string())
         .build()?;
 
     let client = Client::new(config).await?;
@@ -63,7 +61,6 @@ Set the following environment variables:
 
 ```bash
 export 4MICA_WALLET_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-
 # Optional (defaults to https://api.4mica.xyz/ if not set; override for local dev)
 export 4MICA_RPC_URL="http://localhost:3000"
 export 4MICA_ETHEREUM_HTTP_RPC_URL="http://localhost:8545"
@@ -91,30 +88,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 The SDK provides client interfaces for both sides of the payment flow plus a helper to bridge HTTP 402 resources:
 
 - `UserClient`: payer controls collateral and signs payments
-- `RecipientClient`: payment recipient creates tabs, issues guarantees, and claims collateral
-- `X402Flow`: builds X-PAYMENT headers (and bodies for `/verify`) for X402-protected HTTP endpoints
+- `RecipientClient`: payment recipient creates tabs, verify guarantees, and claims collateral
+- `X402Flow`: builds X-PAYMENT headers for X402-protected HTTP endpoints
 
 ### X402 flow (HTTP 402)
 
-The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Required` response into an X-PAYMENT header (and optional `/settle` call) that the facilitator will accept. The examples in `https://github.com/4mica-Network/x402-4mica/examples` model the expected flow: the client only speaks to the resource server, while the resource server talks to the facilitator for `/tabs`, `/verify`, and `/settle`.
+The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Required` response into an X-PAYMENT header (and optional `/settle` call) that the facilitator will accept. The examples in `https://github.com/4mica-Network/x402-4mica/examples` model the expected flow: the client speaks to the resource server, and the resource server talks to the facilitator for `/tabs`, `/verify`, and `/settle`.
 
 #### What the SDK expects from `paymentRequirements`
 
 `rust-sdk-4mica` accepts the canonical X402 JSON (camelCase). At minimum you need:
 - `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
-- `payTo` and `asset`: recipient address and asset address
-- `maxAmountRequired`: number as decimal or `0x…` hex (base units)
-- `extra.tabEndpoint`: absolute URL for POSTing `{ userAddress, paymentRequirements }`
-- `extra.tabId` and `extra.userAddress`: identifiers returned by the tab minting endpoint
-- Optional: `maxTimeoutSeconds`, `startTimestamp`, `description`, `resource`
-
-`X402Flow` will refresh the tab by calling `extra.tabEndpoint` before signing and will reject requirements where `extra.userAddress` does not match the caller.
+`X402Flow` will refresh the tab by calling `extra.tabEndpoint` before signing. 
 
 #### End-to-end client flow
 
-Typical sequence (as in `examples/mock_paid_api.py`):
-- GET the protected endpoint; capture `paymentRequirementsTemplate` and `tabEndpoint` from the 402.
-- POST `tabEndpoint` with `{ userAddress, paymentRequirements }` to mint requirements bound to your wallet (includes `extra.tabId`).
+Typical sequence (as in `https://github.com/4mica-Network/x402-4mica/examples/server/mock_paid_api.py`):
+- GET the protected endpoint; capture `paymentRequirementsTemplate`. 
+- POST `tabEndpoint` with `{ userAddress, paymentRequirements }` to mint requirements bound to your wallet.
 - Call `X402Flow::sign_payment` to get the base64 `X-PAYMENT` header.
 - Retry the protected endpoint with `X-PAYMENT`; the resource server will call the facilitator `/verify` and `/settle`.
 
@@ -132,20 +123,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    // 2) Discover the payment requirements (HTTP 402) and request a tab
-    let user_address = std::env::var("USER_ADDRESS")?; // same wallet as PAYER_KEY
-    let tab_endpoint = "https://resource-url/tab"; // from the 402 payload
-    let tab_response = reqwest::Client::new()
-        .post(tab_endpoint)
-        .json(&serde_json::json!({
-            "userAddress": user_address,
-            "paymentRequirements": { /* template from 402 response */ }
-        }))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<serde_json::Value>()
-        .await?;
     let payment_requirements: PaymentRequirements =
         serde_json::from_value(tab_response["paymentRequirements"].clone())?;
 
@@ -170,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### Resource server / facilitator side
 
-If your resource server proxies to the facilitator (the pattern used in `examples/mock_paid_api.py`), you can reuse the SDK to settle after verifying:
+If your resource server proxies to the facilitator (the pattern used in `examples/server/mock_paid_api.py`), you can reuse the SDK to settle after verifying:
 
 ```rust
 use rust_sdk_4mica::{Client, ConfigBuilder, X402Flow, X402SignedPayment};
@@ -210,7 +187,7 @@ Notes:
 - `deposit(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, DepositError>`: Deposit collateral in ETH or ERC20 token
 - `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
-- `sign_payment(claims: PaymentGuaranteeClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment
+- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment
 - `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String, erc20_token: Option<String>) -> Result<TransactionReceipt, PayTabError>`: Pay a tab directly on-chain in ETH or ERC20 token
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
@@ -311,10 +288,10 @@ println!("Asset: {}", status.asset);
 #### Sign a Payment
 
 ```rust
-use rust_sdk_4mica::{PaymentGuaranteeClaims, SigningScheme, U256};
+use rust_sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
 
 // Create payment claims for ETH payment
-let claims = PaymentGuaranteeClaims::new(
+let claims = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(), // user_address
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(), // recipient_address
     U256::from(1),                                              // tab_id
@@ -339,7 +316,7 @@ let payment_sig = client.user.sign_payment(claims, SigningScheme::Eip191).await?
 
 // For ERC20 token payment, pass the token address
 let usdc_token = "0x1234567890123456789012345678901234567890".to_string();
-let claims_usdc = PaymentGuaranteeClaims::new(
+let claims_usdc = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
     U256::from(1),
@@ -469,10 +446,10 @@ println!("Asset: {}", status.asset);
 #### Issue Payment Guarantee
 
 ```rust
-use rust_sdk_4mica::{PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims, SigningScheme, U256};
+use rust_sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
 
 // First, the user signs the payment (see User Client example above)
-let claims = PaymentGuaranteeClaims::new(
+let claims = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
     U256::from(1),
@@ -483,18 +460,8 @@ let claims = PaymentGuaranteeClaims::new(
 
 let payment_sig = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
 
-// Then, the recipient requests a guarantee
-let guarantee_claims = PaymentGuaranteeRequestClaims {
-    user_address: claims.user_address,
-    recipient_address: claims.recipient_address,
-    tab_id: claims.tab_id,
-    amount: claims.amount,
-    timestamp: claims.timestamp,
-    erc20_token: claims.erc20_token,
-};
-
 let bls_cert = client.recipient.issue_payment_guarantee(
-    guarantee_claims,
+    claims,
     payment_sig.signature,
     payment_sig.scheme,
 ).await?;
@@ -517,8 +484,7 @@ Here's a complete example showing a payment flow with ETH:
 
 ```rust
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims,
-    SigningScheme, U256,
+    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
 
 #[tokio::main]
@@ -549,7 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Created tab: {}", tab_id);
 
     // 4. User signs a payment
-    let claims = PaymentGuaranteeClaims::new(
+    let claims = PaymentGuaranteeRequestClaims::new(
         user_address.clone(),
         recipient_address.clone(),
         tab_id,
@@ -563,18 +529,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Payment signed");
 
     // 5. Recipient issues guarantee
-    let guarantee_claims = PaymentGuaranteeRequestClaims {
-        user_address: claims.user_address,
-        recipient_address: claims.recipient_address,
-        tab_id: claims.tab_id,
-        amount: claims.amount,
-        timestamp: claims.timestamp,
-        erc20_token: claims.erc20_token,
-    };
-
     let bls_cert = recipient_client
         .recipient
-        .issue_payment_guarantee(guarantee_claims, payment_sig.signature, payment_sig.scheme)
+        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
 
@@ -593,8 +550,7 @@ Here's a complete example showing a payment flow with an ERC20 token:
 
 ```rust
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims,
-    SigningScheme, U256,
+    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
 
 #[tokio::main]
@@ -637,7 +593,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Created USDC tab: {}", tab_id);
 
     // 4. User signs a USDC payment
-    let claims = PaymentGuaranteeClaims::new(
+    let claims = PaymentGuaranteeRequestClaims::new(
         user_address.clone(),
         recipient_address.clone(),
         tab_id,
@@ -651,18 +607,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Payment signed");
 
     // 5. Recipient issues guarantee
-    let guarantee_claims = PaymentGuaranteeRequestClaims {
-        user_address: claims.user_address,
-        recipient_address: claims.recipient_address,
-        tab_id: claims.tab_id,
-        amount: claims.amount,
-        timestamp: claims.timestamp,
-        erc20_token: claims.erc20_token,
-    };
-
     let bls_cert = recipient_client
         .recipient
-        .issue_payment_guarantee(guarantee_claims, payment_sig.signature, payment_sig.scheme)
+        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
 
@@ -769,6 +716,8 @@ use rust_sdk_4mica::error::{
 **`PayTabError`**
 
 - `InvalidParams(String)`: Invalid parameters provided
+- `InvalidAsset`: Asset does not match the tab asset
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
 **`TabPaymentStatusError`**
@@ -790,14 +739,15 @@ use rust_sdk_4mica::error::{
 - `GuaranteeDomainMismatch`: Guarantee domain mismatch
 - `UnsupportedGuaranteeVersion(u64)`: Unsupported guarantee version
 
-**`FacilitatorError`**
+**`X402Error`**
 
-- `InvalidUrl(String)` / `InvalidMethod(String)`: Malformed X402 base URL or HTTP method on the request
-- `UnexpectedStatus(StatusCode)`: Protected resource did not return `402 Payment Required`
-- `MissingPaymentRequirements` or `TabResolutionFailed(String)`: X402 payload did not include usable payment requirements
-- `InvalidPaymentRequirements(String)` / `MissingExtra(String)` / `InvalidExtra(String)`: Schema errors such as missing `tabId`/`userAddress` in `extra`
+- `InvalidScheme(String)`: `paymentRequirements.scheme` must include `4mica`
+- `InvalidFacilitatorUrl(String)`: Invalid facilitator `/settle` base URL
+- `TabResolutionFailed(String)` / `InvalidExtra(String)`: Issues resolving or parsing `paymentRequirements.extra`
 - `InvalidNumber { field, source }` / `UserMismatch { found, expected }`: Invalid numeric fields or wrong user in requirements
-- `Signing(SignPaymentError)` / `Http(reqwest::Error)`: Errors while signing or talking to the X402/resource endpoints
+- `EncodeEnvelope(String)`: Failed to encode the X-PAYMENT envelope
+- `SettlementFailed { status, body }`: Facilitator `/settle` returned a non-success status
+- `Signing(SignPaymentError)` / `Http(reqwest::Error)`: Errors while signing or making HTTP requests
 
 **`RecipientQueryError`**
 
