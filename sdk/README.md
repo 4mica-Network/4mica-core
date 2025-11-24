@@ -18,7 +18,7 @@ Add the SDK to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rust-sdk-4mica = "0.3.2"
+rust-sdk-4mica = "0.3.3"
 ```
 
 ## Initialization and Configuration
