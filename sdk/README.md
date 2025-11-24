@@ -96,47 +96,111 @@ The SDK provides client interfaces for both sides of the payment flow plus a hel
 
 ### X402 flow (HTTP 402)
 
-Use `X402Flow` when you are talking to an HTTP API that responds with `402 Payment Required` and an X402-compatible `paymentRequirements` payload. The helper handles the 402 → tab resolution → signing pipeline and gives you everything needed to pay for the resource.
+The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Required` response into an X-PAYMENT header (and optional `/settle` call) that the facilitator will accept. The examples in `https://github.com/4mica-Network/x402-4mica/examples` model the expected flow: the client only speaks to the resource server, while the resource server talks to the facilitator for `/tabs`, `/verify`, and `/settle`.
+
+#### What the SDK expects from `paymentRequirements`
+
+`rust-sdk-4mica` accepts the canonical X402 JSON (camelCase). At minimum you need:
+- `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
+- `payTo` and `asset`: recipient address and asset address
+- `maxAmountRequired`: number as decimal or `0x…` hex (base units)
+- `extra.tabEndpoint`: absolute URL for POSTing `{ userAddress, paymentRequirements }`
+- `extra.tabId` and `extra.userAddress`: identifiers returned by the tab minting endpoint
+- Optional: `maxTimeoutSeconds`, `startTimestamp`, `description`, `resource`
+
+`X402Flow` will refresh the tab by calling `extra.tabEndpoint` before signing and will reject requirements where `extra.userAddress` does not match the caller.
+
+#### End-to-end client flow
+
+Typical sequence (as in `examples/mock_paid_api.py`):
+- GET the protected endpoint; capture `paymentRequirementsTemplate` and `tabEndpoint` from the 402.
+- POST `tabEndpoint` with `{ userAddress, paymentRequirements }` to mint requirements bound to your wallet (includes `extra.tabId`).
+- Call `X402Flow::sign_payment` to get the base64 `X-PAYMENT` header.
+- Retry the protected endpoint with `X-PAYMENT`; the resource server will call the facilitator `/verify` and `/settle`.
 
 ```rust
-use rust_sdk_4mica::{Client, ConfigBuilder, PaymentRequest, X402Flow};
+use rust_sdk_4mica::{Client, ConfigBuilder, X402Flow};
+use rust_sdk_4mica::x402::PaymentRequirements;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize the core client (only the wallet key is required by default)
-    let core = Client::new(
+    // 1) Core client (only the payer key is required by default)
+    let payer = Client::new(
         ConfigBuilder::default()
             .wallet_private_key(std::env::var("PAYER_KEY")?)
             .build()?,
     )
     .await?;
 
-    // Point at your X402 base (defaults to http://localhost:8080/ with X402Flow::new)
-    let flow = X402Flow::with_base_url(core, "http://localhost:8080/")?;
+    // 2) Discover the payment requirements (HTTP 402) and request a tab
+    let user_address = std::env::var("USER_ADDRESS")?; // same wallet as PAYER_KEY
+    let tab_endpoint = "https://resource-url/tab"; // from the 402 payload
+    let tab_response = reqwest::Client::new()
+        .post(tab_endpoint)
+        .json(&serde_json::json!({
+            "userAddress": user_address,
+            "paymentRequirements": { /* template from 402 response */ }
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let payment_requirements: PaymentRequirements =
+        serde_json::from_value(tab_response["paymentRequirements"].clone())?;
 
-    // Describe the protected resource and HTTP method (GET by default)
-    let request = PaymentRequest::new("http://localhost:3000/protected", "0xUserAddress")
-        .with_method_str("GET")?; // or POST/PUT/etc.
+    // 3) Build the X-PAYMENT header with the SDK
+    let flow = X402Flow::new(payer)?;
+    let signed = flow
+        .sign_payment(payment_requirements.clone(), user_address.clone())
+        .await?;
+    let x_payment_header = signed.header; // send as `X-PAYMENT: {header}`
 
-    // Build the signed payment envelope
-    let prepared = flow.prepare_payment(request).await?;
-
-    // Attach the header to your protected request
-    let x_payment_header = prepared.header(); // send as `X-PAYMENT: {x_payment_header}`
-
-    // And send this body to the X402 /verify endpoint (if you are proxying through it)
-    let verify_body = prepared.verify_body();
+    // 4) Call the protected resource with the header
+    let _paid = reqwest::Client::new()
+        .get("https://resource-url/resource")
+        .header("X-PAYMENT", &x_payment_header)
+        .send()
+        .await?
+        .error_for_status()?;
 
     Ok(())
 }
 ```
 
-What happens under the hood:
-- The helper re-fetches the resource and expects a `402 Payment Required` response.
-- If the response includes a `tabEndpoint`, the helper follows it. When the tab response contains full `paymentRequirements`, those are used; otherwise the helper merges tab metadata (`tabId`, `userAddress`, `recipientAddress` → `pay_to`, `assetAddress` → `asset`, `ttlSeconds` → `max_timeout_seconds`, `startTimestamp`) into the inline `paymentRequirements` template.
-- If the response includes an `accepted` list, the helper requires a `tabEndpoint` and will always follow it (even when `paymentRequirements` are inline).
-- The requirements must include `extra.tabId` and `extra.userAddress`, plus `pay_to`, `asset`, `max_amount_required`, and `scheme`/`network`. The helper will align scheme/network with the X402 `/supported` list when available.
-- The resulting `PreparedPayment` contains the base64-encoded X-PAYMENT header and a `/verify` body ready for the X402 service.
+#### Resource server / facilitator side
+
+If your resource server proxies to the facilitator (the pattern used in `examples/mock_paid_api.py`), you can reuse the SDK to settle after verifying:
+
+```rust
+use rust_sdk_4mica::{Client, ConfigBuilder, X402Flow, X402SignedPayment};
+use rust_sdk_4mica::x402::PaymentRequirements;
+
+async fn settle(
+    facilitator_url: &str,
+    payment_requirements: PaymentRequirements,
+    payment: X402SignedPayment,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let core = Client::new(
+        ConfigBuilder::default()
+            .wallet_private_key(std::env::var("RESOURCE_SIGNER_KEY")?)
+            .build()?,
+    )
+    .await?;
+    let flow = X402Flow::new(core)?;
+
+    // POST /settle to the facilitator; returns the facilitator JSON body on success
+    let settled = flow
+        .settle_payment(payment, payment_requirements, facilitator_url)
+        .await?;
+    println!("settlement result: {}", settled.settlement);
+    Ok(())
+}
+```
+
+Notes:
+- `sign_payment` always uses EIP-712 signing and will error if the scheme is not 4mica.
+- `settle_payment` only hits `/settle`; resource servers should still call the facilitator `/verify` first when enforcing access (see the Python example for the end-to-end pattern).
 
 ### API Methods Summary
 
