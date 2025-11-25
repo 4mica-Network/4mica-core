@@ -158,6 +158,28 @@ fn validate_address(addr: &str) -> Result<(), PersistDbError> {
     Ok(())
 }
 
+fn map_unique_withdrawal_err(
+    err: sea_orm::DbErr,
+    user_address: &str,
+    asset_address: &str,
+) -> PersistDbError {
+    let msg = err.to_string();
+    if msg.contains("uniq_user_asset_pending_withdrawal")
+        || msg.contains("unique")
+            && msg.contains("Withdrawal")
+            && msg.contains("user_address")
+            && msg.contains("asset_address")
+    {
+        PersistDbError::MultiplePendingWithdrawals {
+            user: user_address.to_owned(),
+            asset: asset_address.to_owned(),
+            count: 2,
+        }
+    } else {
+        PersistDbError::DatabaseFailure(err)
+    }
+}
+
 //
 // ────────────────────── ADMIN API KEYS ──────────────────────
 //
@@ -245,6 +267,7 @@ pub async fn deposit(
     use sea_orm::ActiveValue::Set as AvSet;
     let now = Utc::now().naive_utc();
     validate_address(&user_address)?;
+    validate_address(&asset_address)?;
 
     ctx.db
         .transaction(|txn| {
@@ -315,7 +338,17 @@ pub async fn unlock_user_collateral(
                 // CAS: mark tab as Settled once (idempotent)
                 let cas = entities::tabs::Entity::update_many()
                     .filter(entities::tabs::Column::Id.eq(&tab_id))
-                    .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
+                    .filter(
+                        Condition::all()
+                            .add(
+                                entities::tabs::Column::SettlementStatus
+                                    .ne(SettlementStatus::Settled),
+                            )
+                            .add(
+                                entities::tabs::Column::SettlementStatus
+                                    .ne(SettlementStatus::Remunerated),
+                            ),
+                    )
                     .set(entities::tabs::ActiveModel {
                         settlement_status: Set(SettlementStatus::Settled),
                         updated_at: Set(now),
@@ -391,35 +424,48 @@ pub async fn request_withdrawal(
     when: i64,
     amount: U256,
 ) -> Result<(), PersistDbError> {
-    // Ensure user exists and has enough collateral
-    let asset_balance = get_user_balance_on(ctx.db.as_ref(), &user_address, &asset_address).await?;
+    validate_address(&user_address)?;
+    validate_address(&asset_address)?;
 
-    let user_collateral = U256::from_str(&asset_balance.total)
-        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-    if amount > user_collateral {
-        return Err(PersistDbError::InsufficientCollateral);
-    }
+    ctx.db
+        .transaction(|txn| {
+            let asset_address = asset_address.clone();
+            let user_address = user_address.clone();
+            Box::pin(async move {
+                // Ensure user exists and has enough collateral
+                let asset_balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
 
-    let now = Utc::now().naive_utc();
-    let ts = Utc
-        .timestamp_opt(when, 0)
-        .single()
-        .ok_or_else(|| PersistDbError::InvalidTimestamp(when))?
-        .naive_utc();
+                let user_collateral = U256::from_str(&asset_balance.total)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                if amount > user_collateral {
+                    return Err(PersistDbError::InsufficientCollateral);
+                }
 
-    let withdrawal_model = withdrawal::ActiveModel {
-        id: Set(uuid::Uuid::new_v4().to_string()),
-        user_address: Set(user_address),
-        asset_address: Set(asset_address),
-        requested_amount: Set(amount.to_string()),
-        executed_amount: Set("0".to_string()),
-        request_ts: Set(ts),
-        status: Set(WithdrawalStatus::Pending),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
-    withdrawal::Entity::insert(withdrawal_model)
-        .exec(ctx.db.as_ref())
+                let now = Utc::now().naive_utc();
+                let ts = Utc
+                    .timestamp_opt(when, 0)
+                    .single()
+                    .ok_or_else(|| PersistDbError::InvalidTimestamp(when))?
+                    .naive_utc();
+
+                let withdrawal_model = withdrawal::ActiveModel {
+                    id: Set(uuid::Uuid::new_v4().to_string()),
+                    user_address: Set(user_address.clone()),
+                    asset_address: Set(asset_address.clone()),
+                    requested_amount: Set(amount.to_string()),
+                    executed_amount: Set("0".to_string()),
+                    request_ts: Set(ts),
+                    status: Set(WithdrawalStatus::Pending),
+                    created_at: Set(now),
+                    updated_at: Set(now),
+                };
+                withdrawal::Entity::insert(withdrawal_model)
+                    .exec(txn)
+                    .await
+                    .map_err(|e| map_unique_withdrawal_err(e, &user_address, &asset_address))?;
+                Ok::<_, PersistDbError>(())
+            })
+        })
         .await?;
     Ok(())
 }
@@ -429,6 +475,8 @@ pub async fn cancel_withdrawal(
     user_address: String,
     asset_address: String,
 ) -> Result<(), PersistDbError> {
+    validate_address(&user_address)?;
+    validate_address(&asset_address)?;
     match withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_address))
         .filter(withdrawal::Column::AssetAddress.eq(asset_address))
@@ -453,23 +501,35 @@ pub async fn finalize_withdrawal(
     asset_address: String,
     executed_amount: U256,
 ) -> Result<(), PersistDbError> {
+    validate_address(&user_address)?;
+    validate_address(&asset_address)?;
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
                 let now = Utc::now().naive_utc();
 
-                // most recent Pending withdrawal for this asset; if none => error
-                let withdrawal = withdrawal::Entity::find()
+                let pending = withdrawal::Entity::find()
                     .filter(withdrawal::Column::UserAddress.eq(&user_address))
                     .filter(withdrawal::Column::AssetAddress.eq(&asset_address))
                     .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
                     .order_by_desc(withdrawal::Column::CreatedAt)
-                    .one(txn)
-                    .await?
-                    .ok_or(PersistDbError::WithdrawalNotFound {
+                    .all(txn)
+                    .await?;
+
+                if pending.is_empty() {
+                    return Err(PersistDbError::WithdrawalNotFound {
                         user: user_address.clone(),
                         asset: asset_address.clone(),
-                    })?;
+                    });
+                }
+                if pending.len() > 1 {
+                    return Err(PersistDbError::MultiplePendingWithdrawals {
+                        user: user_address.clone(),
+                        asset: asset_address.clone(),
+                        count: pending.len(),
+                    });
+                }
+                let withdrawal = pending.into_iter().next().unwrap();
 
                 // ensure we never execute more than requested
                 let requested = U256::from_str(&withdrawal.requested_amount)
@@ -532,6 +592,8 @@ pub async fn submit_payment_transaction(
     let now = Utc::now().naive_utc();
 
     validate_address(&user_address)?;
+    validate_address(&recipient_address)?;
+    validate_address(&asset_address)?;
     ensure_user_exists_on(ctx.db.as_ref(), &user_address).await?;
     let tx = user_transaction::ActiveModel {
         tx_id: Set(transaction_id),
@@ -569,6 +631,31 @@ pub async fn delete_unfinalized_payment_transaction(
         .exec(ctx.db.as_ref())
         .await?;
 
+    Ok(())
+}
+
+pub async fn mark_payment_transaction_finalized(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<(), PersistDbError> {
+    let now = Utc::now().naive_utc();
+    user_transaction::Entity::update_many()
+        .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .filter(user_transaction::Column::Finalized.eq(false))
+        .col_expr(
+            user_transaction::Column::Finalized,
+            sea_orm::sea_query::Expr::value(true),
+        )
+        .col_expr(
+            user_transaction::Column::Verified,
+            sea_orm::sea_query::Expr::value(true),
+        )
+        .col_expr(
+            user_transaction::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now),
+        )
+        .exec(ctx.db.as_ref())
+        .await?;
     Ok(())
 }
 
@@ -679,6 +766,10 @@ pub async fn lock_and_store_guarantee(
 ) -> Result<(), PersistDbError> {
     use chrono::Utc;
     use std::str::FromStr;
+
+    validate_address(&promise.user_address)?;
+    validate_address(&promise.recipient_address)?;
+    validate_address(&promise.asset_address)?;
 
     let cert_str = serde_json::to_string(cert)
         .map_err(|e| PersistDbError::InvariantViolation(e.to_string()))?;
@@ -836,9 +927,11 @@ pub async fn remunerate_recipient(
                 // Compare-and-set using typed `.set(ActiveModel { ... })`
                 let cas = entities::tabs::Entity::update_many()
                     .filter(entities::tabs::Column::Id.eq(&tab_id))
-                    .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
+                    .filter(Condition::all().add(
+                        entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Remunerated),
+                    ))
                     .set(entities::tabs::ActiveModel {
-                        settlement_status: Set(SettlementStatus::Settled),
+                        settlement_status: Set(SettlementStatus::Remunerated),
                         updated_at: Set(now),
                         ..Default::default()
                     })
@@ -1065,7 +1158,11 @@ pub async fn find_active_tab_by_triplet(
         .filter(entities::tabs::Column::ServerAddress.eq(server_address))
         .filter(entities::tabs::Column::AssetAddress.eq(asset_address))
         .filter(entities::tabs::Column::Status.eq(TabStatus::Pending))
-        .filter(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
+        .filter(
+            Condition::all()
+                .add(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
+                .add(entities::tabs::Column::SettlementStatus.ne(SettlementStatus::Remunerated)),
+        )
         .order_by_desc(entities::tabs::Column::UpdatedAt)
         .one(ctx.db.as_ref())
         .await

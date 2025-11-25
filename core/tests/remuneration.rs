@@ -88,12 +88,12 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
             .any(|e| e.amount == U256::from(10u64).to_string())
     );
 
-    // Status flipped to Settled
+    // Status flipped to Remunerated
     let tab = tabs::Entity::find_by_id(u256_to_string(tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
-    assert_eq!(tab.settlement_status, SettlementStatus::Settled);
+    assert_eq!(tab.settlement_status, SettlementStatus::Remunerated);
 
     // Collateral debited
     assert_eq!(
@@ -237,12 +237,12 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
     assert_eq!(events[0].event_type, CollateralEventType::Remunerate);
     assert_eq!(events[0].amount, U256::ZERO.to_string());
 
-    // Status is Settled; collateral unchanged (still 0)
+    // Status is Remunerated; collateral unchanged (still 0)
     let tab = tabs::Entity::find_by_id(u256_to_string(tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
-    assert_eq!(tab.settlement_status, SettlementStatus::Settled);
+    assert_eq!(tab.settlement_status, SettlementStatus::Remunerated);
     assert_eq!(
         read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
         U256::ZERO
@@ -321,12 +321,12 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].amount, U256::from(10u64).to_string());
 
-    // Status is Settled and collateral was debited once (to 0)
+    // Status is Remunerated and collateral was debited once (to 0)
     let tab = tabs::Entity::find_by_id(u256_to_string(tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
-    assert_eq!(tab.settlement_status, SettlementStatus::Settled);
+    assert_eq!(tab.settlement_status, SettlementStatus::Remunerated);
     assert_eq!(
         read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
         U256::ZERO
@@ -500,12 +500,12 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
         .await?;
     assert_eq!(events.len(), 1);
 
-    // Status is Settled and collateral debited once
+    // Status is Remunerated and collateral debited once
     let tab = tabs::Entity::find_by_id(u256_to_string(tab_id))
         .one(ctx.db.as_ref())
         .await?
         .unwrap();
-    assert_eq!(tab.settlement_status, SettlementStatus::Settled);
+    assert_eq!(tab.settlement_status, SettlementStatus::Remunerated);
     assert_eq!(
         read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
         U256::ZERO
