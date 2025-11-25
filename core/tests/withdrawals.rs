@@ -39,6 +39,52 @@ async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+async fn duplicate_withdrawal_request_returns_domain_error() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
+
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        1,
+        U256::from(10u64),
+    )
+    .await?;
+
+    let res = repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        2,
+        U256::from(5u64),
+    )
+    .await;
+
+    match res {
+        Err(core_service::error::PersistDbError::MultiplePendingWithdrawals {
+            user,
+            asset,
+            ..
+        }) => {
+            assert_eq!(user, user_addr);
+            assert_eq!(asset, DEFAULT_ASSET_ADDRESS);
+        }
+        other => panic!("expected MultiplePendingWithdrawals error, got {:?}", other),
+    }
+
+    let pending = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
+        .all(ctx.db.as_ref())
+        .await?;
+    assert_eq!(pending.len(), 1, "only one pending withdrawal should exist");
+
+    Ok(())
+}
+
+#[test(tokio::test)]
 async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 

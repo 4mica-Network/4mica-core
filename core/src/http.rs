@@ -179,8 +179,12 @@ async fn list_settled_tabs(
     State(service): State<SharedService>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<TabInfo>>, ApiError> {
+    // Treat Remunerated as a settled state for API consumers.
     let tabs = service
-        .list_tabs_for_recipient(recipient, vec![SettlementStatus::Settled])
+        .list_tabs_for_recipient(
+            recipient,
+            vec![SettlementStatus::Settled, SettlementStatus::Remunerated],
+        )
         .await
         .map_err(ApiError::from)?;
     Ok(Json(tabs))

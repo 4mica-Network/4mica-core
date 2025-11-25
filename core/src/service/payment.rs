@@ -109,6 +109,8 @@ pub async fn process_discovered_payment(
         )));
     }
 
+    repo::mark_payment_transaction_finalized(ctx, &tx_hash).await?;
+
     Ok(())
 }
 
