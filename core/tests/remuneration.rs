@@ -513,3 +513,93 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Once a tab is Settled (collateral unlocked), remuneration should be a no-op.
+#[test(tokio::test)]
+async fn remuneration_is_noop_after_settlement() -> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let now = Utc::now().naive_utc();
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+
+    let u_am = entities::user::ActiveModel {
+        address: Set(user_addr.clone()),
+        version: Set(0),
+        is_suspended: Set(false),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    entities::user::Entity::insert(u_am)
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    let tab_id = U256::from(rand::random::<u128>());
+    let tab_am = entities::tabs::ActiveModel {
+        id: Set(u256_to_string(tab_id)),
+        user_address: Set(user_addr.clone()),
+        server_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
+        start_ts: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+        status: Set(TabStatus::Open),
+        settlement_status: Set(SettlementStatus::Pending),
+        ttl: Set(300),
+    };
+    entities::tabs::Entity::insert(tab_am)
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await?;
+    set_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS, U256::from(10u64)).await?;
+
+    repo::unlock_user_collateral(
+        &ctx,
+        tab_id,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(10u64),
+    )
+    .await?;
+
+    // Attempting remuneration after settlement should be a no-op.
+    repo::remunerate_recipient(
+        &ctx,
+        tab_id,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(5u64),
+    )
+    .await?;
+
+    let tab = tabs::Entity::find_by_id(u256_to_string(tab_id))
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(tab.settlement_status, SettlementStatus::Settled);
+
+    // Collateral and locked amounts unchanged by the remuneration attempt.
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(10u64)
+    );
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
+
+    // Only the Unlock event should be recorded.
+    let events = collateral_event::Entity::find()
+        .filter(collateral_event::Column::TabId.eq(u256_to_string(tab_id)))
+        .all(ctx.db.as_ref())
+        .await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, CollateralEventType::Unlock);
+
+    Ok(())
+}

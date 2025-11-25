@@ -5,8 +5,9 @@ use entities::tabs;
 use log::info;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, Set};
 
-/// Centralized, monotonic settlement transitions for tabs:
-/// Pending → Settled → Remunerated. Later transitions are idempotent no-ops.
+/// Centralized settlement transitions for tabs.
+/// Only allow moving from Pending → Settled, or Pending → Remunerated.
+/// Later transitions are idempotent no-ops.
 pub async fn transition_settlement<C: ConnectionTrait>(
     conn: &C,
     tab_id: &str,
@@ -16,13 +17,10 @@ pub async fn transition_settlement<C: ConnectionTrait>(
     let mut condition = Condition::all().add(tabs::Column::Id.eq(tab_id));
     match target {
         SettlementStatus::Settled => {
-            condition = condition
-                .add(tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
-                .add(tabs::Column::SettlementStatus.ne(SettlementStatus::Remunerated));
+            condition = condition.add(tabs::Column::SettlementStatus.eq(SettlementStatus::Pending));
         }
         SettlementStatus::Remunerated => {
-            condition =
-                condition.add(tabs::Column::SettlementStatus.ne(SettlementStatus::Remunerated));
+            condition = condition.add(tabs::Column::SettlementStatus.eq(SettlementStatus::Pending))
         }
         other => {
             return Err(PersistDbError::InvariantViolation(format!(
