@@ -32,16 +32,6 @@ impl CoreService {
                     ServiceError::InvalidParams(format!("Invalid prev_req_id: {}", e))
                 })?;
 
-                let prev_ts_i64 = last.start_ts.and_utc().timestamp();
-                if prev_ts_i64 < 0 {
-                    return Err(ServiceError::Other(anyhow!("Negative previous start_ts")));
-                }
-
-                let prev_start_ts = prev_ts_i64 as u64;
-                if claims.timestamp != prev_start_ts {
-                    return Err(ServiceError::ModifiedStartTs);
-                }
-
                 prev_req_id
                     .checked_add(U256::from(1u8))
                     .ok_or(ServiceError::InvalidRequestID)?
@@ -73,15 +63,6 @@ impl CoreService {
             return Err(ServiceError::InvalidRequestID);
         }
 
-        if tab.status == TabStatus::Pending {
-            let start_ts = chrono::Utc
-                .timestamp_opt(claims.timestamp as i64, 0)
-                .single()
-                .ok_or_else(|| ServiceError::InvalidParams("Invalid timestamp".into()))?
-                .naive_utc();
-            repo::open_tab(&self.inner.persist_ctx, claims.tab_id, start_ts).await?;
-        }
-
         if tab.asset_address != claims.asset_address {
             return Err(ServiceError::InvalidParams("Invalid asset address".into()));
         }
@@ -90,9 +71,29 @@ impl CoreService {
             return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
         }
 
-        let expiry = claims.timestamp.saturating_add(tab.ttl as u64);
-        if expiry < now_secs {
+        let tab_start_ts_i64 = tab.start_ts.and_utc().timestamp();
+        if tab_start_ts_i64 < 0 {
+            return Err(ServiceError::Other(anyhow!("Negative tab start_ts")));
+        }
+
+        let tab_start_ts = tab_start_ts_i64 as u64;
+        let tab_expiry = tab_start_ts.saturating_add(tab.ttl as u64);
+
+        if claims.timestamp < tab_start_ts || claims.timestamp > tab_expiry {
+            return Err(ServiceError::ModifiedStartTs);
+        }
+
+        if tab_expiry < now_secs {
             return Err(ServiceError::TabClosed);
+        }
+
+        if tab.status == TabStatus::Pending {
+            let start_ts = chrono::Utc
+                .timestamp_opt(claims.timestamp as i64, 0)
+                .single()
+                .ok_or_else(|| ServiceError::InvalidParams("Invalid timestamp".into()))?
+                .naive_utc();
+            repo::open_tab(&self.inner.persist_ctx, claims.tab_id, start_ts).await?;
         }
 
         Ok(next_req_id)
