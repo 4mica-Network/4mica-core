@@ -27,8 +27,8 @@ pub async fn wait_for_collateral_increase(
     starting_total: U256,
     increase_by: U256,
 ) -> anyhow::Result<()> {
-    let poll_interval = Duration::from_millis(500);
-    let timeout = Duration::from_secs(60);
+    let poll_interval = Duration::from_millis(200);
+    let timeout = Duration::from_secs(30);
     let start = Instant::now();
     let user_address = user_address.to_string();
     let asset_address = asset_address.to_string();

@@ -10,7 +10,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
 };
 use anyhow::anyhow;
-use entities::sea_orm_active_enums::SettlementStatus;
+use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::{error, info, warn};
 use parking_lot::Mutex;
 use rpc::{
@@ -227,7 +227,8 @@ impl CoreService {
     ) -> ServiceResult<CreatePaymentTabResult> {
         let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
         let now = crate::util::now_naive();
-        if now.and_utc().timestamp() < 0 {
+        let now_ts = now.and_utc().timestamp();
+        if now_ts < 0 {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
         }
 
@@ -244,13 +245,21 @@ impl CoreService {
         )
         .await?
         {
-            let id = parse_tab_id(&existing.id)?;
-            return Ok(CreatePaymentTabResult {
-                id,
-                user_address: existing.user_address,
-                recipient_address: existing.server_address,
-                erc20_token: Some(asset_address),
-            });
+            let start_ts = existing.start_ts.and_utc().timestamp();
+            let expiry_ts = start_ts.saturating_add(existing.ttl);
+            let expired = existing.ttl <= 0 || expiry_ts < now_ts;
+
+            // Reuse an existing tab when it is still valid, or when it is a pending tab (which can
+            // be re-opened even if expired).
+            if !expired || existing.status == TabStatus::Pending {
+                let id = parse_tab_id(&existing.id)?;
+                return Ok(CreatePaymentTabResult {
+                    id,
+                    user_address: existing.user_address,
+                    recipient_address: existing.server_address,
+                    erc20_token: Some(asset_address),
+                });
+            }
         }
 
         let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
