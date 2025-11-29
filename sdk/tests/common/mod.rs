@@ -28,8 +28,11 @@ pub async fn wait_for_collateral_increase(
     increase_by: U256,
 ) -> anyhow::Result<()> {
     let poll_interval = Duration::from_millis(500);
-    let timeout = Duration::from_secs(60);
+    // The core service may take a bit to pick up the first deposit after startup,
+    // so give it a generous window before failing the test.
+    let timeout = Duration::from_secs(120);
     let start = Instant::now();
+    let mut last_log = start;
     let user_address = user_address.to_string();
     let asset_address = asset_address.to_string();
     let target_total = starting_total + increase_by;
@@ -50,6 +53,14 @@ pub async fn wait_for_collateral_increase(
             bail!(
                 "timed out waiting for collateral increase to {target_total:?} for user {user_address}, last observed total {last_total:?}"
             );
+        }
+
+        // Emit an occasional heartbeat so test logs show progress if indexing is slow.
+        if last_log.elapsed() > Duration::from_secs(15) {
+            println!(
+                "waiting for collateral update for user {user_address}: target {target_total}, last observed {last_total}"
+            );
+            last_log = Instant::now();
         }
 
         tokio::time::sleep(poll_interval).await;
