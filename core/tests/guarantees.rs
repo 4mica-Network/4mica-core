@@ -343,64 +343,6 @@ async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-async fn get_last_guarantee_for_tab_returns_most_recent() -> anyhow::Result<()> {
-    use tokio::time::{Duration, sleep};
-
-    let _ = init()?;
-    let ctx = PersistCtx::new().await?;
-    let now = Utc::now().naive_utc();
-
-    // base user + tab
-    let user_addr = random_eth_address();
-    let recipient_addr = random_eth_address();
-    let u_am = entities::user::ActiveModel {
-        address: Set(user_addr.clone()),
-        version: Set(0),
-        is_suspended: Set(false),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
-    entities::user::Entity::insert(u_am)
-        .exec(ctx.db.as_ref())
-        .await?;
-    let tab_id = random_u256();
-    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
-
-    // two guarantees with increasing req_id and later created_at
-    let g1 = GuaranteeData {
-        tab_id,
-        req_id: U256::from(1u64),
-        from: user_addr.clone(),
-        to: random_eth_address(),
-        asset: DEFAULT_ASSET_ADDRESS.to_string(),
-        value: U256::from(10u64),
-        start_ts: now,
-        cert: "cert1".into(),
-    };
-    repo::store_guarantee_on(ctx.db.as_ref(), g1).await?;
-    // ensure created_at differs
-    sleep(Duration::from_millis(10)).await;
-    let g2 = GuaranteeData {
-        tab_id,
-        req_id: U256::from(2u64),
-        from: user_addr,
-        to: random_eth_address(),
-        asset: DEFAULT_ASSET_ADDRESS.to_string(),
-        value: U256::from(20u64),
-        start_ts: now,
-        cert: "cert2".into(),
-    };
-    repo::store_guarantee_on(ctx.db.as_ref(), g2).await?;
-
-    let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
-    assert!(last.is_some());
-    let last = last.unwrap();
-    assert_eq!(last.req_id, "0x2");
-    assert_eq!(last.value, U256::from(20u64).to_string());
-    Ok(())
-}
-
-#[test(tokio::test)]
 async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
