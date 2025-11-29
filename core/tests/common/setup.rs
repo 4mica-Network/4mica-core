@@ -1,7 +1,14 @@
-use std::sync::Arc;
+use std::{
+    net::TcpListener,
+    sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
+    },
+};
 
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WalletProvider};
 use alloy_primitives::{Address, FixedBytes};
+use anyhow::{Context, bail};
 use core_service::{
     config::{AppConfig, EthereumConfig},
     persist::PersistCtx,
@@ -44,6 +51,29 @@ pub fn dummy_verification_key() -> (
         FixedBytes::<32>::from([0u8; 32]),
         FixedBytes::<32>::from([0u8; 32]),
     )
+}
+
+/// Reserve an unused TCP port for Anvil to bind to.
+fn allocate_anvil_port() -> anyhow::Result<u16> {
+    // Keep a running counter so concurrent tests do not pick the same ephemeral port.
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(40101);
+
+    for _ in 0..200 {
+        let candidate = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
+        let listener = match TcpListener::bind(("127.0.0.1", candidate)) {
+            Ok(listener) => listener,
+            Err(_) => continue, // try the next port
+        };
+
+        let port = listener
+            .local_addr()
+            .context("failed to read reserved anvil port")?
+            .port();
+        drop(listener); // free the port so Anvil can take it
+        return Ok(port);
+    }
+
+    bail!("could not allocate a free port for Anvil")
 }
 
 fn init_config() -> AppConfig {
@@ -95,7 +125,7 @@ async fn deploy_contracts(
 
 pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     let mut cfg = init_config();
-    let anvil_port = 40101u16;
+    let anvil_port = allocate_anvil_port()?;
 
     let provider = ProviderBuilder::new()
         .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;

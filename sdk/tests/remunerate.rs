@@ -1,69 +1,50 @@
-use alloy::{hex, primitives::Address, providers::ProviderBuilder, sol};
-use rpc::{CorePublicParameters, RpcProxy};
+use alloy::hex;
+use rpc::RpcProxy;
 use rust_sdk_4mica::{
     Client, Config, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
     error::RemunerateError,
 };
-use std::{str::FromStr, time::Duration};
+use std::time::{Duration, Instant};
 
 use crate::common::{ETH_ASSET_ADDRESS, wait_for_collateral_increase};
 
 mod common;
 
-sol! {
-    #[sol(rpc)]
-    #[allow(non_camel_case_types)]
-    contract DebugCore4Mica {
-        function GUARANTEE_VERIFICATION_KEY() external view returns (bytes32,bytes32,bytes32,bytes32);
-        function guaranteeDomainSeparator() external view returns (bytes32);
-    }
+async fn ensure_core_available(tag: &str, config: &Config) -> anyhow::Result<()> {
+    let rpc_url = config.rpc_url.as_str();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let rpc_proxy = RpcProxy::new(rpc_url)
+            .map_err(|err| anyhow::anyhow!("[{tag}] core RPC at {rpc_url} unavailable: {err}"))?;
+        rpc_proxy
+            .get_public_params()
+            .await
+            .map_err(|err| anyhow::anyhow!("[{tag}] core RPC at {rpc_url} unavailable: {err}"))
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("[{tag}] timed out waiting for core RPC at {rpc_url}"))??;
+    Ok(())
 }
 
-async fn log_signature_environment(
-    tag: &str,
-    config: &Config,
-) -> anyhow::Result<CorePublicParameters> {
-    let rpc_url = config.rpc_url.as_str();
-    println!("[{}] SDK rpc_url={}", tag, rpc_url);
+async fn wait_for_tab_remunerated(recipient_client: &Client, tab_id: U256) -> anyhow::Result<()> {
+    let poll_interval = Duration::from_millis(200);
+    let timeout = Duration::from_secs(10);
+    let start = Instant::now();
 
-    let rpc_proxy = RpcProxy::new(rpc_url)?;
-    let public_params = rpc_proxy.get_public_params().await?;
-    println!(
-        "[{}] Core service chain_id={}, contract_address={}, ethereum_http_rpc_url={}",
-        tag,
-        public_params.chain_id,
-        public_params.contract_address,
-        public_params.ethereum_http_rpc_url
-    );
-    println!(
-        "[{}] Core service public key=0x{}",
-        tag,
-        hex::encode(&public_params.public_key)
-    );
+    loop {
+        let status = recipient_client
+            .recipient
+            .get_tab_payment_status(tab_id)
+            .await?;
+        if status.remunerated {
+            return Ok(());
+        }
 
-    let contract_address = Address::from_str(&public_params.contract_address)?;
+        if start.elapsed() > timeout {
+            anyhow::bail!("timed out waiting for tab {tab_id:?} to be remunerated");
+        }
 
-    let provider = ProviderBuilder::new()
-        .connect(&public_params.ethereum_http_rpc_url)
-        .await?;
-    let contract = DebugCore4Mica::new(contract_address, provider);
-    let on_chain_domain = contract.guaranteeDomainSeparator().call().await?;
-    println!(
-        "[{}] On-chain domain separator=0x{}",
-        tag,
-        hex::encode(on_chain_domain)
-    );
-    let key = contract.GUARANTEE_VERIFICATION_KEY().call().await?;
-    println!(
-        "[{}] On-chain verification key:\n  x_a=0x{}\n  x_b=0x{}\n  y_a=0x{}\n  y_b=0x{}",
-        tag,
-        hex::encode(key._0),
-        hex::encode(key._1),
-        hex::encode(key._2),
-        hex::encode(key._3)
-    );
-
-    Ok(public_params)
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 #[tokio::test]
@@ -78,9 +59,9 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .build()?;
     let user_config_clone = user_config.clone();
 
+    ensure_core_available("test_recipient_remuneration:user", &user_config_clone).await?;
     let user_address = user_config_clone.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
-    // log_signature_environment("user", &user_config_clone).await?;
 
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
@@ -95,7 +76,6 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .address()
         .to_string();
     let recipient_client = Client::new(recipient_config).await?;
-    // log_signature_environment("recipient", &recipient_config_clone).await?;
 
     let user_info = user_client.user.get_user().await?;
     let eth_asset_before =
@@ -186,7 +166,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to remunerate the tab: {}", e))?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_tab_remunerated(&recipient_client, tab_id).await?;
 
     let user_info_after = user_client.user.get_user().await?;
     let eth_asset = common::extract_asset_info(&user_info_after, ETH_ASSET_ADDRESS)
@@ -195,14 +175,6 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         eth_asset.collateral,
         eth_asset_before.collateral + deposit_amount - guarantee_amount
     );
-
-    let tab_status = recipient_client
-        .recipient
-        .get_tab_payment_status(tab_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get the tab payment status: {}", e))?;
-
-    assert!(tab_status.remunerated);
 
     Ok(())
 }
@@ -220,8 +192,8 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     let user_config_clone = user_config.clone();
 
     let user_address = user_config_clone.wallet_private_key.address().to_string();
+    ensure_core_available("test_double_remuneration_fails:user", &user_config_clone).await?;
     let user_client = Client::new(user_config).await?;
-    log_signature_environment("double:user", &user_config_clone).await?;
 
     let recipient_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())
@@ -236,7 +208,6 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .address()
         .to_string();
     let recipient_client = Client::new(recipient_config).await?;
-    log_signature_environment("double:recipient", &recipient_config_clone).await?;
 
     let core_total_before = recipient_client
         .recipient
@@ -312,7 +283,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .remunerate(bls_cert.clone())
         .await?;
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for_tab_remunerated(&recipient_client, tab_id).await?;
 
     let result = recipient_client.recipient.remunerate(bls_cert).await;
 
