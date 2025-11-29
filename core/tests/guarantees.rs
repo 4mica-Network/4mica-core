@@ -722,6 +722,26 @@ async fn rejects_timestamp_outside_tab_window() {
     )
     .await;
 
+    // Seed the first guarantee so the pending tab is opened and subsequent requests are treated as follow-ups.
+    repo::open_tab(&ctx, tab_id, start_ts)
+        .await
+        .expect("open pending tab");
+    repo::store_guarantee_on(
+        ctx.db.as_ref(),
+        core_service::persist::GuaranteeData {
+            tab_id,
+            req_id: U256::ZERO,
+            from: user_addr.clone(),
+            to: recipient_addr.clone(),
+            asset: DEFAULT_ASSET_ADDRESS.to_string(),
+            value: U256::from(1u64),
+            start_ts,
+            cert: "{}".into(),
+        },
+    )
+    .await
+    .expect("seed initial guarantee");
+
     let before_start = (start_ts - Duration::seconds(1)).and_utc().timestamp() as u64;
     let claims = build_claims(
         tab_id,
@@ -755,7 +775,7 @@ async fn rejects_timestamp_outside_tab_window() {
         .await
         .expect("tab fetch")
         .expect("tab exists");
-    assert_eq!(tab.status, TabStatus::Pending);
+    assert_eq!(tab.status, TabStatus::Open);
     assert_eq!(
         tab.start_ts.and_utc().timestamp(),
         start_ts.and_utc().timestamp()
