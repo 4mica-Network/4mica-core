@@ -142,7 +142,8 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
         run: |
-          nohup cargo run -p core-service > api.log 2>&1 &
+          # Stream API logs to the job output while persisting to api.log
+          stdbuf -oL -eL cargo run -p core-service 2>&1 | tee api.log &
           for i in {1..30}; do
             if nc -z 127.0.0.1 3000; then
               echo "API is up!"
