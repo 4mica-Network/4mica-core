@@ -16,6 +16,7 @@ use common::fixtures::{ensure_user, fetch_user, init_test_env, random_address};
 use crate::common::fixtures::{read_collateral, read_locked_collateral};
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn deposit_zero_does_not_crash() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -37,6 +38,7 @@ async fn deposit_zero_does_not_crash() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn deposit_large_value() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -58,6 +60,7 @@ async fn deposit_large_value() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -97,6 +100,7 @@ async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn deposit_overflow_protection() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -127,6 +131,7 @@ async fn deposit_overflow_protection() -> anyhow::Result<()> {
     Ok(())
 }
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -164,6 +169,7 @@ async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Re
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -214,6 +220,7 @@ async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn multiple_locks_accumulate_locked_collateral() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -259,6 +266,7 @@ async fn multiple_locks_accumulate_locked_collateral() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn lock_fails_on_u256_overflow() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -287,6 +295,7 @@ async fn lock_fails_on_u256_overflow() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn db_check_rejects_inserting_locked_gt_total() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -310,6 +319,7 @@ async fn db_check_rejects_inserting_locked_gt_total() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn db_check_rejects_lowering_total_below_locked() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -417,6 +427,7 @@ async fn make_tab(ctx: &PersistCtx, tab_id: U256, user_addr: &str) -> anyhow::Re
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -463,6 +474,7 @@ async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> an
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -504,6 +516,7 @@ async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -534,6 +547,7 @@ async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyho
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn deposit_creates_user_if_missing() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 

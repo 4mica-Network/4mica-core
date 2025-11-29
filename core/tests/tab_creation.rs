@@ -68,6 +68,7 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
         domain: [0u8; 32],
     });
 
+    let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     CoreService::new_with_dependencies(
         config,
         persist_ctx,
@@ -75,6 +76,7 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
         chain_id,
         read_provider,
         [0u8; 32],
+        ready_rx,
     )
 }
 
@@ -87,6 +89,7 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn returns_existing_pending_tab_when_active() {
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
@@ -142,6 +145,7 @@ async fn returns_existing_pending_tab_when_active() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn reuses_pending_tab_even_when_expired() {
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
@@ -205,6 +209,7 @@ async fn reuses_pending_tab_even_when_expired() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn uses_default_ttl_when_not_provided() {
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,

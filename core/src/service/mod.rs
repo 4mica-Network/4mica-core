@@ -20,6 +20,7 @@ use rpc::{
 };
 use std::sync::Arc;
 use tokio::{
+    sync::oneshot,
     task::JoinHandle,
     time::{Duration, sleep},
 };
@@ -49,6 +50,7 @@ pub struct Inner {
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
     listener_handle: Mutex<Option<JoinHandle<()>>>,
+    listener_ready_rx: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl Drop for Inner {
@@ -90,6 +92,7 @@ impl CoreService {
             crypto::hex::encode_hex(&on_chain_domain)
         );
 
+        let (ready_tx, ready_rx) = oneshot::channel();
         let core_service = Self::new_with_dependencies(
             config,
             persist_ctx.clone(),
@@ -97,6 +100,7 @@ impl CoreService {
             actual_chain_id,
             read_provider.clone(),
             on_chain_domain,
+            ready_rx,
         )?;
         match core_service.bootstrap_admin_api_key().await {
             Ok(Some(api_key)) => info!(
@@ -105,10 +109,10 @@ impl CoreService {
             Ok(None) => {}
             Err(err) => warn!("Failed to initialize bootstrap admin API key: {err:?}"),
         }
-
         let core_service_clone = core_service.clone();
         tokio::spawn(async move {
             let mut delay = Duration::from_secs(1);
+            let mut ready_tx = Some(ready_tx);
             loop {
                 match EthereumListener::new(
                     listener_cfg.clone(),
@@ -116,7 +120,7 @@ impl CoreService {
                     read_provider.clone(),
                     Arc::new(core_service_clone.clone()),
                 )
-                .run()
+                .run(ready_tx.take())
                 .await
                 {
                     Ok(handle) => {
@@ -148,6 +152,7 @@ impl CoreService {
         chain_id: u64,
         read_provider: DynProvider,
         guarantee_domain: [u8; 32],
+        listener_ready_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<Self> {
         let bls_private_key: [u8; 32] = config
             .secrets
@@ -182,6 +187,7 @@ impl CoreService {
             read_provider,
             contract_api,
             listener_handle: Mutex::default(),
+            listener_ready_rx: Mutex::new(Some(listener_ready_rx)),
         };
 
         Ok(Self {
@@ -205,6 +211,13 @@ impl CoreService {
         if let Some(handle) = self.inner.listener_handle.lock().take() {
             handle.abort();
         }
+    }
+
+    pub async fn wait_for_listener_ready(&self) -> Result<(), oneshot::error::RecvError> {
+        if let Some(receiver) = self.inner.listener_ready_rx.lock().take() {
+            receiver.await?;
+        }
+        Ok(())
     }
 
     pub async fn build_ws_provider(config: EthereumConfig) -> ServiceResult<DynProvider> {
