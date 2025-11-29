@@ -10,7 +10,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
 };
 use anyhow::anyhow;
-use entities::sea_orm_active_enums::SettlementStatus;
+use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::{error, info, warn};
 use parking_lot::Mutex;
 use rpc::{
@@ -249,8 +249,9 @@ impl CoreService {
             let expiry_ts = start_ts.saturating_add(existing.ttl);
             let expired = existing.ttl <= 0 || expiry_ts < now_ts;
 
-            // Only reuse an existing tab when it is still within its TTL window.
-            if !expired {
+            // Reuse an existing tab when it is still valid, or when it is a pending tab (which can
+            // be re-opened even if expired).
+            if !expired || existing.status == TabStatus::Pending {
                 let id = parse_tab_id(&existing.id)?;
                 return Ok(CreatePaymentTabResult {
                     id,

@@ -142,7 +142,7 @@ async fn returns_existing_pending_tab_when_active() {
 }
 
 #[tokio::test]
-async fn creates_new_tab_when_existing_pending_is_expired() {
+async fn reuses_pending_tab_even_when_expired() {
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
@@ -184,7 +184,7 @@ async fn creates_new_tab_when_existing_pending_is_expired() {
         .await
         .expect("seed expired tab");
 
-    let fresh = core_service
+    let reused = core_service
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user,
             recipient_address: recipient,
@@ -192,15 +192,15 @@ async fn creates_new_tab_when_existing_pending_is_expired() {
             ttl: Some(300),
         })
         .await
-        .expect("new tab after expiry");
+        .expect("tab reused even if expired");
 
-    assert_ne!(fresh.id, expired_id);
+    assert_eq!(reused.id, expired_id);
 
-    let fetched = repo::get_tab_by_id(&ctx, fresh.id)
+    let fetched = repo::get_tab_by_id(&ctx, reused.id)
         .await
-        .expect("new tab fetch")
-        .expect("new tab present");
-    assert_eq!(fetched.ttl, 300);
+        .expect("tab fetch")
+        .expect("tab present");
+    assert_eq!(fetched.ttl, expired_ttl);
     assert_eq!(fetched.status, TabStatus::Pending);
 }
 
