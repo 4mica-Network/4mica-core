@@ -11,7 +11,6 @@ use entities::{
     tabs, user_transaction,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
-use serial_test::serial;
 use std::{str::FromStr, time::Duration};
 use test_log::test;
 
@@ -65,7 +64,7 @@ async fn insert_tab(
 
 /// `PaymentRecorded` → user transaction created.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
     let E2eEnvironment {
         provider,
@@ -141,7 +140,7 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
 
 /// Same event twice → only one DB row (idempotent).
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
     let E2eEnvironment {
         provider,
@@ -235,7 +234,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 
 /// Payments originating from a non-tab user must be ignored by the scanner.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
     let E2eEnvironment {
         core_service,
@@ -289,7 +288,7 @@ async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
 
 /// PaymentRecorded does NOT reduce collateral (record only).
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> {
     let E2eEnvironment {
         provider,
@@ -361,7 +360,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
     let E2eEnvironment {
         provider,

@@ -168,7 +168,7 @@ jobs:
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
-        run: cargo test --workspace -- --test-threads=1
+        run: cargo test --workspace
 
   deploy-develop:
     needs: build-and-test

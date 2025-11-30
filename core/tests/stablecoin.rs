@@ -8,7 +8,6 @@ use entities::{
 };
 use log::debug;
 use sea_orm::{EntityTrait, Set};
-use serial_test::serial;
 use std::time::Duration;
 use test_log::test;
 
@@ -56,7 +55,7 @@ async fn insert_tab(
 
 /// `Transfer` → collateral unlocked.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
     let E2eEnvironment {
         contract,
@@ -161,7 +160,7 @@ async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
 
 /// `Withdrawal` flow for stablecoin → collateral withdrawn event reduces balance.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let E2eEnvironment {
         provider,

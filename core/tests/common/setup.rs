@@ -165,6 +165,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     )
     .await?;
     let core_service = CoreService::new(cfg.clone()).await?;
+    core_service.wait_for_listener_ready().await?;
 
     let mut scheduler = TaskScheduler::new().await?;
     scheduler
@@ -189,6 +190,8 @@ pub async fn spawn_core_service_in_existing_environment(
     env: &mut E2eEnvironment,
 ) -> anyhow::Result<CoreService> {
     let core_service = CoreService::new(env.cfg.clone()).await?;
+    core_service.wait_for_listener_ready().await?;
+
     env.core_service = core_service.clone();
 
     Ok(core_service)

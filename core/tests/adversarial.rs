@@ -10,6 +10,7 @@ fn init() -> anyhow::Result<AppConfig> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn weird_identifiers_do_not_crash() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;

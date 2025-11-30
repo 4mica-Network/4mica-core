@@ -69,6 +69,7 @@ impl CoreContractApi for RecordingContractApi {
 }
 
 #[test_log::test(tokio::test)]
+#[serial_test::serial]
 async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
@@ -133,6 +134,7 @@ async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<(
 }
 
 #[test_log::test(tokio::test)]
+#[serial_test::serial]
 async fn successful_record_payment_marks_transaction_finalized() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;

@@ -3,7 +3,6 @@ use rust_sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
     error::VerifyGuaranteeError,
 };
-use serial_test::serial;
 use std::time::Duration;
 
 mod common;
@@ -25,7 +24,7 @@ async fn resolve_start_timestamp(recipient: &RecipientClient, tab_id: U256) -> a
 }
 
 #[tokio::test]
-#[serial]
+#[serial_test::serial]
 async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     // These wallet keys are picked from the default accounts in anvil test node
 
@@ -207,7 +206,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[serial]
+#[serial_test::serial]
 async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     let user_config = ConfigBuilder::default()
         .rpc_url("http://localhost:3000".to_string())

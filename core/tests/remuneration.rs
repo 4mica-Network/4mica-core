@@ -23,6 +23,7 @@ fn init() -> anyhow::Result<AppConfig> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -105,6 +106,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn remuneration_reduces_locked_collateral() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -172,6 +174,7 @@ async fn remuneration_reduces_locked_collateral() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn remunerate_without_tab_errors() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -188,6 +191,7 @@ async fn remunerate_without_tab_errors() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -252,6 +256,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -340,6 +345,7 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
 /// - status remains Pending
 /// - collateral unchanged
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -415,6 +421,7 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
 
 /// Two concurrent remunerations should settle exactly once.
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -516,6 +523,7 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
 
 /// Once a tab is Settled (collateral unlocked), remuneration should be a no-op.
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn remuneration_is_noop_after_settlement() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;

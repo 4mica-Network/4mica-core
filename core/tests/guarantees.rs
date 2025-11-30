@@ -129,6 +129,7 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
         domain: [0u8; 32],
     });
 
+    let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let core_service = CoreService::new_with_dependencies(
         config,
         persist_ctx,
@@ -136,6 +137,7 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
         chain_id,
         read_provider,
         [0u8; 32],
+        ready_rx,
     )?;
     Ok(core_service)
 }
@@ -193,6 +195,7 @@ fn build_claims(
 }
 
 #[test]
+#[serial_test::serial]
 fn domain_separator_matches_contract_logic() {
     let addr = Address::from_str("0xA15BB66138824a1c7167f5E85b957d04Dd34E468").unwrap();
     let domain = common::fixtures::compute_guarantee_domain_separator(31337, addr).unwrap();
@@ -203,6 +206,7 @@ fn domain_separator_matches_contract_logic() {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -255,6 +259,7 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 
@@ -334,6 +339,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -343,6 +349,7 @@ async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -392,6 +399,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -448,6 +456,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -514,6 +523,7 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
 }
 
 #[test(tokio::test)]
+#[serial_test::serial]
 async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -576,6 +586,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn accepts_timestamp_within_tab_window() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -629,6 +640,7 @@ async fn accepts_timestamp_within_tab_window() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn rejects_timestamp_outside_tab_window() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -725,6 +737,7 @@ async fn rejects_timestamp_outside_tab_window() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn pending_tab_expired_reopens_with_first_claim_timestamp() {
     load_env();
     let ctx = match PersistCtx::new().await {

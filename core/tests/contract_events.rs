@@ -8,7 +8,6 @@ use entities::sea_orm_active_enums::*;
 use entities::*;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
-use serial_test::serial;
 use std::time::Duration;
 use test_log::test;
 
@@ -53,7 +52,7 @@ async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()>
 //
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     let E2eEnvironment {
         contract,
@@ -94,7 +93,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     const NUMBER_OF_TRIALS: usize = 60;
 
@@ -158,7 +157,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
 //
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     let E2eEnvironment {
         contract,
@@ -229,7 +228,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let E2eEnvironment {
         provider,
@@ -294,7 +293,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
 // ────────────────────── CONFIG EVENTS (requires roles) ──────────────────────
 //
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
     let E2eEnvironment {
         contract,
@@ -359,7 +358,7 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     let E2eEnvironment {
         provider,
@@ -434,7 +433,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial]
+#[serial_test::serial]
 async fn listener_catches_up_on_missed_events() -> anyhow::Result<()> {
     // Setup environment with fresh DB and make first deposit
     let mut test_env = setup_e2e_environment().await?;
