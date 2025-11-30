@@ -14,7 +14,7 @@ use alloy::{
 use futures_util::{StreamExt, stream};
 use log::{error, info, warn};
 use std::{sync::Arc, time::Duration};
-use tokio::{self, task::JoinHandle};
+use tokio::{self, sync::oneshot, task::JoinHandle};
 
 pub struct EthereumListener {
     config: EthereumConfig,
@@ -38,7 +38,10 @@ impl EthereumListener {
         }
     }
 
-    pub async fn run(&self) -> Result<JoinHandle<()>, BlockchainListenerError> {
+    pub async fn run(
+        &self,
+        ready_tx: Option<oneshot::Sender<()>>,
+    ) -> Result<JoinHandle<()>, BlockchainListenerError> {
         let address: Address = self
             .config
             .contract_address
@@ -56,6 +59,7 @@ impl EthereumListener {
             address,
             persist_ctx,
             self.handler.clone(),
+            ready_tx,
         ));
         Ok(handle)
     }
@@ -66,6 +70,7 @@ impl EthereumListener {
         address: Address,
         persist_ctx: PersistCtx,
         handler: Arc<dyn EthereumEventHandler>,
+        mut ready_tx: Option<oneshot::Sender<()>>,
     ) {
         let mut delay = Duration::from_secs(5);
 
@@ -123,6 +128,12 @@ impl EthereumListener {
 
                     // Reset the delay to 5 seconds on successful subscription
                     delay = Duration::from_secs(5);
+
+                    // Signal that the listener is ready
+                    if let Some(tx) = ready_tx.take() {
+                        let _ = tx.send(());
+                        info!("Listener is ready and signaled readiness");
+                    }
 
                     if let Err(e) =
                         Self::process_events(&handler, &persist_ctx, &mut combined_stream).await
