@@ -424,7 +424,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     // Insert two guarantees with different req_ids
     let g1 = GuaranteeData {
         tab_id,
-        req_id: U256::from(0xA),
+        req_id: U256::from(0xf),
         from: user_addr.clone(),
         to: random_eth_address(),
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -433,9 +433,10 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
         cert: "cert-A".into(),
     };
     repo::store_guarantee_on(ctx.db.as_ref(), g1).await?;
+
     let g2 = GuaranteeData {
         tab_id,
-        req_id: U256::from(0xB),
+        req_id: U256::from(0x10),
         from: user_addr,
         to: random_eth_address(),
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -449,7 +450,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
     let last = last.unwrap();
-    assert_eq!(last.req_id, "0xb");
+    assert_eq!(last.req_id, "0x10");
     assert_eq!(last.value, U256::from(20u64).to_string());
 
     Ok(())

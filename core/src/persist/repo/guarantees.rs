@@ -7,6 +7,7 @@ use crypto::bls::BLSCert;
 use entities::guarantee;
 use log::info;
 use rpc::PaymentGuaranteeClaims;
+use sea_orm::prelude::Expr;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
@@ -146,7 +147,11 @@ pub async fn get_guarantees_for_tab(
 ) -> Result<Vec<guarantee::Model>, PersistDbError> {
     let rows = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
-        .order_by_asc(guarantee::Column::ReqId)
+        // Pad the prefix-stripped req_id to 64 characters (256 bits) and decode it to bytes, then sort by that.
+        // 'i' is for case-insensitive matching.
+        .order_by_asc(Expr::cust(
+            r#"decode(lpad(regexp_replace(req_id, '^0x', '', 'i'), 64, '0'), 'hex')"#,
+        ))
         .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
@@ -160,7 +165,11 @@ pub async fn get_last_guarantee_for_tab(
     info!("Fetching last guarantee for tab {}", tab_id);
     let row = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
-        .order_by_desc(guarantee::Column::ReqId)
+        // Pad the prefix-stripped req_id to 64 characters (256 bits) and decode it to bytes, then sort by that.
+        // 'i' is for case-insensitive matching.
+        .order_by_desc(Expr::cust(
+            r#"decode(lpad(regexp_replace(req_id, '^0x', '', 'i'), 64, '0'), 'hex')"#,
+        ))
         .one(ctx.db.as_ref())
         .await?;
     Ok(row)
