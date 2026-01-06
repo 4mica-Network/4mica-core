@@ -1,7 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use crate::util::u256_to_string;
-use alloy::primitives::U256;
+use alloy::primitives::{Address as AlloyAddress, U256};
 use entities::collateral_event;
 use entities::sea_orm_active_enums::{CollateralEventType, SettlementStatus};
 use log::info;
@@ -95,6 +95,25 @@ pub async fn unlock_user_collateral(
             Box::pin(async move {
                 let tab = get_tab_by_id_on(txn, tab_id).await?;
                 let tab_id_str = u256_to_string(tab_id);
+
+                let tab_asset = AlloyAddress::from_str(&tab.asset_address).map_err(|e| {
+                    PersistDbError::InvariantViolation(format!(
+                        "invalid tab asset address {} for tab {}: {e}",
+                        &tab.asset_address, tab_id_str
+                    ))
+                })?;
+                let unlock_asset = AlloyAddress::from_str(&asset_address).map_err(|e| {
+                    PersistDbError::InvariantViolation(format!(
+                        "invalid unlock asset address {} for tab {}: {e}",
+                        &asset_address, tab_id_str
+                    ))
+                })?;
+                if tab_asset != unlock_asset {
+                    return Err(PersistDbError::InvariantViolation(format!(
+                        "tab asset does not match unlock asset for tab {}",
+                        tab_id_str
+                    )));
+                }
 
                 let transitioned =
                     transition_settlement(txn, &tab_id_str, SettlementStatus::Settled, now).await?;
