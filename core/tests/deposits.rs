@@ -548,6 +548,46 @@ async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyho
 
 #[test(tokio::test)]
 #[serial_test::serial]
+async fn unlock_user_collateral_fails_if_asset_mismatched() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+
+    let user_addr = random_address();
+    let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
+
+    make_user_with_locked(&ctx, &user_addr, U256::from(30u64), U256::from(10u64)).await?;
+    make_tab(&ctx, tab_id, &user_addr).await?;
+
+    let mut other_asset = random_address();
+    while other_asset == DEFAULT_ASSET_ADDRESS {
+        other_asset = random_address();
+    }
+
+    let err = repo::unlock_user_collateral(
+        &ctx,
+        tab_id,
+        other_asset,
+        U256::from(5u64),
+    )
+    .await
+    .expect_err("should fail unlocking with mismatched asset");
+    match err {
+        PersistDbError::InvariantViolation(_) => { /* expected */ }
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    let locked = read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(locked, U256::from(10u64));
+
+    let t = tabs::Entity::find_by_id(u256_to_string(tab_id))
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(t.settlement_status, SettlementStatus::Pending);
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
 async fn deposit_creates_user_if_missing() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
