@@ -4,10 +4,11 @@ use alloy_primitives::Address;
 use core_service::persist::{PersistCtx, repo};
 use entities::{
     sea_orm_active_enums::{SettlementStatus, TabStatus},
+    user_transaction,
     tabs,
 };
 use log::debug;
-use sea_orm::{EntityTrait, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::time::Duration;
 use test_log::test;
 
@@ -154,6 +155,117 @@ async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
         tries += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+
+    Ok(())
+}
+
+/// `TabPaid` with wrong recipient is ignored.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::serial]
+async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
+    let E2eEnvironment {
+        contract,
+        core_service,
+        usdc,
+        signer_addr,
+        ..
+    } = setup_e2e_environment().await?;
+    let persist_ctx = core_service.persist_ctx();
+
+    let recipient_address = unique_addr();
+    let mut wrong_recipient = unique_addr();
+    while wrong_recipient == recipient_address {
+        wrong_recipient = unique_addr();
+    }
+
+    usdc.mint(signer_addr, U256::from(100u64))
+        .send()
+        .await?
+        .watch()
+        .await?;
+    usdc.approve(*contract.address(), U256::from(100u64))
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    let user_address = signer_addr.to_string();
+    repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_address).await?;
+
+    // deposit 50 USDC
+    contract
+        .depositStablecoin(*usdc.address(), U256::from(50u64))
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    insert_tab(
+        persist_ctx,
+        tab_id,
+        &user_address,
+        &recipient_address,
+        &usdc.address().to_string(),
+    )
+    .await?;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let balance = repo::get_user_balance_on(
+        persist_ctx.db.as_ref(),
+        &user_address,
+        &usdc.address().to_string(),
+    )
+    .await?;
+    assert_eq!(balance.total.parse::<U256>().unwrap(), U256::from(50u64));
+
+    // lock 20 USDC
+    repo::update_user_balance_and_version_on(
+        persist_ctx.db.as_ref(),
+        &user_address,
+        &usdc.address().to_string(),
+        balance.version,
+        balance.total.parse().unwrap(),
+        U256::from(20u64),
+    )
+    .await?;
+
+    // transfer 10 USDC to a wrong recipient
+    contract
+        .payTabInERC20Token(
+            tab_id,
+            *usdc.address(),
+            U256::from(10u64),
+            wrong_recipient.parse().unwrap(),
+        )
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    let mut tries = 0;
+    let mut has_tx = false;
+    while tries < 10 {
+        let tx_rows = user_transaction::Entity::find()
+            .filter(user_transaction::Column::UserAddress.eq(user_address.clone()))
+            .all(persist_ctx.db.as_ref())
+            .await?;
+        if !tx_rows.is_empty() {
+            has_tx = true;
+            break;
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        !has_tx,
+        "unexpected payment recorded for mismatched recipient"
+    );
+
+    let locked =
+        read_locked_collateral(persist_ctx, &user_address, &usdc.address().to_string()).await?;
+    assert_eq!(locked, U256::from(20u64));
 
     Ok(())
 }

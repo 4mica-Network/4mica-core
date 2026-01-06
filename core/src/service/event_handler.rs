@@ -119,12 +119,15 @@ impl EthereumEventHandler for CoreService {
             tab_id,
             asset,
             user,
+            recipient,
             amount,
             ..
         } = *log.log_decode()?.data();
 
         let tab_id_str = crate::util::u256_to_string(tab_id);
-        info!("Tab paid: tab={tab_id_str}, user={user}, amount={amount}, asset={asset}");
+        info!(
+            "Tab paid: tab={tab_id_str}, user={user}, recipient={recipient}, amount={amount}, asset={asset}"
+        );
 
         let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? else {
             warn!("Tab not found for TabPaid: {}. Skipping.", tab_id_str);
@@ -164,11 +167,19 @@ impl EthereumEventHandler for CoreService {
             ))
         })?;
 
+        if recipient_address != recipient {
+            warn!(
+                "Recipient does not match tab recipient for tab {}. Skipping.",
+                tab_id_str
+            );
+            return Ok(());
+        }
+
         let payment = PaymentTx {
             block_number: log.block_number.unwrap_or_default(),
             tx_hash: log.transaction_hash.unwrap_or_default(),
             from: user,
-            to: recipient_address,
+            to: recipient,
             amount,
             tab_id,
             req_id: U256::from(1),
