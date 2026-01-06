@@ -214,7 +214,8 @@ impl CoreService {
     }
 
     pub async fn wait_for_listener_ready(&self) -> Result<(), oneshot::error::RecvError> {
-        if let Some(receiver) = self.inner.listener_ready_rx.lock().take() {
+        let receiver = self.inner.listener_ready_rx.lock().take();
+        if let Some(receiver) = receiver {
             receiver.await?;
         }
         Ok(())

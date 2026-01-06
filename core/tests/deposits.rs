@@ -562,14 +562,9 @@ async fn unlock_user_collateral_fails_if_asset_mismatched() -> anyhow::Result<()
         other_asset = random_address();
     }
 
-    let err = repo::unlock_user_collateral(
-        &ctx,
-        tab_id,
-        other_asset,
-        U256::from(5u64),
-    )
-    .await
-    .expect_err("should fail unlocking with mismatched asset");
+    let err = repo::unlock_user_collateral(&ctx, tab_id, other_asset, U256::from(5u64))
+        .await
+        .expect_err("should fail unlocking with mismatched asset");
     match err {
         PersistDbError::InvariantViolation(_) => { /* expected */ }
         other => panic!("unexpected error: {other:?}"),
