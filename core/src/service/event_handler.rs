@@ -139,6 +139,25 @@ impl EthereumEventHandler for CoreService {
             return Ok(());
         }
 
+        let tab_asset_address: Address = match tab.asset_address.parse() {
+            Ok(address) => address,
+            Err(err) => {
+                warn!(
+                    "Invalid tab asset address {} for tab {} (err: {}). Skipping.",
+                    &tab.asset_address, tab_id_str, err
+                );
+                return Ok(());
+            }
+        };
+
+        if tab_asset_address != asset {
+            warn!(
+                "Asset does not match tab asset for tab {}. Skipping.",
+                tab_id_str
+            );
+            return Ok(());
+        }
+
         let recipient_address: Address = tab.server_address.parse().map_err(|e| {
             BlockchainListenerError::EventHandlerError(format!(
                 "Failed to parse recipient address: {e}"

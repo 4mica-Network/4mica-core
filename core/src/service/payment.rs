@@ -72,6 +72,25 @@ pub async fn process_discovered_payment(
         .erc20_token
         .unwrap_or(DEFAULT_ASSET_ADDRESS.parse().map_err(anyhow::Error::from)?);
 
+    let tab_asset_address = match tab.asset_address.parse::<Address>() {
+        Ok(address) => address,
+        Err(err) => {
+            warn!(
+                "Invalid tab asset address {} for tab {} (err: {}). Skipping.",
+                &tab.asset_address, tab_id_str, err
+            );
+            return Ok(());
+        }
+    };
+
+    if tab_asset_address != asset_address {
+        warn!(
+            "Payment asset does not match tab asset for tab {}. Skipping.",
+            tab_id_str
+        );
+        return Ok(());
+    }
+
     // Submit a user transaction if it doesn't already exist
     let rows_affected = repo::submit_payment_transaction(
         ctx,
