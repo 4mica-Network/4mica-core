@@ -73,14 +73,74 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
         vm.expectEmit(true, true, false, true);
-        emit Core4Mica.RecipientRemunerated(tabId, ETH_ASSET, 0.5 ether);
+        emit Core4Mica.RecipientRemunerated(tabId, ETH_ASSET, 0.25 ether);
 
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
-        assertEq(USER2.balance, 0.5 ether);
+        assertEq(USER2.balance, 0.25 ether);
         (uint256 collateral, , ) = core4Mica.getUser(USER1);
-        assertEq(collateral, 0.5 ether);
+        assertEq(collateral, 0.75 ether);
+    }
+
+    function test_Remunerate_TwoTabs_PartialPaymentDoesNotDoubleSpend()
+        public
+    {
+        vm.prank(USER1);
+        core4Mica.deposit{value: 1 ether}();
+
+        uint256 tabId1 = 0x1111;
+        uint256 tabId2 = 0x2222;
+        uint256 reqId1 = 1;
+        uint256 reqId2 = 2;
+
+        vm.prank(OPERATOR);
+        core4Mica.recordPayment(tabId2, ETH_ASSET, 0.2 ether);
+
+        uint256 tabTimestamp = 1;
+        vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
+
+        Guarantee memory g1 = _ethGuarantee(
+            tabId1,
+            tabTimestamp,
+            USER1,
+            USER2,
+            reqId1,
+            0.6 ether
+        );
+        Guarantee memory g2 = _ethGuarantee(
+            tabId2,
+            tabTimestamp,
+            USER1,
+            USER2,
+            reqId2,
+            0.6 ether
+        );
+        BLS.G2Point memory signature1 = _signGuarantee(g1, TEST_PRIVATE_KEY);
+        BLS.G2Point memory signature2 = _signGuarantee(g2, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData1 = _encodeGuaranteeWithVersion(g1);
+        bytes memory guaranteeData2 = _encodeGuaranteeWithVersion(g2);
+
+        uint256 user2BalanceBefore = USER2.balance;
+
+        vm.prank(USER2);
+        core4Mica.remunerate(guaranteeData1, signature1);
+
+        (uint256 collateralAfterFirst, , ) = core4Mica.getUser(USER1);
+        assertEq(collateralAfterFirst, 0.4 ether);
+
+        vm.prank(USER2);
+        core4Mica.remunerate(guaranteeData2, signature2);
+
+        assertEq(USER2.balance, user2BalanceBefore + 1 ether);
+        (uint256 collateralAfterSecond, , ) = core4Mica.getUser(USER1);
+        assertEq(collateralAfterSecond, 0);
+
+        (uint256 paid, bool remunerated, ) = core4Mica.getPaymentStatus(
+            tabId2
+        );
+        assertEq(paid, 0.2 ether);
+        assertTrue(remunerated);
     }
 
     function test_Remunerate_Stablecoin() public {
