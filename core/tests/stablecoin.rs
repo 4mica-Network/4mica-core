@@ -4,8 +4,7 @@ use alloy_primitives::Address;
 use core_service::persist::{PersistCtx, repo};
 use entities::{
     sea_orm_active_enums::{SettlementStatus, TabStatus},
-    user_transaction,
-    tabs,
+    tabs, user_transaction,
 };
 use log::debug;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
