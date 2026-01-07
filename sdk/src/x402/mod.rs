@@ -180,6 +180,10 @@ where
         user_address: &str,
     ) -> Result<PaymentGuaranteeRequestClaimsV1, X402Error> {
         let tab_id = parse_u256(&tab.tab_id)?;
+        let req_id = match tab.next_req_id.as_deref() {
+            Some(raw) => parse_u256(raw)?,
+            None => U256::ZERO,
+        };
         let amount = parse_u256(&requirements.max_amount_required)?;
 
         if !tab.user_address.eq_ignore_ascii_case(user_address) {
@@ -198,6 +202,7 @@ where
             user_address.to_string(),
             requirements.pay_to.clone(),
             tab_id,
+            req_id,
             amount,
             now,
             Some(requirements.asset.clone()),

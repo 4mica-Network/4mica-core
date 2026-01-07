@@ -295,6 +295,7 @@ let claims = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(), // user_address
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(), // recipient_address
     U256::from(1),                                              // tab_id
+    U256::ZERO,                                                 // req_id (first request)
     U256::from(1_000_000_000_000_000_000u128),                  // amount (1 ETH)
     1704067200,                                                 // timestamp
     None,                                                       // erc20_token (None for ETH)
@@ -320,6 +321,7 @@ let claims_usdc = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
     U256::from(1),
+    U256::ZERO,
     U256::from(1000_000_000u128), // 1000 USDC
     1704067200,
     Some(usdc_token),
@@ -453,6 +455,7 @@ let claims = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
     U256::from(1),
+    U256::ZERO,
     U256::from(1_000_000_000_000_000_000u128), // 1 ETH
     1704067200,
     None, // None for ETH
@@ -519,6 +522,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_address.clone(),
         recipient_address.clone(),
         tab_id,
+        U256::ZERO,
         U256::from(1_000_000_000_000_000_000u128), // 1 ETH
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -597,6 +601,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_address.clone(),
         recipient_address.clone(),
         tab_id,
+        U256::ZERO,
         U256::from(1000_000_000u128), // 1,000 USDC
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?

@@ -26,7 +26,7 @@ impl CoreService {
             .await
             .map_err(ServiceError::from)?;
 
-        let next_req_id = match last_opt {
+        let expected_req_id = match last_opt {
             Some(ref last) => {
                 let prev_req_id = U256::from_str(&last.req_id).map_err(|e| {
                     ServiceError::InvalidParams(format!("Invalid prev_req_id: {}", e))
@@ -45,6 +45,10 @@ impl CoreService {
             }
         };
 
+        if claims.req_id != expected_req_id {
+            return Err(ServiceError::InvalidRequestID);
+        }
+
         let now_i64 = chrono::Utc::now().timestamp();
         if now_i64 < 0 {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
@@ -59,7 +63,7 @@ impl CoreService {
             return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
         };
 
-        if (tab.status == TabStatus::Pending) != (next_req_id == U256::ZERO) {
+        if (tab.status == TabStatus::Pending) != (expected_req_id == U256::ZERO) {
             return Err(ServiceError::InvalidRequestID);
         }
 
@@ -106,7 +110,7 @@ impl CoreService {
             return Err(ServiceError::TabClosed);
         }
 
-        Ok(next_req_id)
+        Ok(claims.req_id)
     }
 
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
@@ -130,7 +134,7 @@ impl CoreService {
 
         repo::ensure_user_is_active(&self.inner.persist_ctx, req.claims.user_address()).await?;
 
-        let req_id = match &req.claims {
+        match &req.claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
                 self.verify_guarantee_request_claims_v1(claims).await?
             }
@@ -155,7 +159,6 @@ impl CoreService {
         let guarantee_claims = PaymentGuaranteeClaims::from_request(
             &req.claims,
             self.inner.guarantee_domain,
-            req_id,
             total_amount,
         );
         let cert: BLSCert = self.create_bls_cert(guarantee_claims.clone()).await?;

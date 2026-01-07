@@ -64,6 +64,8 @@ pub struct TabResponse {
     pub tab_id: String,
     #[serde(alias = "userAddress")]
     pub user_address: String,
+    #[serde(alias = "nextReqId", alias = "reqId")]
+    pub next_req_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
