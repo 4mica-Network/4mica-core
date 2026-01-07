@@ -140,7 +140,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
 
         // Expect events
         vm.expectEmit(true, true, true, true);
-        emit Core4Mica.TabPaid(tabId, address(usdc), OPERATOR, amount);
+        emit Core4Mica.TabPaid(tabId, address(usdc), OPERATOR, recipient, amount);
 
         // Pay tab in USDC
         vm.prank(OPERATOR);
@@ -164,7 +164,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
         uint256 recipientBalanceBefore = usdt.balanceOf(recipient);
 
         vm.expectEmit(true, true, true, true);
-        emit Core4Mica.TabPaid(tabId, address(usdt), OPERATOR, amount);
+        emit Core4Mica.TabPaid(tabId, address(usdt), OPERATOR, recipient, amount);
 
         vm.prank(OPERATOR);
         core4Mica.payTabInERC20Token(tabId, address(usdt), amount, recipient);
