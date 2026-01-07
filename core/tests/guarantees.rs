@@ -182,12 +182,14 @@ fn build_claims(
     tab_id: U256,
     user_address: String,
     recipient_address: String,
+    req_id: U256,
     timestamp: u64,
 ) -> PaymentGuaranteeRequestClaimsV1 {
     PaymentGuaranteeRequestClaimsV1 {
         tab_id,
         user_address,
         recipient_address,
+        req_id,
         asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
         amount: U256::from(1u64),
         timestamp,
@@ -489,12 +491,12 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
             tab_id,
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            req_id: U256::ZERO,
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
             amount: U256::from(40u64),
             timestamp: Utc::now().timestamp() as u64,
         }),
         domain,
-        U256::from(0u64),
         U256::from(40u64),
     );
 
@@ -552,13 +554,13 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
             tab_id,
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            req_id: random_u256(),
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
             amount: U256::from(10u64),
             // deliberately invalid: chrono cannot represent this
             timestamp: i64::MAX as u64,
         }),
         domain,
-        random_u256(),
         U256::from(10u64),
     );
 
@@ -624,7 +626,7 @@ async fn accepts_timestamp_within_tab_window() {
     .await;
 
     let claims_ts = (start_ts + Duration::seconds(120)).and_utc().timestamp() as u64;
-    let claims = build_claims(tab_id, user_addr, recipient_addr, claims_ts);
+    let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
     let req_id = core_service
         .verify_guarantee_request_claims_v1(&claims)
@@ -702,6 +704,7 @@ async fn rejects_timestamp_outside_tab_window() {
         tab_id,
         user_addr.clone(),
         recipient_addr.clone(),
+        U256::from(1u64),
         before_start,
     );
     let err = core_service
@@ -716,7 +719,13 @@ async fn rejects_timestamp_outside_tab_window() {
     let after_expiry = (start_ts + Duration::seconds(ttl + 1))
         .and_utc()
         .timestamp() as u64;
-    let claims = build_claims(tab_id, user_addr, recipient_addr, after_expiry);
+    let claims = build_claims(
+        tab_id,
+        user_addr,
+        recipient_addr,
+        U256::from(1u64),
+        after_expiry,
+    );
     let err = core_service
         .verify_guarantee_request_claims_v1(&claims)
         .await
@@ -775,7 +784,7 @@ async fn pending_tab_expired_reopens_with_first_claim_timestamp() {
     .await;
 
     let claim_ts = Utc::now().timestamp() as u64;
-    let claims = build_claims(tab_id, user_addr, recipient_addr, claim_ts);
+    let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claim_ts);
 
     let req_id = core_service
         .verify_guarantee_request_claims_v1(&claims)
