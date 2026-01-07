@@ -55,6 +55,7 @@ pub mod abi {
             uint256 indexed tab_id,
             address indexed asset,
             address indexed user,
+            address recipient,
             uint256 amount
         );
     }

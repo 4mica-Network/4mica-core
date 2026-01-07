@@ -154,6 +154,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 indexed tab_id,
         address indexed asset,
         address indexed user,
+        address recipient,
         uint256 amount
     );
     event GuaranteeVersionUpdated(
@@ -493,7 +494,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         whenNotPaused
     {
         IERC20(asset).safeTransferFrom(msg.sender, recipient, amount);
-        emit TabPaid(tab_id, asset, msg.sender, amount);
+        emit TabPaid(tab_id, asset, msg.sender, recipient, amount);
     }
 
     /// TODO(#20): compress signature
