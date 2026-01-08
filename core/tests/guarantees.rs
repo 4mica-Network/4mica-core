@@ -86,12 +86,12 @@ fn build_payment_claims(
             tab_id,
             user_address: user_address.to_string(),
             recipient_address: recipient_address.to_string(),
+            req_id,
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
             amount,
             timestamp: Utc::now().timestamp() as u64,
         }),
         domain,
-        req_id,
         total_amount,
     )
 }
