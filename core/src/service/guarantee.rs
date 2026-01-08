@@ -5,7 +5,7 @@ use crate::{
     persist::repo,
     util::u256_to_string,
 };
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use chrono::TimeZone;
 use crypto::bls::BLSCert;
@@ -65,6 +65,16 @@ impl CoreService {
 
         if (tab.status == TabStatus::Pending) != (expected_req_id == U256::ZERO) {
             return Err(ServiceError::InvalidRequestID);
+        }
+
+        let tab_user = Address::from_str(&tab.user_address)
+            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab user address")))?;
+        let claim_user = Address::from_str(&claims.user_address)
+            .map_err(|_| ServiceError::InvalidParams("Invalid user address".into()))?;
+        if tab_user != claim_user {
+            return Err(ServiceError::InvalidParams(
+                "User address does not match tab".into(),
+            ));
         }
 
         if tab.asset_address != claims.asset_address {
