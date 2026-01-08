@@ -1058,6 +1058,47 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
+async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Result<()> {
+    let (_, core_client, ctx) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let tab_recipient_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
+
+    let tab = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: tab_recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(3600),
+        })
+        .await
+        .expect("create tab");
+
+    let forged_recipient_addr = random_address();
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &forged_recipient_addr,
+        tab.id,
+        U256::ZERO,
+        U256::from(1u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let result = core_client.issue_guarantee(req).await;
+    assert!(result.is_err(), "must reject mismatched recipient address");
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
 async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::Result<()> {
     let (_, core_client, ctx) = setup_clean_db().await?;
 
