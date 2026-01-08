@@ -9,7 +9,7 @@ use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use chrono::TimeZone;
 use crypto::bls::BLSCert;
-use entities::sea_orm_active_enums::TabStatus;
+use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::info;
 use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
@@ -62,6 +62,10 @@ impl CoreService {
         let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, claims.tab_id).await? else {
             return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
         };
+
+        if tab.status == TabStatus::Closed || tab.settlement_status != SettlementStatus::Pending {
+            return Err(ServiceError::TabClosed);
+        }
 
         if (tab.status == TabStatus::Pending) != (expected_req_id == U256::ZERO) {
             return Err(ServiceError::InvalidRequestID);
