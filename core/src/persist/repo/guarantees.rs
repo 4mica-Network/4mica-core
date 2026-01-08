@@ -17,7 +17,7 @@ use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{now, parse_address};
 use super::tabs::get_tab_by_id_on;
 use super::users::ensure_user_exists_on;
-use entities::tabs;
+use super::withdrawals::get_pending_withdrawal_on;
 
 pub async fn lock_and_store_guarantee(
     ctx: &PersistCtx,
@@ -56,7 +56,19 @@ pub async fn lock_and_store_guarantee(
                     PersistDbError::InvalidCollateral("invalid locked collateral".into())
                 })?;
 
-                let free = total.saturating_sub(locked);
+                let pending_amount = match get_pending_withdrawal_on(
+                    txn,
+                    &promise.user_address,
+                    &promise.asset_address,
+                )
+                .await?
+                {
+                    Some(withdrawal) => U256::from_str(&withdrawal.requested_amount)
+                        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?,
+                    None => U256::ZERO,
+                };
+
+                let free = total.saturating_sub(locked).saturating_sub(pending_amount);
                 if free < promise.amount {
                     return Err(PersistDbError::InsufficientCollateral);
                 }
