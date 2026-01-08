@@ -2,11 +2,11 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use crate::util::u256_to_string;
 use alloy::primitives::{Address as AlloyAddress, U256};
-use entities::collateral_event;
 use entities::sea_orm_active_enums::{CollateralEventType, SettlementStatus};
+use entities::{collateral_event, tabs};
 use log::info;
 use sea_orm::ActiveValue::Set;
-use sea_orm::{EntityTrait, TransactionTrait};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
@@ -115,11 +115,19 @@ pub async fn unlock_user_collateral(
                     )));
                 }
 
-                let transitioned =
-                    transition_settlement(txn, &tab_id_str, SettlementStatus::Settled, now).await?;
-                if !transitioned {
+                if tab.settlement_status != SettlementStatus::Pending {
                     return Ok::<_, PersistDbError>(());
                 }
+
+                let total_amount = U256::from_str(&tab.total_amount)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let paid_amount = U256::from_str(&tab.paid_amount)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let new_paid = paid_amount.checked_add(amount).ok_or_else(|| {
+                    PersistDbError::DatabaseFailure(sea_orm::DbErr::Custom(
+                        "paid_amount overflow".to_string(),
+                    ))
+                })?;
 
                 let asset_balance =
                     get_user_balance_on(txn, &tab.user_address, &asset_address).await?;
@@ -147,6 +155,20 @@ pub async fn unlock_user_collateral(
                     new_locked,
                 )
                 .await?;
+
+                let mut tab_update = tabs::ActiveModel {
+                    paid_amount: Set(new_paid.to_string()),
+                    updated_at: Set(now),
+                    ..Default::default()
+                };
+                if tab.settlement_status == SettlementStatus::Pending && new_paid >= total_amount {
+                    tab_update.settlement_status = Set(SettlementStatus::Settled);
+                }
+                tabs::Entity::update_many()
+                    .filter(tabs::Column::Id.eq(tab_id_str.clone()))
+                    .set(tab_update)
+                    .exec(txn)
+                    .await?;
 
                 let ev = collateral_event::ActiveModel {
                     id: Set(new_uuid()),

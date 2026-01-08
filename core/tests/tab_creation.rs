@@ -180,6 +180,8 @@ async fn reuses_pending_tab_even_when_expired() {
         ttl: Set(expired_ttl),
         status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(expired_start),
         updated_at: Set(expired_start),
     };
