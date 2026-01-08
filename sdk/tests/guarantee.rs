@@ -23,6 +23,14 @@ async fn resolve_start_timestamp(recipient: &RecipientClient, tab_id: U256) -> a
     Ok(common::get_now().as_secs())
 }
 
+async fn resolve_next_req_id(recipient: &RecipientClient, tab_id: U256) -> anyhow::Result<U256> {
+    if let Some(latest) = recipient.get_latest_guarantee(tab_id).await? {
+        return Ok(latest.req_id + U256::from(1u64));
+    }
+
+    Ok(U256::ZERO)
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
@@ -93,10 +101,12 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
 
     // Step 3: User signs a payment (1 ETH)
     let start_timestamp = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
+    let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
     let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
+        req_id,
         amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
         timestamp: start_timestamp,
         asset_address: ETH_ASSET_ADDRESS.to_string(),
@@ -260,10 +270,12 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     let base_ts = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
 
     // Issue first guarantee.
+    let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
     let mut claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
+        req_id,
         amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
         timestamp: base_ts,
         asset_address: ETH_ASSET_ADDRESS.to_string(),
@@ -283,6 +295,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
 
     // Issue second guarantee with a different amount but same timestamp.
     claims.amount = U256::from(1_500_000_000_000_000_000u128); // 1.5 ETH
+    claims.req_id = first_req_id + U256::from(1u64);
     let sig_second = user_client
         .user
         .sign_payment(claims.clone(), SigningScheme::Eip712)

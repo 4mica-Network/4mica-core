@@ -90,6 +90,7 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
                     Json(TabResponse {
                         tab_id: "0x1234".into(),
                         user_address: body.user_address,
+                        next_req_id: None,
                     })
                 }
             }),

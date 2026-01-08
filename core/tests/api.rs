@@ -67,6 +67,7 @@ sol! {
         address user;
         address recipient;
         uint256  tabId;
+        uint256 reqId;
         uint256 amount;
         address asset;
         uint64  timestamp;
@@ -79,6 +80,7 @@ async fn build_signed_req(
     user_addr: &str,
     recipient_addr: &str,
     tab_id: U256,
+    req_id: U256,
     amount: U256,
     wallet: &alloy::signers::local::PrivateKeySigner,
     timestamp: Option<u64>,
@@ -94,6 +96,7 @@ async fn build_signed_req(
         user: Address::from_str(user_addr).unwrap(),
         recipient: Address::from_str(recipient_addr).unwrap(),
         tabId: tab_id,
+        reqId: req_id,
         amount,
         asset: Address::from_str(asset_address).unwrap(),
         timestamp: ts,
@@ -105,6 +108,7 @@ async fn build_signed_req(
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
             tab_id,
+            req_id,
             amount,
             timestamp: ts,
             asset_address: asset_address.to_string(),
@@ -131,6 +135,7 @@ async fn build_eip712_signed_request(
         user: wallet.address(),
         recipient,
         tabId: U256::from(0x7461622d6f6b32u128),
+        reqId: U256::from(0u64),
         amount: U256::from(42u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
         timestamp,
@@ -144,6 +149,7 @@ async fn build_eip712_signed_request(
             user_address: wallet.address().to_string(),
             recipient_address: recipient.to_string(),
             tab_id: U256::from(0x7461622d6f6b32u128),
+            req_id: U256::from(0u64),
             amount: U256::from(42u64),
             timestamp,
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -170,6 +176,7 @@ async fn issue_guarantee_rejects_future_timestamp() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         U256::from(0x7461622d667574757265u128),
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         Some(future_ts),
@@ -199,6 +206,7 @@ async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()>
         &user_addr,
         &recipient_addr,
         U256::from(0x7461622d6e6f636f6c6c61746572616cu128),
+        U256::ZERO,
         U256::from(10u64),
         &wallet,
         None,
@@ -217,7 +225,7 @@ async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()>
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn issue_guarantee_assigns_sequential_req_ids() -> anyhow::Result<()> {
+async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
     let (_, core_client, ctx) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -243,6 +251,7 @@ async fn issue_guarantee_assigns_sequential_req_ids() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab.id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         Some(start_ts),
@@ -256,6 +265,7 @@ async fn issue_guarantee_assigns_sequential_req_ids() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab.id,
+        U256::from(1u64),
         U256::from(2u64),
         &wallet,
         Some(start_ts),
@@ -264,6 +274,21 @@ async fn issue_guarantee_assigns_sequential_req_ids() -> anyhow::Result<()> {
     .await;
 
     core_client.issue_guarantee(req1).await.expect("second ok");
+
+    let req_replay = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab.id,
+        U256::from(1u64),
+        U256::from(3u64),
+        &wallet,
+        Some(start_ts),
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+    let result = core_client.issue_guarantee(req_replay).await;
+    assert!(result.is_err(), "must reject replayed req_id");
 
     let guarantees = core_client
         .get_tab_guarantees(tab.id)
@@ -304,6 +329,7 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(5u64),
         &wallet,
         None,
@@ -371,6 +397,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(5u64),
         &wallet,
         Some(shared_ts),
@@ -387,6 +414,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::from(1u64),
         U256::from(7u64),
         &wallet,
         Some(shared_ts),
@@ -486,6 +514,7 @@ async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Resu
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(3u64),
         &wallet,
         None,
@@ -549,6 +578,7 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab.id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         Some(start_ts),
@@ -562,6 +592,7 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab.id,
+        U256::from(1u64),
         U256::from(1u64),
         &wallet,
         Some(start_ts + 5),
@@ -603,6 +634,7 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         Some(start_ts),
@@ -616,6 +648,7 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::from(1u64),
         U256::from(1u64),
         &wallet,
         Some(start_ts),
@@ -666,6 +699,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         amount1,
         &wallet,
         Some(start_ts),
@@ -693,6 +727,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::from(1u64),
         amount2,
         &wallet,
         Some(start_ts),
@@ -737,6 +772,7 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,
@@ -776,6 +812,7 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_result.id,
+        U256::ZERO,
         U256::ONE,
         &wallet,
         None,
@@ -825,6 +862,7 @@ async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()>
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(4u64),
         &wallet,
         Some(start_ts),
@@ -858,6 +896,7 @@ async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()>
         &user_addr,
         &recipient_addr,
         tab_id,
+        forced_req_id + U256::from(1u64),
         U256::from(3u64),
         &wallet,
         Some(start_ts),
@@ -906,6 +945,7 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab.id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,
@@ -957,6 +997,7 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
         &user_addr,
         &recipient_addr,
         tab.id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,
@@ -1013,6 +1054,7 @@ async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::
         &user_addr,
         &recipient_addr,
         tab_result.id,
+        U256::from(1u64),
         U256::from(1u64),
         &wallet,
         Some(fake_start.and_utc().timestamp() as u64),
@@ -1537,6 +1579,7 @@ async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(12u64),
         &wallet,
         None,
@@ -1616,6 +1659,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
             address user;
             address recipient;
             uint256  tabId;
+            uint256 reqId;
             uint256 amount;
             address asset;
             uint64  timestamp;
@@ -1641,6 +1685,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         user,
         recipient,
         tabId: tab_id,
+        reqId: U256::ZERO,
         amount: U256::from(1u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
         timestamp,
@@ -1657,6 +1702,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
             user_address: user.to_string(),
             recipient_address: recipient.to_string(),
             tab_id,
+            req_id: U256::ZERO,
             amount: U256::from(1u64),
             timestamp,
             asset_address: "0x0000000000000000000000000000000000000000".into(),
@@ -1875,6 +1921,7 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
         &user_addr,
         &recipient_addr,
         tab_id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
         None,

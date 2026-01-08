@@ -267,11 +267,22 @@ impl CoreService {
             // be re-opened even if expired).
             if !expired || existing.status == TabStatus::Pending {
                 let id = parse_tab_id(&existing.id)?;
+                let next_req_id =
+                    match repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, id).await? {
+                        Some(model) => {
+                            let last = mapper::guarantee_model_to_info(model)?;
+                            last.req_id
+                                .checked_add(U256::from(1u8))
+                                .ok_or(ServiceError::InvalidRequestID)?
+                        }
+                        None => U256::ZERO,
+                    };
                 return Ok(CreatePaymentTabResult {
                     id,
                     user_address: existing.user_address,
                     recipient_address: existing.server_address,
                     erc20_token: Some(asset_address),
+                    next_req_id,
                 });
             }
         }
@@ -294,6 +305,7 @@ impl CoreService {
             user_address: req.user_address,
             recipient_address: req.recipient_address,
             erc20_token: req.erc20_token,
+            next_req_id: U256::ZERO,
         })
     }
 
