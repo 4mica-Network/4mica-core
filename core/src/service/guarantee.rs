@@ -76,6 +76,15 @@ impl CoreService {
                 "User address does not match tab".into(),
             ));
         }
+        let tab_recipient = Address::from_str(&tab.server_address)
+            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab recipient address")))?;
+        let claim_recipient = Address::from_str(&claims.recipient_address)
+            .map_err(|_| ServiceError::InvalidParams("Invalid recipient address".into()))?;
+        if tab_recipient != claim_recipient {
+            return Err(ServiceError::InvalidParams(
+                "Recipient address does not match tab".into(),
+            ));
+        }
 
         if tab.asset_address != claims.asset_address {
             return Err(ServiceError::InvalidParams("Invalid asset address".into()));
