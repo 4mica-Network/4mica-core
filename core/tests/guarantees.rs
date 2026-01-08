@@ -12,7 +12,7 @@ use core_service::{
     error::PersistDbError,
     ethereum::CoreContractApi,
     persist::*,
-    service::CoreService,
+    service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
 };
 use crypto::bls::BLSCert;
@@ -81,6 +81,7 @@ fn load_env() {
 struct MockContractApi {
     chain_id: u64,
     domain: [u8; 32],
+    tab_expiration_time: u64,
 }
 
 #[async_trait::async_trait]
@@ -93,6 +94,12 @@ impl CoreContractApi for MockContractApi {
         &self,
     ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
         Ok(self.domain)
+    }
+
+    async fn get_tab_expiration_time(
+        &self,
+    ) -> Result<u64, core_service::error::CoreContractApiError> {
+        Ok(self.tab_expiration_time)
     }
 
     async fn record_payment(
@@ -127,17 +134,21 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
     let contract_api: Arc<dyn CoreContractApi> = Arc::new(MockContractApi {
         chain_id,
         domain: [0u8; 32],
+        tab_expiration_time: 3600,
     });
 
     let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let core_service = CoreService::new_with_dependencies(
         config,
-        persist_ctx,
-        contract_api,
-        chain_id,
-        read_provider,
-        [0u8; 32],
-        ready_rx,
+        CoreServiceDeps {
+            persist_ctx,
+            contract_api,
+            chain_id,
+            read_provider,
+            guarantee_domain: [0u8; 32],
+            tab_expiration_time: 3600,
+            listener_ready_rx: ready_rx,
+        },
     )?;
     Ok(core_service)
 }
@@ -803,4 +814,55 @@ async fn pending_tab_expired_reopens_with_first_claim_timestamp() {
         expired_start.and_utc().timestamp()
     );
     assert_eq!(tab.ttl, ttl);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
+    load_env();
+    let ctx = match PersistCtx::new().await {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            return;
+        }
+    };
+    let core_service = match build_core_service(ctx.clone()).await {
+        Ok(cs) => cs,
+        Err(err) => {
+            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            return;
+        }
+    };
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_addr).await;
+    seed_user(&ctx, &recipient_addr).await;
+
+    let tab_id = U256::from(random::<u64>());
+    let start_ts = (Utc::now() - Duration::seconds(60)).naive_utc();
+    let ttl = 7200i64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_addr.clone(),
+        recipient_addr.clone(),
+        start_ts,
+        ttl,
+    )
+    .await;
+
+    let claims_ts = Utc::now().timestamp() as u64;
+    let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
+
+    let err = core_service
+        .verify_guarantee_request_claims_v1(&claims)
+        .await
+        .expect_err("ttl exceeding tab expiration should be rejected");
+    assert!(matches!(
+        err,
+        core_service::error::ServiceError::InvalidParams(msg)
+            if msg.contains("tab expiration time")
+    ));
 }

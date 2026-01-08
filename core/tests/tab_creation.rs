@@ -5,7 +5,7 @@ use core_service::{
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
     ethereum::CoreContractApi,
     persist::{PersistCtx, repo},
-    service::CoreService,
+    service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
 };
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
@@ -15,9 +15,12 @@ use rpc::CreatePaymentTabRequest;
 use sea_orm::{EntityTrait, Set};
 use std::{panic, sync::Arc};
 
+const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
+
 struct MockContractApi {
     chain_id: u64,
     domain: [u8; 32],
+    tab_expiration_time: u64,
 }
 
 #[async_trait::async_trait]
@@ -30,6 +33,12 @@ impl CoreContractApi for MockContractApi {
         &self,
     ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
         Ok(self.domain)
+    }
+
+    async fn get_tab_expiration_time(
+        &self,
+    ) -> Result<u64, core_service::error::CoreContractApiError> {
+        Ok(self.tab_expiration_time)
     }
 
     async fn record_payment(
@@ -56,7 +65,10 @@ fn build_read_provider() -> anyhow::Result<DynProvider> {
     Ok(provider.erased())
 }
 
-async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreService> {
+async fn build_core_service(
+    persist_ctx: PersistCtx,
+    tab_expiration_time: u64,
+) -> anyhow::Result<CoreService> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
     let config = AppConfig::fetch()?;
@@ -66,17 +78,21 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
     let contract_api: Arc<dyn CoreContractApi> = Arc::new(MockContractApi {
         chain_id,
         domain: [0u8; 32],
+        tab_expiration_time,
     });
 
     let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     CoreService::new_with_dependencies(
         config,
-        persist_ctx,
-        contract_api,
-        chain_id,
-        read_provider,
-        [0u8; 32],
-        ready_rx,
+        CoreServiceDeps {
+            persist_ctx,
+            contract_api,
+            chain_id,
+            read_provider,
+            guarantee_domain: [0u8; 32],
+            tab_expiration_time,
+            listener_ready_rx: ready_rx,
+        },
     )
 }
 
@@ -98,7 +114,7 @@ async fn returns_existing_pending_tab_when_active() {
             return;
         }
     };
-    let core_service = match build_core_service(ctx.clone()).await {
+    let core_service = match build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME).await {
         Ok(cs) => cs,
         Err(err) => {
             eprintln!("skipping returns_existing_pending_tab_when_active: {err}");
@@ -154,7 +170,7 @@ async fn reuses_pending_tab_even_when_expired() {
             return;
         }
     };
-    let core_service = match build_core_service(ctx.clone()).await {
+    let core_service = match build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME).await {
         Ok(cs) => cs,
         Err(err) => {
             eprintln!("skipping creates_new_tab_when_existing_pending_is_expired: {err}");
@@ -218,7 +234,7 @@ async fn uses_default_ttl_when_not_provided() {
             return;
         }
     };
-    let core_service = match build_core_service(ctx.clone()).await {
+    let core_service = match build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME).await {
         Ok(cs) => cs,
         Err(err) => {
             eprintln!("skipping uses_default_ttl_when_not_provided: {err}");
@@ -248,4 +264,44 @@ async fn uses_default_ttl_when_not_provided() {
     assert_eq!(stored.ttl, DEFAULT_TTL_SECS as i64);
     assert_eq!(stored.user_address, user);
     assert_eq!(stored.server_address, recipient);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn rejects_ttl_exceeding_tab_expiration() {
+    let ctx = match PersistCtx::new().await {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            eprintln!("skipping rejects_ttl_exceeding_tab_expiration: {err}");
+            return;
+        }
+    };
+    let core_service = match build_core_service(ctx.clone(), 300).await {
+        Ok(cs) => cs,
+        Err(err) => {
+            eprintln!("skipping rejects_ttl_exceeding_tab_expiration: {err}");
+            return;
+        }
+    };
+
+    let user = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user).await;
+    seed_user(&ctx, &recipient).await;
+
+    let err = core_service
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user,
+            recipient_address: recipient,
+            erc20_token: None,
+            ttl: Some(600),
+        })
+        .await
+        .expect_err("ttl should exceed tab expiration");
+
+    assert!(matches!(
+        err,
+        core_service::error::ServiceError::InvalidParams(msg)
+            if msg.contains("tab expiration time")
+    ));
 }
