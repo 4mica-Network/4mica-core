@@ -59,6 +59,8 @@ async fn insert_test_tab(
         ttl: Set(300),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -192,6 +194,8 @@ async fn insert_pending_tab(
         ttl: Set(ttl),
         status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -320,6 +324,8 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -407,6 +413,8 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         ttl: Set(123),
     };
     entities::tabs::Entity::insert(tab_am)

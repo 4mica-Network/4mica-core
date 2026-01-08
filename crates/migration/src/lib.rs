@@ -5,6 +5,7 @@ mod m20250901_000002_multi_asset;
 mod m20250901_000003_user_suspension;
 mod m20250901_000004_admin_api_keys;
 mod m20251116_000005_blockchain_event;
+mod m20251118_000006_tab_payment_totals;
 
 pub struct Migrator;
 
@@ -17,6 +18,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20250901_000003_user_suspension::Migration),
             Box::new(m20250901_000004_admin_api_keys::Migration),
             Box::new(m20251116_000005_blockchain_event::Migration),
+            Box::new(m20251118_000006_tab_payment_totals::Migration),
         ]
     }
 }
