@@ -31,6 +31,7 @@ pub struct CreatePaymentTabResult {
     pub user_address: String,
     pub recipient_address: String,
     pub erc20_token: Option<String>,
+    pub next_req_id: U256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
