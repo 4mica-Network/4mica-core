@@ -564,6 +564,132 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
 
 #[test(tokio::test)]
 #[serial_test::serial]
+async fn lock_and_store_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        Utc::now().timestamp(),
+        U256::from(80u64),
+    )
+    .await?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = random_u256();
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
+
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            tab_id,
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr,
+            req_id: U256::ZERO,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            amount: U256::from(30u64),
+            timestamp: Utc::now().timestamp() as u64,
+        }),
+        domain,
+        U256::from(30u64),
+    );
+
+    let mut sk_be32 = [0u8; 32];
+    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
+
+    let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
+    assert!(matches!(res, Err(PersistDbError::InsufficientCollateral)));
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
+    let g = entities::guarantee::Entity::find()
+        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(promise.req_id)))
+        .one(ctx.db.as_ref())
+        .await?;
+    assert!(g.is_none());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
+async fn lock_and_store_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        Utc::now().timestamp(),
+        U256::from(40u64),
+    )
+    .await?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = random_u256();
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
+
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            tab_id,
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr,
+            req_id: U256::ZERO,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            amount: U256::from(30u64),
+            timestamp: Utc::now().timestamp() as u64,
+        }),
+        domain,
+        U256::from(30u64),
+    );
+
+    let mut sk_be32 = [0u8; 32];
+    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
+
+    repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(30u64)
+    );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
 async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
