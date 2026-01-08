@@ -187,19 +187,22 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
         .expect("seed user");
 }
 
-async fn insert_pending_tab(
-    ctx: &PersistCtx,
+struct TestTabSpec {
     tab_id: U256,
     user_address: String,
     recipient_address: String,
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
-) {
+    status: TabStatus,
+    settlement_status: SettlementStatus,
+}
+
+async fn insert_tab_with_status(ctx: &PersistCtx, spec: TestTabSpec) {
     let now = Utc::now().naive_utc();
     let tab = entities::tabs::ActiveModel {
-        id: Set(u256_to_string(tab_id)),
-        user_address: Set(user_address),
-        server_address: Set(recipient_address),
+        id: Set(u256_to_string(spec.tab_id)),
+        user_address: Set(spec.user_address),
+        server_address: Set(spec.recipient_address),
         asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(start_ts),
         ttl: Set(ttl),
@@ -215,6 +218,29 @@ async fn insert_pending_tab(
         .exec(ctx.db.as_ref())
         .await
         .expect("insert tab");
+}
+
+async fn insert_pending_tab(
+    ctx: &PersistCtx,
+    tab_id: U256,
+    user_address: String,
+    recipient_address: String,
+    start_ts: chrono::NaiveDateTime,
+    ttl: i64,
+) {
+    insert_tab_with_status(
+        ctx,
+        TestTabSpec {
+            tab_id,
+            user_address,
+            recipient_address,
+            start_ts,
+            ttl,
+            status: TabStatus::Pending,
+            settlement_status: SettlementStatus::Pending,
+        },
+    )
+    .await;
 }
 
 fn build_claims(
@@ -902,6 +928,81 @@ async fn rejects_timestamp_outside_tab_window() {
         tab.start_ts.and_utc().timestamp(),
         start_ts.and_utc().timestamp()
     );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn rejects_guarantee_when_tab_settlement_finalized() {
+    load_env();
+    let ctx = match PersistCtx::new().await {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            return;
+        }
+    };
+    let core_service = match build_core_service(ctx.clone()).await {
+        Ok(cs) => cs,
+        Err(err) => {
+            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            return;
+        }
+    };
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_addr).await;
+    seed_user(&ctx, &recipient_addr).await;
+
+    for settlement_status in [SettlementStatus::Settled, SettlementStatus::Remunerated] {
+        let tab_id = U256::from(random::<u64>());
+        let start_ts = (Utc::now() - Duration::seconds(300)).naive_utc();
+        let ttl = 600i64;
+        insert_tab_with_status(
+            &ctx,
+            TestTabSpec {
+                tab_id,
+                user_address: user_addr.clone(),
+                recipient_address: recipient_addr.clone(),
+                start_ts,
+                ttl,
+                status: TabStatus::Open,
+                settlement_status,
+            },
+        )
+        .await;
+
+        repo::store_guarantee_on(
+            ctx.db.as_ref(),
+            core_service::persist::GuaranteeData {
+                tab_id,
+                req_id: U256::ZERO,
+                from: user_addr.clone(),
+                to: recipient_addr.clone(),
+                asset: DEFAULT_ASSET_ADDRESS.to_string(),
+                value: U256::from(1u64),
+                start_ts,
+                cert: "{}".into(),
+            },
+        )
+        .await
+        .expect("seed initial guarantee");
+
+        let claims_ts = (Utc::now() - Duration::seconds(60)).timestamp() as u64;
+        let claims = build_claims(
+            tab_id,
+            user_addr.clone(),
+            recipient_addr.clone(),
+            U256::from(1u64),
+            claims_ts,
+        );
+
+        let err = core_service
+            .verify_guarantee_request_claims_v1(&claims)
+            .await
+            .expect_err("finalized settlement should reject guarantees");
+        assert!(matches!(err, core_service::error::ServiceError::TabClosed));
+    }
 }
 
 #[tokio::test]
