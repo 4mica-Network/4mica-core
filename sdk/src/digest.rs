@@ -12,6 +12,7 @@ sol! {
         address user;
         address recipient;
         uint256  tabId;
+        uint256 reqId;
         uint256 amount;
         address asset;
         uint64  timestamp;
@@ -34,6 +35,7 @@ pub fn eip712_digest(
         recipient: Address::from_str(&claims.recipient_address)
             .map_err(|_| anyhow!("invalid claims.recipient_address"))?,
         tabId: claims.tab_id,
+        reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)
             .map_err(|_| anyhow!("invalid claims.asset_address"))?,
@@ -52,6 +54,7 @@ pub fn eip191_digest(
         user,
         recipient,
         tabId: claims.tab_id,
+        reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)
             .map_err(|_| anyhow!("invalid claims.asset_address"))?,

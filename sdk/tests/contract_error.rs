@@ -67,6 +67,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
+        req_id: U256::ZERO,
         amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
