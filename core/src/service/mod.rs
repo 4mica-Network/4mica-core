@@ -18,7 +18,10 @@ use rpc::{
     CreatePaymentTabResult, GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserSuspensionStatus,
     UserTransactionInfo,
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::{
     sync::oneshot,
     task::JoinHandle,
@@ -46,6 +49,7 @@ pub struct Inner {
     bls_private_key: [u8; 32],
     public_params: CorePublicParameters,
     guarantee_domain: [u8; 32],
+    tab_expiration_time: AtomicU64,
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
@@ -64,6 +68,16 @@ impl Drop for Inner {
 #[derive(Clone)]
 pub struct CoreService {
     inner: Arc<Inner>,
+}
+
+pub struct CoreServiceDeps {
+    pub persist_ctx: PersistCtx,
+    pub contract_api: Arc<dyn CoreContractApi>,
+    pub chain_id: u64,
+    pub read_provider: DynProvider,
+    pub guarantee_domain: [u8; 32],
+    pub tab_expiration_time: u64,
+    pub listener_ready_rx: oneshot::Receiver<()>,
 }
 
 impl CoreService {
@@ -87,20 +101,25 @@ impl CoreService {
 
         let read_provider = Self::build_ws_provider(eth_cfg.clone()).await?;
         let on_chain_domain = contract_api.get_guarantee_domain_separator().await?;
+        let tab_expiration_time = contract_api.get_tab_expiration_time().await?;
         info!(
             "on-chain guarantee domain separator: 0x{}",
             crypto::hex::encode_hex(&on_chain_domain)
         );
+        info!("on-chain tab expiration time: {}s", tab_expiration_time);
 
         let (ready_tx, ready_rx) = oneshot::channel();
         let core_service = Self::new_with_dependencies(
             config,
-            persist_ctx.clone(),
-            contract_api,
-            actual_chain_id,
-            read_provider.clone(),
-            on_chain_domain,
-            ready_rx,
+            CoreServiceDeps {
+                persist_ctx: persist_ctx.clone(),
+                contract_api,
+                chain_id: actual_chain_id,
+                read_provider: read_provider.clone(),
+                guarantee_domain: on_chain_domain,
+                tab_expiration_time,
+                listener_ready_rx: ready_rx,
+            },
         )?;
         match core_service.bootstrap_admin_api_key().await {
             Ok(Some(api_key)) => info!(
@@ -145,15 +164,7 @@ impl CoreService {
         Ok(core_service)
     }
 
-    pub fn new_with_dependencies(
-        config: AppConfig,
-        persist_ctx: PersistCtx,
-        contract_api: Arc<dyn CoreContractApi>,
-        chain_id: u64,
-        read_provider: DynProvider,
-        guarantee_domain: [u8; 32],
-        listener_ready_rx: oneshot::Receiver<()>,
-    ) -> anyhow::Result<Self> {
+    pub fn new_with_dependencies(config: AppConfig, deps: CoreServiceDeps) -> anyhow::Result<Self> {
         let bls_private_key: [u8; 32] = config
             .secrets
             .bls_private_key
@@ -176,18 +187,19 @@ impl CoreService {
             bls_private_key,
             public_params: CorePublicParameters {
                 public_key,
-                contract_address: eth_config.contract_address.clone(),
-                ethereum_http_rpc_url: eth_config.http_rpc_url.clone(),
+                contract_address: eth_config.contract_address,
+                ethereum_http_rpc_url: eth_config.http_rpc_url,
                 eip712_name,
                 eip712_version,
-                chain_id,
+                chain_id: deps.chain_id,
             },
-            guarantee_domain,
-            persist_ctx,
-            read_provider,
-            contract_api,
+            guarantee_domain: deps.guarantee_domain,
+            tab_expiration_time: AtomicU64::new(deps.tab_expiration_time),
+            persist_ctx: deps.persist_ctx,
+            read_provider: deps.read_provider,
+            contract_api: deps.contract_api,
             listener_handle: Mutex::default(),
-            listener_ready_rx: Mutex::new(Some(listener_ready_rx)),
+            listener_ready_rx: Mutex::new(Some(deps.listener_ready_rx)),
         };
 
         Ok(Self {
@@ -205,6 +217,16 @@ impl CoreService {
 
     pub fn public_params(&self) -> CorePublicParameters {
         self.inner.public_params.clone()
+    }
+
+    fn tab_expiration_time(&self) -> u64 {
+        self.inner.tab_expiration_time.load(Ordering::Relaxed)
+    }
+
+    fn set_tab_expiration_time(&self, tab_expiration_time: u64) {
+        self.inner
+            .tab_expiration_time
+            .store(tab_expiration_time, Ordering::Relaxed);
     }
 
     pub fn kill_listener(&self) {
@@ -240,6 +262,7 @@ impl CoreService {
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
         let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
+        let max_ttl = self.tab_expiration_time();
         let now = crate::util::now_naive();
         let now_ts = now.and_utc().timestamp();
         if now_ts < 0 {
@@ -266,6 +289,12 @@ impl CoreService {
             // Reuse an existing tab when it is still valid, or when it is a pending tab (which can
             // be re-opened even if expired).
             if !expired || existing.status == TabStatus::Pending {
+                if existing.ttl <= 0 || existing.ttl as u64 > max_ttl {
+                    return Err(ServiceError::InvalidParams(format!(
+                        "tab ttl exceeds tab expiration time (ttl={}, max={})",
+                        existing.ttl, max_ttl
+                    )));
+                }
                 let id = parse_tab_id(&existing.id)?;
                 let next_req_id =
                     match repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, id).await? {
@@ -285,6 +314,13 @@ impl CoreService {
                     next_req_id,
                 });
             }
+        }
+
+        if ttl > max_ttl {
+            return Err(ServiceError::InvalidParams(format!(
+                "tab ttl exceeds tab expiration time (ttl={}, max={})",
+                ttl, max_ttl
+            )));
         }
 
         let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);

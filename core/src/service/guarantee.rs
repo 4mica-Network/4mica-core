@@ -84,6 +84,13 @@ impl CoreService {
         if tab.ttl <= 0 {
             return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
         }
+        let max_ttl = self.tab_expiration_time();
+        if tab.ttl as u64 > max_ttl {
+            return Err(ServiceError::InvalidParams(format!(
+                "tab ttl exceeds tab expiration time (ttl={}, max={})",
+                tab.ttl, max_ttl
+            )));
+        }
 
         let (tab_start_ts_i64, tab_ttl) = if tab.status == TabStatus::Pending {
             let start_ts = chrono::Utc
