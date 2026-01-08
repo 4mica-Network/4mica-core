@@ -59,6 +59,8 @@ async fn insert_test_tab(
         ttl: Set(300),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -68,6 +70,30 @@ async fn insert_test_tab(
         .await?;
 
     Ok(())
+}
+
+fn build_payment_claims(
+    domain: [u8; 32],
+    tab_id: U256,
+    req_id: U256,
+    user_address: &str,
+    recipient_address: &str,
+    amount: U256,
+    total_amount: U256,
+) -> PaymentGuaranteeClaims {
+    PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            tab_id,
+            user_address: user_address.to_string(),
+            recipient_address: recipient_address.to_string(),
+            req_id,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            amount,
+            timestamp: Utc::now().timestamp() as u64,
+        }),
+        domain,
+        total_amount,
+    )
 }
 
 fn load_env() {
@@ -168,6 +194,8 @@ async fn insert_pending_tab(
         ttl: Set(ttl),
         status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -296,6 +324,8 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -383,6 +413,8 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         updated_at: Set(now),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         ttl: Set(123),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -521,6 +553,121 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
         .one(ctx.db.as_ref())
         .await?;
     assert!(g.is_some());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
+async fn partial_payment_unlock_allows_relock_within_freed_amount() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id1 = random_u256();
+    let tab_id2 = random_u256();
+    insert_test_tab(&ctx, tab_id1, user_addr.clone(), recipient_addr.clone()).await?;
+    insert_test_tab(&ctx, tab_id2, user_addr.clone(), recipient_addr.clone()).await?;
+
+    let mut sk_be32 = [0u8; 32];
+    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+
+    let promise1 = build_payment_claims(
+        domain,
+        tab_id1,
+        U256::from(0u64),
+        &user_addr,
+        &recipient_addr,
+        U256::from(40u64),
+        U256::from(40u64),
+    );
+    let cert1 = BLSCert::new(&sk_be32, promise1.clone())?;
+    repo::lock_and_store_guarantee(&ctx, &promise1, &cert1).await?;
+
+    let promise2 = build_payment_claims(
+        domain,
+        tab_id2,
+        U256::from(0u64),
+        &user_addr,
+        &recipient_addr,
+        U256::from(60u64),
+        U256::from(60u64),
+    );
+    let cert2 = BLSCert::new(&sk_be32, promise2.clone())?;
+    repo::lock_and_store_guarantee(&ctx, &promise2, &cert2).await?;
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(100u64)
+    );
+
+    repo::unlock_user_collateral(
+        &ctx,
+        tab_id2,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(20u64),
+    )
+    .await?;
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(80u64)
+    );
+
+    let promise3 = build_payment_claims(
+        domain,
+        tab_id1,
+        U256::from(1u64),
+        &user_addr,
+        &recipient_addr,
+        U256::from(20u64),
+        U256::from(60u64),
+    );
+    let cert3 = BLSCert::new(&sk_be32, promise3.clone())?;
+    repo::lock_and_store_guarantee(&ctx, &promise3, &cert3).await?;
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(100u64)
+    );
+
+    let promise4 = build_payment_claims(
+        domain,
+        tab_id1,
+        U256::from(2u64),
+        &user_addr,
+        &recipient_addr,
+        U256::from(1u64),
+        U256::from(61u64),
+    );
+    let cert4 = BLSCert::new(&sk_be32, promise4.clone())?;
+    let err = repo::lock_and_store_guarantee(&ctx, &promise4, &cert4)
+        .await
+        .expect_err("should fail when no free collateral remains");
+    match err {
+        PersistDbError::InsufficientCollateral => { /* expected */ }
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(100u64)
+    );
 
     Ok(())
 }

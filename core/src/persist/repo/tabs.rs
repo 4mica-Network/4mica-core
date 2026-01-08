@@ -34,6 +34,8 @@ pub async fn create_pending_tab(
         ttl: Set(ttl),
         status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(now()),
         updated_at: Set(now()),
     };

@@ -408,7 +408,12 @@ async fn make_user_with_locked(
     Ok(())
 }
 
-async fn make_tab(ctx: &PersistCtx, tab_id: U256, user_addr: &str) -> anyhow::Result<()> {
+async fn make_tab(
+    ctx: &PersistCtx,
+    tab_id: U256,
+    user_addr: &str,
+    total_amount: U256,
+) -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
     let am = tabs::ActiveModel {
         id: Set(u256_to_string(tab_id)),
@@ -419,6 +424,8 @@ async fn make_tab(ctx: &PersistCtx, tab_id: U256, user_addr: &str) -> anyhow::Re
         ttl: Set(60),
         status: Set(entities::sea_orm_active_enums::TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set(total_amount.to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -436,7 +443,7 @@ async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> an
 
     // user: total 100, locked 40
     make_user_with_locked(&ctx, &user_addr, U256::from(100u64), U256::from(40u64)).await?;
-    make_tab(&ctx, tab_id, &user_addr).await?;
+    make_tab(&ctx, tab_id, &user_addr, U256::from(25u64)).await?;
 
     // unlock 25
     repo::unlock_user_collateral(
@@ -483,7 +490,7 @@ async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::
 
     // start: 50 total, 20 locked
     make_user_with_locked(&ctx, &user_addr, U256::from(50u64), U256::from(20u64)).await?;
-    make_tab(&ctx, tab_id, &user_addr).await?;
+    make_tab(&ctx, tab_id, &user_addr, U256::from(10u64)).await?;
 
     // first unlock of 10
     repo::unlock_user_collateral(
@@ -524,7 +531,7 @@ async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyho
     let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
 
     make_user_with_locked(&ctx, &user_addr, U256::from(30u64), U256::from(5u64)).await?;
-    make_tab(&ctx, tab_id, &user_addr).await?;
+    make_tab(&ctx, tab_id, &user_addr, U256::ZERO).await?;
 
     // trying to unlock 10 when only 5 are locked must error
     let err = repo::unlock_user_collateral(
@@ -555,7 +562,7 @@ async fn unlock_user_collateral_fails_if_asset_mismatched() -> anyhow::Result<()
     let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
 
     make_user_with_locked(&ctx, &user_addr, U256::from(30u64), U256::from(10u64)).await?;
-    make_tab(&ctx, tab_id, &user_addr).await?;
+    make_tab(&ctx, tab_id, &user_addr, U256::ZERO).await?;
 
     let mut other_asset = random_address();
     while other_asset == DEFAULT_ASSET_ADDRESS {

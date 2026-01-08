@@ -18,6 +18,10 @@ pub struct Model {
     pub start_ts: DateTime,
     pub status: TabStatus,
     pub settlement_status: SettlementStatus,
+    #[sea_orm(column_type = "Text")]
+    pub total_amount: String,
+    #[sea_orm(column_type = "Text")]
+    pub paid_amount: String,
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub ttl: i64,

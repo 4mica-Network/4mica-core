@@ -49,6 +49,8 @@ async fn insert_tab(
         start_ts: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
         created_at: Set(now),
         updated_at: Set(now),
         ttl: Set(3600i64),

@@ -14,8 +14,10 @@ use sea_orm::{
 };
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::parse_address;
+use super::common::{now, parse_address};
+use super::tabs::get_tab_by_id_on;
 use super::users::ensure_user_exists_on;
+use entities::tabs;
 
 pub async fn lock_and_store_guarantee(
     ctx: &PersistCtx,
@@ -24,6 +26,7 @@ pub async fn lock_and_store_guarantee(
 ) -> Result<(), PersistDbError> {
     use std::str::FromStr;
 
+    let now = now();
     parse_address(&promise.user_address)?;
     parse_address(&promise.recipient_address)?;
     parse_address(&promise.asset_address)?;
@@ -71,6 +74,28 @@ pub async fn lock_and_store_guarantee(
                     new_locked,
                 )
                 .await?;
+
+                let tab = get_tab_by_id_on(txn, promise.tab_id).await?;
+                let tab_id_str = tab.id.clone();
+                let current_total = U256::from_str(&tab.total_amount)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                if promise.total_amount < current_total {
+                    return Err(PersistDbError::InvariantViolation(format!(
+                        "total_amount decreased for tab {}",
+                        tab_id_str
+                    )));
+                }
+                if promise.total_amount > current_total {
+                    tabs::Entity::update_many()
+                        .filter(tabs::Column::Id.eq(tab_id_str))
+                        .set(tabs::ActiveModel {
+                            total_amount: Set(promise.total_amount.to_string()),
+                            updated_at: Set(now),
+                            ..Default::default()
+                        })
+                        .exec(txn)
+                        .await?;
+                }
 
                 let data = GuaranteeData {
                     tab_id: promise.tab_id,

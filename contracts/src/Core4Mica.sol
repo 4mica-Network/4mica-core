@@ -535,12 +535,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
         // Tab must not be paid
         if (status.paid >= g.total_amount) revert TabAlreadyPaid();
+        uint256 remaining = g.total_amount - status.paid;
 
-        // Client must have sufficient funds
-        if (collateralBalances[g.client][asset] < g.total_amount)
+        // Client must have sufficient funds for the remainder
+        if (collateralBalances[g.client][asset] < remaining)
             revert DoubleSpendingDetected();
 
-        collateralBalances[g.client][asset] -= g.total_amount;
+        collateralBalances[g.client][asset] -= remaining;
         status.remunerated = true;
 
         // Subtract the remunerated value from the withdrawal request
@@ -551,18 +552,18 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             wr.timestamp != 0 &&
             g.timestamp < wr.timestamp + synchronizationDelay
         ) {
-            uint256 deduction = Math.min(wr.amount, g.total_amount);
+            uint256 deduction = Math.min(wr.amount, remaining);
             wr.amount -= deduction;
         }
 
         if (asset == ETH_ASSET) {
-            (bool ok, ) = payable(g.recipient).call{value: g.total_amount}("");
+            (bool ok, ) = payable(g.recipient).call{value: remaining}("");
             if (!ok) revert TransferFailed();
         } else {
-            IERC20(asset).safeTransfer(g.recipient, g.total_amount);
+            IERC20(asset).safeTransfer(g.recipient, remaining);
         }
 
-        emit RecipientRemunerated(g.tab_id, asset, g.total_amount);
+        emit RecipientRemunerated(g.tab_id, asset, remaining);
     }
 
     // ========= Operator / Manager flows =========
