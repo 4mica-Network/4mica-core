@@ -12,7 +12,7 @@ use core_service::{
     error::PersistDbError,
     ethereum::CoreContractApi,
     persist::*,
-    service::CoreService,
+    service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
 };
 use crypto::bls::BLSCert;
@@ -81,6 +81,7 @@ fn load_env() {
 struct MockContractApi {
     chain_id: u64,
     domain: [u8; 32],
+    tab_expiration_time: u64,
 }
 
 #[async_trait::async_trait]
@@ -93,6 +94,12 @@ impl CoreContractApi for MockContractApi {
         &self,
     ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
         Ok(self.domain)
+    }
+
+    async fn get_tab_expiration_time(
+        &self,
+    ) -> Result<u64, core_service::error::CoreContractApiError> {
+        Ok(self.tab_expiration_time)
     }
 
     async fn record_payment(
@@ -127,17 +134,21 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
     let contract_api: Arc<dyn CoreContractApi> = Arc::new(MockContractApi {
         chain_id,
         domain: [0u8; 32],
+        tab_expiration_time: 3600,
     });
 
     let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let core_service = CoreService::new_with_dependencies(
         config,
-        persist_ctx,
-        contract_api,
-        chain_id,
-        read_provider,
-        [0u8; 32],
-        ready_rx,
+        CoreServiceDeps {
+            persist_ctx,
+            contract_api,
+            chain_id,
+            read_provider,
+            guarantee_domain: [0u8; 32],
+            tab_expiration_time: 3600,
+            listener_ready_rx: ready_rx,
+        },
     )?;
     Ok(core_service)
 }
@@ -150,24 +161,27 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
         .expect("seed user");
 }
 
-async fn insert_pending_tab(
-    ctx: &PersistCtx,
+struct TestTabSpec {
     tab_id: U256,
     user_address: String,
     recipient_address: String,
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
-) {
+    status: TabStatus,
+    settlement_status: SettlementStatus,
+}
+
+async fn insert_tab_with_status(ctx: &PersistCtx, spec: TestTabSpec) {
     let now = Utc::now().naive_utc();
     let tab = entities::tabs::ActiveModel {
-        id: Set(u256_to_string(tab_id)),
-        user_address: Set(user_address),
-        server_address: Set(recipient_address),
+        id: Set(u256_to_string(spec.tab_id)),
+        user_address: Set(spec.user_address),
+        server_address: Set(spec.recipient_address),
         asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        start_ts: Set(start_ts),
-        ttl: Set(ttl),
-        status: Set(TabStatus::Pending),
-        settlement_status: Set(SettlementStatus::Pending),
+        start_ts: Set(spec.start_ts),
+        ttl: Set(spec.ttl),
+        status: Set(spec.status),
+        settlement_status: Set(spec.settlement_status),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -176,6 +190,29 @@ async fn insert_pending_tab(
         .exec(ctx.db.as_ref())
         .await
         .expect("insert tab");
+}
+
+async fn insert_pending_tab(
+    ctx: &PersistCtx,
+    tab_id: U256,
+    user_address: String,
+    recipient_address: String,
+    start_ts: chrono::NaiveDateTime,
+    ttl: i64,
+) {
+    insert_tab_with_status(
+        ctx,
+        TestTabSpec {
+            tab_id,
+            user_address,
+            recipient_address,
+            start_ts,
+            ttl,
+            status: TabStatus::Pending,
+            settlement_status: SettlementStatus::Pending,
+        },
+    )
+    .await;
 }
 
 fn build_claims(
@@ -527,6 +564,132 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
 
 #[test(tokio::test)]
 #[serial_test::serial]
+async fn lock_and_store_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        Utc::now().timestamp(),
+        U256::from(80u64),
+    )
+    .await?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = random_u256();
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
+
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            tab_id,
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr,
+            req_id: U256::ZERO,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            amount: U256::from(30u64),
+            timestamp: Utc::now().timestamp() as u64,
+        }),
+        domain,
+        U256::from(30u64),
+    );
+
+    let mut sk_be32 = [0u8; 32];
+    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
+
+    let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
+    assert!(matches!(res, Err(PersistDbError::InsufficientCollateral)));
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
+    let g = entities::guarantee::Entity::find()
+        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(promise.req_id)))
+        .one(ctx.db.as_ref())
+        .await?;
+    assert!(g.is_none());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
+async fn lock_and_store_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        Utc::now().timestamp(),
+        U256::from(40u64),
+    )
+    .await?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = random_u256();
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
+
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            tab_id,
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr,
+            req_id: U256::ZERO,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            amount: U256::from(30u64),
+            timestamp: Utc::now().timestamp() as u64,
+        }),
+        domain,
+        U256::from(30u64),
+    );
+
+    let mut sk_be32 = [0u8; 32];
+    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+    let cert = BLSCert::new(&sk_be32, promise.clone())?;
+
+    repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(30u64)
+    );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
 async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -748,6 +911,81 @@ async fn rejects_timestamp_outside_tab_window() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn rejects_guarantee_when_tab_settlement_finalized() {
+    load_env();
+    let ctx = match PersistCtx::new().await {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            return;
+        }
+    };
+    let core_service = match build_core_service(ctx.clone()).await {
+        Ok(cs) => cs,
+        Err(err) => {
+            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            return;
+        }
+    };
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_addr).await;
+    seed_user(&ctx, &recipient_addr).await;
+
+    for settlement_status in [SettlementStatus::Settled, SettlementStatus::Remunerated] {
+        let tab_id = U256::from(random::<u64>());
+        let start_ts = (Utc::now() - Duration::seconds(300)).naive_utc();
+        let ttl = 600i64;
+        insert_tab_with_status(
+            &ctx,
+            TestTabSpec {
+                tab_id,
+                user_address: user_addr.clone(),
+                recipient_address: recipient_addr.clone(),
+                start_ts,
+                ttl,
+                status: TabStatus::Open,
+                settlement_status,
+            },
+        )
+        .await;
+
+        repo::store_guarantee_on(
+            ctx.db.as_ref(),
+            core_service::persist::GuaranteeData {
+                tab_id,
+                req_id: U256::ZERO,
+                from: user_addr.clone(),
+                to: recipient_addr.clone(),
+                asset: DEFAULT_ASSET_ADDRESS.to_string(),
+                value: U256::from(1u64),
+                start_ts,
+                cert: "{}".into(),
+            },
+        )
+        .await
+        .expect("seed initial guarantee");
+
+        let claims_ts = (Utc::now() - Duration::seconds(60)).timestamp() as u64;
+        let claims = build_claims(
+            tab_id,
+            user_addr.clone(),
+            recipient_addr.clone(),
+            U256::from(1u64),
+            claims_ts,
+        );
+
+        let err = core_service
+            .verify_guarantee_request_claims_v1(&claims)
+            .await
+            .expect_err("finalized settlement should reject guarantees");
+        assert!(matches!(err, core_service::error::ServiceError::TabClosed));
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn pending_tab_expired_reopens_with_first_claim_timestamp() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -803,4 +1041,55 @@ async fn pending_tab_expired_reopens_with_first_claim_timestamp() {
         expired_start.and_utc().timestamp()
     );
     assert_eq!(tab.ttl, ttl);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
+    load_env();
+    let ctx = match PersistCtx::new().await {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            return;
+        }
+    };
+    let core_service = match build_core_service(ctx.clone()).await {
+        Ok(cs) => cs,
+        Err(err) => {
+            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            return;
+        }
+    };
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_addr).await;
+    seed_user(&ctx, &recipient_addr).await;
+
+    let tab_id = U256::from(random::<u64>());
+    let start_ts = (Utc::now() - Duration::seconds(60)).naive_utc();
+    let ttl = 7200i64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_addr.clone(),
+        recipient_addr.clone(),
+        start_ts,
+        ttl,
+    )
+    .await;
+
+    let claims_ts = Utc::now().timestamp() as u64;
+    let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
+
+    let err = core_service
+        .verify_guarantee_request_claims_v1(&claims)
+        .await
+        .expect_err("ttl exceeding tab expiration should be rejected");
+    assert!(matches!(
+        err,
+        core_service::error::ServiceError::InvalidParams(msg)
+            if msg.contains("tab expiration time")
+    ));
 }

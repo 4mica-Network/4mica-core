@@ -5,8 +5,8 @@ use chrono::{TimeZone, Utc};
 use entities::sea_orm_active_enums::WithdrawalStatus;
 use entities::withdrawal;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
-    TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter,
+    QueryOrder, Set, TransactionTrait,
 };
 use std::str::FromStr;
 
@@ -167,6 +167,35 @@ pub async fn finalize_withdrawal(
         .await?;
 
     Ok(())
+}
+
+pub async fn get_pending_withdrawal_on<C: ConnectionTrait>(
+    conn: &C,
+    user_address: &str,
+    asset_address: &str,
+) -> Result<Option<withdrawal::Model>, PersistDbError> {
+    let user_address = parse_address(user_address)?;
+    let asset_address = parse_address(asset_address)?;
+    let user_str = user_address.as_str().to_owned();
+    let asset_str = asset_address.as_str().to_owned();
+
+    let rows = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(&user_str))
+        .filter(withdrawal::Column::AssetAddress.eq(&asset_str))
+        .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
+        .order_by_desc(withdrawal::Column::CreatedAt)
+        .all(conn)
+        .await?;
+
+    match rows.len() {
+        0 => Ok(None),
+        1 => Ok(rows.into_iter().next()),
+        count => Err(PersistDbError::MultiplePendingWithdrawals {
+            user: user_str,
+            asset: asset_str,
+            count,
+        }),
+    }
 }
 
 pub async fn get_pending_withdrawals_for_user(

@@ -5,11 +5,11 @@ use crate::{
     persist::repo,
     util::u256_to_string,
 };
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use chrono::TimeZone;
 use crypto::bls::BLSCert;
-use entities::sea_orm_active_enums::TabStatus;
+use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::info;
 use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
@@ -63,8 +63,31 @@ impl CoreService {
             return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
         };
 
+        if tab.status == TabStatus::Closed || tab.settlement_status != SettlementStatus::Pending {
+            return Err(ServiceError::TabClosed);
+        }
+
         if (tab.status == TabStatus::Pending) != (expected_req_id == U256::ZERO) {
             return Err(ServiceError::InvalidRequestID);
+        }
+
+        let tab_user = Address::from_str(&tab.user_address)
+            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab user address")))?;
+        let claim_user = Address::from_str(&claims.user_address)
+            .map_err(|_| ServiceError::InvalidParams("Invalid user address".into()))?;
+        if tab_user != claim_user {
+            return Err(ServiceError::InvalidParams(
+                "User address does not match tab".into(),
+            ));
+        }
+        let tab_recipient = Address::from_str(&tab.server_address)
+            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab recipient address")))?;
+        let claim_recipient = Address::from_str(&claims.recipient_address)
+            .map_err(|_| ServiceError::InvalidParams("Invalid recipient address".into()))?;
+        if tab_recipient != claim_recipient {
+            return Err(ServiceError::InvalidParams(
+                "Recipient address does not match tab".into(),
+            ));
         }
 
         if tab.asset_address != claims.asset_address {
@@ -73,6 +96,13 @@ impl CoreService {
 
         if tab.ttl <= 0 {
             return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
+        }
+        let max_ttl = self.tab_expiration_time();
+        if tab.ttl as u64 > max_ttl {
+            return Err(ServiceError::InvalidParams(format!(
+                "tab ttl exceeds tab expiration time (ttl={}, max={})",
+                tab.ttl, max_ttl
+            )));
         }
 
         let (tab_start_ts_i64, tab_ttl) = if tab.status == TabStatus::Pending {
