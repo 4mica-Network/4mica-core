@@ -72,30 +72,6 @@ async fn insert_test_tab(
     Ok(())
 }
 
-fn build_payment_claims(
-    domain: [u8; 32],
-    tab_id: U256,
-    req_id: U256,
-    user_address: &str,
-    recipient_address: &str,
-    amount: U256,
-    total_amount: U256,
-) -> PaymentGuaranteeClaims {
-    PaymentGuaranteeClaims::from_request(
-        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            tab_id,
-            user_address: user_address.to_string(),
-            recipient_address: recipient_address.to_string(),
-            req_id,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-            amount,
-            timestamp: Utc::now().timestamp() as u64,
-        }),
-        domain,
-        total_amount,
-    )
-}
-
 fn load_env() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -204,10 +180,10 @@ async fn insert_tab_with_status(ctx: &PersistCtx, spec: TestTabSpec) {
         user_address: Set(spec.user_address),
         server_address: Set(spec.recipient_address),
         asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        start_ts: Set(start_ts),
-        ttl: Set(ttl),
-        status: Set(TabStatus::Pending),
-        settlement_status: Set(SettlementStatus::Pending),
+        start_ts: Set(spec.start_ts),
+        ttl: Set(spec.ttl),
+        status: Set(spec.status),
+        settlement_status: Set(spec.settlement_status),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         created_at: Set(now),
