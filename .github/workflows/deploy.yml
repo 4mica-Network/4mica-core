@@ -158,6 +158,19 @@ jobs:
           done
           cat api.log
 
+      - name: Wait for listener readiness
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/core/health >/dev/null; then
+              echo "Listener is ready!"
+              exit 0
+            fi
+            echo "Waiting for listener..."
+            sleep 5
+          done
+          echo "Listener readiness timed out"
+          exit 1
+
       - name: Run tests
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

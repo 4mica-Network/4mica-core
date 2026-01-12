@@ -53,6 +53,10 @@ impl EthereumListener {
             .events(all_event_signatures());
 
         let persist_ctx = self.persist_ctx.clone();
+        let initial_backfill_blocks = self
+            .config
+            .number_of_blocks_to_confirm
+            .saturating_add(self.config.number_of_pending_blocks);
         let handle = tokio::spawn(Self::listen_loop(
             self.provider.clone(),
             base_filter,
@@ -60,6 +64,7 @@ impl EthereumListener {
             persist_ctx,
             self.handler.clone(),
             ready_tx,
+            initial_backfill_blocks,
         ));
         Ok(handle)
     }
@@ -71,6 +76,7 @@ impl EthereumListener {
         persist_ctx: PersistCtx,
         handler: Arc<dyn EthereumEventHandler>,
         mut ready_tx: Option<oneshot::Sender<()>>,
+        initial_backfill_blocks: u64,
     ) {
         let mut delay = Duration::from_secs(5);
 
@@ -92,17 +98,31 @@ impl EthereumListener {
                         "Subscribed to new events from address {address:?} starting at latest block"
                     );
 
-                    // Fetch historical logs from last processed event to latest
+                    // Fetch historical logs from last processed event (or a small backfill window) to latest
                     let last_processed_block = last_event.map(|e| e.block_number as u64);
-                    let historical_logs = if let Some(last_processed_block) = last_processed_block {
+                    let mut backfill_start = last_processed_block;
+                    if backfill_start.is_none() && initial_backfill_blocks > 0 {
+                        match provider.get_block_number().await {
+                            Ok(latest) => {
+                                let start = latest.saturating_sub(initial_backfill_blocks);
+                                backfill_start = Some(start);
+                                info!(
+                                    "No last processed event found; backfilling from block {start} to latest"
+                                );
+                            }
+                            Err(e) => {
+                                error!("Failed to fetch latest block for backfill: {e}");
+                            }
+                        }
+                    }
+
+                    let historical_logs = if let Some(start_block) = backfill_start {
                         let historical_filter = base_filter
                             .clone()
-                            .from_block(last_processed_block)
+                            .from_block(start_block)
                             .to_block(BlockNumberOrTag::Latest);
 
-                        info!(
-                            "Fetching historical logs from block {last_processed_block:?} to latest"
-                        );
+                        info!("Fetching historical logs from block {start_block:?} to latest");
 
                         match provider.get_logs(&historical_filter).await {
                             Ok(logs) => {
