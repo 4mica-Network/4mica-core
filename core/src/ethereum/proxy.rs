@@ -20,6 +20,8 @@ pub trait CoreContractApi: Send + Sync {
 
     async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError>;
 
+    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError>;
+
     async fn record_payment(
         &self,
         tab_id: U256,
@@ -79,6 +81,12 @@ impl CoreContractApi for CoreContractProxy {
         }
 
         Ok(version_config.domainSeparator.into())
+    }
+
+    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
+        let contract = self.build_contract();
+        let expiration = contract.tabExpirationTime().call().await?;
+        Ok(expiration.to())
     }
 
     async fn record_payment(

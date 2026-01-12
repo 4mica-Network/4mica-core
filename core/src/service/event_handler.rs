@@ -211,8 +211,13 @@ impl EthereumEventHandler for CoreService {
                 info!("{:?}", ev);
             }
             "TabExpirationTimeUpdated" => {
-                let ev = log.log_decode::<TabExpirationTimeUpdated>()?;
-                info!("{:?}", ev);
+                let TabExpirationTimeUpdated {
+                    newExpirationTime: new_expiration_time,
+                    ..
+                } = *log.log_decode()?.data();
+                let new_expiration = new_expiration_time.to();
+                info!("TabExpirationTimeUpdated: {}", new_expiration);
+                self.set_tab_expiration_time(new_expiration);
             }
             "SynchronizationDelayUpdated" => {
                 let ev = log.log_decode::<SynchronizationDelayUpdated>()?;

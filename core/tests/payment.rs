@@ -31,6 +31,10 @@ impl CoreContractApi for FailingContractApi {
         Ok([0u8; 32])
     }
 
+    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
+        Ok(3600)
+    }
+
     async fn record_payment(
         &self,
         _tab_id: U256,
@@ -55,6 +59,10 @@ impl CoreContractApi for RecordingContractApi {
 
     async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
         Ok([0u8; 32])
+    }
+
+    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
+        Ok(3600)
     }
 
     async fn record_payment(
