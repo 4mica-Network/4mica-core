@@ -132,6 +132,44 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: cargo run -- up
 
+      - name: Start API service (core tests)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SERVER_HOST: 0.0.0.0
+          SERVER_PORT: 3000
+          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
+          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
+          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
+          CRON_JOB_SETTINGS: "*/3 * * * * *"
+        run: |
+          # Run the API in the background for core API tests.
+          stdbuf -oL -eL cargo run -p core-service 2>&1 | tee core/api-core.log &
+          for i in {1..30}; do
+            if nc -z 127.0.0.1 3000; then
+              echo "API is up!"
+              break
+            fi
+            echo "Waiting for API..."
+            sleep 5
+          done
+
+      - name: Wait for listener readiness (core tests)
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/core/health >/dev/null; then
+              echo "Listener is ready!"
+              exit 0
+            fi
+            echo "Waiting for listener..."
+            sleep 5
+          done
+          echo "Listener readiness timed out"
+          tail -n 200 core/api-core.log || true
+          exit 1
+
       - name: Run workspace tests (exclude sdk)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -143,6 +181,12 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
         run: cargo test --workspace --exclude sdk
+
+      - name: Stop API service (core tests)
+        if: always()
+        run: |
+          pkill -f core-service || true
+          sleep 2
 
       - name: Prepare SDK test database
         env:
@@ -169,7 +213,7 @@ jobs:
           DATABASE_URL: ${{ env.SDK_DATABASE_URL }}
         run: cargo run -- up
 
-      - name: Start API service
+      - name: Start API service (sdk tests)
         working-directory: core
         env:
           DATABASE_URL: ${{ env.SDK_DATABASE_URL }}
@@ -195,7 +239,7 @@ jobs:
           done
           cat api.log
 
-      - name: Wait for listener readiness
+      - name: Wait for listener readiness (sdk tests)
         run: |
           for i in {1..60}; do
             if curl -fsS http://127.0.0.1:3000/core/health >/dev/null; then
