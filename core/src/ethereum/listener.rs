@@ -1,6 +1,6 @@
 use crate::{
     config::EthereumConfig,
-    error::BlockchainListenerError,
+    error::{BlockchainListenerError, PersistDbError},
     ethereum::{contract::*, event_handler::EthereumEventHandler},
     persist::{PersistCtx, repo},
 };
@@ -177,6 +177,9 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         stream: &mut (impl futures_util::Stream<Item = Log> + Unpin),
     ) -> Result<(), BlockchainListenerError> {
+        const MAX_HANDLER_RETRIES: usize = 5;
+        const RETRY_BASE_DELAY_MS: u64 = 200;
+
         while let Some(log) = stream.next().await {
             let Some(block_number) = log.block_number else {
                 warn!("Log has no block number, skipping...");
@@ -196,8 +199,13 @@ impl EthereumListener {
                 "Storing blockchain event: {signature} at block {block_number} with log index {log_index}"
             );
 
-            match repo::store_blockchain_event(persist_ctx, &signature, block_number, log_index)
-                .await
+            let inserted = match repo::store_blockchain_event(
+                persist_ctx,
+                &signature,
+                block_number,
+                log_index,
+            )
+            .await
             {
                 Ok(inserted) => {
                     if !inserted {
@@ -206,65 +214,102 @@ impl EthereumListener {
                         );
                         continue;
                     }
+                    true
                 }
                 Err(e) => {
                     error!("Failed to store blockchain event: {e}");
                     return Err(e.into());
                 }
-            }
-
-            let result = match log.topic0() {
-                Some(&CollateralDeposited::SIGNATURE_HASH) => {
-                    handler.handle_collateral_deposited(log).await
-                }
-                Some(&RecipientRemunerated::SIGNATURE_HASH) => {
-                    handler.handle_recipient_remunerated(log).await
-                }
-                Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
-                    handler.handle_collateral_withdrawn(log).await
-                }
-                Some(&WithdrawalRequested::SIGNATURE_HASH) => {
-                    handler.handle_withdrawal_requested(log).await
-                }
-                Some(&WithdrawalCanceled::SIGNATURE_HASH) => {
-                    handler.handle_withdrawal_canceled(log).await
-                }
-                Some(&PaymentRecorded::SIGNATURE_HASH) => {
-                    handler.handle_payment_recorded(log).await
-                }
-                Some(&TabPaid::SIGNATURE_HASH) => handler.handle_tab_paid(log).await,
-                Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "WithdrawalGracePeriodUpdated")
-                        .await
-                }
-                Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "RemunerationGracePeriodUpdated")
-                        .await
-                }
-                Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "TabExpirationTimeUpdated")
-                        .await
-                }
-                Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "SynchronizationDelayUpdated")
-                        .await
-                }
-                _ => {
-                    info!("Unknown log: {:?}", log);
-                    Ok(())
-                }
             };
 
-            if let Err(e) = result {
-                error!("Event handler error: {e}");
+            let mut attempts = 0;
+            loop {
+                let result = match log.topic0() {
+                    Some(&CollateralDeposited::SIGNATURE_HASH) => {
+                        handler.handle_collateral_deposited(log.clone()).await
+                    }
+                    Some(&RecipientRemunerated::SIGNATURE_HASH) => {
+                        handler.handle_recipient_remunerated(log.clone()).await
+                    }
+                    Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
+                        handler.handle_collateral_withdrawn(log.clone()).await
+                    }
+                    Some(&WithdrawalRequested::SIGNATURE_HASH) => {
+                        handler.handle_withdrawal_requested(log.clone()).await
+                    }
+                    Some(&WithdrawalCanceled::SIGNATURE_HASH) => {
+                        handler.handle_withdrawal_canceled(log.clone()).await
+                    }
+                    Some(&PaymentRecorded::SIGNATURE_HASH) => {
+                        handler.handle_payment_recorded(log.clone()).await
+                    }
+                    Some(&TabPaid::SIGNATURE_HASH) => handler.handle_tab_paid(log.clone()).await,
+                    Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "WithdrawalGracePeriodUpdated")
+                            .await
+                    }
+                    Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "RemunerationGracePeriodUpdated")
+                            .await
+                    }
+                    Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "TabExpirationTimeUpdated")
+                            .await
+                    }
+                    Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "SynchronizationDelayUpdated")
+                            .await
+                    }
+                    _ => {
+                        info!("Unknown log: {:?}", log);
+                        Ok(())
+                    }
+                };
+
+                match result {
+                    Ok(()) => break,
+                    Err(e) => {
+                        if attempts < MAX_HANDLER_RETRIES && is_retryable_handler_error(&e) {
+                            attempts += 1;
+                            let delay = Duration::from_millis(
+                                RETRY_BASE_DELAY_MS.saturating_mul(attempts as u64),
+                            );
+                            warn!(
+                                "Event handler error (attempt {attempts}/{MAX_HANDLER_RETRIES}): {e}. Retrying in {delay:?}..."
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+
+                        error!("Event handler error: {e}");
+                        if inserted
+                            && is_retryable_handler_error(&e)
+                            && let Err(err) =
+                                repo::delete_blockchain_event(persist_ctx, block_number, log_index)
+                                    .await
+                        {
+                            error!("Failed to delete blockchain event: {err}");
+                        }
+                        break;
+                    }
+                }
             }
         }
 
         warn!("Event stream ended unexpectedly");
         Ok(())
     }
+}
+
+fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
+    matches!(
+        err,
+        BlockchainListenerError::Db(PersistDbError::OptimisticLockConflict { .. })
+            | BlockchainListenerError::Db(PersistDbError::DatabaseFailure(_))
+            | BlockchainListenerError::DatabaseFailure(_)
+    )
 }
