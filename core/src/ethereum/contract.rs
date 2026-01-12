@@ -151,6 +151,8 @@ pub mod contract_abi {
                     bool enabled
                 );
 
+            function tabExpirationTime() external view returns (uint256);
+
             /// View: current BLS verification key.
             function GUARANTEE_VERIFICATION_KEY() external view returns (bytes32,bytes32,bytes32,bytes32);
 
