@@ -29,6 +29,7 @@ type SharedService = Arc<CoreService>;
 pub fn router(service: CoreService) -> Router {
     let shared = Arc::new(service);
     Router::new()
+        .route("/core/health", get(get_health))
         .route("/core/public-params", get(get_public_params))
         .route("/core/payment-tabs", post(create_payment_tab))
         .route("/core/guarantees", post(issue_guarantee))
@@ -151,6 +152,18 @@ async fn get_public_params(
     State(service): State<SharedService>,
 ) -> Result<Json<CorePublicParameters>, ApiError> {
     Ok(Json(service.public_params()))
+}
+
+async fn get_health(
+    State(service): State<SharedService>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    service
+        .wait_for_listener_ready()
+        .await
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "listener unavailable"))?;
+    Ok(Json(
+        serde_json::json!({ "status": "ok", "listener_ready": true }),
+    ))
 }
 
 async fn issue_guarantee(

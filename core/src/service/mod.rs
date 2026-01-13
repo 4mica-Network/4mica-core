@@ -20,10 +20,10 @@ use rpc::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::{
-    sync::oneshot,
+    sync::{Notify, oneshot},
     task::JoinHandle,
     time::{Duration, sleep},
 };
@@ -55,6 +55,8 @@ pub struct Inner {
     contract_api: Arc<dyn CoreContractApi>,
     listener_handle: Mutex<Option<JoinHandle<()>>>,
     listener_ready_rx: Mutex<Option<oneshot::Receiver<()>>>,
+    listener_ready: AtomicBool,
+    listener_ready_notify: Notify,
 }
 
 impl Drop for Inner {
@@ -200,6 +202,8 @@ impl CoreService {
             contract_api: deps.contract_api,
             listener_handle: Mutex::default(),
             listener_ready_rx: Mutex::new(Some(deps.listener_ready_rx)),
+            listener_ready: AtomicBool::new(false),
+            listener_ready_notify: Notify::new(),
         };
 
         Ok(Self {
@@ -236,10 +240,19 @@ impl CoreService {
     }
 
     pub async fn wait_for_listener_ready(&self) -> Result<(), oneshot::error::RecvError> {
+        if self.inner.listener_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
         let receiver = self.inner.listener_ready_rx.lock().take();
         if let Some(receiver) = receiver {
             receiver.await?;
+            self.inner.listener_ready.store(true, Ordering::Release);
+            self.inner.listener_ready_notify.notify_waiters();
+            return Ok(());
         }
+
+        self.inner.listener_ready_notify.notified().await;
         Ok(())
     }
 
