@@ -1,6 +1,6 @@
 use crate::{
     config::EthereumConfig,
-    error::BlockchainListenerError,
+    error::{BlockchainListenerError, PersistDbError},
     ethereum::{contract::*, event_handler::EthereumEventHandler},
     persist::{PersistCtx, repo},
 };
@@ -53,6 +53,10 @@ impl EthereumListener {
             .events(all_event_signatures());
 
         let persist_ctx = self.persist_ctx.clone();
+        let initial_backfill_blocks = self
+            .config
+            .number_of_blocks_to_confirm
+            .saturating_add(self.config.number_of_pending_blocks);
         let handle = tokio::spawn(Self::listen_loop(
             self.provider.clone(),
             base_filter,
@@ -60,6 +64,7 @@ impl EthereumListener {
             persist_ctx,
             self.handler.clone(),
             ready_tx,
+            initial_backfill_blocks,
         ));
         Ok(handle)
     }
@@ -71,6 +76,7 @@ impl EthereumListener {
         persist_ctx: PersistCtx,
         handler: Arc<dyn EthereumEventHandler>,
         mut ready_tx: Option<oneshot::Sender<()>>,
+        initial_backfill_blocks: u64,
     ) {
         let mut delay = Duration::from_secs(5);
 
@@ -92,17 +98,31 @@ impl EthereumListener {
                         "Subscribed to new events from address {address:?} starting at latest block"
                     );
 
-                    // Fetch historical logs from last processed event to latest
+                    // Fetch historical logs from last processed event (or a small backfill window) to latest
                     let last_processed_block = last_event.map(|e| e.block_number as u64);
-                    let historical_logs = if let Some(last_processed_block) = last_processed_block {
+                    let mut backfill_start = last_processed_block;
+                    if backfill_start.is_none() && initial_backfill_blocks > 0 {
+                        match provider.get_block_number().await {
+                            Ok(latest) => {
+                                let start = latest.saturating_sub(initial_backfill_blocks);
+                                backfill_start = Some(start);
+                                info!(
+                                    "No last processed event found; backfilling from block {start} to latest"
+                                );
+                            }
+                            Err(e) => {
+                                error!("Failed to fetch latest block for backfill: {e}");
+                            }
+                        }
+                    }
+
+                    let historical_logs = if let Some(start_block) = backfill_start {
                         let historical_filter = base_filter
                             .clone()
-                            .from_block(last_processed_block)
+                            .from_block(start_block)
                             .to_block(BlockNumberOrTag::Latest);
 
-                        info!(
-                            "Fetching historical logs from block {last_processed_block:?} to latest"
-                        );
+                        info!("Fetching historical logs from block {start_block:?} to latest");
 
                         match provider.get_logs(&historical_filter).await {
                             Ok(logs) => {
@@ -157,6 +177,9 @@ impl EthereumListener {
         persist_ctx: &PersistCtx,
         stream: &mut (impl futures_util::Stream<Item = Log> + Unpin),
     ) -> Result<(), BlockchainListenerError> {
+        const MAX_HANDLER_RETRIES: usize = 5;
+        const RETRY_BASE_DELAY_MS: u64 = 200;
+
         while let Some(log) = stream.next().await {
             let Some(block_number) = log.block_number else {
                 warn!("Log has no block number, skipping...");
@@ -176,8 +199,13 @@ impl EthereumListener {
                 "Storing blockchain event: {signature} at block {block_number} with log index {log_index}"
             );
 
-            match repo::store_blockchain_event(persist_ctx, &signature, block_number, log_index)
-                .await
+            let inserted = match repo::store_blockchain_event(
+                persist_ctx,
+                &signature,
+                block_number,
+                log_index,
+            )
+            .await
             {
                 Ok(inserted) => {
                     if !inserted {
@@ -186,65 +214,102 @@ impl EthereumListener {
                         );
                         continue;
                     }
+                    true
                 }
                 Err(e) => {
                     error!("Failed to store blockchain event: {e}");
                     return Err(e.into());
                 }
-            }
-
-            let result = match log.topic0() {
-                Some(&CollateralDeposited::SIGNATURE_HASH) => {
-                    handler.handle_collateral_deposited(log).await
-                }
-                Some(&RecipientRemunerated::SIGNATURE_HASH) => {
-                    handler.handle_recipient_remunerated(log).await
-                }
-                Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
-                    handler.handle_collateral_withdrawn(log).await
-                }
-                Some(&WithdrawalRequested::SIGNATURE_HASH) => {
-                    handler.handle_withdrawal_requested(log).await
-                }
-                Some(&WithdrawalCanceled::SIGNATURE_HASH) => {
-                    handler.handle_withdrawal_canceled(log).await
-                }
-                Some(&PaymentRecorded::SIGNATURE_HASH) => {
-                    handler.handle_payment_recorded(log).await
-                }
-                Some(&TabPaid::SIGNATURE_HASH) => handler.handle_tab_paid(log).await,
-                Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "WithdrawalGracePeriodUpdated")
-                        .await
-                }
-                Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "RemunerationGracePeriodUpdated")
-                        .await
-                }
-                Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "TabExpirationTimeUpdated")
-                        .await
-                }
-                Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => {
-                    handler
-                        .handle_admin_event(log, "SynchronizationDelayUpdated")
-                        .await
-                }
-                _ => {
-                    info!("Unknown log: {:?}", log);
-                    Ok(())
-                }
             };
 
-            if let Err(e) = result {
-                error!("Event handler error: {e}");
+            let mut attempts = 0;
+            loop {
+                let result = match log.topic0() {
+                    Some(&CollateralDeposited::SIGNATURE_HASH) => {
+                        handler.handle_collateral_deposited(log.clone()).await
+                    }
+                    Some(&RecipientRemunerated::SIGNATURE_HASH) => {
+                        handler.handle_recipient_remunerated(log.clone()).await
+                    }
+                    Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
+                        handler.handle_collateral_withdrawn(log.clone()).await
+                    }
+                    Some(&WithdrawalRequested::SIGNATURE_HASH) => {
+                        handler.handle_withdrawal_requested(log.clone()).await
+                    }
+                    Some(&WithdrawalCanceled::SIGNATURE_HASH) => {
+                        handler.handle_withdrawal_canceled(log.clone()).await
+                    }
+                    Some(&PaymentRecorded::SIGNATURE_HASH) => {
+                        handler.handle_payment_recorded(log.clone()).await
+                    }
+                    Some(&TabPaid::SIGNATURE_HASH) => handler.handle_tab_paid(log.clone()).await,
+                    Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "WithdrawalGracePeriodUpdated")
+                            .await
+                    }
+                    Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "RemunerationGracePeriodUpdated")
+                            .await
+                    }
+                    Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "TabExpirationTimeUpdated")
+                            .await
+                    }
+                    Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "SynchronizationDelayUpdated")
+                            .await
+                    }
+                    _ => {
+                        info!("Unknown log: {:?}", log);
+                        Ok(())
+                    }
+                };
+
+                match result {
+                    Ok(()) => break,
+                    Err(e) => {
+                        if attempts < MAX_HANDLER_RETRIES && is_retryable_handler_error(&e) {
+                            attempts += 1;
+                            let delay = Duration::from_millis(
+                                RETRY_BASE_DELAY_MS.saturating_mul(attempts as u64),
+                            );
+                            warn!(
+                                "Event handler error (attempt {attempts}/{MAX_HANDLER_RETRIES}): {e}. Retrying in {delay:?}..."
+                            );
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+
+                        error!("Event handler error: {e}");
+                        if inserted
+                            && is_retryable_handler_error(&e)
+                            && let Err(err) =
+                                repo::delete_blockchain_event(persist_ctx, block_number, log_index)
+                                    .await
+                        {
+                            error!("Failed to delete blockchain event: {err}");
+                        }
+                        break;
+                    }
+                }
             }
         }
 
         warn!("Event stream ended unexpectedly");
         Ok(())
     }
+}
+
+fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
+    matches!(
+        err,
+        BlockchainListenerError::Db(PersistDbError::OptimisticLockConflict { .. })
+            | BlockchainListenerError::Db(PersistDbError::DatabaseFailure(_))
+            | BlockchainListenerError::DatabaseFailure(_)
+    )
 }
