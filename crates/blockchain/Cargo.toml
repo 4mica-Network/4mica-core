@@ -2,6 +2,13 @@
 name = "blockchain"
 version = "0.4.1"
 edition.workspace = true
+authors = ["4Mica Network <team@4mica.xyz>"]
+description = "Blockchain data providers and schedulers for the 4Mica payment network."
+license = "CC-BY-NC-4.0"
+repository = "https://github.com/4mica-Network/4mica-core"
+homepage = "https://4mica.xyz"
+keywords = ["4mica", "blockchain", "ethereum", "scheduler"]
+categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
 async-trait.workspace = true

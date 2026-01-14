@@ -2,6 +2,7 @@
 name = "core-service"
 version = "0.4.0"
 edition.workspace = true
+publish = false
 
 [dependencies]
 rpc = { workspace = true }
