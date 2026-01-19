@@ -836,6 +836,66 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
+async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyhow::Result<()> {
+    let (_, core_client, ctx) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
+
+    let tab_result = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: None,
+        })
+        .await
+        .expect("create tab");
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_result.id,
+        U256::ZERO,
+        U256::from(2u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let result = core_client.issue_guarantee(req).await;
+    assert!(
+        result.is_err(),
+        "must reject when collateral is insufficient"
+    );
+
+    let tab = repo::get_tab_by_id(&ctx, tab_result.id)
+        .await
+        .expect("get tab")
+        .expect("tab exists");
+    assert_eq!(
+        tab.status,
+        entities::sea_orm_active_enums::TabStatus::Pending
+    );
+
+    let guarantees = repo::get_guarantees_for_tab(&ctx, tab_result.id)
+        .await
+        .expect("get guarantees");
+    assert!(
+        guarantees.is_empty(),
+        "must not store guarantees on failure"
+    );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
 async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()> {
     let (_, core_client, ctx) = setup_clean_db().await?;
 
