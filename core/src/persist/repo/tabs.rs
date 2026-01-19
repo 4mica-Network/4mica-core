@@ -65,6 +65,26 @@ pub async fn open_tab(
     Ok(())
 }
 
+pub async fn open_tab_on<C: ConnectionTrait>(
+    conn: &C,
+    tab_id: alloy::primitives::U256,
+    start_ts: NaiveDateTime,
+) -> Result<(), PersistDbError> {
+    tabs::Entity::update_many()
+        .filter(tabs::Column::Id.eq(u256_to_string(tab_id)))
+        .filter(tabs::Column::Status.eq(TabStatus::Pending))
+        .set(tabs::ActiveModel {
+            status: Set(TabStatus::Open),
+            start_ts: Set(start_ts),
+            updated_at: Set(now()),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+
+    Ok(())
+}
+
 pub async fn find_active_tab_by_triplet(
     ctx: &PersistCtx,
     user_address: &str,
