@@ -2,6 +2,7 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 
 pub mod admin;
+pub mod auth;
 pub mod balances;
 pub mod collateral;
 pub mod common;
@@ -14,6 +15,7 @@ pub mod users;
 pub mod withdrawals;
 
 pub use admin::*;
+pub use auth::*;
 pub use balances::*;
 pub use collateral::*;
 pub use common::Address;
