@@ -56,12 +56,34 @@ pub struct Secrets {
     pub core_admin_seed_key: Option<String>,
 }
 
+#[derive(Debug, Clone, Envconfig)]
+pub struct AuthConfig {
+    #[envconfig(from = "AUTH_NONCE_TTL_SECS", default = "300")]
+    pub nonce_ttl_secs: i64,
+
+    #[envconfig(from = "AUTH_REFRESH_TTL_SECS", default = "2592000")]
+    pub refresh_ttl_secs: i64,
+
+    #[envconfig(from = "AUTH_ACCESS_TTL_SECS", default = "900")]
+    pub access_ttl_secs: u64,
+
+    #[envconfig(from = "AUTH_SIWE_STATEMENT", default = "Sign in to 4mica.")]
+    pub siwe_statement: String,
+
+    #[envconfig(from = "AUTH_SIWE_DOMAIN")]
+    pub siwe_domain: Option<String>,
+
+    #[envconfig(from = "AUTH_SIWE_URI")]
+    pub siwe_uri: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub server_config: ServerConfig,
     pub ethereum_config: EthereumConfig,
     pub secrets: Secrets,
     pub eip712: Eip712Config,
+    pub auth: AuthConfig,
 }
 
 impl AppConfig {
@@ -72,12 +94,14 @@ impl AppConfig {
             EthereumConfig::init_from_env().context("Failed to load ethereum config")?;
         let secrets = Secrets::init_from_env().context("Failed to load secrets")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
+        let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
 
         Ok(Self {
             server_config,
             ethereum_config,
             secrets,
             eip712,
+            auth,
         })
     }
 }

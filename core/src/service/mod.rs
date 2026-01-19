@@ -39,10 +39,15 @@ fn parse_tab_id(raw: &str) -> ServiceResult<U256> {
 }
 
 mod api_keys;
+pub mod auth;
 pub mod event_handler;
 mod guarantee;
 pub mod payment;
 pub use api_keys::AdminApiKeyScope;
+pub use auth::{
+    AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse, AuthRefreshRequest,
+    AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse, SiweTemplate,
+};
 
 pub struct Inner {
     config: AppConfig,

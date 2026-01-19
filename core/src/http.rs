@@ -4,7 +4,11 @@ use uuid::Uuid;
 use crate::{
     error::ServiceError,
     persist::mapper,
-    service::{AdminApiKeyScope, CoreService},
+    service::{
+        AdminApiKeyScope, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest,
+        AuthNonceResponse, AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest,
+        AuthVerifyResponse, CoreService,
+    },
 };
 use alloy_primitives::U256;
 use axum::{
@@ -29,6 +33,10 @@ type SharedService = Arc<CoreService>;
 pub fn router(service: CoreService) -> Router {
     let shared = Arc::new(service);
     Router::new()
+        .route("/auth/nonce", post(post_auth_nonce))
+        .route("/auth/verify", post(post_auth_verify))
+        .route("/auth/refresh", post(post_auth_refresh))
+        .route("/auth/logout", post(post_auth_logout))
         .route("/core/health", get(get_health))
         .route("/core/public-params", get(get_public_params))
         .route("/core/payment-tabs", post(create_payment_tab))
@@ -152,6 +160,38 @@ async fn get_public_params(
     State(service): State<SharedService>,
 ) -> Result<Json<CorePublicParameters>, ApiError> {
     Ok(Json(service.public_params()))
+}
+
+async fn post_auth_nonce(
+    State(service): State<SharedService>,
+    Json(req): Json<AuthNonceRequest>,
+) -> Result<Json<AuthNonceResponse>, ApiError> {
+    let res = service.create_auth_nonce(req).await?;
+    Ok(Json(res))
+}
+
+async fn post_auth_verify(
+    State(service): State<SharedService>,
+    Json(req): Json<AuthVerifyRequest>,
+) -> Result<Json<AuthVerifyResponse>, ApiError> {
+    let res = service.verify_auth(req).await?;
+    Ok(Json(res))
+}
+
+async fn post_auth_refresh(
+    State(service): State<SharedService>,
+    Json(req): Json<AuthRefreshRequest>,
+) -> Result<Json<AuthRefreshResponse>, ApiError> {
+    let res = service.refresh_auth(req).await?;
+    Ok(Json(res))
+}
+
+async fn post_auth_logout(
+    State(service): State<SharedService>,
+    Json(req): Json<AuthLogoutRequest>,
+) -> Result<Json<AuthLogoutResponse>, ApiError> {
+    let res = service.logout_auth(req).await?;
+    Ok(Json(res))
 }
 
 async fn get_health(
