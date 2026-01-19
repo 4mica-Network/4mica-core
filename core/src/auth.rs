@@ -7,6 +7,8 @@ use rpc::{
 };
 use std::str::FromStr;
 
+pub mod siwe;
+
 sol! {
     struct SolGuaranteeRequestClaimsV1 {
         address user;
