@@ -761,7 +761,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
 
 #[tokio::test]
 #[serial_test::serial]
-async fn accepts_timestamp_within_tab_window() {
+async fn accepts_timestamp_within_tab_window_without_opening_tab() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
@@ -809,8 +809,11 @@ async fn accepts_timestamp_within_tab_window() {
         .await
         .expect("tab fetch")
         .expect("tab exists");
-    assert_eq!(tab.status, TabStatus::Open);
-    assert_eq!(tab.start_ts.and_utc().timestamp(), claims_ts as i64);
+    assert_eq!(tab.status, TabStatus::Pending);
+    assert_eq!(
+        tab.start_ts.and_utc().timestamp(),
+        start_ts.and_utc().timestamp()
+    );
 }
 
 #[tokio::test]
@@ -994,7 +997,7 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn pending_tab_expired_reopens_with_first_claim_timestamp() {
+async fn pending_tab_expired_accepts_first_claim_without_reopening() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
@@ -1042,9 +1045,8 @@ async fn pending_tab_expired_reopens_with_first_claim_timestamp() {
         .await
         .expect("tab fetch")
         .expect("tab exists");
-    assert_eq!(tab.status, TabStatus::Open);
-    assert_eq!(tab.start_ts.and_utc().timestamp(), claim_ts as i64);
-    assert_ne!(
+    assert_eq!(tab.status, TabStatus::Pending);
+    assert_eq!(
         tab.start_ts.and_utc().timestamp(),
         expired_start.and_utc().timestamp()
     );

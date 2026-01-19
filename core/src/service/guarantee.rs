@@ -111,15 +111,8 @@ impl CoreService {
                 .single()
                 .ok_or_else(|| ServiceError::InvalidParams("Invalid timestamp".into()))?
                 .naive_utc();
-            repo::open_tab(&self.inner.persist_ctx, claims.tab_id, start_ts).await?;
 
-            let Some(updated_tab) =
-                repo::get_tab_by_id(&self.inner.persist_ctx, claims.tab_id).await?
-            else {
-                return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
-            };
-
-            (updated_tab.start_ts.and_utc().timestamp(), updated_tab.ttl)
+            (start_ts.and_utc().timestamp(), tab.ttl)
         } else {
             (tab.start_ts.and_utc().timestamp(), tab.ttl)
         };

@@ -5,6 +5,7 @@ use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
 use crypto::bls::BLSCert;
 use entities::guarantee;
+use entities::sea_orm_active_enums::TabStatus;
 use log::info;
 use rpc::PaymentGuaranteeClaims;
 use sea_orm::prelude::Expr;
@@ -15,7 +16,7 @@ use sea_orm::{
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{now, parse_address};
-use super::tabs::get_tab_by_id_on;
+use super::tabs::{get_tab_by_id_on, open_tab_on};
 use super::users::ensure_user_exists_on;
 use super::withdrawals::get_pending_withdrawal_on;
 use entities::tabs;
@@ -107,6 +108,10 @@ pub async fn lock_and_store_guarantee(
                         })
                         .exec(txn)
                         .await?;
+                }
+
+                if tab.status == TabStatus::Pending {
+                    open_tab_on(txn, promise.tab_id, start_dt).await?;
                 }
 
                 let data = GuaranteeData {
