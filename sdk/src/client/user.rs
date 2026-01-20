@@ -4,7 +4,11 @@ use alloy::{
     providers::Provider,
     rpc::types::{TransactionReceipt, TransactionRequest},
 };
-use rpc::{PaymentGuaranteeRequestClaimsV1, SigningScheme};
+use crypto::bls::BLSCert;
+use rpc::{
+    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    SigningScheme,
+};
 
 use crate::{
     PaymentSignature,
@@ -14,7 +18,8 @@ use crate::{
     },
     error::{
         ApproveErc20Error, CancelWithdrawalError, DepositError, FinalizeWithdrawalError,
-        GetUserError, PayTabError, RequestWithdrawalError, SignPaymentError, TabPaymentStatusError,
+        GetUserError, IssuePaymentGuaranteeError, PayTabError, RequestWithdrawalError,
+        SignPaymentError, TabPaymentStatusError,
     },
     sig::PaymentSigner,
     validators::validate_address,
@@ -151,6 +156,31 @@ impl UserClient {
             .await?;
 
         Ok(sig)
+    }
+
+    pub async fn issue_payment_guarantee(
+        &self,
+        claims: PaymentGuaranteeRequestClaimsV1,
+        signature: String,
+        scheme: SigningScheme,
+    ) -> Result<BLSCert, IssuePaymentGuaranteeError> {
+        let signer_address = self.ctx.signer().address().to_string();
+        if signer_address != claims.user_address {
+            return Err(IssuePaymentGuaranteeError::InvalidParams(
+                "signer address does not match user address".into(),
+            ));
+        }
+
+        let cert = self
+            .ctx
+            .rpc_proxy()
+            .issue_guarantee(PaymentGuaranteeRequest::new(
+                PaymentGuaranteeRequestClaims::V1(claims),
+                signature,
+                scheme,
+            ))
+            .await?;
+        Ok(cert)
     }
 
     async fn pay_tab_in_erc20_token(

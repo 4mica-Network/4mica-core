@@ -33,3 +33,5 @@ test-log = { workspace = true }
 serial_test = "3.2.0"
 axum = { workspace = true, features = ["macros", "json"] }
 serde_json = { workspace = true }
+core-service = { path = "../core" }
+dotenv = { workspace = true }

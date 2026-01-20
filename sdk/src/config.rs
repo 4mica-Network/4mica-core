@@ -99,16 +99,14 @@ impl ConfigBuilder {
         )?;
         let contract_address =
             Self::optional(self.contract_address, validate_address, "contract_address")?;
-        let bearer_token = self
-            .bearer_token
-            .and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            });
+        let bearer_token = self.bearer_token.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
 
         Ok(Config {
             rpc_url,

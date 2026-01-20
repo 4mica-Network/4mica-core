@@ -1,4 +1,4 @@
-use crate::service::CoreService;
+use crate::service::{AccessContext, CoreService, SCOPE_GUARANTEE_ISSUE};
 use crate::{
     auth::verify_guarantee_request_signature,
     error::{ServiceError, ServiceResult},
@@ -143,8 +143,12 @@ impl CoreService {
 
     pub async fn issue_payment_guarantee(
         &self,
+        auth: &AccessContext,
         req: PaymentGuaranteeRequest,
     ) -> ServiceResult<BLSCert> {
+        super::require_scope(auth, SCOPE_GUARANTEE_ISSUE)?;
+        super::require_user_match(auth, req.claims.user_address())?;
+
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
 

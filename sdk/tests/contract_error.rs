@@ -4,14 +4,17 @@ use rust_sdk_4mica::{
 
 mod common;
 
-use crate::common::{ETH_ASSET_ADDRESS, build_authed_config, wait_for_collateral_increase};
+use crate::common::{
+    ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config,
+    wait_for_collateral_increase,
+};
 
 #[tokio::test]
 #[serial_test::serial]
 async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     // These wallet keys are picked from the default accounts in anvil test node
 
-    let user_config = build_authed_config(
+    let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
     )
@@ -20,7 +23,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let user_address = user_config.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
-    let recipient_config = build_authed_config(
+    let recipient_config = build_authed_recipient_config(
         "http://localhost:3000",
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
     )
@@ -81,9 +84,9 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         claims.amount, claims.asset_address, claims.timestamp
     );
 
-    // Step 4: Recipient issues guarantee
-    let bls_cert = recipient_client
-        .recipient
+    // Step 4: User issues guarantee
+    let bls_cert = user_client
+        .user
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
 

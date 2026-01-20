@@ -1,6 +1,6 @@
 use alloy_primitives::U256;
-use reqwest::{Client, Url};
 use reqwest::header::AUTHORIZATION;
+use reqwest::{Client, Url};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 

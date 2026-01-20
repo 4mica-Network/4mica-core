@@ -5,7 +5,10 @@ use rust_sdk_4mica::{
 };
 use std::time::{Duration, Instant};
 
-use crate::common::{ETH_ASSET_ADDRESS, build_authed_config, wait_for_collateral_increase};
+use crate::common::{
+    ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config,
+    wait_for_collateral_increase,
+};
 
 mod common;
 
@@ -50,7 +53,7 @@ async fn wait_for_tab_remunerated(recipient_client: &Client, tab_id: U256) -> an
 #[serial_test::serial]
 #[test_log::test]
 async fn test_recipient_remuneration() -> anyhow::Result<()> {
-    let user_config = build_authed_config(
+    let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
     )
@@ -61,7 +64,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     let user_address = user_config_clone.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
-    let recipient_config = build_authed_config(
+    let recipient_config = build_authed_recipient_config(
         "http://localhost:3000",
         "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
     )
@@ -131,8 +134,8 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
 
-    let bls_cert = recipient_client
-        .recipient
+    let bls_cert = user_client
+        .user
         .issue_payment_guarantee(claims.clone(), payment_sig.signature, payment_sig.scheme)
         .await?;
     println!(
@@ -181,7 +184,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 #[serial_test::serial]
 #[test_log::test]
 async fn test_double_remuneration_fails() -> anyhow::Result<()> {
-    let user_config = build_authed_config(
+    let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
     )
@@ -192,7 +195,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     ensure_core_available("test_double_remuneration_fails:user", &user_config_clone).await?;
     let user_client = Client::new(user_config).await?;
 
-    let recipient_config = build_authed_config(
+    let recipient_config = build_authed_recipient_config(
         "http://localhost:3000",
         "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
     )
@@ -250,8 +253,8 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
 
-    let bls_cert = recipient_client
-        .recipient
+    let bls_cert = user_client
+        .user
         .issue_payment_guarantee(claims.clone(), payment_sig.signature, payment_sig.scheme)
         .await?;
     println!(

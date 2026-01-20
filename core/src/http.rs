@@ -5,7 +5,7 @@ use crate::{
     error::ServiceError,
     persist::mapper,
     service::{
-        AdminApiKeyScope, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest,
+        AccessContext, AdminApiKeyScope, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest,
         AuthNonceResponse, AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest,
         AuthVerifyResponse, CoreService,
     },
@@ -13,7 +13,7 @@ use crate::{
 use alloy_primitives::U256;
 use axum::{
     Json, Router,
-    extract::{Path, Query, Request, State},
+    extract::{Extension, Path, Query, Request, State},
     http::HeaderMap,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -95,13 +95,6 @@ pub fn router(service: CoreService) -> Router {
         .with_state(shared)
 }
 
-#[derive(Clone, Debug)]
-pub struct Principal {
-    pub wallet_address: String,
-    pub role: String,
-    pub scopes: Vec<String>,
-}
-
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
@@ -180,7 +173,7 @@ async fn auth_middleware(
     let token = bearer_token(req.headers())?;
     let claims = service.validate_access_token(token)?;
 
-    req.extensions_mut().insert(Principal {
+    req.extensions_mut().insert(AccessContext {
         wallet_address: claims.sub,
         role: claims.role,
         scopes: claims.scopes,
@@ -270,10 +263,11 @@ async fn get_health(
 
 async fn issue_guarantee(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Json(req): Json<PaymentGuaranteeRequest>,
 ) -> Result<Json<BLSCert>, ApiError> {
     let cert = service
-        .issue_payment_guarantee(req)
+        .issue_payment_guarantee(&auth, req)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(cert))
@@ -281,10 +275,11 @@ async fn issue_guarantee(
 
 async fn create_payment_tab(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Json(req): Json<CreatePaymentTabRequest>,
 ) -> Result<Json<CreatePaymentTabResult>, ApiError> {
     let result = service
-        .create_payment_tab(req)
+        .create_payment_tab(&auth, req)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(result))
@@ -292,11 +287,13 @@ async fn create_payment_tab(
 
 async fn list_settled_tabs(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<TabInfo>>, ApiError> {
     // Treat Remunerated as a settled state for API consumers.
     let tabs = service
         .list_tabs_for_recipient(
+            &auth,
             recipient,
             vec![SettlementStatus::Settled, SettlementStatus::Remunerated],
         )
@@ -307,10 +304,11 @@ async fn list_settled_tabs(
 
 async fn list_pending_remunerations(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<PendingRemunerationInfo>>, ApiError> {
     let items = service
-        .list_pending_remunerations(recipient)
+        .list_pending_remunerations(&auth, recipient)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(items))
@@ -318,15 +316,20 @@ async fn list_pending_remunerations(
 
 async fn get_tab(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Option<TabInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
-    let tab = service.get_tab(tab_id).await.map_err(ApiError::from)?;
+    let tab = service
+        .get_tab(&auth, tab_id)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(tab))
 }
 
 async fn list_recipient_tabs(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
 ) -> Result<Json<Vec<TabInfo>>, ApiError> {
@@ -347,7 +350,7 @@ async fn list_recipient_tabs(
         mapper::parse_settlement_statuses(Some(statuses)).map_err(ApiError::from)?
     };
     let tabs = service
-        .list_tabs_for_recipient(recipient, parsed)
+        .list_tabs_for_recipient(&auth, recipient, parsed)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(tabs))
@@ -355,11 +358,12 @@ async fn list_recipient_tabs(
 
 async fn get_tab_guarantees(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Vec<GuaranteeInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let guarantees = service
-        .get_tab_guarantees(tab_id)
+        .get_tab_guarantees(&auth, tab_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(guarantees))
@@ -367,11 +371,12 @@ async fn get_tab_guarantees(
 
 async fn get_latest_guarantee(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let guarantee = service
-        .get_latest_guarantee(tab_id)
+        .get_latest_guarantee(&auth, tab_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(guarantee))
@@ -379,12 +384,13 @@ async fn get_latest_guarantee(
 
 async fn get_specific_guarantee(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path((tab_id, req_id)): Path<(String, String)>,
 ) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let req_id = parse_u256(&req_id)?;
     let guarantee = service
-        .get_guarantee(tab_id, req_id)
+        .get_guarantee(&auth, tab_id, req_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(guarantee))
@@ -392,10 +398,11 @@ async fn get_specific_guarantee(
 
 async fn list_recipient_payments(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<UserTransactionInfo>>, ApiError> {
     let payments = service
-        .list_recipient_payments(recipient)
+        .list_recipient_payments(&auth, recipient)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(payments))
@@ -403,11 +410,12 @@ async fn list_recipient_payments(
 
 async fn get_collateral_events_for_tab(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Vec<CollateralEventInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let events = service
-        .get_collateral_events_for_tab(tab_id)
+        .get_collateral_events_for_tab(&auth, tab_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(events))
@@ -415,10 +423,11 @@ async fn get_collateral_events_for_tab(
 
 async fn get_user_asset_balance(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path((user, asset)): Path<(String, String)>,
 ) -> Result<Json<Option<AssetBalanceInfo>>, ApiError> {
     let balance = service
-        .get_user_asset_balance(user, asset)
+        .get_user_asset_balance(&auth, user, asset)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(balance))

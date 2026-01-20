@@ -95,9 +95,9 @@ impl RecipientClient {
         signature: String,
         scheme: SigningScheme,
     ) -> Result<BLSCert, IssuePaymentGuaranteeError> {
-        if !self.check_signer_address(&claims.recipient_address) {
+        if !self.check_signer_address(&claims.user_address) {
             return Err(IssuePaymentGuaranteeError::InvalidParams(
-                "signer address does not match recipient address".into(),
+                "signer address does not match user address".into(),
             ));
         }
 

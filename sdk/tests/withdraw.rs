@@ -6,14 +6,14 @@ use std::time::Duration;
 
 mod common;
 
-use crate::common::{ETH_ASSET_ADDRESS, build_authed_config, wait_for_collateral_increase};
+use crate::common::{ETH_ASSET_ADDRESS, build_authed_user_config, wait_for_collateral_increase};
 
 #[tokio::test]
 #[serial_test::serial]
 #[test_log::test]
 async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     // Setup user client
-    let user_config = build_authed_config(
+    let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
     )
@@ -95,7 +95,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
 #[test_log::test]
 async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Result<()> {
     // Setup user client
-    let user_config = build_authed_config(
+    let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
     )
@@ -149,7 +149,7 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
 #[test_log::test]
 async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     // Setup user client
-    let user_config = build_authed_config(
+    let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
     )
