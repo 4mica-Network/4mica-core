@@ -1,7 +1,9 @@
+use crate::auth::jwt::issue_access_token;
 use crate::auth::siwe::{parse_siwe_message, verify_siwe_message};
 use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
 use crate::service::CoreService;
+use anyhow::anyhow;
 use chrono::{DateTime, Duration, Utc};
 use rand::random;
 use serde::{Deserialize, Serialize};
@@ -82,7 +84,23 @@ fn parse_rfc3339(label: &str, raw: &str) -> ServiceResult<DateTime<Utc>> {
         .map_err(|_| ServiceError::InvalidParams(format!("invalid {label} timestamp")))
 }
 
+fn parse_wallet_scopes(address: &str, value: serde_json::Value) -> ServiceResult<Vec<String>> {
+    serde_json::from_value(value)
+        .map_err(|e| ServiceError::Other(anyhow!("invalid scopes for wallet role {address}: {e}")))
+}
+
 impl CoreService {
+    async fn load_wallet_claims(&self, address: &str) -> ServiceResult<(String, Vec<String>)> {
+        let row = repo::get_wallet_role(&self.inner.persist_ctx, address).await?;
+        match row {
+            Some(model) => {
+                let scopes = parse_wallet_scopes(address, model.scopes)?;
+                Ok((model.role, scopes))
+            }
+            None => Ok(("user".to_string(), Vec::new())),
+        }
+    }
+
     pub async fn create_auth_nonce(
         &self,
         req: AuthNonceRequest,
@@ -185,6 +203,10 @@ impl CoreService {
             return Err(ServiceError::Unauthorized("nonce already used".into()));
         }
 
+        let subject = parsed.address.to_string();
+        let (role, scopes) = self.load_wallet_claims(&subject).await?;
+        let access_token = issue_access_token(auth_cfg, &subject, &role, scopes)?;
+
         let refresh_token = generate_token("refresh");
         let refresh_hash = hash_refresh_token(&refresh_token);
         let now = Utc::now();
@@ -193,15 +215,14 @@ impl CoreService {
         repo::insert_refresh_token(
             &self.inner.persist_ctx,
             &refresh_hash,
-            &req.address,
+            &subject,
             now.naive_utc(),
             expires_at.naive_utc(),
         )
         .await?;
 
         Ok(AuthVerifyResponse {
-            // Placeholder token until JWT issuance is added.
-            access_token: generate_token("access"),
+            access_token,
             refresh_token,
             expires_in: auth_cfg.access_ttl_secs,
         })
@@ -221,6 +242,9 @@ impl CoreService {
             return Err(ServiceError::Unauthorized("refresh token expired".into()));
         }
 
+        let (role, scopes) = self.load_wallet_claims(&row.address).await?;
+        let access_token = issue_access_token(auth_cfg, &row.address, &role, scopes)?;
+
         let refresh_token = generate_token("refresh");
         let refresh_hash = hash_refresh_token(&refresh_token);
         let now = Utc::now();
@@ -239,7 +263,7 @@ impl CoreService {
             .await?;
 
         Ok(AuthRefreshResponse {
-            access_token: generate_token("access"),
+            access_token,
             refresh_token,
             expires_in: auth_cfg.access_ttl_secs,
         })

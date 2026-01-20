@@ -67,6 +67,15 @@ pub struct AuthConfig {
     #[envconfig(from = "AUTH_ACCESS_TTL_SECS", default = "900")]
     pub access_ttl_secs: u64,
 
+    #[envconfig(from = "AUTH_JWT_ISSUER", default = "4mica-core")]
+    pub jwt_issuer: String,
+
+    #[envconfig(from = "AUTH_JWT_AUDIENCE", default = "4mica")]
+    pub jwt_audience: String,
+
+    #[envconfig(from = "AUTH_JWT_SECRET", default = "dev-insecure-change-me")]
+    pub jwt_hmac_secret: String,
+
     #[envconfig(from = "AUTH_SIWE_STATEMENT", default = "Sign in to 4mica.")]
     pub siwe_statement: String,
 

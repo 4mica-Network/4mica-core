@@ -7,6 +7,7 @@ use rpc::{
 };
 use std::str::FromStr;
 
+pub mod jwt;
 pub mod siwe;
 
 sol! {
