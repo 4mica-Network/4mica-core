@@ -1,4 +1,4 @@
-use crate::auth::jwt::issue_access_token;
+use crate::auth::jwt::{AccessTokenClaims, issue_access_token, validate_access_token};
 use crate::auth::siwe::{parse_siwe_message, verify_siwe_message};
 use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
@@ -90,6 +90,10 @@ fn parse_wallet_scopes(address: &str, value: serde_json::Value) -> ServiceResult
 }
 
 impl CoreService {
+    pub fn validate_access_token(&self, token: &str) -> ServiceResult<AccessTokenClaims> {
+        validate_access_token(&self.inner.config.auth, token)
+    }
+
     async fn load_wallet_claims(&self, address: &str) -> ServiceResult<(String, Vec<String>)> {
         let row = repo::get_wallet_role(&self.inner.persist_ctx, address).await?;
         match row {

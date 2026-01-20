@@ -13,14 +13,15 @@ use crate::{
 use alloy_primitives::U256;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::HeaderMap,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
-use http::StatusCode;
+use http::{StatusCode, header::AUTHORIZATION};
 use rpc::{
     ADMIN_API_KEY_HEADER, AdminApiKeyInfo, AdminApiKeySecret, AssetBalanceInfo,
     CollateralEventInfo, CorePublicParameters, CreateAdminApiKeyRequest, CreatePaymentTabRequest,
@@ -87,7 +88,18 @@ pub fn router(service: CoreService) -> Router {
             "/core/admin/api-keys/{id}/revoke",
             post(revoke_admin_api_key),
         )
+        .layer(middleware::from_fn_with_state(
+            shared.clone(),
+            auth_middleware,
+        ))
         .with_state(shared)
+}
+
+#[derive(Clone, Debug)]
+pub struct Principal {
+    pub wallet_address: String,
+    pub role: String,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -154,6 +166,56 @@ fn parse_u256(value: &str) -> Result<U256, ApiError> {
             format!("invalid 256-bit value {value}: {e}"),
         )
     })
+}
+
+async fn auth_middleware(
+    State(service): State<SharedService>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if is_public_path(req.uri().path()) {
+        return Ok(next.run(req).await);
+    }
+
+    let token = bearer_token(req.headers())?;
+    let claims = service.validate_access_token(token)?;
+
+    req.extensions_mut().insert(Principal {
+        wallet_address: claims.sub,
+        role: claims.role,
+        scopes: claims.scopes,
+    });
+
+    Ok(next.run(req).await)
+}
+
+fn is_public_path(path: &str) -> bool {
+    if matches!(path, "/core/health" | "/core/public-params") {
+        return true;
+    }
+    path == "/auth" || path.starts_with("/auth/")
+}
+
+fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
+    let value = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "missing authorization"))?;
+
+    let value = value.trim();
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "invalid authorization"))?;
+
+    if token.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "missing bearer token",
+        ));
+    }
+
+    Ok(token)
 }
 
 async fn get_public_params(

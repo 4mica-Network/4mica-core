@@ -1,6 +1,7 @@
 use alloy::{
     primitives::{Address, Signature, U256},
     signers::Signer,
+    signers::local::PrivateKeySigner,
     sol_types::{SolStruct, eip712_domain, sol},
 };
 use alloy_sol_types::SolValue;
@@ -18,6 +19,7 @@ use rpc::{
     RpcProxy, SigningScheme, TabInfo, UpdateUserSuspensionRequest,
 };
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
+use serde::Deserialize;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -29,6 +31,28 @@ use common::fixtures::{
 };
 
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
+
+#[derive(Debug, Deserialize)]
+struct AuthNonceResponse {
+    nonce: String,
+    siwe: SiweTemplateResponse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SiweTemplateResponse {
+    domain: String,
+    uri: String,
+    chain_id: u64,
+    statement: String,
+    expiration: String,
+    issued_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthVerifyResponse {
+    access_token: String,
+}
 
 async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx)> {
     let (config, ctx) = init_test_env().await?;
@@ -44,7 +68,10 @@ async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx)> {
         &[ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS],
     )
     .await?;
-    let core_client = RpcProxy::new(&core_addr)?.with_admin_api_key(admin_key);
+    let access_token = login_with_siwe(&core_addr).await?;
+    let core_client = RpcProxy::new(&core_addr)?
+        .with_admin_api_key(admin_key)
+        .with_bearer_token(access_token);
 
     Ok((config, core_client, ctx))
 }
@@ -72,6 +99,56 @@ sol! {
         address asset;
         uint64  timestamp;
     }
+}
+
+fn build_siwe_message_from_template(
+    template: &SiweTemplateResponse,
+    address: &str,
+    nonce: &str,
+) -> String {
+    format!(
+        "{domain} wants you to sign in with your Ethereum account:\n{address}\n\n{statement}\n\nURI: {uri}\nVersion: 1\nChain ID: {chain_id}\nNonce: {nonce}\nIssued At: {issued_at}\nExpiration Time: {expiration}",
+        domain = template.domain,
+        address = address,
+        statement = template.statement,
+        uri = template.uri,
+        chain_id = template.chain_id,
+        nonce = nonce,
+        issued_at = template.issued_at,
+        expiration = template.expiration,
+    )
+}
+
+async fn login_with_siwe(base_addr: &str) -> anyhow::Result<String> {
+    let signer = PrivateKeySigner::random();
+    let address = signer.address().to_string();
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature = signer.sign_message(message.as_bytes()).await?;
+    let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
+
+    let verify_res = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&serde_json::json!({
+            "address": address,
+            "message": message,
+            "signature": signature_hex,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let verify_res: AuthVerifyResponse = verify_res.json().await?;
+
+    Ok(verify_res.access_token)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1355,6 +1432,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
         "http://{}:{}",
         config.server_config.host, config.server_config.port
     );
+    let access_token = login_with_siwe(&base_addr).await?;
     let http_client = reqwest::Client::new();
 
     let single_url = format!(
@@ -1364,6 +1442,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
     );
     let resp = http_client
         .get(&single_url)
+        .bearer_auth(&access_token)
         .send()
         .await
         .expect("single status request");
@@ -1381,6 +1460,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
     );
     let resp = http_client
         .get(&multi_url)
+        .bearer_auth(&access_token)
         .send()
         .await
         .expect("multi status request");
@@ -1398,6 +1478,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
     );
     let resp = http_client
         .get(&invalid_url)
+        .bearer_auth(&access_token)
         .send()
         .await
         .expect("invalid status request");
@@ -1413,6 +1494,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
 
     let bad_body = http_client
         .post(format!("{base}/core/payment-tabs", base = base_addr))
+        .bearer_auth(access_token)
         .json(&serde_json::json!({
             "recipient_address": recipient_addr,
             "ttl": 1200
@@ -2109,6 +2191,7 @@ async fn suspension_endpoint_requires_api_key() -> anyhow::Result<()> {
         "http://{}:{}",
         config.server_config.host, config.server_config.port
     );
+    let access_token = login_with_siwe(&base_addr).await?;
     let http_client = reqwest::Client::new();
     let resp = http_client
         .post(format!(
@@ -2116,6 +2199,7 @@ async fn suspension_endpoint_requires_api_key() -> anyhow::Result<()> {
             base = base_addr,
             user = user_addr
         ))
+        .bearer_auth(access_token)
         .json(&UpdateUserSuspensionRequest { suspended: true })
         .send()
         .await?;
@@ -2144,11 +2228,17 @@ async fn api_key_scope_is_enforced() -> anyhow::Result<()> {
         })
         .await?;
 
+    let base_addr = format!(
+        "http://{}:{}",
+        config.server_config.host, config.server_config.port
+    );
+    let restricted_token = login_with_siwe(&base_addr).await?;
     let restricted_client = RpcProxy::new(&format!(
         "http://{}:{}",
         config.server_config.host, config.server_config.port
     ))?
-    .with_admin_api_key(restricted.api_key);
+    .with_admin_api_key(restricted.api_key)
+    .with_bearer_token(restricted_token);
 
     let err = restricted_client
         .update_user_suspension(user_addr.clone(), true)

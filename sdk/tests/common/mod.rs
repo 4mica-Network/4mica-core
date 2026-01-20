@@ -1,7 +1,13 @@
 #![allow(dead_code)]
 
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::Signer;
 use anyhow::bail;
-use rust_sdk_4mica::{Address, U256, UserInfo, client::recipient::RecipientClient};
+use rust_sdk_4mica::{
+    Address, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
+};
+use serde::Deserialize;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 pub mod x402;
@@ -54,4 +60,87 @@ pub async fn wait_for_collateral_increase(
 
         tokio::time::sleep(poll_interval).await;
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthNonceResponse {
+    nonce: String,
+    siwe: SiweTemplateResponse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SiweTemplateResponse {
+    domain: String,
+    uri: String,
+    chain_id: u64,
+    statement: String,
+    expiration: String,
+    issued_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthVerifyResponse {
+    access_token: String,
+}
+
+fn build_siwe_message_from_template(
+    template: &SiweTemplateResponse,
+    address: &str,
+    nonce: &str,
+) -> String {
+    format!(
+        "{domain} wants you to sign in with your Ethereum account:\n{address}\n\n{statement}\n\nURI: {uri}\nVersion: 1\nChain ID: {chain_id}\nNonce: {nonce}\nIssued At: {issued_at}\nExpiration Time: {expiration}",
+        domain = template.domain,
+        address = address,
+        statement = template.statement,
+        uri = template.uri,
+        chain_id = template.chain_id,
+        nonce = nonce,
+        issued_at = template.issued_at,
+        expiration = template.expiration,
+    )
+}
+
+pub async fn login_with_siwe(base_url: &str, private_key: &str) -> anyhow::Result<String> {
+    let signer = PrivateKeySigner::from_str(private_key)?;
+    let address = signer.address().to_string();
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_url}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message =
+        build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature = signer.sign_message(message.as_bytes()).await?;
+    let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
+
+    let verify_res = client
+        .post(format!("{base_url}/auth/verify"))
+        .json(&serde_json::json!({
+            "address": address,
+            "message": message,
+            "signature": signature_hex,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let verify_res: AuthVerifyResponse = verify_res.json().await?;
+
+    Ok(verify_res.access_token)
+}
+
+pub async fn build_authed_config(base_url: &str, private_key: &str) -> anyhow::Result<Config> {
+    let access_token = login_with_siwe(base_url, private_key).await?;
+    let config = ConfigBuilder::default()
+        .rpc_url(base_url.to_string())
+        .wallet_private_key(private_key.to_string())
+        .bearer_token(access_token)
+        .build()?;
+    Ok(config)
 }

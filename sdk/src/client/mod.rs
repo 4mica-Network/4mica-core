@@ -60,7 +60,12 @@ impl ClientCtx {
     }
 
     fn build_rpc_proxy(cfg: &Config) -> Result<RpcProxy, ClientError> {
-        RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))
+        let mut proxy =
+            RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))?;
+        if let Some(token) = &cfg.bearer_token {
+            proxy = proxy.with_bearer_token(token.clone());
+        }
+        Ok(proxy)
     }
 
     async fn build_provider(

@@ -1,5 +1,6 @@
 use alloy_primitives::U256;
 use reqwest::{Client, Url};
+use reqwest::header::AUTHORIZATION;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -25,6 +26,7 @@ pub struct RpcProxy {
     client: Client,
     base_url: Url,
     admin_api_key: Option<String>,
+    bearer_token: Option<String>,
 }
 
 impl RpcProxy {
@@ -38,11 +40,17 @@ impl RpcProxy {
             client,
             base_url,
             admin_api_key: None,
+            bearer_token: None,
         })
     }
 
     pub fn with_admin_api_key(mut self, api_key: impl Into<String>) -> Self {
         self.admin_api_key = Some(api_key.into());
+        self
+    }
+
+    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer_token = Some(token.into());
         self
     }
 
@@ -58,11 +66,27 @@ impl RpcProxy {
         }
     }
 
+    fn apply_auth_header(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(token) = &self.bearer_token {
+            builder.header(AUTHORIZATION, format!("Bearer {token}"))
+        } else {
+            builder
+        }
+    }
+
+    fn apply_admin_and_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let builder = self.apply_admin_header(builder);
+        self.apply_auth_header(builder)
+    }
+
     async fn get<T>(&self, url: Url) -> Result<T, ApiClientError>
     where
         T: DeserializeOwned,
     {
-        let response = self.client.get(url).send().await?;
+        let builder = self.client.get(url);
+        let builder = self.apply_admin_header(builder);
+        let builder = self.apply_auth_header(builder);
+        let response = builder.send().await?;
         Self::decode_response(response).await
     }
 
@@ -71,7 +95,10 @@ impl RpcProxy {
         Req: Serialize + ?Sized,
         Resp: DeserializeOwned,
     {
-        let response = self.client.post(url).json(body).send().await?;
+        let builder = self.client.post(url).json(body);
+        let builder = self.apply_admin_header(builder);
+        let builder = self.apply_auth_header(builder);
+        let response = builder.send().await?;
         Self::decode_response(response).await
     }
 
@@ -221,7 +248,7 @@ impl RpcProxy {
         let path = format!("/core/users/{user_address}/suspension");
         let url = self.url(&path)?;
         let body = UpdateUserSuspensionRequest { suspended };
-        let request = self.apply_admin_header(self.client.post(url).json(&body));
+        let request = self.apply_admin_and_auth(self.client.post(url).json(&body));
         let response = request.send().await?;
         Self::decode_response(response).await
     }
@@ -231,14 +258,14 @@ impl RpcProxy {
         req: CreateAdminApiKeyRequest,
     ) -> Result<AdminApiKeySecret, ApiClientError> {
         let url = self.url("/core/admin/api-keys")?;
-        let request = self.apply_admin_header(self.client.post(url).json(&req));
+        let request = self.apply_admin_and_auth(self.client.post(url).json(&req));
         let response = request.send().await?;
         Self::decode_response(response).await
     }
 
     pub async fn list_admin_api_keys(&self) -> Result<Vec<AdminApiKeyInfo>, ApiClientError> {
         let url = self.url("/core/admin/api-keys")?;
-        let request = self.apply_admin_header(self.client.get(url));
+        let request = self.apply_admin_and_auth(self.client.get(url));
         let response = request.send().await?;
         Self::decode_response(response).await
     }
@@ -249,7 +276,7 @@ impl RpcProxy {
     ) -> Result<AdminApiKeyInfo, ApiClientError> {
         let path = format!("/core/admin/api-keys/{id}/revoke");
         let url = self.url(&path)?;
-        let request = self.apply_admin_header(self.client.post(url));
+        let request = self.apply_admin_and_auth(self.client.post(url));
         let response = request.send().await?;
         Self::decode_response(response).await
     }

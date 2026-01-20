@@ -184,17 +184,18 @@ pub async fn verify_siwe_message<P: Provider>(
     let signature_bytes = crypto::hex::decode_hex(signature_hex)
         .map_err(|_| invalid_siwe("invalid signature hex"))?;
 
-    let is_contract = is_contract_wallet(provider, message.address).await?;
-    if !is_contract {
-        let signature = Signature::try_from(signature_bytes.as_slice())
-            .map_err(|_| invalid_siwe("invalid signature length"))?;
-        let digest = siwe_message_hash(raw_message);
-        let recovered = signature
-            .recover_address_from_prehash(&digest)
-            .map_err(|_| invalid_siwe("signature recovery failed"))?;
-        if recovered != message.address {
-            return Err(invalid_siwe("invalid signature"));
+    let eoa_verified = match Signature::try_from(signature_bytes.as_slice()) {
+        Ok(signature) => {
+            let digest = siwe_message_hash(raw_message);
+            match signature.recover_address_from_prehash(&digest) {
+                Ok(recovered) => recovered == message.address,
+                Err(_) => false,
+            }
         }
+        Err(_) => false,
+    };
+
+    if eoa_verified {
         return Ok(message);
     }
 
@@ -211,14 +212,6 @@ fn parse_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 fn siwe_message_hash(raw_message: &str) -> B256 {
     eip191_hash_message(raw_message.as_bytes())
-}
-
-async fn is_contract_wallet<P: Provider>(provider: &P, address: Address) -> ServiceResult<bool> {
-    let code = provider
-        .get_code_at(address)
-        .await
-        .map_err(|err| ServiceError::Other(anyhow!("failed to fetch code: {err}")))?;
-    Ok(!code.is_empty())
 }
 
 async fn verify_erc1271_signature<P: Provider>(
