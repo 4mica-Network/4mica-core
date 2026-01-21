@@ -435,10 +435,12 @@ async fn get_user_asset_balance(
 
 async fn update_user_suspension(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(user): Path<String>,
     headers: HeaderMap,
     Json(req): Json<UpdateUserSuspensionRequest>,
 ) -> Result<Json<UserSuspensionStatus>, ApiError> {
+    require_admin_role(&auth)?;
     require_admin_api_key(&service, &headers, AdminApiKeyScope::SuspendUsers).await?;
     let status = service
         .set_user_suspension(user, req.suspended)
@@ -449,9 +451,11 @@ async fn update_user_suspension(
 
 async fn create_admin_api_key(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     headers: HeaderMap,
     Json(req): Json<CreateAdminApiKeyRequest>,
 ) -> Result<Json<AdminApiKeySecret>, ApiError> {
+    require_admin_role(&auth)?;
     require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
     let secret = service
         .create_admin_api_key(req)
@@ -462,8 +466,10 @@ async fn create_admin_api_key(
 
 async fn list_admin_api_keys(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AdminApiKeyInfo>>, ApiError> {
+    require_admin_role(&auth)?;
     require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
     let keys = service
         .list_admin_api_keys()
@@ -474,9 +480,11 @@ async fn list_admin_api_keys(
 
 async fn revoke_admin_api_key(
     State(service): State<SharedService>,
+    Extension(auth): Extension<AccessContext>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AdminApiKeyInfo>, ApiError> {
+    require_admin_role(&auth)?;
     require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid api key id"))?;
@@ -485,6 +493,16 @@ async fn revoke_admin_api_key(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(info))
+}
+
+fn require_admin_role(auth: &AccessContext) -> Result<(), ApiError> {
+    if !auth.role.trim().eq_ignore_ascii_case("admin") {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "admin role required",
+        ));
+    }
+    Ok(())
 }
 
 async fn require_admin_api_key(

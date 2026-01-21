@@ -3,11 +3,22 @@ use crate::auth::siwe::{parse_siwe_message, verify_siwe_message};
 use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
 use crate::service::CoreService;
+use alloy::primitives::Address;
 use anyhow::anyhow;
 use chrono::{DateTime, Duration, Utc};
 use rand::random;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::str::FromStr;
+
+const WALLET_STATUS_ACTIVE: &str = "active";
+const WALLET_STATUS_SUSPENDED: &str = "suspended";
+const WALLET_STATUS_REVOKED: &str = "revoked";
+const WALLET_STATUS_ALLOWED: [&str; 3] = [
+    WALLET_STATUS_ACTIVE,
+    WALLET_STATUS_SUSPENDED,
+    WALLET_STATUS_REVOKED,
+];
 
 #[derive(Debug, Deserialize)]
 pub struct AuthNonceRequest {
@@ -89,39 +100,35 @@ fn parse_wallet_scopes(address: &str, value: serde_json::Value) -> ServiceResult
         .map_err(|e| ServiceError::Other(anyhow!("invalid scopes for wallet role {address}: {e}")))
 }
 
+fn parse_wallet_address(raw: &str) -> ServiceResult<Address> {
+    Address::from_str(raw.trim())
+        .map_err(|_| ServiceError::InvalidParams("invalid wallet address".into()))
+}
+
+fn validate_wallet_status(status: &str) -> ServiceResult<()> {
+    let status = status.trim();
+    if status.is_empty() {
+        return Err(ServiceError::Unauthorized(
+            "wallet role status missing".into(),
+        ));
+    }
+    if !WALLET_STATUS_ALLOWED
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(status))
+    {
+        return Err(ServiceError::Unauthorized(
+            "wallet role status invalid".into(),
+        ));
+    }
+    if !status.eq_ignore_ascii_case(WALLET_STATUS_ACTIVE) {
+        return Err(ServiceError::Unauthorized("wallet role not active".into()));
+    }
+    Ok(())
+}
+
 impl CoreService {
-    pub fn validate_access_token(&self, token: &str) -> ServiceResult<AccessTokenClaims> {
-        validate_access_token(&self.inner.config.auth, token)
-    }
-
-    async fn load_wallet_claims(&self, address: &str) -> ServiceResult<(String, Vec<String>)> {
-        let row = repo::get_wallet_role(&self.inner.persist_ctx, address).await?;
-        match row {
-            Some(model) => {
-                let scopes = parse_wallet_scopes(address, model.scopes)?;
-                Ok((model.role, scopes))
-            }
-            None => Ok(("user".to_string(), Vec::new())),
-        }
-    }
-
-    pub async fn create_auth_nonce(
-        &self,
-        req: AuthNonceRequest,
-    ) -> ServiceResult<AuthNonceResponse> {
+    fn build_siwe_context(&self) -> (String, String, String) {
         let auth_cfg = &self.inner.config.auth;
-        let now = Utc::now();
-        let expires_at = now + Duration::seconds(auth_cfg.nonce_ttl_secs);
-        let nonce = repo::common::new_uuid();
-
-        repo::insert_auth_nonce(
-            &self.inner.persist_ctx,
-            &req.address,
-            &nonce,
-            expires_at.naive_utc(),
-        )
-        .await?;
-
         let host = self.inner.config.server_config.host.trim();
         let port = self.inner.config.server_config.port.trim();
         let domain = auth_cfg
@@ -148,6 +155,48 @@ impl CoreService {
                     format!("http://{domain}:{port}")
                 }
             });
+        (domain, uri, auth_cfg.siwe_statement.clone())
+    }
+
+    pub fn validate_access_token(&self, token: &str) -> ServiceResult<AccessTokenClaims> {
+        validate_access_token(
+            &self.inner.config.auth,
+            self.inner.config.ethereum_config.chain_id,
+            token,
+        )
+    }
+
+    async fn load_wallet_claims(&self, address: &str) -> ServiceResult<(String, Vec<String>)> {
+        let row = repo::get_wallet_role(&self.inner.persist_ctx, address).await?;
+        match row {
+            Some(model) => {
+                validate_wallet_status(&model.status)?;
+                let scopes = parse_wallet_scopes(address, model.scopes)?;
+                Ok((model.role, scopes))
+            }
+            None => Ok(("user".to_string(), Vec::new())),
+        }
+    }
+
+    pub async fn create_auth_nonce(
+        &self,
+        req: AuthNonceRequest,
+    ) -> ServiceResult<AuthNonceResponse> {
+        let auth_cfg = &self.inner.config.auth;
+        let address = parse_wallet_address(&req.address)?.to_string();
+        let now = Utc::now();
+        let expires_at = now + Duration::seconds(auth_cfg.nonce_ttl_secs);
+        let nonce = repo::common::new_uuid();
+
+        repo::insert_auth_nonce(
+            &self.inner.persist_ctx,
+            &address,
+            &nonce,
+            expires_at.naive_utc(),
+        )
+        .await?;
+
+        let (domain, uri, statement) = self.build_siwe_context();
 
         Ok(AuthNonceResponse {
             nonce: nonce.clone(),
@@ -155,7 +204,7 @@ impl CoreService {
                 domain,
                 uri,
                 chain_id: self.inner.config.ethereum_config.chain_id,
-                statement: auth_cfg.siwe_statement.clone(),
+                statement,
                 expiration: expires_at.to_rfc3339(),
                 issued_at: now.to_rfc3339(),
             },
@@ -165,14 +214,45 @@ impl CoreService {
     pub async fn verify_auth(&self, req: AuthVerifyRequest) -> ServiceResult<AuthVerifyResponse> {
         let auth_cfg = &self.inner.config.auth;
         let parsed = parse_siwe_message(&req.message)?;
+        let expected_address = parse_wallet_address(&req.address)?;
 
-        if parsed.address.to_string() != req.address {
+        if parsed.address != expected_address {
             return Err(ServiceError::Unauthorized("address mismatch".into()));
+        }
+
+        let address = expected_address.to_string();
+
+        if parsed.version.trim() != "1" {
+            return Err(ServiceError::Unauthorized("invalid siwe version".into()));
         }
 
         if parsed.chain_id != self.inner.config.ethereum_config.chain_id {
             return Err(ServiceError::Unauthorized("invalid chain id".into()));
         }
+
+        let (expected_domain, expected_uri, expected_statement) = self.build_siwe_context();
+        if !parsed.domain.eq_ignore_ascii_case(&expected_domain) {
+            return Err(ServiceError::Unauthorized("siwe domain mismatch".into()));
+        }
+        if parsed.uri.trim() != expected_uri {
+            return Err(ServiceError::Unauthorized("siwe uri mismatch".into()));
+        }
+
+        let expected_statement = expected_statement.trim();
+        let statement_matches = if expected_statement.is_empty() {
+            parsed
+                .statement
+                .as_deref()
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+        } else {
+            parsed.statement.as_deref().map(|value| value.trim()) == Some(expected_statement)
+        };
+        if !statement_matches {
+            return Err(ServiceError::Unauthorized("siwe statement mismatch".into()));
+        }
+
+        parse_rfc3339("issued_at", &parsed.issued_at)?;
 
         if let Some(expiration) = parsed.expiration_time.as_deref()
             && parse_rfc3339("expiration", expiration)? < Utc::now()
@@ -187,7 +267,7 @@ impl CoreService {
         }
 
         let nonce_row =
-            repo::get_auth_nonce(&self.inner.persist_ctx, &req.address, &parsed.nonce).await?;
+            repo::get_auth_nonce(&self.inner.persist_ctx, &address, &parsed.nonce).await?;
         let nonce_row = nonce_row
             .ok_or_else(|| ServiceError::Unauthorized("nonce not found or expired".into()))?;
         if nonce_row.used_at.is_some() || nonce_row.expires_at < Utc::now().naive_utc() {
@@ -196,20 +276,25 @@ impl CoreService {
 
         verify_siwe_message(
             &self.inner.read_provider,
-            &req.address,
+            &address,
             &req.message,
             &req.signature,
         )
         .await?;
 
-        if !repo::mark_auth_nonce_used(&self.inner.persist_ctx, &req.address, &parsed.nonce).await?
-        {
+        if !repo::mark_auth_nonce_used(&self.inner.persist_ctx, &address, &parsed.nonce).await? {
             return Err(ServiceError::Unauthorized("nonce already used".into()));
         }
 
-        let subject = parsed.address.to_string();
+        let subject = address;
         let (role, scopes) = self.load_wallet_claims(&subject).await?;
-        let access_token = issue_access_token(auth_cfg, &subject, &role, scopes)?;
+        let access_token = issue_access_token(
+            auth_cfg,
+            &subject,
+            &role,
+            scopes,
+            self.inner.config.ethereum_config.chain_id,
+        )?;
 
         let refresh_token = generate_token("refresh");
         let refresh_hash = hash_refresh_token(&refresh_token);
@@ -238,33 +323,28 @@ impl CoreService {
     ) -> ServiceResult<AuthRefreshResponse> {
         let auth_cfg = &self.inner.config.auth;
         let token_hash = hash_refresh_token(&req.refresh_token);
-        let row = repo::get_refresh_token(&self.inner.persist_ctx, &token_hash)
-            .await?
-            .ok_or_else(|| ServiceError::Unauthorized("invalid refresh token".into()))?;
-
-        if row.revoked_at.is_some() || row.expires_at < Utc::now().naive_utc() {
-            return Err(ServiceError::Unauthorized("refresh token expired".into()));
-        }
-
-        let (role, scopes) = self.load_wallet_claims(&row.address).await?;
-        let access_token = issue_access_token(auth_cfg, &row.address, &role, scopes)?;
-
         let refresh_token = generate_token("refresh");
         let refresh_hash = hash_refresh_token(&refresh_token);
         let now = Utc::now();
         let expires_at = now + Duration::seconds(auth_cfg.refresh_ttl_secs);
 
-        repo::insert_refresh_token(
+        let address = repo::rotate_refresh_token(
             &self.inner.persist_ctx,
+            &token_hash,
             &refresh_hash,
-            &row.address,
             now.naive_utc(),
             expires_at.naive_utc(),
         )
         .await?;
 
-        repo::revoke_refresh_token(&self.inner.persist_ctx, &token_hash, Some(&refresh_hash))
-            .await?;
+        let (role, scopes) = self.load_wallet_claims(&address).await?;
+        let access_token = issue_access_token(
+            auth_cfg,
+            &address,
+            &role,
+            scopes,
+            self.inner.config.ethereum_config.chain_id,
+        )?;
 
         Ok(AuthRefreshResponse {
             access_token,

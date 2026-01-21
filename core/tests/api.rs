@@ -32,7 +32,7 @@ use common::fixtures::{
 };
 
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
-const DEFAULT_WALLET_ROLE: &str = "recipient";
+const DEFAULT_WALLET_ROLE: &str = "admin";
 const DEFAULT_WALLET_STATUS: &str = "active";
 
 #[derive(Debug, Deserialize)]

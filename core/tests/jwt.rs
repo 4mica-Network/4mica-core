@@ -26,6 +26,7 @@ fn access_token_expiry_is_enforced() -> Result<()> {
     let now = if now < 3600 { 3600 } else { now };
     let iat = usize::try_from(now as u64).map_err(|_| anyhow::anyhow!("timestamp overflow"))?;
     let exp = iat - 3600;
+    let chain_id = 1;
 
     let claims = AccessTokenClaims {
         sub: "0x0000000000000000000000000000000000000001".into(),
@@ -35,6 +36,9 @@ fn access_token_expiry_is_enforced() -> Result<()> {
         aud: cfg.jwt_audience.clone(),
         iat,
         exp,
+        nbf: iat,
+        jti: "test-jti".into(),
+        chain_id,
     };
 
     let token = jsonwebtoken::encode(
@@ -43,7 +47,7 @@ fn access_token_expiry_is_enforced() -> Result<()> {
         &EncodingKey::from_secret(cfg.jwt_hmac_secret.as_bytes()),
     )?;
 
-    match validate_access_token(&cfg, &token) {
+    match validate_access_token(&cfg, chain_id, &token) {
         Ok(_) => bail!("expired token should be rejected"),
         Err(ServiceError::Unauthorized(_)) => Ok(()),
         Err(err) => bail!("unexpected error: {err:?}"),

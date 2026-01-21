@@ -3,7 +3,7 @@ use crate::persist::PersistCtx;
 use chrono::NaiveDateTime;
 use entities::{auth_nonce, auth_refresh_token, wallet_role};
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 
 use super::common::{now, parse_address};
 
@@ -109,6 +109,72 @@ pub async fn revoke_refresh_token(
         .await?;
 
     Ok(res.rows_affected > 0)
+}
+
+pub async fn rotate_refresh_token(
+    ctx: &PersistCtx,
+    token_hash: &str,
+    new_token_hash: &str,
+    issued_at: NaiveDateTime,
+    expires_at: NaiveDateTime,
+) -> Result<String, PersistDbError> {
+    let token_hash = token_hash.to_string();
+    let new_token_hash = new_token_hash.to_string();
+
+    ctx.db
+        .transaction(|txn| {
+            let token_hash = token_hash.clone();
+            let new_token_hash = new_token_hash.clone();
+            Box::pin(async move {
+                let row = auth_refresh_token::Entity::find_by_id(&token_hash)
+                    .one(txn)
+                    .await?
+                    .ok_or_else(|| {
+                        PersistDbError::AuthTokenInvalid("invalid refresh token".into())
+                    })?;
+
+                let now = now();
+                if row.revoked_at.is_some() || row.expires_at < now {
+                    return Err(PersistDbError::AuthTokenInvalid(
+                        "refresh token expired".into(),
+                    ));
+                }
+
+                let model = auth_refresh_token::ActiveModel {
+                    token_hash: Set(new_token_hash.clone()),
+                    address: Set(row.address.clone()),
+                    issued_at: Set(issued_at),
+                    expires_at: Set(expires_at),
+                    revoked_at: Set(None),
+                    replaced_by: Set(None),
+                };
+
+                auth_refresh_token::Entity::insert(model)
+                    .exec_without_returning(txn)
+                    .await?;
+
+                let res = auth_refresh_token::Entity::update_many()
+                    .filter(auth_refresh_token::Column::TokenHash.eq(&token_hash))
+                    .filter(auth_refresh_token::Column::RevokedAt.is_null())
+                    .col_expr(auth_refresh_token::Column::RevokedAt, Expr::value(now))
+                    .col_expr(
+                        auth_refresh_token::Column::ReplacedBy,
+                        Expr::value(new_token_hash),
+                    )
+                    .exec(txn)
+                    .await?;
+
+                if res.rows_affected == 0 {
+                    return Err(PersistDbError::AuthTokenInvalid(
+                        "refresh token already used".into(),
+                    ));
+                }
+
+                Ok(row.address)
+            })
+        })
+        .await
+        .map_err(PersistDbError::from)
 }
 
 pub async fn upsert_wallet_role(

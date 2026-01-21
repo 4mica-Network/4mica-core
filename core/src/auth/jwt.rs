@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use chrono::Utc;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessTokenClaims {
@@ -14,6 +15,9 @@ pub struct AccessTokenClaims {
     pub aud: String,
     pub iat: usize,
     pub exp: usize,
+    pub nbf: usize,
+    pub jti: String,
+    pub chain_id: u64,
 }
 
 pub fn issue_access_token(
@@ -21,6 +25,7 @@ pub fn issue_access_token(
     sub: &str,
     role: &str,
     scopes: Vec<String>,
+    chain_id: u64,
 ) -> ServiceResult<String> {
     let now = unix_timestamp()?;
     let exp = now
@@ -35,6 +40,9 @@ pub fn issue_access_token(
         aud: cfg.jwt_audience.clone(),
         iat: to_usize(now, "iat")?,
         exp: to_usize(exp, "exp")?,
+        nbf: to_usize(now, "nbf")?,
+        jti: Uuid::new_v4().to_string(),
+        chain_id,
     };
 
     let header = Header::new(Algorithm::HS256);
@@ -42,14 +50,23 @@ pub fn issue_access_token(
         .map_err(|err| ServiceError::Other(anyhow!("failed to issue jwt: {err}")))
 }
 
-pub fn validate_access_token(cfg: &AuthConfig, token: &str) -> ServiceResult<AccessTokenClaims> {
+pub fn validate_access_token(
+    cfg: &AuthConfig,
+    expected_chain_id: u64,
+    token: &str,
+) -> ServiceResult<AccessTokenClaims> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_issuer(std::slice::from_ref(&cfg.jwt_issuer));
     validation.set_audience(std::slice::from_ref(&cfg.jwt_audience));
     validation.validate_exp = true;
+    validation.validate_nbf = true;
 
     let data = jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key(cfg)?, &validation)
         .map_err(|_| ServiceError::Unauthorized("invalid access token".into()))?;
+
+    if data.claims.chain_id != expected_chain_id {
+        return Err(ServiceError::Unauthorized("invalid chain id".into()));
+    }
 
     Ok(data.claims)
 }
