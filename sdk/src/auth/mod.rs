@@ -229,9 +229,8 @@ impl AuthState {
 fn compute_expires_at(expires_in: u64) -> Result<SystemTime, AuthError> {
     let now = SystemTime::now();
     let ttl = Duration::from_secs(expires_in);
-    now.checked_add(ttl).ok_or_else(|| {
-        AuthError::Internal("token expires_at overflow".into())
-    })
+    now.checked_add(ttl)
+        .ok_or_else(|| AuthError::Internal("token expires_at overflow".into()))
 }
 
 fn build_siwe_message(template: &SiweTemplate, address: &str, nonce: &str) -> String {

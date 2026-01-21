@@ -57,6 +57,13 @@ struct AuthVerifyResponse {
     access_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthTokenResponse {
+    access_token: String,
+    refresh_token: String,
+    expires_in: u64,
+}
+
 #[derive(Clone, Debug)]
 struct AuthSession {
     address: String,
@@ -280,6 +287,205 @@ async fn build_eip712_signed_request(
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip712,
     )
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let address = signer.address().to_string();
+    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature = signer.sign_message(message.as_bytes()).await?;
+    let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
+
+    let payload = serde_json::json!({
+        "address": address,
+        "message": message,
+        "signature": signature_hex,
+    });
+    let first = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert!(first.status().is_success());
+
+    let second = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert_eq!(second.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = second.json().await?;
+    let error = body
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        error.contains("nonce"),
+        "unexpected error response: {body:?}"
+    );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let address = signer.address().to_string();
+    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature_hex = "invalid-hex-signature";
+
+    let resp = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&serde_json::json!({
+            "address": address,
+            "message": message,
+            "signature": signature_hex,
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await?;
+    let error = body
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        error.contains("invalid signature"),
+        "unexpected error response: {body:?}"
+    );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let address = signer.address().to_string();
+    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature = signer.sign_message(message.as_bytes()).await?;
+    let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
+
+    let verify_res = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&serde_json::json!({
+            "address": address,
+            "message": message,
+            "signature": signature_hex,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let verify_res: AuthTokenResponse = verify_res.json().await?;
+
+    let refresh_token = verify_res.refresh_token.clone();
+    let refresh_res = client
+        .post(format!("{base_addr}/auth/refresh"))
+        .json(&serde_json::json!({ "refresh_token": refresh_token.clone() }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let refresh_res: AuthTokenResponse = refresh_res.json().await?;
+
+    assert_ne!(refresh_res.refresh_token, verify_res.refresh_token);
+    assert!(!refresh_res.access_token.is_empty());
+    assert!(refresh_res.expires_in > 0);
+
+    let reuse_res = client
+        .post(format!("{base_addr}/auth/refresh"))
+        .json(&serde_json::json!({ "refresh_token": refresh_token }))
+        .send()
+        .await?;
+    assert_eq!(reuse_res.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let recipient_address = signer.address().to_string();
+    let user_address = random_address();
+
+    let auth = login_with_siwe(
+        &base_addr,
+        &ctx,
+        &signer,
+        DEFAULT_WALLET_ROLE,
+        &[SCOPE_TAB_READ],
+    )
+    .await?;
+    let client = RpcProxy::new(&base_addr)?.with_bearer_token(auth.access_token);
+
+    let err = client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address,
+            recipient_address,
+            erc20_token: None,
+            ttl: None,
+        })
+        .await
+        .expect_err("missing scope should reject");
+    match err {
+        ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+            assert!(
+                message.contains("missing scope"),
+                "unexpected message: {message}"
+            );
+        }
+        other => anyhow::bail!("unexpected error: {other:?}"),
+    }
+
+    Ok(())
 }
 
 #[test_log::test(tokio::test)]

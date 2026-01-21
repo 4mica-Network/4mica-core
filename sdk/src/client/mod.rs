@@ -39,16 +39,13 @@ struct ClientCtx(Arc<Inner>);
 impl ClientCtx {
     async fn new(cfg: Config) -> Result<Self, ClientError> {
         let rpc_proxy = Self::build_rpc_proxy(&cfg)?;
-        let auth_session = cfg
-            .auth
-            .clone()
-            .and_then(|auth_cfg| {
-                if cfg.bearer_token.is_some() {
-                    None
-                } else {
-                    Some(AuthSession::new(auth_cfg, cfg.wallet_private_key.clone()))
-                }
-            });
+        let auth_session = cfg.auth.clone().and_then(|auth_cfg| {
+            if cfg.bearer_token.is_some() {
+                None
+            } else {
+                Some(AuthSession::new(auth_cfg, cfg.wallet_private_key.clone()))
+            }
+        });
         let public_params = rpc_proxy
             .get_public_params()
             .await
@@ -167,10 +164,7 @@ impl ClientCtx {
     async fn rpc_proxy(&self) -> Result<RpcProxy, ApiClientError> {
         let mut proxy = self.0.rpc_proxy.clone();
         if let Some(auth) = &self.0.auth_session {
-            let token = auth
-                .access_token()
-                .await
-                .map_err(map_auth_error)?;
+            let token = auth.access_token().await.map_err(map_auth_error)?;
             proxy = proxy.with_bearer_token(token);
         }
         Ok(proxy)

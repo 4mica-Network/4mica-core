@@ -167,8 +167,9 @@ impl ConfigBuilder {
 
         let auth = if self.auth_enabled {
             let auth_url = match self.auth_url {
-                Some(raw) => validate_url(&raw)
-                    .map_err(|e| ConfigError::InvalidValue(e.to_string()))?,
+                Some(raw) => {
+                    validate_url(&raw).map_err(|e| ConfigError::InvalidValue(e.to_string()))?
+                }
                 None => rpc_url.clone(),
             };
             let refresh_margin_secs = self

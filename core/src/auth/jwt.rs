@@ -46,6 +46,7 @@ pub fn validate_access_token(cfg: &AuthConfig, token: &str) -> ServiceResult<Acc
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_issuer(std::slice::from_ref(&cfg.jwt_issuer));
     validation.set_audience(std::slice::from_ref(&cfg.jwt_audience));
+    validation.validate_exp = true;
 
     let data = jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key(cfg)?, &validation)
         .map_err(|_| ServiceError::Unauthorized("invalid access token".into()))?;
