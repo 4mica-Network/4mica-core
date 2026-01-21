@@ -4,8 +4,9 @@ use std::{
 };
 
 use alloy::signers::{Signer, local::PrivateKeySigner};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
 use url::Url;
 
 use crate::{config::AuthConfig, error::AuthError};
@@ -115,6 +116,7 @@ pub struct AuthSession {
     address: String,
     refresh_margin: Duration,
     state: Arc<Mutex<Option<AuthState>>>,
+    refresh_lock: Arc<AsyncMutex<()>>,
 }
 
 impl AuthSession {
@@ -126,13 +128,13 @@ impl AuthSession {
             address,
             refresh_margin: Duration::from_secs(cfg.refresh_margin_secs),
             state: Arc::new(Mutex::new(None)),
+            refresh_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 
     pub async fn login(&self) -> Result<AuthTokens, AuthError> {
-        let tokens = self.perform_login().await?;
-        self.store_tokens(&tokens)?;
-        Ok(tokens)
+        let _guard = self.refresh_lock.lock().await;
+        self.login_locked().await
     }
 
     pub async fn access_token(&self) -> Result<String, AuthError> {
@@ -140,16 +142,29 @@ impl AuthSession {
             return Ok(token);
         }
 
+        let _guard = self.refresh_lock.lock().await;
+
+        if let Some(token) = self.cached_access_token()? {
+            return Ok(token);
+        }
+
         let refresh_token = self.refresh_token()?;
         let tokens = if let Some(refresh_token) = refresh_token {
-            self.refresh_with_token(&refresh_token).await?
+            match self.refresh_with_token(&refresh_token).await {
+                Ok(tokens) => tokens,
+                Err(AuthError::Api { status, .. }) if status == StatusCode::UNAUTHORIZED => {
+                    self.login_locked().await?
+                }
+                Err(err) => return Err(err),
+            }
         } else {
-            self.login().await?
+            self.login_locked().await?
         };
         Ok(tokens.access_token)
     }
 
     pub async fn refresh(&self) -> Result<AuthTokens, AuthError> {
+        let _guard = self.refresh_lock.lock().await;
         let refresh_token = self
             .refresh_token()?
             .ok_or(AuthError::MissingRefreshToken)?;
@@ -200,6 +215,12 @@ impl AuthSession {
         self.client
             .verify(&self.address, &message, &signature_hex)
             .await
+    }
+
+    async fn login_locked(&self) -> Result<AuthTokens, AuthError> {
+        let tokens = self.perform_login().await?;
+        self.store_tokens(&tokens)?;
+        Ok(tokens)
     }
 
     async fn refresh_with_token(&self, refresh_token: &str) -> Result<AuthTokens, AuthError> {
