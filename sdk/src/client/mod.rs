@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use crate::{
+    auth::{AuthSession, AuthTokens},
     config::Config,
     contract::{
         Core4Mica::{self, Core4MicaInstance},
         ERC20::{self, ERC20Instance},
     },
-    error::ClientError,
+    error::{AuthError, ClientError},
     validators::{validate_address, validate_url},
 };
 use alloy::{
@@ -14,7 +15,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use rpc::{CorePublicParameters, RpcProxy};
+use rpc::{ApiClientError, CorePublicParameters, RpcProxy};
 
 use self::{recipient::RecipientClient, user::UserClient};
 
@@ -29,6 +30,7 @@ struct Inner {
     contract_address: Address,
     operator_public_key: [u8; 48],
     guarantee_domain: [u8; 32],
+    auth_session: Option<AuthSession>,
 }
 
 #[derive(Clone)]
@@ -37,6 +39,16 @@ struct ClientCtx(Arc<Inner>);
 impl ClientCtx {
     async fn new(cfg: Config) -> Result<Self, ClientError> {
         let rpc_proxy = Self::build_rpc_proxy(&cfg)?;
+        let auth_session = cfg
+            .auth
+            .clone()
+            .and_then(|auth_cfg| {
+                if cfg.bearer_token.is_some() {
+                    None
+                } else {
+                    Some(AuthSession::new(auth_cfg, cfg.wallet_private_key.clone()))
+                }
+            });
         let public_params = rpc_proxy
             .get_public_params()
             .await
@@ -56,6 +68,7 @@ impl ClientCtx {
             contract_address,
             operator_public_key,
             guarantee_domain: on_chain_domain,
+            auth_session,
         })))
     }
 
@@ -151,8 +164,16 @@ impl ClientCtx {
         &self.0.provider
     }
 
-    fn rpc_proxy(&self) -> &RpcProxy {
-        &self.0.rpc_proxy
+    async fn rpc_proxy(&self) -> Result<RpcProxy, ApiClientError> {
+        let mut proxy = self.0.rpc_proxy.clone();
+        if let Some(auth) = &self.0.auth_session {
+            let token = auth
+                .access_token()
+                .await
+                .map_err(map_auth_error)?;
+            proxy = proxy.with_bearer_token(token);
+        }
+        Ok(proxy)
     }
 
     fn signer(&self) -> &PrivateKeySigner {
@@ -165,6 +186,15 @@ impl ClientCtx {
 
     fn guarantee_domain(&self) -> &[u8; 32] {
         &self.0.guarantee_domain
+    }
+
+    async fn login(&self) -> Result<AuthTokens, AuthError> {
+        let session = self
+            .0
+            .auth_session
+            .as_ref()
+            .ok_or(AuthError::MissingConfig)?;
+        session.login().await
     }
 }
 
@@ -182,5 +212,22 @@ impl Client {
             recipient: RecipientClient::new(ctx.clone()),
             user: UserClient::new(ctx.clone()),
         })
+    }
+
+    pub async fn login(&self) -> Result<AuthTokens, AuthError> {
+        self.user.login().await
+    }
+}
+
+fn map_auth_error(err: AuthError) -> ApiClientError {
+    match err {
+        AuthError::InvalidUrl(err) => ApiClientError::InvalidUrl(err),
+        AuthError::Transport(err) => ApiClientError::Transport(err),
+        AuthError::Decode(err) => ApiClientError::Decode(err),
+        AuthError::Api { status, message } => ApiClientError::Api { status, message },
+        other => ApiClientError::Api {
+            status: other.status(),
+            message: other.to_string(),
+        },
     }
 }

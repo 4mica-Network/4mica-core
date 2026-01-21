@@ -60,6 +60,7 @@ impl RecipientClient {
         let result = self
             .ctx
             .rpc_proxy()
+            .await?
             .create_payment_tab(CreatePaymentTabRequest {
                 user_address,
                 recipient_address,
@@ -104,6 +105,7 @@ impl RecipientClient {
         let cert = self
             .ctx
             .rpc_proxy()
+            .await?
             .issue_guarantee(PaymentGuaranteeRequest::new(
                 PaymentGuaranteeRequestClaims::V1(claims),
                 signature,
@@ -189,6 +191,7 @@ impl RecipientClient {
         let tabs = self
             .ctx
             .rpc_proxy()
+            .await?
             .list_settled_tabs(address)
             .await?
             .into_iter()
@@ -204,6 +207,7 @@ impl RecipientClient {
         let items = self
             .ctx
             .rpc_proxy()
+            .await?
             .list_pending_remunerations(address)
             .await?
             .into_iter()
@@ -213,7 +217,7 @@ impl RecipientClient {
     }
 
     pub async fn get_tab(&self, tab_id: U256) -> Result<Option<TabInfo>, RecipientQueryError> {
-        let result = self.ctx.rpc_proxy().get_tab(tab_id).await?;
+        let result = self.ctx.rpc_proxy().await?.get_tab(tab_id).await?;
         Ok(result.map(Into::into))
     }
 
@@ -225,6 +229,7 @@ impl RecipientClient {
         let tabs = self
             .ctx
             .rpc_proxy()
+            .await?
             .list_recipient_tabs(address, settlement_statuses)
             .await?
             .into_iter()
@@ -240,6 +245,7 @@ impl RecipientClient {
         let guarantees = self
             .ctx
             .rpc_proxy()
+            .await?
             .get_tab_guarantees(tab_id)
             .await?
             .into_iter()
@@ -255,6 +261,7 @@ impl RecipientClient {
         let result = self
             .ctx
             .rpc_proxy()
+            .await?
             .get_latest_guarantee(tab_id)
             .await?
             .map(Into::into);
@@ -269,6 +276,7 @@ impl RecipientClient {
         let result = self
             .ctx
             .rpc_proxy()
+            .await?
             .get_guarantee(tab_id, req_id)
             .await?
             .map(Into::into);
@@ -282,6 +290,7 @@ impl RecipientClient {
         let payments = self
             .ctx
             .rpc_proxy()
+            .await?
             .list_recipient_payments(address)
             .await?
             .into_iter()
@@ -297,6 +306,7 @@ impl RecipientClient {
         let events = self
             .ctx
             .rpc_proxy()
+            .await?
             .get_collateral_events_for_tab(tab_id)
             .await?
             .into_iter()
@@ -313,6 +323,7 @@ impl RecipientClient {
         let balance = self
             .ctx
             .rpc_proxy()
+            .await?
             .get_user_asset_balance(user_address, asset_address)
             .await?
             .map(Into::into);

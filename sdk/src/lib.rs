@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod client;
 pub mod config;
 mod contract;
@@ -20,6 +21,8 @@ pub use client::model::{
     RecipientPaymentInfo, TabInfo, TabPaymentStatus, UserInfo,
 };
 pub use config::{Config, ConfigBuilder};
+pub use config::AuthConfig;
+pub use auth::{AuthClient, AuthSession, AuthTokens};
 pub use crypto::bls::BLSCert;
 pub use sig::PaymentSignature;
 pub use x402::X402Flow;

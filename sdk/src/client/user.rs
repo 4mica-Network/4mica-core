@@ -35,6 +35,10 @@ impl UserClient {
         Self { ctx }
     }
 
+    pub(crate) async fn login(&self) -> Result<crate::auth::AuthTokens, crate::error::AuthError> {
+        self.ctx.login().await
+    }
+
     pub fn guarantee_domain(&self) -> &[u8; 32] {
         self.ctx.guarantee_domain()
     }
@@ -147,7 +151,7 @@ impl UserClient {
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError> {
         // TODO: Cache public parameters for a while
-        let pub_params = self.ctx.rpc_proxy().get_public_params().await?;
+        let pub_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
 
         let sig = self
             .ctx
@@ -174,6 +178,7 @@ impl UserClient {
         let cert = self
             .ctx
             .rpc_proxy()
+            .await?
             .issue_guarantee(PaymentGuaranteeRequest::new(
                 PaymentGuaranteeRequestClaims::V1(claims),
                 signature,

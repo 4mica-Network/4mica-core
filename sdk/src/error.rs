@@ -7,6 +7,7 @@ use reqwest::StatusCode;
 use rpc::ApiClientError;
 use serde_json::Value;
 use thiserror::Error;
+use url::ParseError;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -14,6 +15,40 @@ pub enum ConfigError {
     InvalidValue(String),
     #[error("missing config: {0}")]
     Missing(String),
+}
+
+#[derive(Error, Debug)]
+pub enum AuthError {
+    #[error("invalid auth URL: {0}")]
+    InvalidUrl(#[from] ParseError),
+    #[error("auth request failed: {0}")]
+    Transport(#[from] reqwest::Error),
+    #[error("failed to decode auth response: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("auth server returned {status}: {message}")]
+    Api { status: StatusCode, message: String },
+    #[error("signing failed: {0}")]
+    Signing(String),
+    #[error("auth config is missing")]
+    MissingConfig,
+    #[error("refresh token not available")]
+    MissingRefreshToken,
+    #[error("auth state error: {0}")]
+    Internal(String),
+}
+
+impl AuthError {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::Api { status, .. } => *status,
+            Self::InvalidUrl(_) | Self::MissingConfig => StatusCode::BAD_REQUEST,
+            Self::MissingRefreshToken => StatusCode::UNAUTHORIZED,
+            Self::Transport(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Decode(_) => StatusCode::BAD_GATEWAY,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Signing(_) => StatusCode::UNAUTHORIZED,
+        }
+    }
 }
 
 #[derive(Error, Debug)]
