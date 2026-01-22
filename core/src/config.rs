@@ -54,9 +54,6 @@ pub struct Eip712Config {
 pub struct Secrets {
     #[envconfig(from = "BLS_PRIVATE_KEY")]
     pub bls_private_key: HexBytes,
-
-    #[envconfig(from = "CORE_ADMIN_SEED_KEY")]
-    pub core_admin_seed_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Envconfig)]

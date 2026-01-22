@@ -15,7 +15,7 @@ use entities::{
     sea_orm_active_enums::{SettlementStatus, TabStatus},
     tabs,
 };
-use log::{error, info, warn};
+use log::{error, info};
 use parking_lot::Mutex;
 use rpc::{
     AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
@@ -97,12 +97,10 @@ fn require_tab_owner(auth: &AccessContext, tab: &tabs::Model) -> ServiceResult<(
     Err(ServiceError::Unauthorized("tab access denied".into()))
 }
 
-mod api_keys;
 pub mod auth;
 pub mod event_handler;
 mod guarantee;
 pub mod payment;
-pub use api_keys::AdminApiKeyScope;
 pub use auth::{
     AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse, AuthRefreshRequest,
     AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse, SiweTemplate,
@@ -187,13 +185,6 @@ impl CoreService {
                 listener_ready_rx: ready_rx,
             },
         )?;
-        match core_service.bootstrap_admin_api_key().await {
-            Ok(Some(api_key)) => info!(
-                "Bootstrap admin API key initialized with SuspendUsers+ManageKeys scopes: {api_key}"
-            ),
-            Ok(None) => {}
-            Err(err) => warn!("Failed to initialize bootstrap admin API key: {err:?}"),
-        }
         let core_service_clone = core_service.clone();
         tokio::spawn(async move {
             let mut delay = Duration::from_secs(1);

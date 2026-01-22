@@ -14,10 +14,9 @@ use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
 use rand::random;
 use rpc::{
-    ADMIN_API_KEY_PREFIX, ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS, ApiClientError,
-    CorePublicParameters, CreateAdminApiKeyRequest, CreatePaymentTabRequest,
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
-    RpcProxy, SigningScheme, TabInfo, UpdateUserSuspensionRequest,
+    ApiClientError, CorePublicParameters, CreatePaymentTabRequest, PaymentGuaranteeRequest,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1, RpcProxy, SigningScheme,
+    TabInfo, UpdateUserSuspensionRequest,
 };
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
 use serde::Deserialize;
@@ -82,12 +81,6 @@ async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx, Au
     let core_addr = core_base_url(&config);
     clear_all_tables(&ctx).await?;
 
-    let admin_key = common::fixtures::create_admin_api_key(
-        &ctx,
-        "test-admin",
-        &[ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS],
-    )
-    .await?;
     let recipient_signer = PrivateKeySigner::random();
     let auth = login_with_siwe(
         &core_addr,
@@ -97,9 +90,7 @@ async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx, Au
         &[SCOPE_TAB_CREATE, SCOPE_TAB_READ, SCOPE_GUARANTEE_ISSUE],
     )
     .await?;
-    let core_client = RpcProxy::new(&core_addr)?
-        .with_admin_api_key(admin_key)
-        .with_bearer_token(auth.access_token.clone());
+    let core_client = RpcProxy::new(&core_addr)?.with_bearer_token(auth.access_token.clone());
 
     Ok((config, core_client, ctx, auth))
 }
@@ -2480,7 +2471,7 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn suspension_endpoint_requires_api_key() -> anyhow::Result<()> {
+async fn suspension_endpoint_accepts_admin_role() -> anyhow::Result<()> {
     let (config, _core_client, ctx, auth) = setup_clean_db().await?;
     let user_addr = random_address();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
@@ -2502,84 +2493,7 @@ async fn suspension_endpoint_requires_api_key() -> anyhow::Result<()> {
         .send()
         .await?;
 
-    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
-    let body: serde_json::Value = resp.json().await?;
-    assert_eq!(
-        body.get("error"),
-        Some(&serde_json::Value::String("missing api key".into()))
-    );
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::serial]
-async fn api_key_scope_is_enforced() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
-    let user_addr = random_address();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let restricted = core_client
-        .create_admin_api_key(CreateAdminApiKeyRequest {
-            name: "support".into(),
-            scopes: vec![ADMIN_SCOPE_MANAGE_KEYS.into()],
-        })
-        .await?;
-
-    let restricted_token = auth.access_token.clone();
-    let restricted_client = RpcProxy::new(&format!(
-        "http://{}:{}",
-        config.server_config.host, config.server_config.port
-    ))?
-    .with_admin_api_key(restricted.api_key)
-    .with_bearer_token(restricted_token);
-
-    let err = restricted_client
-        .update_user_suspension(user_addr.clone(), true)
-        .await
-        .expect_err("missing scope should reject");
-    match err {
-        ApiClientError::Api { status, message } => {
-            assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
-            assert!(
-                message.contains("missing scope"),
-                "unexpected message: {message}"
-            );
-        }
-        other => panic!("unexpected error: {:?}", other),
-    }
-    // ensure main admin key still works to clean up
-    core_client
-        .update_user_suspension(user_addr, false)
-        .await
-        .expect("default admin key should work");
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::serial]
-async fn admin_api_key_lifecycle() -> anyhow::Result<()> {
-    let (_, core_client, _, _auth) = setup_clean_db().await?;
-
-    let created = core_client
-        .create_admin_api_key(CreateAdminApiKeyRequest {
-            name: "ops-team".into(),
-            scopes: vec![ADMIN_SCOPE_SUSPEND_USERS.into()],
-        })
-        .await?;
-    assert_eq!(created.name, "ops-team");
-    assert!(created.api_key.starts_with(ADMIN_API_KEY_PREFIX));
-
-    let keys = core_client.list_admin_api_keys().await?;
-    assert!(
-        keys.iter()
-            .any(|k| k.id == created.id && k.revoked_at.is_none()),
-        "new key not found in list"
-    );
-
-    let revoked = core_client.revoke_admin_api_key(created.id.clone()).await?;
-    assert!(revoked.revoked_at.is_some());
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
     Ok(())
 }
