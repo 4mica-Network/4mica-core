@@ -134,8 +134,8 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
 
-    let bls_cert = user_client
-        .user
+    let bls_cert = recipient_client
+        .recipient
         .issue_payment_guarantee(claims.clone(), payment_sig.signature, payment_sig.scheme)
         .await?;
     println!(
@@ -253,8 +253,8 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
 
-    let bls_cert = user_client
-        .user
+    let bls_cert = recipient_client
+        .recipient
         .issue_payment_guarantee(claims.clone(), payment_sig.signature, payment_sig.scheme)
         .await?;
     println!(

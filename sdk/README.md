@@ -463,7 +463,7 @@ let claims = PaymentGuaranteeRequestClaims::new(
 
 let payment_sig = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
 
-let bls_cert = client.user.issue_payment_guarantee(
+let bls_cert = client.recipient.issue_payment_guarantee(
     claims,
     payment_sig.signature,
     payment_sig.scheme,

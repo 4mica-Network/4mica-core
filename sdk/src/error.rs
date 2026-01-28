@@ -37,9 +37,9 @@ pub enum AuthError {
     Internal(String),
 }
 
-impl AuthError {
-    pub fn status(&self) -> StatusCode {
-        match self {
+impl Into<ApiClientError> for AuthError {
+    fn into(self) -> ApiClientError {
+        let status = match &self {
             Self::Api { status, .. } => *status,
             Self::InvalidUrl(_) | Self::MissingConfig => StatusCode::BAD_REQUEST,
             Self::MissingRefreshToken => StatusCode::UNAUTHORIZED,
@@ -47,6 +47,17 @@ impl AuthError {
             Self::Decode(_) => StatusCode::BAD_GATEWAY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Signing(_) => StatusCode::UNAUTHORIZED,
+        };
+
+        match self {
+            Self::InvalidUrl(err) => ApiClientError::InvalidUrl(err),
+            Self::Transport(err) => ApiClientError::Transport(err),
+            Self::Decode(err) => ApiClientError::Decode(err),
+            Self::Api { status, message } => ApiClientError::Api { status, message },
+            other => ApiClientError::Api {
+                status,
+                message: other.to_string(),
+            },
         }
     }
 }

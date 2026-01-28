@@ -39,11 +39,14 @@ struct ClientCtx(Arc<Inner>);
 impl ClientCtx {
     async fn new(cfg: Config) -> Result<Self, ClientError> {
         let rpc_proxy = Self::build_rpc_proxy(&cfg)?;
-        let auth_session = cfg.auth.clone().and_then(|auth_cfg| {
+        let auth_session = cfg.auth.as_ref().and_then(|auth_cfg| {
             if cfg.bearer_token.is_some() {
                 None
             } else {
-                Some(AuthSession::new(auth_cfg, cfg.wallet_private_key.clone()))
+                Some(AuthSession::new(
+                    auth_cfg.clone(),
+                    cfg.wallet_private_key.clone(),
+                ))
             }
         });
         let public_params = rpc_proxy
@@ -164,7 +167,10 @@ impl ClientCtx {
     async fn rpc_proxy(&self) -> Result<RpcProxy, ApiClientError> {
         let mut proxy = self.0.rpc_proxy.clone();
         if let Some(auth) = &self.0.auth_session {
-            let token = auth.access_token().await.map_err(map_auth_error)?;
+            let token = auth
+                .access_token()
+                .await
+                .map_err(Into::<ApiClientError>::into)?;
             proxy = proxy.with_bearer_token(token);
         }
         Ok(proxy)
@@ -194,6 +200,7 @@ impl ClientCtx {
 
 #[derive(Clone)]
 pub struct Client {
+    ctx: ClientCtx,
     pub recipient: RecipientClient,
     pub user: UserClient,
 }
@@ -203,25 +210,13 @@ impl Client {
         let ctx = ClientCtx::new(cfg).await?;
 
         Ok(Self {
+            ctx: ctx.clone(),
             recipient: RecipientClient::new(ctx.clone()),
-            user: UserClient::new(ctx.clone()),
+            user: UserClient::new(ctx),
         })
     }
 
     pub async fn login(&self) -> Result<AuthTokens, AuthError> {
-        self.user.login().await
-    }
-}
-
-fn map_auth_error(err: AuthError) -> ApiClientError {
-    match err {
-        AuthError::InvalidUrl(err) => ApiClientError::InvalidUrl(err),
-        AuthError::Transport(err) => ApiClientError::Transport(err),
-        AuthError::Decode(err) => ApiClientError::Decode(err),
-        AuthError::Api { status, message } => ApiClientError::Api { status, message },
-        other => ApiClientError::Api {
-            status: other.status(),
-            message: other.to_string(),
-        },
+        self.ctx.login().await
     }
 }

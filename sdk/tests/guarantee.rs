@@ -117,8 +117,8 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .await?;
 
     // Step 4: User issues guarantee
-    let bls_cert = user_client
-        .user
+    let bls_cert = recipient_client
+        .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
 
@@ -282,8 +282,8 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
         .user
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
-    let cert_first = user_client
-        .user
+    let cert_first = recipient_client
+        .recipient
         .issue_payment_guarantee(claims.clone(), sig_first.signature, sig_first.scheme)
         .await?;
     let parsed_first = recipient_client
@@ -298,8 +298,8 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
         .user
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
-    let cert_second = user_client
-        .user
+    let cert_second = recipient_client
+        .recipient
         .issue_payment_guarantee(claims.clone(), sig_second.signature, sig_second.scheme)
         .await?;
     let parsed_second = recipient_client

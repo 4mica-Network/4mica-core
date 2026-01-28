@@ -27,11 +27,6 @@ impl RecipientClient {
         Self { ctx }
     }
 
-    fn check_signer_address(&self, expected: &str) -> bool {
-        let signer_address = self.ctx.signer().address();
-        signer_address.to_string() == expected
-    }
-
     pub fn guarantee_domain(&self) -> &[u8; 32] {
         self.ctx.guarantee_domain()
     }
@@ -51,12 +46,6 @@ impl RecipientClient {
         erc20_token: Option<String>,
         ttl: Option<u64>,
     ) -> Result<U256, CreateTabError> {
-        if !self.check_signer_address(&recipient_address) {
-            return Err(CreateTabError::InvalidParams(
-                "signer address does not match recipient address".into(),
-            ));
-        }
-
         let result = self
             .ctx
             .rpc_proxy()
@@ -96,12 +85,6 @@ impl RecipientClient {
         signature: String,
         scheme: SigningScheme,
     ) -> Result<BLSCert, IssuePaymentGuaranteeError> {
-        if !self.check_signer_address(&claims.user_address) {
-            return Err(IssuePaymentGuaranteeError::InvalidParams(
-                "signer address does not match user address".into(),
-            ));
-        }
-
         let cert = self
             .ctx
             .rpc_proxy()

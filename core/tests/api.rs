@@ -6,9 +6,9 @@ use alloy::{
 };
 use alloy_sol_types::SolValue;
 use chrono::{DateTime, Duration, Utc};
+use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ};
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::persist::{GuaranteeData, PersistCtx, repo};
-use core_service::service::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ};
 use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
 use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
@@ -482,14 +482,12 @@ async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_future_timestamp() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let future_ts = (Utc::now() + Duration::hours(1)).timestamp() as u64;
@@ -506,7 +504,7 @@ async fn issue_guarantee_rejects_future_timestamp() -> anyhow::Result<()> {
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(result.is_err(), "must reject promise with future timestamp");
 
     Ok(())
@@ -515,14 +513,12 @@ async fn issue_guarantee_rejects_future_timestamp() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let req = build_signed_req(
@@ -538,7 +534,7 @@ async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()>
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(
         result.is_err(),
         "must reject when collateral is insufficient"
@@ -550,14 +546,12 @@ async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()>
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
 
@@ -584,7 +578,7 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client.issue_guarantee(req0).await.expect("first ok");
+    core_client.issue_guarantee(req0).await.expect("first ok");
 
     let req1 = build_signed_req(
         &public_params,
@@ -599,7 +593,7 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
     )
     .await;
 
-    user_client.issue_guarantee(req1).await.expect("second ok");
+    core_client.issue_guarantee(req1).await.expect("second ok");
 
     let req_replay = build_signed_req(
         &public_params,
@@ -613,7 +607,7 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    let result = user_client.issue_guarantee(req_replay).await;
+    let result = core_client.issue_guarantee(req_replay).await;
     assert!(result.is_err(), "must reject replayed req_id");
 
     let guarantees = core_client
@@ -630,15 +624,13 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_guarantee_queries() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab_id = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -665,7 +657,7 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
     )
     .await;
 
-    user_client
+    core_client
         .issue_guarantee(req)
         .await
         .expect("issue guarantee");
@@ -699,15 +691,13 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab_id = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -734,7 +724,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client
+    core_client
         .issue_guarantee(req0)
         .await
         .expect("issue first guarantee");
@@ -751,7 +741,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client
+    core_client
         .issue_guarantee(req1)
         .await
         .expect("issue second guarantee");
@@ -819,15 +809,13 @@ async fn core_api_guarantee_queries_empty_state() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(12u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab_id = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -853,7 +841,7 @@ async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Resu
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client
+    core_client
         .issue_guarantee(req)
         .await
         .expect("issue guarantee");
@@ -886,14 +874,12 @@ async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Resu
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let tab = core_client
@@ -919,7 +905,7 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client.issue_guarantee(req0).await.expect("first ok");
+    core_client.issue_guarantee(req0).await.expect("first ok");
 
     let req1 = build_signed_req(
         &public_params,
@@ -934,7 +920,7 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
     )
     .await;
 
-    let result = user_client.issue_guarantee(req1).await;
+    let result = core_client.issue_guarantee(req1).await;
     assert!(result.is_err(), "must reject modified start timestamp");
 
     Ok(())
@@ -943,14 +929,12 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let tab = core_client
@@ -977,7 +961,7 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client.issue_guarantee(req0).await.expect("first ok");
+    core_client.issue_guarantee(req0).await.expect("first ok");
 
     let req1 = build_signed_req(
         &public_params,
@@ -991,7 +975,7 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    let cert2 = user_client.issue_guarantee(req1).await.expect("second ok");
+    let cert2 = core_client.issue_guarantee(req1).await.expect("second ok");
 
     assert!(cert2.verify(&public_params.public_key).unwrap());
     let rows = guarantee_entity::Entity::find()
@@ -1007,14 +991,12 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(100u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let tab = core_client
@@ -1044,7 +1026,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    let cert1 = user_client
+    let cert1 = core_client
         .issue_guarantee(req0)
         .await
         .expect("first guarantee ok");
@@ -1072,7 +1054,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    let cert2 = user_client
+    let cert2 = core_client
         .issue_guarantee(req1)
         .await
         .expect("second guarantee ok");
@@ -1096,14 +1078,12 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let tab_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
@@ -1120,7 +1100,7 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(result.is_err(), "must reject when tab not found");
 
     Ok(())
@@ -1129,14 +1109,12 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab_result = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -1162,7 +1140,7 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
     )
     .await;
 
-    user_client
+    core_client
         .issue_guarantee(req)
         .await
         .expect("issue guarantee");
@@ -1179,14 +1157,12 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab_result = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -1212,7 +1188,7 @@ async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyho
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(
         result.is_err(),
         "must reject when collateral is insufficient"
@@ -1241,14 +1217,12 @@ async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyho
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let tab = core_client
@@ -1275,7 +1249,7 @@ async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()>
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client.issue_guarantee(req0).await.expect("first ok");
+    core_client.issue_guarantee(req0).await.expect("first ok");
 
     // Manually insert a guarantee with a higher req_id to emulate a gap.
     let forced_req_id = U256::from(5u64);
@@ -1309,7 +1283,7 @@ async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()>
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client
+    core_client
         .issue_guarantee(req_next)
         .await
         .expect("next guarantee ok");
@@ -1327,15 +1301,13 @@ async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()>
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     insert_user_with_asset_collateral(&ctx, &user_addr, STABLE_ASSET_ADDRESS, U256::from(5u64))
         .await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -1361,7 +1333,7 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
     )
     .await;
 
-    let cert = user_client
+    let cert = core_client
         .issue_guarantee(req)
         .await
         .expect("issue guarantee");
@@ -1381,15 +1353,13 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     insert_user_with_asset_collateral(&ctx, &user_addr, STABLE_ASSET_ADDRESS, U256::from(5u64))
         .await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -1415,7 +1385,7 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(result.is_err(), "must reject mismatched asset address");
 
     Ok(())
@@ -1424,7 +1394,7 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let tab_user_addr = alloy::signers::local::PrivateKeySigner::random()
         .address()
@@ -1445,14 +1415,6 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
     let other_wallet = alloy::signers::local::PrivateKeySigner::random();
     let other_user_addr = other_wallet.address().to_string();
     ensure_user_with_collateral(&ctx, &other_user_addr, U256::from(5u64)).await?;
-    let user_client = client_with_signer(
-        &config,
-        &ctx,
-        &other_wallet,
-        "user",
-        &[SCOPE_GUARANTEE_ISSUE],
-    )
-    .await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
     let req = build_signed_req(
@@ -1468,7 +1430,7 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(result.is_err(), "must reject mismatched user address");
 
     Ok(())
@@ -1477,14 +1439,12 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let tab_recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -1511,7 +1471,7 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(result.is_err(), "must reject mismatched recipient address");
 
     Ok(())
@@ -1520,14 +1480,12 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab_result = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -1570,7 +1528,7 @@ async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::
     )
     .await;
 
-    let result = user_client.issue_guarantee(req).await;
+    let result = core_client.issue_guarantee(req).await;
     assert!(
         result.is_err(),
         "must reject if pending tab already has history"
@@ -2067,15 +2025,13 @@ async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(25u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
 
     let tab_id = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -2101,7 +2057,7 @@ async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    user_client
+    core_client
         .issue_guarantee(req)
         .await
         .expect("issue guarantee");
@@ -2414,13 +2370,22 @@ async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
 #[serial_test::serial]
 async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
     let (config, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
+
+    let user_wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_wallet.address().to_string();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let user_client =
-        client_with_signer(&config, &ctx, &wallet, "user", &[SCOPE_GUARANTEE_ISSUE]).await?;
+
+    let recipient2_wallet = alloy::signers::local::PrivateKeySigner::random();
+    let recipient2_addr = recipient2_wallet.address().to_string();
+    let recipient2_client = client_with_signer(
+        &config,
+        &ctx,
+        &recipient2_wallet,
+        "recipient",
+        &[SCOPE_GUARANTEE_ISSUE],
+    )
+    .await?;
 
     let tab_id = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -2436,25 +2401,25 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
     let req = build_signed_req(
         &public_params,
         &user_addr,
-        &recipient_addr,
+        &recipient2_addr,
         tab_id,
         U256::ZERO,
         U256::from(1u64),
-        &wallet,
+        &user_wallet,
         None,
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
 
     core_client
-        .update_user_suspension(user_addr.clone(), true)
+        .update_user_suspension(recipient2_addr.clone(), true)
         .await
         .expect("suspend user");
 
-    let err = user_client
+    let err = recipient2_client
         .issue_guarantee(req)
         .await
-        .expect_err("suspended user should not receive guarantees");
+        .expect_err("suspended recipient should not receive guarantees");
     match err {
         ApiClientError::Api { status, message } => {
             assert_eq!(status, reqwest::StatusCode::FORBIDDEN);

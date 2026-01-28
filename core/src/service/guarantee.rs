@@ -1,6 +1,10 @@
-use crate::service::{AccessContext, CoreService, SCOPE_GUARANTEE_ISSUE};
+use crate::service::CoreService;
 use crate::{
-    auth::verify_guarantee_request_signature,
+    auth::{
+        access::{self, AccessContext},
+        constants::SCOPE_GUARANTEE_ISSUE,
+        verify_guarantee_request_signature,
+    },
     error::{ServiceError, ServiceResult},
     persist::repo,
     util::u256_to_string,
@@ -146,8 +150,8 @@ impl CoreService {
         auth: &AccessContext,
         req: PaymentGuaranteeRequest,
     ) -> ServiceResult<BLSCert> {
-        super::require_scope(auth, SCOPE_GUARANTEE_ISSUE)?;
-        super::require_user_match(auth, req.claims.user_address())?;
+        access::require_scope(auth, SCOPE_GUARANTEE_ISSUE)?;
+        access::require_recipient_match(auth, req.claims.recipient_address())?;
 
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();

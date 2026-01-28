@@ -85,8 +85,8 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     );
 
     // Step 4: User issues guarantee
-    let bls_cert = user_client
-        .user
+    let bls_cert = recipient_client
+        .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
 

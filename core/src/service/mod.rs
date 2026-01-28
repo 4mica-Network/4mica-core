@@ -1,3 +1,5 @@
+use crate::auth::access::{self, AccessContext};
+use crate::auth::constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ};
 use crate::persist::mapper;
 use crate::{
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS, EthereumConfig},
@@ -32,79 +34,10 @@ use tokio::{
     time::{Duration, sleep},
 };
 
-pub const SCOPE_TAB_CREATE: &str = "tab:create";
-pub const SCOPE_TAB_READ: &str = "tab:read";
-pub const SCOPE_GUARANTEE_ISSUE: &str = "guarantee:issue";
-
-#[derive(Clone, Debug)]
-pub struct AccessContext {
-    pub wallet_address: String,
-    pub role: String,
-    pub scopes: Vec<String>,
-}
-
-fn parse_tab_id(raw: &str) -> ServiceResult<U256> {
-    let trimmed = raw.trim();
-    let parsed = if let Some(rest) = trimmed.strip_prefix("0x") {
-        U256::from_str_radix(rest, 16)
-    } else {
-        U256::from_str_radix(trimmed, 10)
-    };
-    parsed.map_err(|err| ServiceError::Other(anyhow!("invalid tab id {raw}: {err}")))
-}
-
-fn scope_contains(scopes: &[String], required: &str) -> bool {
-    scopes
-        .iter()
-        .any(|scope| scope.trim().eq_ignore_ascii_case(required))
-}
-
-fn addresses_match(left: &str, right: &str) -> bool {
-    left.trim().eq_ignore_ascii_case(right.trim())
-}
-
-fn require_scope(auth: &AccessContext, scope: &str) -> ServiceResult<()> {
-    if !scope_contains(&auth.scopes, scope) {
-        return Err(ServiceError::Unauthorized("missing scope".into()));
-    }
-    Ok(())
-}
-
-fn require_recipient_match(auth: &AccessContext, recipient_address: &str) -> ServiceResult<()> {
-    if !addresses_match(&auth.wallet_address, recipient_address) {
-        return Err(ServiceError::Unauthorized(
-            "recipient address does not match token subject".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn require_user_match(auth: &AccessContext, user_address: &str) -> ServiceResult<()> {
-    if !addresses_match(&auth.wallet_address, user_address) {
-        return Err(ServiceError::Unauthorized(
-            "user address does not match token subject".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn require_tab_owner(auth: &AccessContext, tab: &tabs::Model) -> ServiceResult<()> {
-    if addresses_match(&auth.wallet_address, &tab.user_address)
-        || addresses_match(&auth.wallet_address, &tab.server_address)
-    {
-        return Ok(());
-    }
-    Err(ServiceError::Unauthorized("tab access denied".into()))
-}
-
 pub mod auth;
 pub mod event_handler;
 mod guarantee;
 pub mod payment;
-pub use auth::{
-    AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse, AuthRefreshRequest,
-    AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse, SiweTemplate,
-};
 
 pub struct Inner {
     config: AppConfig,
@@ -330,15 +263,15 @@ impl CoreService {
         auth: &AccessContext,
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
-        require_scope(auth, SCOPE_TAB_CREATE)?;
-        require_recipient_match(auth, &req.recipient_address)?;
+        access::require_scope(auth, SCOPE_TAB_CREATE)?;
+        access::require_recipient_match(auth, &req.recipient_address)?;
 
         let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
         let max_ttl = self.tab_expiration_time();
         let now = crate::util::now_naive();
         let now_ts = now.and_utc().timestamp();
         if now_ts < 0 {
-            return Err(ServiceError::Other(anyhow!("System time before epoch")));
+            return Err(anyhow!("System time before epoch").into());
         }
 
         let asset_address = req
@@ -367,7 +300,7 @@ impl CoreService {
                         existing.ttl, max_ttl
                     )));
                 }
-                let id = parse_tab_id(&existing.id)?;
+                let id = crate::util::parse_tab_id(&existing.id)?;
                 let next_req_id =
                     match repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, id).await? {
                         Some(model) => {
@@ -423,8 +356,8 @@ impl CoreService {
         recipient_address: String,
         settlement_statuses: Vec<SettlementStatus>,
     ) -> ServiceResult<Vec<TabInfo>> {
-        require_scope(auth, SCOPE_TAB_READ)?;
-        require_recipient_match(auth, &recipient_address)?;
+        access::require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_recipient_match(auth, &recipient_address)?;
 
         let status_refs = if settlement_statuses.is_empty() {
             None
@@ -446,8 +379,8 @@ impl CoreService {
         auth: &AccessContext,
         recipient_address: String,
     ) -> ServiceResult<Vec<PendingRemunerationInfo>> {
-        require_scope(auth, SCOPE_TAB_READ)?;
-        require_recipient_match(auth, &recipient_address)?;
+        access::require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_recipient_match(auth, &recipient_address)?;
 
         let tabs = repo::get_tabs_for_recipient(
             &self.inner.persist_ctx,
@@ -479,14 +412,14 @@ impl CoreService {
         auth: &AccessContext,
         tab_id: U256,
     ) -> ServiceResult<Option<TabInfo>> {
-        require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_scope(auth, SCOPE_TAB_READ)?;
 
-        let maybe_tab = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await?;
-        if let Some(ref tab) = maybe_tab {
-            require_tab_owner(auth, tab)?;
-        }
+        let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? else {
+            return Ok(None);
+        };
+        access::require_tab_owner(auth, &tab)?;
 
-        maybe_tab.map(mapper::tab_model_to_info).transpose()
+        Some(mapper::tab_model_to_info(tab)).transpose()
     }
 
     async fn load_tab_for_read(
@@ -494,12 +427,12 @@ impl CoreService {
         auth: &AccessContext,
         tab_id: U256,
     ) -> ServiceResult<tabs::Model> {
-        require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_scope(auth, SCOPE_TAB_READ)?;
 
         let tab = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id)
             .await?
             .ok_or_else(|| ServiceError::NotFound(u256_to_string(tab_id)))?;
-        require_tab_owner(auth, &tab)?;
+        access::require_tab_owner(auth, &tab)?;
         Ok(tab)
     }
 
@@ -544,8 +477,8 @@ impl CoreService {
         auth: &AccessContext,
         recipient_address: String,
     ) -> ServiceResult<Vec<UserTransactionInfo>> {
-        require_scope(auth, SCOPE_TAB_READ)?;
-        require_recipient_match(auth, &recipient_address)?;
+        access::require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_recipient_match(auth, &recipient_address)?;
 
         let rows =
             repo::get_recipient_transactions(&self.inner.persist_ctx, &recipient_address).await?;
@@ -573,12 +506,16 @@ impl CoreService {
         user_address: String,
         asset_address: String,
     ) -> ServiceResult<Option<AssetBalanceInfo>> {
-        require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_scope(auth, SCOPE_TAB_READ)?;
 
-        let maybe =
+        let Some(balance) =
             repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
-                .await?;
-        maybe.map(mapper::asset_balance_model_to_info).transpose()
+                .await?
+        else {
+            return Ok(None);
+        };
+
+        Some(mapper::asset_balance_model_to_info(balance)).transpose()
     }
 
     pub async fn set_user_suspension(

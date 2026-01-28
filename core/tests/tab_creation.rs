@@ -2,10 +2,11 @@ use alloy::primitives::U256;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};
 use core_service::{
+    auth::{access::AccessContext, constants::SCOPE_TAB_CREATE},
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
     ethereum::CoreContractApi,
     persist::{PersistCtx, repo},
-    service::{AccessContext, CoreService, CoreServiceDeps, SCOPE_TAB_CREATE},
+    service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
 };
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};

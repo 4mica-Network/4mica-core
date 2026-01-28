@@ -1,12 +1,5 @@
-use crate::{
-    error::ServiceError,
-    persist::mapper,
-    service::{
-        AccessContext, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
-        AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
-        CoreService,
-    },
-};
+use crate::auth::access::AccessContext;
+use crate::{error::ServiceError, persist::mapper, service::CoreService};
 use alloy_primitives::U256;
 use axum::{
     Json, Router,
@@ -20,16 +13,15 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
 use http::{StatusCode, header::AUTHORIZATION};
 use rpc::{
-    AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
-    CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo,
-    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
+    AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
+    AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
+    CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest, CreatePaymentTabResult,
+    GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, TabInfo,
+    UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
 };
-use std::{str::FromStr, sync::Arc};
-
-type SharedService = Arc<CoreService>;
+use std::str::FromStr;
 
 pub fn router(service: CoreService) -> Router {
-    let shared = Arc::new(service);
     Router::new()
         .route("/auth/nonce", post(post_auth_nonce))
         .route("/auth/verify", post(post_auth_verify))
@@ -78,10 +70,10 @@ pub fn router(service: CoreService) -> Router {
             post(update_user_suspension),
         )
         .layer(middleware::from_fn_with_state(
-            shared.clone(),
+            service.clone(),
             auth_middleware,
         ))
-        .with_state(shared)
+        .with_state(service)
 }
 
 #[derive(Debug)]
@@ -151,7 +143,7 @@ fn parse_u256(value: &str) -> Result<U256, ApiError> {
 }
 
 async fn auth_middleware(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
@@ -201,13 +193,13 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
 }
 
 async fn get_public_params(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
 ) -> Result<Json<CorePublicParameters>, ApiError> {
     Ok(Json(service.public_params()))
 }
 
 async fn post_auth_nonce(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Json(req): Json<AuthNonceRequest>,
 ) -> Result<Json<AuthNonceResponse>, ApiError> {
     let res = service.create_auth_nonce(req).await?;
@@ -215,7 +207,7 @@ async fn post_auth_nonce(
 }
 
 async fn post_auth_verify(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Json(req): Json<AuthVerifyRequest>,
 ) -> Result<Json<AuthVerifyResponse>, ApiError> {
     let res = service.verify_auth(req).await?;
@@ -223,7 +215,7 @@ async fn post_auth_verify(
 }
 
 async fn post_auth_refresh(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Json(req): Json<AuthRefreshRequest>,
 ) -> Result<Json<AuthRefreshResponse>, ApiError> {
     let res = service.refresh_auth(req).await?;
@@ -231,7 +223,7 @@ async fn post_auth_refresh(
 }
 
 async fn post_auth_logout(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Json(req): Json<AuthLogoutRequest>,
 ) -> Result<Json<AuthLogoutResponse>, ApiError> {
     let res = service.logout_auth(req).await?;
@@ -239,7 +231,7 @@ async fn post_auth_logout(
 }
 
 async fn get_health(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     service
         .wait_for_listener_ready()
@@ -251,7 +243,7 @@ async fn get_health(
 }
 
 async fn issue_guarantee(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Json(req): Json<PaymentGuaranteeRequest>,
 ) -> Result<Json<BLSCert>, ApiError> {
@@ -263,7 +255,7 @@ async fn issue_guarantee(
 }
 
 async fn create_payment_tab(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Json(req): Json<CreatePaymentTabRequest>,
 ) -> Result<Json<CreatePaymentTabResult>, ApiError> {
@@ -275,7 +267,7 @@ async fn create_payment_tab(
 }
 
 async fn list_settled_tabs(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<TabInfo>>, ApiError> {
@@ -292,7 +284,7 @@ async fn list_settled_tabs(
 }
 
 async fn list_pending_remunerations(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<PendingRemunerationInfo>>, ApiError> {
@@ -304,7 +296,7 @@ async fn list_pending_remunerations(
 }
 
 async fn get_tab(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Option<TabInfo>>, ApiError> {
@@ -317,7 +309,7 @@ async fn get_tab(
 }
 
 async fn list_recipient_tabs(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
@@ -346,7 +338,7 @@ async fn list_recipient_tabs(
 }
 
 async fn get_tab_guarantees(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Vec<GuaranteeInfo>>, ApiError> {
@@ -359,7 +351,7 @@ async fn get_tab_guarantees(
 }
 
 async fn get_latest_guarantee(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
@@ -372,7 +364,7 @@ async fn get_latest_guarantee(
 }
 
 async fn get_specific_guarantee(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path((tab_id, req_id)): Path<(String, String)>,
 ) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
@@ -386,7 +378,7 @@ async fn get_specific_guarantee(
 }
 
 async fn list_recipient_payments(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<UserTransactionInfo>>, ApiError> {
@@ -398,7 +390,7 @@ async fn list_recipient_payments(
 }
 
 async fn get_collateral_events_for_tab(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Vec<CollateralEventInfo>>, ApiError> {
@@ -411,7 +403,7 @@ async fn get_collateral_events_for_tab(
 }
 
 async fn get_user_asset_balance(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path((user, asset)): Path<(String, String)>,
 ) -> Result<Json<Option<AssetBalanceInfo>>, ApiError> {
@@ -423,7 +415,7 @@ async fn get_user_asset_balance(
 }
 
 async fn update_user_suspension(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
     Path(user): Path<String>,
     Json(req): Json<UpdateUserSuspensionRequest>,

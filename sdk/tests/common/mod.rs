@@ -180,10 +180,7 @@ async fn build_authed_config(
 }
 
 pub async fn build_authed_user_config(base_url: &str, private_key: &str) -> anyhow::Result<Config> {
-    let scopes = vec![
-        SCOPE_TAB_READ.to_string(),
-        SCOPE_GUARANTEE_ISSUE.to_string(),
-    ];
+    let scopes = vec![SCOPE_TAB_READ.to_string()];
     build_authed_config(base_url, private_key, ROLE_USER, &scopes).await
 }
 
@@ -191,6 +188,10 @@ pub async fn build_authed_recipient_config(
     base_url: &str,
     private_key: &str,
 ) -> anyhow::Result<Config> {
-    let scopes = vec![SCOPE_TAB_CREATE.to_string(), SCOPE_TAB_READ.to_string()];
+    let scopes = vec![
+        SCOPE_TAB_CREATE.to_string(),
+        SCOPE_TAB_READ.to_string(),
+        SCOPE_GUARANTEE_ISSUE.to_string(),
+    ];
     build_authed_config(base_url, private_key, ROLE_RECIPIENT, &scopes).await
 }
