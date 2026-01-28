@@ -1,4 +1,4 @@
-use crate::auth::access::AccessContext;
+use crate::auth::access::{self, AccessContext};
 use crate::{error::ServiceError, persist::mapper, service::CoreService};
 use alloy_primitives::U256;
 use axum::{
@@ -420,20 +420,10 @@ async fn update_user_suspension(
     Path(user): Path<String>,
     Json(req): Json<UpdateUserSuspensionRequest>,
 ) -> Result<Json<UserSuspensionStatus>, ApiError> {
-    require_admin_role(&auth)?;
+    access::require_admin_role(&auth)?;
     let status = service
         .set_user_suspension(user, req.suspended)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(status))
-}
-
-fn require_admin_role(auth: &AccessContext) -> Result<(), ApiError> {
-    if !auth.role.trim().eq_ignore_ascii_case("admin") {
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "admin role required",
-        ));
-    }
-    Ok(())
 }

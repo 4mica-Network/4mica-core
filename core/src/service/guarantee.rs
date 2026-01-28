@@ -164,6 +164,11 @@ impl CoreService {
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
 
         repo::ensure_user_is_active(&self.inner.persist_ctx, req.claims.user_address()).await?;
+        repo::ensure_user_is_active_if_exists(
+            &self.inner.persist_ctx,
+            req.claims.recipient_address(),
+        )
+        .await?;
 
         match &req.claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {

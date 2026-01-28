@@ -2368,22 +2368,21 @@ async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
-    let recipient_addr = auth.address.clone();
+async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> {
+    let (config, core_client, ctx, _) = setup_clean_db().await?;
 
     let user_wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = user_wallet.address().to_string();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
-    let recipient2_wallet = alloy::signers::local::PrivateKeySigner::random();
-    let recipient2_addr = recipient2_wallet.address().to_string();
-    let recipient2_client = client_with_signer(
+    let recipient_wallet = alloy::signers::local::PrivateKeySigner::random();
+    let recipient_addr = recipient_wallet.address().to_string();
+    let recipient_client = client_with_signer(
         &config,
         &ctx,
-        &recipient2_wallet,
+        &recipient_wallet,
         "recipient",
-        &[SCOPE_GUARANTEE_ISSUE],
+        &[SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE],
     )
     .await?;
 
@@ -2401,7 +2400,7 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
     let req = build_signed_req(
         &public_params,
         &user_addr,
-        &recipient2_addr,
+        &recipient_addr,
         tab_id,
         U256::ZERO,
         U256::from(1u64),
@@ -2412,14 +2411,71 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
     .await;
 
     core_client
-        .update_user_suspension(recipient2_addr.clone(), true)
+        .update_user_suspension(recipient_addr.clone(), true)
         .await
-        .expect("suspend user");
+        .expect("suspend recipient");
 
-    let err = recipient2_client
+    let err = recipient_client
         .issue_guarantee(req)
         .await
         .expect_err("suspended recipient should not receive guarantees");
+    match err {
+        ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+            assert!(
+                message.contains("user suspended"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {:?}", other),
+    }
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+    let recipient_addr = auth.address.clone();
+
+    let user_wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_wallet.address().to_string();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
+
+    let tab_id = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(600),
+        })
+        .await?
+        .id;
+
+    let public_params = core_client.get_public_params().await?;
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_id,
+        U256::ZERO,
+        U256::from(1u64),
+        &user_wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    core_client
+        .update_user_suspension(user_addr.clone(), true)
+        .await
+        .expect("suspend user");
+
+    let err = core_client
+        .issue_guarantee(req)
+        .await
+        .expect_err("suspended user should not receive guarantees");
     match err {
         ApiClientError::Api { status, message } => {
             assert_eq!(status, reqwest::StatusCode::FORBIDDEN);

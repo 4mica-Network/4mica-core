@@ -51,3 +51,10 @@ pub fn require_tab_owner(auth: &AccessContext, tab: &tabs::Model) -> ServiceResu
     }
     Err(ServiceError::Unauthorized("tab access denied".into()))
 }
+
+pub fn require_admin_role(auth: &AccessContext) -> ServiceResult<()> {
+    if !auth.role.trim().eq_ignore_ascii_case("admin") {
+        return Err(ServiceError::Unauthorized("admin role required".into()));
+    }
+    Ok(())
+}

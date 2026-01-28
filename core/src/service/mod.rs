@@ -264,7 +264,11 @@ impl CoreService {
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
         access::require_scope(auth, SCOPE_TAB_CREATE)?;
-        access::require_recipient_match(auth, &req.recipient_address)?;
+        if let Err(e) = access::require_recipient_match(auth, &req.recipient_address)
+            && access::require_admin_role(auth).is_err()
+        {
+            return Err(e);
+        }
 
         let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
         let max_ttl = self.tab_expiration_time();
