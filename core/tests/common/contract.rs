@@ -193,3 +193,11 @@ sol! {
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
     }
 }
+
+sol! {
+    // Minimal ERC-1271 mock: always returns the magic value.
+    #[sol(rpc, bytecode = "0x600d600c600039600d6000f3631626ba7e6000526004601cf3")]
+    contract MockERC1271Wallet {
+        function isValidSignature(bytes32 hash, bytes signature) external view returns (bytes4);
+    }
+}

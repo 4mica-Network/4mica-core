@@ -21,6 +21,16 @@ pub fn generate_tab_id(user: &str, recipient: &str, ttl: u64) -> U256 {
     U256::from_be_bytes(hash.into())
 }
 
+pub fn parse_tab_id(raw: &str) -> anyhow::Result<U256> {
+    let trimmed = raw.trim();
+    let parsed = if let Some(rest) = trimmed.strip_prefix("0x") {
+        U256::from_str_radix(rest, 16)
+    } else {
+        U256::from_str_radix(trimmed, 10)
+    };
+    parsed.map_err(|err| anyhow::anyhow!("invalid tab id {raw}: {err}"))
+}
+
 pub fn u256_to_string(val: U256) -> String {
     format!("{:#x}", val)
 }

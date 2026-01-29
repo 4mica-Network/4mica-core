@@ -47,6 +47,8 @@ jobs:
     name: Build, run services, and test
     runs-on: ubuntu-latest
     needs: [fmt, lint]
+    env:
+      AUTH_JWT_SECRET: ${{ secrets.AUTH_JWT_SECRET }}
     services:
       pg:
         image: postgres:17-alpine

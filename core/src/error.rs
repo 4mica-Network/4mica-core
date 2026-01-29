@@ -130,6 +130,9 @@ pub enum PersistDbError {
         count: usize,
     },
 
+    #[error("auth token invalid: {0}")]
+    AuthTokenInvalid(String),
+
     #[error(
         "optimistic lock conflict for user {user}, asset {asset_address}, expected version {expected_version}"
     )]
@@ -214,6 +217,7 @@ impl From<PersistDbError> for ServiceError {
                     "Multiple pending withdrawals for user {user}, asset {asset} (found {count})"
                 ))
             }
+            PersistDbError::AuthTokenInvalid(msg) => ServiceError::Unauthorized(msg),
             PersistDbError::OptimisticLockConflict { .. } => ServiceError::OptimisticLockConflict,
             PersistDbError::InvariantViolation(msg) => ServiceError::Other(anyhow!(msg)),
             PersistDbError::DatabaseFailure(e) => {

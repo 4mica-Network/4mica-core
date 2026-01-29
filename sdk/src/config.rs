@@ -6,12 +6,22 @@ use crate::{
     validators::{validate_address, validate_url, validate_wallet_private_key},
 };
 
+const DEFAULT_AUTH_REFRESH_MARGIN_SECS: u64 = 60;
+
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    pub auth_url: Url,
+    pub refresh_margin_secs: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub rpc_url: Url,
     pub wallet_private_key: PrivateKeySigner,
     pub ethereum_http_rpc_url: Option<Url>,
     pub contract_address: Option<Address>,
+    pub bearer_token: Option<String>,
+    pub auth: Option<AuthConfig>,
 }
 
 pub struct ConfigBuilder {
@@ -19,6 +29,11 @@ pub struct ConfigBuilder {
     wallet_private_key: Option<String>,
     ethereum_http_rpc_url: Option<String>,
     contract_address: Option<String>,
+    bearer_token: Option<String>,
+    auth_url: Option<String>,
+    auth_refresh_margin_secs: Option<u64>,
+    auth_refresh_margin_parse_error: Option<String>,
+    auth_enabled: bool,
 }
 
 impl ConfigBuilder {
@@ -28,6 +43,11 @@ impl ConfigBuilder {
             wallet_private_key: None,
             ethereum_http_rpc_url: None,
             contract_address: None,
+            bearer_token: None,
+            auth_url: None,
+            auth_refresh_margin_secs: None,
+            auth_refresh_margin_parse_error: None,
+            auth_enabled: false,
         }
     }
 
@@ -55,6 +75,32 @@ impl ConfigBuilder {
         self
     }
 
+    /// Optional bearer token for authenticated core HTTP calls.
+    pub fn bearer_token(mut self, bearer_token: String) -> Self {
+        self.bearer_token = Some(bearer_token);
+        self
+    }
+
+    /// Enable SIWE authentication using the core auth endpoints.
+    pub fn enable_auth(mut self) -> Self {
+        self.auth_enabled = true;
+        self
+    }
+
+    /// Optional auth base URL. Defaults to the RPC URL when auth is enabled.
+    pub fn auth_url(mut self, auth_url: String) -> Self {
+        self.auth_url = Some(auth_url);
+        self.auth_enabled = true;
+        self
+    }
+
+    /// Refresh access tokens when the remaining TTL is below this threshold (in seconds).
+    pub fn auth_refresh_margin_secs(mut self, secs: u64) -> Self {
+        self.auth_refresh_margin_secs = Some(secs);
+        self.auth_enabled = true;
+        self
+    }
+
     pub fn from_env(mut self) -> Self {
         if let Ok(v) = std::env::var("4MICA_RPC_URL") {
             self = self.rpc_url(v);
@@ -67,6 +113,23 @@ impl ConfigBuilder {
         }
         if let Ok(v) = std::env::var("4MICA_CONTRACT_ADDRESS") {
             self = self.contract_address(v);
+        }
+        if let Ok(v) = std::env::var("4MICA_BEARER_TOKEN") {
+            self = self.bearer_token(v);
+        }
+        if let Ok(v) = std::env::var("4MICA_AUTH_URL") {
+            self = self.auth_url(v);
+        }
+        if let Ok(v) = std::env::var("4MICA_AUTH_REFRESH_MARGIN_SECS") {
+            match v.parse::<u64>() {
+                Ok(secs) => {
+                    self = self.auth_refresh_margin_secs(secs);
+                }
+                Err(_) => {
+                    self.auth_refresh_margin_parse_error = Some(v);
+                    self.auth_enabled = true;
+                }
+            }
         }
         self
     }
@@ -87,12 +150,46 @@ impl ConfigBuilder {
         )?;
         let contract_address =
             Self::optional(self.contract_address, validate_address, "contract_address")?;
+        let bearer_token = self.bearer_token.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        if let Some(raw) = self.auth_refresh_margin_parse_error {
+            return Err(ConfigError::InvalidValue(format!(
+                "invalid auth_refresh_margin_secs: {raw}"
+            )));
+        }
+
+        let auth = if self.auth_enabled {
+            let auth_url = match self.auth_url {
+                Some(raw) => {
+                    validate_url(&raw).map_err(|e| ConfigError::InvalidValue(e.to_string()))?
+                }
+                None => rpc_url.clone(),
+            };
+            let refresh_margin_secs = self
+                .auth_refresh_margin_secs
+                .unwrap_or(DEFAULT_AUTH_REFRESH_MARGIN_SECS);
+            Some(AuthConfig {
+                auth_url,
+                refresh_margin_secs,
+            })
+        } else {
+            None
+        };
 
         Ok(Config {
             rpc_url,
             wallet_private_key,
             ethereum_http_rpc_url,
             contract_address,
+            bearer_token,
+            auth,
         })
     }
 
@@ -138,6 +235,10 @@ mod tests {
         assert!(builder.wallet_private_key.is_none());
         assert!(builder.ethereum_http_rpc_url.is_none());
         assert!(builder.contract_address.is_none());
+        assert!(builder.bearer_token.is_none());
+        assert!(builder.auth_url.is_none());
+        assert!(builder.auth_refresh_margin_secs.is_none());
+        assert!(!builder.auth_enabled);
     }
 
     #[test]
@@ -155,6 +256,8 @@ mod tests {
         );
         assert!(config.ethereum_http_rpc_url.is_none());
         assert!(config.contract_address.is_none());
+        assert!(config.bearer_token.is_none());
+        assert!(config.auth.is_none());
     }
 
     #[test]
@@ -178,6 +281,8 @@ mod tests {
             VALID_ETH_RPC_URL
         );
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
+        assert!(config.bearer_token.is_none());
+        assert!(config.auth.is_none());
     }
 
     #[test]
@@ -254,6 +359,7 @@ mod tests {
             std::env::set_var("4MICA_WALLET_PRIVATE_KEY", VALID_PRIVATE_KEY);
             std::env::set_var("4MICA_ETHEREUM_HTTP_RPC_URL", VALID_ETH_RPC_URL);
             std::env::set_var("4MICA_CONTRACT_ADDRESS", VALID_ADDRESS);
+            std::env::set_var("4MICA_BEARER_TOKEN", "test-token");
         }
 
         let config = ConfigBuilder::default().from_env().build();
@@ -264,6 +370,7 @@ mod tests {
             std::env::remove_var("4MICA_WALLET_PRIVATE_KEY");
             std::env::remove_var("4MICA_ETHEREUM_HTTP_RPC_URL");
             std::env::remove_var("4MICA_CONTRACT_ADDRESS");
+            std::env::remove_var("4MICA_BEARER_TOKEN");
         }
 
         assert!(config.is_ok());
@@ -278,6 +385,8 @@ mod tests {
             VALID_ETH_RPC_URL
         );
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
+        assert_eq!(config.bearer_token.as_deref(), Some("test-token"));
+        assert!(config.auth.is_none());
     }
 
     #[test]

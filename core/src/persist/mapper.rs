@@ -2,14 +2,10 @@ use crate::error::{ServiceError, ServiceResult};
 use alloy::primitives::U256;
 use anyhow::anyhow;
 use entities::{
-    admin_api_key,
     sea_orm_active_enums::{CollateralEventType, SettlementStatus, TabStatus},
     tabs, user,
 };
-use rpc::{
-    AdminApiKeyInfo, AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, TabInfo,
-    UserSuspensionStatus,
-};
+use rpc::{AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, TabInfo, UserSuspensionStatus};
 use std::str::FromStr;
 
 pub fn tab_status_to_str(status: TabStatus) -> &'static str {
@@ -30,8 +26,7 @@ pub fn settlement_status_to_str(status: SettlementStatus) -> &'static str {
 }
 
 pub fn tab_model_to_info(tab: tabs::Model) -> ServiceResult<TabInfo> {
-    let tab_id = U256::from_str(&tab.id)
-        .map_err(|e| ServiceError::Other(anyhow!("invalid tab id {}: {e}", tab.id)))?;
+    let tab_id = U256::from_str(&tab.id).map_err(|e| anyhow!("invalid tab id {}: {e}", tab.id))?;
     let status = tab_status_to_str(tab.status).to_string();
     let settlement_status = settlement_status_to_str(tab.settlement_status).to_string();
 
@@ -66,12 +61,12 @@ pub fn guarantee_model_to_info(model: entities::guarantee::Model) -> ServiceResu
         ..
     } = model;
 
-    let tab_id = U256::from_str(&tab_id_str)
-        .map_err(|e| ServiceError::Other(anyhow!("invalid tab id {}: {e}", tab_id_str)))?;
-    let req_id = U256::from_str(&req_id_str)
-        .map_err(|e| ServiceError::Other(anyhow!("invalid req id {}: {e}", req_id_str)))?;
-    let amount = U256::from_str(&value)
-        .map_err(|e| ServiceError::Other(anyhow!("invalid guarantee amount {}: {e}", value)))?;
+    let tab_id =
+        U256::from_str(&tab_id_str).map_err(|e| anyhow!("invalid tab id {}: {e}", tab_id_str))?;
+    let req_id =
+        U256::from_str(&req_id_str).map_err(|e| anyhow!("invalid req id {}: {e}", req_id_str))?;
+    let amount =
+        U256::from_str(&value).map_err(|e| anyhow!("invalid guarantee amount {}: {e}", value))?;
     let start_timestamp = start_ts.and_utc().timestamp();
     let certificate = if cert.is_empty() { None } else { Some(cert) };
 
@@ -101,24 +96,22 @@ pub fn collateral_event_type_to_str(t: CollateralEventType) -> &'static str {
 pub fn collateral_event_model_to_info(
     model: entities::collateral_event::Model,
 ) -> ServiceResult<CollateralEventInfo> {
-    let amount = U256::from_str(&model.amount).map_err(|e| {
-        ServiceError::Other(anyhow!(
-            "invalid collateral event amount {}: {e}",
-            model.amount
-        ))
-    })?;
+    let amount = U256::from_str(&model.amount)
+        .map_err(|e| anyhow!("invalid collateral event amount {}: {e}", model.amount))?;
 
     let tab_id = match model.tab_id {
-        Some(ref id) => Some(U256::from_str(id).map_err(|e| {
-            ServiceError::Other(anyhow!("invalid collateral event tab id {}: {e}", id))
-        })?),
+        Some(ref id) => Some(
+            U256::from_str(id)
+                .map_err(|e| anyhow!("invalid collateral event tab id {}: {e}", id))?,
+        ),
         None => None,
     };
 
     let req_id = match model.req_id {
-        Some(ref id) => Some(U256::from_str(id).map_err(|e| {
-            ServiceError::Other(anyhow!("invalid collateral event req id {}: {e}", id))
-        })?),
+        Some(ref id) => Some(
+            U256::from_str(id)
+                .map_err(|e| anyhow!("invalid collateral event req id {}: {e}", id))?,
+        ),
         None => None,
     };
 
@@ -138,15 +131,10 @@ pub fn collateral_event_model_to_info(
 pub fn asset_balance_model_to_info(
     model: entities::user_asset_balance::Model,
 ) -> ServiceResult<AssetBalanceInfo> {
-    let total = U256::from_str(&model.total).map_err(|e| {
-        ServiceError::Other(anyhow!("invalid asset balance total {}: {e}", model.total))
-    })?;
-    let locked = U256::from_str(&model.locked).map_err(|e| {
-        ServiceError::Other(anyhow!(
-            "invalid asset balance locked {}: {e}",
-            model.locked
-        ))
-    })?;
+    let total = U256::from_str(&model.total)
+        .map_err(|e| anyhow!("invalid asset balance total {}: {e}", model.total))?;
+    let locked = U256::from_str(&model.locked)
+        .map_err(|e| anyhow!("invalid asset balance locked {}: {e}", model.locked))?;
 
     Ok(AssetBalanceInfo {
         user_address: model.user_address,
@@ -164,23 +152,6 @@ pub fn user_model_to_suspension_status(model: user::Model) -> UserSuspensionStat
         suspended: model.is_suspended,
         updated_at: model.updated_at.and_utc().timestamp(),
     }
-}
-
-pub fn admin_api_key_model_to_info(model: admin_api_key::Model) -> ServiceResult<AdminApiKeyInfo> {
-    let scopes: Vec<String> = serde_json::from_value(model.scopes).map_err(|e| {
-        ServiceError::Other(anyhow!(
-            "invalid scopes for admin api key {}: {e}",
-            model.id
-        ))
-    })?;
-
-    Ok(AdminApiKeyInfo {
-        id: model.id.to_string(),
-        name: model.name,
-        scopes,
-        created_at: model.created_at.and_utc().timestamp(),
-        revoked_at: model.revoked_at.map(|ts| ts.and_utc().timestamp()),
-    })
 }
 
 pub fn parse_settlement_statuses(

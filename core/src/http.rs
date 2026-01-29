@@ -1,34 +1,32 @@
-use std::{str::FromStr, sync::Arc};
-use uuid::Uuid;
-
-use crate::{
-    error::ServiceError,
-    persist::mapper,
-    service::{AdminApiKeyScope, CoreService},
-};
+use crate::auth::access::{self, AccessContext};
+use crate::{error::ServiceError, persist::mapper, service::CoreService};
 use alloy_primitives::U256;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, Request, State},
     http::HeaderMap,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
-use http::StatusCode;
+use http::{StatusCode, header::AUTHORIZATION};
 use rpc::{
-    ADMIN_API_KEY_HEADER, AdminApiKeyInfo, AdminApiKeySecret, AssetBalanceInfo,
-    CollateralEventInfo, CorePublicParameters, CreateAdminApiKeyRequest, CreatePaymentTabRequest,
-    CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo,
-    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
+    AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
+    AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
+    CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest, CreatePaymentTabResult,
+    GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, TabInfo,
+    UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
 };
-
-type SharedService = Arc<CoreService>;
+use std::str::FromStr;
 
 pub fn router(service: CoreService) -> Router {
-    let shared = Arc::new(service);
     Router::new()
+        .route("/auth/nonce", post(post_auth_nonce))
+        .route("/auth/verify", post(post_auth_verify))
+        .route("/auth/refresh", post(post_auth_refresh))
+        .route("/auth/logout", post(post_auth_logout))
         .route("/core/health", get(get_health))
         .route("/core/public-params", get(get_public_params))
         .route("/core/payment-tabs", post(create_payment_tab))
@@ -71,15 +69,11 @@ pub fn router(service: CoreService) -> Router {
             "/core/users/{user_address}/suspension",
             post(update_user_suspension),
         )
-        .route(
-            "/core/admin/api-keys",
-            get(list_admin_api_keys).post(create_admin_api_key),
-        )
-        .route(
-            "/core/admin/api-keys/{id}/revoke",
-            post(revoke_admin_api_key),
-        )
-        .with_state(shared)
+        .layer(middleware::from_fn_with_state(
+            service.clone(),
+            auth_middleware,
+        ))
+        .with_state(service)
 }
 
 #[derive(Debug)]
@@ -148,14 +142,96 @@ fn parse_u256(value: &str) -> Result<U256, ApiError> {
     })
 }
 
+async fn auth_middleware(
+    State(service): State<CoreService>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if is_public_path(req.uri().path()) {
+        return Ok(next.run(req).await);
+    }
+
+    let token = bearer_token(req.headers())?;
+    let claims = service.validate_access_token(token)?;
+
+    req.extensions_mut().insert(AccessContext {
+        wallet_address: claims.sub,
+        role: claims.role,
+        scopes: claims.scopes,
+    });
+
+    Ok(next.run(req).await)
+}
+
+fn is_public_path(path: &str) -> bool {
+    if matches!(path, "/core/health" | "/core/public-params") {
+        return true;
+    }
+    path == "/auth" || path.starts_with("/auth/")
+}
+
+fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
+    let value = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "missing authorization"))?;
+
+    let value = value.trim();
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "invalid authorization"))?;
+
+    if token.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "missing bearer token",
+        ));
+    }
+
+    Ok(token)
+}
+
 async fn get_public_params(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
 ) -> Result<Json<CorePublicParameters>, ApiError> {
     Ok(Json(service.public_params()))
 }
 
+async fn post_auth_nonce(
+    State(service): State<CoreService>,
+    Json(req): Json<AuthNonceRequest>,
+) -> Result<Json<AuthNonceResponse>, ApiError> {
+    let res = service.create_auth_nonce(req).await?;
+    Ok(Json(res))
+}
+
+async fn post_auth_verify(
+    State(service): State<CoreService>,
+    Json(req): Json<AuthVerifyRequest>,
+) -> Result<Json<AuthVerifyResponse>, ApiError> {
+    let res = service.verify_auth(req).await?;
+    Ok(Json(res))
+}
+
+async fn post_auth_refresh(
+    State(service): State<CoreService>,
+    Json(req): Json<AuthRefreshRequest>,
+) -> Result<Json<AuthRefreshResponse>, ApiError> {
+    let res = service.refresh_auth(req).await?;
+    Ok(Json(res))
+}
+
+async fn post_auth_logout(
+    State(service): State<CoreService>,
+    Json(req): Json<AuthLogoutRequest>,
+) -> Result<Json<AuthLogoutResponse>, ApiError> {
+    let res = service.logout_auth(req).await?;
+    Ok(Json(res))
+}
+
 async fn get_health(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     service
         .wait_for_listener_ready()
@@ -167,34 +243,38 @@ async fn get_health(
 }
 
 async fn issue_guarantee(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Json(req): Json<PaymentGuaranteeRequest>,
 ) -> Result<Json<BLSCert>, ApiError> {
     let cert = service
-        .issue_payment_guarantee(req)
+        .issue_payment_guarantee(&auth, req)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(cert))
 }
 
 async fn create_payment_tab(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Json(req): Json<CreatePaymentTabRequest>,
 ) -> Result<Json<CreatePaymentTabResult>, ApiError> {
     let result = service
-        .create_payment_tab(req)
+        .create_payment_tab(&auth, req)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(result))
 }
 
 async fn list_settled_tabs(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<TabInfo>>, ApiError> {
     // Treat Remunerated as a settled state for API consumers.
     let tabs = service
         .list_tabs_for_recipient(
+            &auth,
             recipient,
             vec![SettlementStatus::Settled, SettlementStatus::Remunerated],
         )
@@ -204,27 +284,33 @@ async fn list_settled_tabs(
 }
 
 async fn list_pending_remunerations(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<PendingRemunerationInfo>>, ApiError> {
     let items = service
-        .list_pending_remunerations(recipient)
+        .list_pending_remunerations(&auth, recipient)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(items))
 }
 
 async fn get_tab(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Option<TabInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
-    let tab = service.get_tab(tab_id).await.map_err(ApiError::from)?;
+    let tab = service
+        .get_tab(&auth, tab_id)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(tab))
 }
 
 async fn list_recipient_tabs(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
 ) -> Result<Json<Vec<TabInfo>>, ApiError> {
@@ -245,152 +331,99 @@ async fn list_recipient_tabs(
         mapper::parse_settlement_statuses(Some(statuses)).map_err(ApiError::from)?
     };
     let tabs = service
-        .list_tabs_for_recipient(recipient, parsed)
+        .list_tabs_for_recipient(&auth, recipient, parsed)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(tabs))
 }
 
 async fn get_tab_guarantees(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Vec<GuaranteeInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let guarantees = service
-        .get_tab_guarantees(tab_id)
+        .get_tab_guarantees(&auth, tab_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(guarantees))
 }
 
 async fn get_latest_guarantee(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let guarantee = service
-        .get_latest_guarantee(tab_id)
+        .get_latest_guarantee(&auth, tab_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(guarantee))
 }
 
 async fn get_specific_guarantee(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path((tab_id, req_id)): Path<(String, String)>,
 ) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let req_id = parse_u256(&req_id)?;
     let guarantee = service
-        .get_guarantee(tab_id, req_id)
+        .get_guarantee(&auth, tab_id, req_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(guarantee))
 }
 
 async fn list_recipient_payments(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<UserTransactionInfo>>, ApiError> {
     let payments = service
-        .list_recipient_payments(recipient)
+        .list_recipient_payments(&auth, recipient)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(payments))
 }
 
 async fn get_collateral_events_for_tab(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(tab_id): Path<String>,
 ) -> Result<Json<Vec<CollateralEventInfo>>, ApiError> {
     let tab_id = parse_u256(&tab_id)?;
     let events = service
-        .get_collateral_events_for_tab(tab_id)
+        .get_collateral_events_for_tab(&auth, tab_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(events))
 }
 
 async fn get_user_asset_balance(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path((user, asset)): Path<(String, String)>,
 ) -> Result<Json<Option<AssetBalanceInfo>>, ApiError> {
     let balance = service
-        .get_user_asset_balance(user, asset)
+        .get_user_asset_balance(&auth, user, asset)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(balance))
 }
 
 async fn update_user_suspension(
-    State(service): State<SharedService>,
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
     Path(user): Path<String>,
-    headers: HeaderMap,
     Json(req): Json<UpdateUserSuspensionRequest>,
 ) -> Result<Json<UserSuspensionStatus>, ApiError> {
-    require_admin_api_key(&service, &headers, AdminApiKeyScope::SuspendUsers).await?;
+    access::require_admin_role(&auth)?;
     let status = service
         .set_user_suspension(user, req.suspended)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(status))
-}
-
-async fn create_admin_api_key(
-    State(service): State<SharedService>,
-    headers: HeaderMap,
-    Json(req): Json<CreateAdminApiKeyRequest>,
-) -> Result<Json<AdminApiKeySecret>, ApiError> {
-    require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
-    let secret = service
-        .create_admin_api_key(req)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(secret))
-}
-
-async fn list_admin_api_keys(
-    State(service): State<SharedService>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<AdminApiKeyInfo>>, ApiError> {
-    require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
-    let keys = service
-        .list_admin_api_keys()
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(keys))
-}
-
-async fn revoke_admin_api_key(
-    State(service): State<SharedService>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<AdminApiKeyInfo>, ApiError> {
-    require_admin_api_key(&service, &headers, AdminApiKeyScope::ManageKeys).await?;
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid api key id"))?;
-    let info = service
-        .revoke_admin_api_key(uuid)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(info))
-}
-
-async fn require_admin_api_key(
-    service: &CoreService,
-    headers: &HeaderMap,
-    scope: AdminApiKeyScope,
-) -> Result<(), ApiError> {
-    let value = headers
-        .get(ADMIN_API_KEY_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "missing api key"))?;
-
-    service
-        .authenticate_admin_api_key(value, scope)
-        .await
-        .map_err(|err| match err {
-            ServiceError::Unauthorized(msg) => ApiError::new(StatusCode::UNAUTHORIZED, msg),
-            other => ApiError::from(other),
-        })
 }

@@ -142,7 +142,7 @@ impl UserClient {
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError> {
         // TODO: Cache public parameters for a while
-        let pub_params = self.ctx.rpc_proxy().get_public_params().await?;
+        let pub_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
 
         let sig = self
             .ctx

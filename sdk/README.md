@@ -188,6 +188,7 @@ Notes:
 - `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment
+- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
 - `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String, erc20_token: Option<String>) -> Result<TransactionReceipt, PayTabError>`: Pay a tab directly on-chain in ETH or ERC20 token
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
@@ -197,7 +198,6 @@ Notes:
 
 - `create_tab(user_address: String, recipient_address: String, erc20_token: Option<String>, ttl: Option<u64>) -> Result<U256, CreateTabError>`: Create a new payment tab in ETH or ERC20 token
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
-- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
 - `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
 - `remunerate(cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>`: Claim from user collateral using BLS certificate
 - `list_settled_tabs() -> Result<Vec<TabInfo>, RecipientQueryError>`: List all settled tabs for the recipient
@@ -532,9 +532,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payment_sig = user_client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
     println!("Payment signed");
 
-    // 5. Recipient issues guarantee
-    let bls_cert = recipient_client
-        .recipient
+    // 5. User issues guarantee
+    let bls_cert = user_client
+        .user
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
@@ -611,9 +611,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payment_sig = user_client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
     println!("Payment signed");
 
-    // 5. Recipient issues guarantee
-    let bls_cert = recipient_client
-        .recipient
+    // 5. User issues guarantee
+    let bls_cert = user_client
+        .user
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
