@@ -1,13 +1,15 @@
 use rust_sdk_4mica::client::recipient::RecipientClient;
 use rust_sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
-    error::VerifyGuaranteeError,
+    Client, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::VerifyGuaranteeError,
 };
 use std::time::Duration;
 
 mod common;
 
-use crate::common::{ETH_ASSET_ADDRESS, wait_for_collateral_increase};
+use crate::common::{
+    ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config,
+    wait_for_collateral_increase,
+};
 
 async fn resolve_start_timestamp(recipient: &RecipientClient, tab_id: U256) -> anyhow::Result<u64> {
     if let Some(latest) = recipient.get_latest_guarantee(tab_id).await? {
@@ -36,22 +38,20 @@ async fn resolve_next_req_id(recipient: &RecipientClient, tab_id: U256) -> anyho
 async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     // These wallet keys are picked from the default accounts in anvil test node
 
-    let user_config = ConfigBuilder::default()
-        .rpc_url("http://localhost:3000".to_string())
-        .wallet_private_key(
-            "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
-        )
-        .build()?;
+    let user_config = build_authed_user_config(
+        "http://localhost:3000",
+        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+    )
+    .await?;
 
     let user_address = user_config.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
-    let recipient_config = ConfigBuilder::default()
-        .rpc_url("http://localhost:3000".to_string())
-        .wallet_private_key(
-            "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356".to_string(),
-        )
-        .build()?;
+    let recipient_config = build_authed_recipient_config(
+        "http://localhost:3000",
+        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+    )
+    .await?;
 
     let recipient_address = recipient_config.wallet_private_key.address().to_string();
     let recipient_client = Client::new(recipient_config).await?;
@@ -116,7 +116,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .sign_payment(claims.clone(), SigningScheme::Eip712)
         .await?;
 
-    // Step 4: Recipient issues guarantee
+    // Step 4: User issues guarantee
     let bls_cert = recipient_client
         .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
@@ -218,21 +218,19 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
-    let user_config = ConfigBuilder::default()
-        .rpc_url("http://localhost:3000".to_string())
-        .wallet_private_key(
-            "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97".to_string(),
-        )
-        .build()?;
+    let user_config = build_authed_user_config(
+        "http://localhost:3000",
+        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+    )
+    .await?;
     let user_address = user_config.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
-    let recipient_config = ConfigBuilder::default()
-        .rpc_url("http://localhost:3000".to_string())
-        .wallet_private_key(
-            "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356".to_string(),
-        )
-        .build()?;
+    let recipient_config = build_authed_recipient_config(
+        "http://localhost:3000",
+        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+    )
+    .await?;
     let recipient_address = recipient_config.wallet_private_key.address().to_string();
     let recipient_client = Client::new(recipient_config).await?;
 

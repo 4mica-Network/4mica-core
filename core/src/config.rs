@@ -1,10 +1,13 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use crypto::hex::HexBytes;
 use envconfig::Envconfig;
+use log::warn;
 
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
 pub const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+const DEFAULT_AUTH_JWT_SECRET: &str = "dev-insecure-change-me";
+const PLACEHOLDER_AUTH_JWT_SECRET: &str = "replace-with-32+bytes-random";
 
 #[derive(Debug, Clone, Envconfig)]
 pub struct ServerConfig {
@@ -51,9 +54,54 @@ pub struct Eip712Config {
 pub struct Secrets {
     #[envconfig(from = "BLS_PRIVATE_KEY")]
     pub bls_private_key: HexBytes,
+}
 
-    #[envconfig(from = "CORE_ADMIN_SEED_KEY")]
-    pub core_admin_seed_key: Option<String>,
+#[derive(Debug, Clone, Envconfig)]
+pub struct AuthConfig {
+    #[envconfig(from = "AUTH_NONCE_TTL_SECS", default = "300")]
+    pub nonce_ttl_secs: i64,
+
+    #[envconfig(from = "AUTH_REFRESH_TTL_SECS", default = "2592000")]
+    pub refresh_ttl_secs: i64,
+
+    #[envconfig(from = "AUTH_ACCESS_TTL_SECS", default = "900")]
+    pub access_ttl_secs: u64,
+
+    #[envconfig(from = "AUTH_JWT_ISSUER", default = "4mica-core")]
+    pub jwt_issuer: String,
+
+    #[envconfig(from = "AUTH_JWT_AUDIENCE", default = "4mica")]
+    pub jwt_audience: String,
+
+    #[envconfig(from = "AUTH_JWT_SECRET", default = "dev-insecure-change-me")]
+    pub jwt_hmac_secret: String,
+
+    #[envconfig(from = "AUTH_SIWE_STATEMENT", default = "Sign in to 4mica.")]
+    pub siwe_statement: String,
+
+    #[envconfig(from = "AUTH_SIWE_DOMAIN")]
+    pub siwe_domain: Option<String>,
+
+    #[envconfig(from = "AUTH_SIWE_URI")]
+    pub siwe_uri: Option<String>,
+}
+
+impl AuthConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let secret = self.jwt_hmac_secret.trim();
+        if secret.is_empty() {
+            bail!("AUTH_JWT_SECRET must be set");
+        }
+        if secret == DEFAULT_AUTH_JWT_SECRET {
+            bail!("AUTH_JWT_SECRET is set to the insecure default; override it");
+        }
+        if secret == PLACEHOLDER_AUTH_JWT_SECRET {
+            warn!("AUTH_JWT_SECRET uses the placeholder value; replace with a 32+ byte secret");
+        } else if secret.len() < 32 {
+            warn!("AUTH_JWT_SECRET is shorter than 32 bytes; use a 32+ byte secret in production");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +110,7 @@ pub struct AppConfig {
     pub ethereum_config: EthereumConfig,
     pub secrets: Secrets,
     pub eip712: Eip712Config,
+    pub auth: AuthConfig,
 }
 
 impl AppConfig {
@@ -72,12 +121,15 @@ impl AppConfig {
             EthereumConfig::init_from_env().context("Failed to load ethereum config")?;
         let secrets = Secrets::init_from_env().context("Failed to load secrets")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
+        let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
+        auth.validate().context("Invalid auth config")?;
 
         Ok(Self {
             server_config,
             ethereum_config,
             secrets,
             eip712,
+            auth,
         })
     }
 }

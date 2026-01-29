@@ -2,6 +2,10 @@ use alloy::primitives::U256;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};
 use core_service::{
+    auth::{
+        access::AccessContext,
+        constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
+    },
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
     ethereum::CoreContractApi,
     persist::{PersistCtx, repo},
@@ -16,6 +20,24 @@ use sea_orm::{EntityTrait, Set};
 use std::{panic, sync::Arc};
 
 const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
+const DEFAULT_ROLE: &str = "user";
+const FACILITATOR_ROLE: &str = "facilitator";
+
+fn recipient_auth(recipient: &str) -> AccessContext {
+    AccessContext {
+        wallet_address: recipient.to_string(),
+        role: DEFAULT_ROLE.to_string(),
+        scopes: vec![SCOPE_TAB_CREATE.to_string()],
+    }
+}
+
+fn facilitator_auth(facilitator: &str) -> AccessContext {
+    AccessContext {
+        wallet_address: facilitator.to_string(),
+        role: FACILITATOR_ROLE.to_string(),
+        scopes: vec![SCOPE_TAB_CREATE.to_string(), SCOPE_TAB_READ.to_string()],
+    }
+}
 
 struct MockContractApi {
     chain_id: u64,
@@ -126,25 +148,31 @@ async fn returns_existing_pending_tab_when_active() {
     let recipient = format!("0x{:040x}", rand::random::<u128>());
     seed_user(&ctx, &user).await;
     seed_user(&ctx, &recipient).await;
-
+    let auth = recipient_auth(&recipient);
     let first = core_service
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user.clone(),
-            recipient_address: recipient.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-        })
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user.clone(),
+                recipient_address: recipient.clone(),
+                erc20_token: None,
+                ttl: Some(600),
+            },
+        )
         .await
         .expect("first tab");
 
     // Second request with a different TTL should still reuse the active pending tab.
     let second = core_service
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user.clone(),
-            recipient_address: recipient.clone(),
-            erc20_token: None,
-            ttl: Some(1200),
-        })
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user.clone(),
+                recipient_address: recipient.clone(),
+                erc20_token: None,
+                ttl: Some(1200),
+            },
+        )
         .await
         .expect("second tab");
 
@@ -182,6 +210,7 @@ async fn reuses_pending_tab_even_when_expired() {
     let recipient = format!("0x{:040x}", rand::random::<u128>());
     seed_user(&ctx, &user).await;
     seed_user(&ctx, &recipient).await;
+    let auth = recipient_auth(&recipient);
 
     // Manually seed an expired pending tab.
     let expired_id = U256::from(random::<u128>());
@@ -207,12 +236,15 @@ async fn reuses_pending_tab_even_when_expired() {
         .expect("seed expired tab");
 
     let reused = core_service
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user,
-            recipient_address: recipient,
-            erc20_token: None,
-            ttl: Some(300),
-        })
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user,
+                recipient_address: recipient,
+                erc20_token: None,
+                ttl: Some(300),
+            },
+        )
         .await
         .expect("tab reused even if expired");
 
@@ -248,14 +280,18 @@ async fn uses_default_ttl_when_not_provided() {
     let recipient = format!("0x{:040x}", rand::random::<u128>());
     seed_user(&ctx, &user).await;
     seed_user(&ctx, &recipient).await;
+    let auth = recipient_auth(&recipient);
 
     let tab = core_service
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user.clone(),
-            recipient_address: recipient.clone(),
-            erc20_token: None,
-            ttl: None,
-        })
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user.clone(),
+                recipient_address: recipient.clone(),
+                erc20_token: None,
+                ttl: None,
+            },
+        )
         .await
         .expect("tab with default ttl");
 
@@ -290,14 +326,18 @@ async fn rejects_ttl_exceeding_tab_expiration() {
     let recipient = format!("0x{:040x}", rand::random::<u128>());
     seed_user(&ctx, &user).await;
     seed_user(&ctx, &recipient).await;
+    let auth = recipient_auth(&recipient);
 
     let err = core_service
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user,
-            recipient_address: recipient,
-            erc20_token: None,
-            ttl: Some(600),
-        })
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user,
+                recipient_address: recipient,
+                erc20_token: None,
+                ttl: Some(600),
+            },
+        )
         .await
         .expect_err("ttl should exceed tab expiration");
 
@@ -306,4 +346,38 @@ async fn rejects_ttl_exceeding_tab_expiration() {
         core_service::error::ServiceError::InvalidParams(msg)
             if msg.contains("tab expiration time")
     ));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn facilitator_can_create_tab_for_recipient() {
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    let core_service = build_core_service(ctx.clone(), 300)
+        .await
+        .expect("core service");
+
+    let user = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
+    let facilitator = format!("0x{:040x}", rand::random::<u128>());
+
+    seed_user(&ctx, &user).await;
+    seed_user(&ctx, &recipient).await;
+
+    let facilitator_auth = facilitator_auth(&facilitator);
+
+    let tab = core_service
+        .create_payment_tab(
+            &facilitator_auth,
+            CreatePaymentTabRequest {
+                user_address: user.clone(),
+                recipient_address: recipient.clone(),
+                erc20_token: None,
+                ttl: Some(300),
+            },
+        )
+        .await
+        .expect("tab created");
+
+    assert_eq!(tab.user_address, user);
+    assert_eq!(tab.recipient_address, recipient);
 }

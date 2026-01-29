@@ -1,10 +1,12 @@
 use alloy::{
     primitives::{Address, Signature, U256},
     signers::Signer,
+    signers::local::PrivateKeySigner,
     sol_types::{SolStruct, eip712_domain, sol},
 };
 use alloy_sol_types::SolValue;
 use chrono::{DateTime, Duration, Utc};
+use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ};
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::persist::{GuaranteeData, PersistCtx, repo};
 use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
@@ -12,12 +14,12 @@ use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
 use rand::random;
 use rpc::{
-    ADMIN_API_KEY_PREFIX, ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS, ApiClientError,
-    CorePublicParameters, CreateAdminApiKeyRequest, CreatePaymentTabRequest,
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
-    RpcProxy, SigningScheme, TabInfo, UpdateUserSuspensionRequest,
+    ApiClientError, CorePublicParameters, CreatePaymentTabRequest, PaymentGuaranteeRequest,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1, RpcProxy, SigningScheme,
+    TabInfo, UpdateUserSuspensionRequest,
 };
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
+use serde::Deserialize;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -29,24 +31,68 @@ use common::fixtures::{
 };
 
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
+const DEFAULT_WALLET_ROLE: &str = "admin";
+const DEFAULT_WALLET_STATUS: &str = "active";
 
-async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx)> {
-    let (config, ctx) = init_test_env().await?;
-    let core_addr = format!(
+#[derive(Debug, Deserialize)]
+struct AuthNonceResponse {
+    nonce: String,
+    siwe: SiweTemplateResponse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SiweTemplateResponse {
+    domain: String,
+    uri: String,
+    chain_id: u64,
+    statement: String,
+    expiration: String,
+    issued_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthVerifyResponse {
+    access_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthTokenResponse {
+    access_token: String,
+    refresh_token: String,
+    expires_in: u64,
+}
+
+#[derive(Clone, Debug)]
+struct AuthSession {
+    address: String,
+    access_token: String,
+}
+
+fn core_base_url(config: &AppConfig) -> String {
+    format!(
         "http://{}:{}",
         config.server_config.host, config.server_config.port
-    );
+    )
+}
+
+async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx, AuthSession)> {
+    let (config, ctx) = init_test_env().await?;
+    let core_addr = core_base_url(&config);
     clear_all_tables(&ctx).await?;
 
-    let admin_key = common::fixtures::create_admin_api_key(
+    let recipient_signer = PrivateKeySigner::random();
+    let auth = login_with_siwe(
+        &core_addr,
         &ctx,
-        "test-admin",
-        &[ADMIN_SCOPE_MANAGE_KEYS, ADMIN_SCOPE_SUSPEND_USERS],
+        &recipient_signer,
+        DEFAULT_WALLET_ROLE,
+        &[SCOPE_TAB_CREATE, SCOPE_TAB_READ, SCOPE_GUARANTEE_ISSUE],
     )
     .await?;
-    let core_client = RpcProxy::new(&core_addr)?.with_admin_api_key(admin_key);
+    let core_client = RpcProxy::new(&core_addr)?.with_bearer_token(auth.access_token.clone());
 
-    Ok((config, core_client, ctx))
+    Ok((config, core_client, ctx, auth))
 }
 
 async fn insert_user_with_asset_collateral(
@@ -72,6 +118,81 @@ sol! {
         address asset;
         uint64  timestamp;
     }
+}
+
+fn build_siwe_message_from_template(
+    template: &SiweTemplateResponse,
+    address: &str,
+    nonce: &str,
+) -> String {
+    format!(
+        "{domain} wants you to sign in with your Ethereum account:\n{address}\n\n{statement}\n\nURI: {uri}\nVersion: 1\nChain ID: {chain_id}\nNonce: {nonce}\nIssued At: {issued_at}\nExpiration Time: {expiration}",
+        domain = template.domain,
+        address = address,
+        statement = template.statement,
+        uri = template.uri,
+        chain_id = template.chain_id,
+        nonce = nonce,
+        issued_at = template.issued_at,
+        expiration = template.expiration,
+    )
+}
+
+async fn login_with_siwe(
+    base_addr: &str,
+    ctx: &PersistCtx,
+    signer: &PrivateKeySigner,
+    role: &str,
+    scopes: &[&str],
+) -> anyhow::Result<AuthSession> {
+    let address = signer.address().to_string();
+    let scopes = scopes
+        .iter()
+        .map(|scope| (*scope).to_string())
+        .collect::<Vec<_>>();
+    repo::upsert_wallet_role(ctx, &address, role, &scopes, DEFAULT_WALLET_STATUS).await?;
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature = signer.sign_message(message.as_bytes()).await?;
+    let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
+
+    let verify_res = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&serde_json::json!({
+            "address": address,
+            "message": message,
+            "signature": signature_hex,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let verify_res: AuthVerifyResponse = verify_res.json().await?;
+
+    Ok(AuthSession {
+        address,
+        access_token: verify_res.access_token,
+    })
+}
+
+async fn client_with_signer(
+    config: &AppConfig,
+    ctx: &PersistCtx,
+    signer: &PrivateKeySigner,
+    role: &str,
+    scopes: &[&str],
+) -> anyhow::Result<RpcProxy> {
+    let base_addr = core_base_url(config);
+    let auth = login_with_siwe(&base_addr, ctx, signer, role, scopes).await?;
+    Ok(RpcProxy::new(&base_addr)?.with_bearer_token(auth.access_token))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -161,12 +282,211 @@ async fn build_eip712_signed_request(
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
+async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let address = signer.address().to_string();
+    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature = signer.sign_message(message.as_bytes()).await?;
+    let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
+
+    let payload = serde_json::json!({
+        "address": address,
+        "message": message,
+        "signature": signature_hex,
+    });
+    let first = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert!(first.status().is_success());
+
+    let second = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&payload)
+        .send()
+        .await?;
+    assert_eq!(second.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let body: serde_json::Value = second.json().await?;
+    let error = body
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        error.contains("nonce"),
+        "unexpected error response: {body:?}"
+    );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let address = signer.address().to_string();
+    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature_hex = "invalid-hex-signature";
+
+    let resp = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&serde_json::json!({
+            "address": address,
+            "message": message,
+            "signature": signature_hex,
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await?;
+    let error = body
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        error.contains("invalid signature"),
+        "unexpected error response: {body:?}"
+    );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let address = signer.address().to_string();
+    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+
+    let client = reqwest::Client::new();
+    let nonce_res = client
+        .post(format!("{base_addr}/auth/nonce"))
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let nonce_res: AuthNonceResponse = nonce_res.json().await?;
+
+    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let signature = signer.sign_message(message.as_bytes()).await?;
+    let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
+
+    let verify_res = client
+        .post(format!("{base_addr}/auth/verify"))
+        .json(&serde_json::json!({
+            "address": address,
+            "message": message,
+            "signature": signature_hex,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let verify_res: AuthTokenResponse = verify_res.json().await?;
+
+    let refresh_token = verify_res.refresh_token.clone();
+    let refresh_res = client
+        .post(format!("{base_addr}/auth/refresh"))
+        .json(&serde_json::json!({ "refresh_token": refresh_token.clone() }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let refresh_res: AuthTokenResponse = refresh_res.json().await?;
+
+    assert_ne!(refresh_res.refresh_token, verify_res.refresh_token);
+    assert!(!refresh_res.access_token.is_empty());
+    assert!(refresh_res.expires_in > 0);
+
+    let reuse_res = client
+        .post(format!("{base_addr}/auth/refresh"))
+        .json(&serde_json::json!({ "refresh_token": refresh_token }))
+        .send()
+        .await?;
+    assert_eq!(reuse_res.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let base_addr = core_base_url(&config);
+    let signer = PrivateKeySigner::random();
+    let recipient_address = signer.address().to_string();
+    let user_address = random_address();
+
+    let auth = login_with_siwe(
+        &base_addr,
+        &ctx,
+        &signer,
+        DEFAULT_WALLET_ROLE,
+        &[SCOPE_TAB_READ],
+    )
+    .await?;
+    let client = RpcProxy::new(&base_addr)?.with_bearer_token(auth.access_token);
+
+    let err = client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address,
+            recipient_address,
+            erc20_token: None,
+            ttl: None,
+        })
+        .await
+        .expect_err("missing scope should reject");
+    match err {
+        ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+            assert!(
+                message.contains("missing scope"),
+                "unexpected message: {message}"
+            );
+        }
+        other => anyhow::bail!("unexpected error: {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
 async fn issue_guarantee_rejects_future_timestamp() -> anyhow::Result<()> {
-    let (_config, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -193,11 +513,11 @@ async fn issue_guarantee_rejects_future_timestamp() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()> {
-    let (_config, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -226,11 +546,11 @@ async fn issue_guarantee_rejects_insufficient_collateral() -> anyhow::Result<()>
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -304,11 +624,11 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_guarantee_queries() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
 
@@ -371,11 +691,11 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
 
@@ -448,10 +768,10 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_guarantee_queries_empty_state() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = core_client
@@ -489,11 +809,11 @@ async fn core_api_guarantee_queries_empty_state() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(12u64)).await?;
 
@@ -554,11 +874,11 @@ async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Resu
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -609,11 +929,11 @@ async fn issue_guarantee_rejects_modified_start_ts() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -671,11 +991,11 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(100u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -758,11 +1078,11 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -789,11 +1109,11 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let tab_result = core_client
@@ -837,11 +1157,11 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
 
     let tab_result = core_client
@@ -897,11 +1217,11 @@ async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyho
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
@@ -981,11 +1301,11 @@ async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()>
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     insert_user_with_asset_collateral(&ctx, &user_addr, STABLE_ASSET_ADDRESS, U256::from(5u64))
         .await?;
 
@@ -1033,11 +1353,11 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     insert_user_with_asset_collateral(&ctx, &user_addr, STABLE_ASSET_ADDRESS, U256::from(5u64))
         .await?;
 
@@ -1074,12 +1394,12 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let tab_user_addr = alloy::signers::local::PrivateKeySigner::random()
         .address()
         .to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &tab_user_addr, U256::from(5u64)).await?;
 
     let tab = core_client
@@ -1119,11 +1439,11 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let tab_recipient_addr = random_address();
+    let tab_recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let tab = core_client
@@ -1160,11 +1480,11 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let tab_result = core_client
@@ -1220,10 +1540,10 @@ async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_get_tab_and_list_recipient_tabs() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
 
     let create_res = core_client
@@ -1265,7 +1585,7 @@ async fn core_api_get_tab_and_list_recipient_tabs() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_get_tab_returns_none_for_missing() -> anyhow::Result<()> {
-    let (_, core_client, _) = setup_clean_db().await?;
+    let (_, core_client, _, _auth) = setup_clean_db().await?;
 
     let missing = core_client
         .get_tab(U256::from(999u64))
@@ -1279,10 +1599,10 @@ async fn core_api_get_tab_returns_none_for_missing() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_list_recipient_tabs_invalid_status_errors() -> anyhow::Result<()> {
-    let (_, core_client, _) = setup_clean_db().await?;
+    let (_, core_client, _, auth) = setup_clean_db().await?;
 
     let err = core_client
-        .list_recipient_tabs(random_address(), Some(vec!["unknown".into()]))
+        .list_recipient_tabs(auth.address.clone(), Some(vec!["unknown".into()]))
         .await
         .unwrap_err();
     assert!(
@@ -1296,10 +1616,10 @@ async fn core_api_list_recipient_tabs_invalid_status_errors() -> anyhow::Result<
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_list_recipient_tabs_case_insensitive_filter() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = core_client
@@ -1334,10 +1654,10 @@ async fn core_api_list_recipient_tabs_case_insensitive_filter() -> anyhow::Resul
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()> {
-    let (config, core_client, ctx) = setup_clean_db().await?;
+    let (config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = core_client
@@ -1355,6 +1675,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
         "http://{}:{}",
         config.server_config.host, config.server_config.port
     );
+    let access_token = auth.access_token.clone();
     let http_client = reqwest::Client::new();
 
     let single_url = format!(
@@ -1364,6 +1685,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
     );
     let resp = http_client
         .get(&single_url)
+        .bearer_auth(&access_token)
         .send()
         .await
         .expect("single status request");
@@ -1381,6 +1703,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
     );
     let resp = http_client
         .get(&multi_url)
+        .bearer_auth(&access_token)
         .send()
         .await
         .expect("multi status request");
@@ -1398,6 +1721,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
     );
     let resp = http_client
         .get(&invalid_url)
+        .bearer_auth(&access_token)
         .send()
         .await
         .expect("invalid status request");
@@ -1413,6 +1737,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
 
     let bad_body = http_client
         .post(format!("{base}/core/payment-tabs", base = base_addr))
+        .bearer_auth(access_token)
         .json(&serde_json::json!({
             "recipient_address": recipient_addr,
             "ttl": 1200
@@ -1432,11 +1757,11 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn create_tab_rejects_unregistered_user() -> anyhow::Result<()> {
-    let (_, core_client, _) = setup_clean_db().await?;
+    let (_, core_client, _, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     let tab_result = core_client
         .create_payment_tab(CreatePaymentTabRequest {
@@ -1454,10 +1779,10 @@ async fn create_tab_rejects_unregistered_user() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_recipient_payments_and_events() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
 
     let create_res = core_client
@@ -1516,10 +1841,10 @@ async fn core_api_recipient_payments_and_events() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_recipient_payments_flags() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(30u64)).await?;
 
@@ -1555,10 +1880,10 @@ async fn core_api_recipient_payments_flags() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_list_recipient_payments_empty() -> anyhow::Result<()> {
-    let (_, core_client, _) = setup_clean_db().await?;
+    let (_, core_client, _, auth) = setup_clean_db().await?;
 
     let payments = core_client
-        .list_recipient_payments(random_address())
+        .list_recipient_payments(auth.address.clone())
         .await
         .expect("list empty payments");
     assert!(payments.is_empty());
@@ -1568,11 +1893,11 @@ async fn core_api_list_recipient_payments_empty() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(40u64)).await?;
 
@@ -1639,10 +1964,10 @@ async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_collateral_events_empty_for_tab_without_events() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = core_client
@@ -1668,7 +1993,7 @@ async fn core_api_collateral_events_empty_for_tab_without_events() -> anyhow::Re
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, _auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(15u64)).await?;
@@ -1700,11 +2025,11 @@ async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(25u64)).await?;
 
@@ -1890,11 +2215,11 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn list_settled_tabs_returns_only_settled_entries() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
 
@@ -1940,9 +2265,9 @@ async fn list_settled_tabs_returns_only_settled_entries() -> anyhow::Result<()> 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn list_settled_tabs_empty_when_none() -> anyhow::Result<()> {
-    let (_, core_client, _) = setup_clean_db().await?;
+    let (_, core_client, _, auth) = setup_clean_db().await?;
 
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     let settled = core_client
         .list_settled_tabs(recipient_addr)
         .await
@@ -1955,10 +2280,10 @@ async fn list_settled_tabs_empty_when_none() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn list_settled_tabs_ignores_pending_tabs() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
 
     let tab_id = core_client
@@ -1990,10 +2315,10 @@ async fn list_settled_tabs_ignores_pending_tabs() -> anyhow::Result<()> {
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
 async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+    let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
     let user_addr = random_address();
-    let recipient_addr = random_address();
+    let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let status = core_client
@@ -2043,12 +2368,79 @@ async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
-    let (_, core_client, ctx) = setup_clean_db().await?;
+async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> {
+    let (config, core_client, ctx, _) = setup_clean_db().await?;
 
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = random_address();
+    let user_wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_wallet.address().to_string();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
+
+    let recipient_wallet = alloy::signers::local::PrivateKeySigner::random();
+    let recipient_addr = recipient_wallet.address().to_string();
+    let recipient_client = client_with_signer(
+        &config,
+        &ctx,
+        &recipient_wallet,
+        "recipient",
+        &[SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE],
+    )
+    .await?;
+
+    let tab_id = recipient_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(600),
+        })
+        .await?
+        .id;
+
+    let public_params = core_client.get_public_params().await?;
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_id,
+        U256::ZERO,
+        U256::from(1u64),
+        &user_wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    core_client
+        .update_user_suspension(recipient_addr.clone(), true)
+        .await
+        .expect("suspend recipient");
+
+    let err = recipient_client
+        .issue_guarantee(req)
+        .await
+        .expect_err("suspended recipient should not receive guarantees");
+    match err {
+        ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+            assert!(
+                message.contains("user suspended"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {:?}", other),
+    }
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+    let recipient_addr = auth.address.clone();
+
+    let user_wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = user_wallet.address().to_string();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
     let tab_id = core_client
@@ -2069,7 +2461,7 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
         tab_id,
         U256::ZERO,
         U256::from(1u64),
-        &wallet,
+        &user_wallet,
         None,
         DEFAULT_ASSET_ADDRESS,
     )
@@ -2100,8 +2492,8 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn suspension_endpoint_requires_api_key() -> anyhow::Result<()> {
-    let (config, _core_client, ctx) = setup_clean_db().await?;
+async fn suspension_endpoint_accepts_admin_role() -> anyhow::Result<()> {
+    let (config, _core_client, ctx, auth) = setup_clean_db().await?;
     let user_addr = random_address();
     common::fixtures::ensure_user(&ctx, &user_addr).await?;
 
@@ -2109,6 +2501,7 @@ async fn suspension_endpoint_requires_api_key() -> anyhow::Result<()> {
         "http://{}:{}",
         config.server_config.host, config.server_config.port
     );
+    let access_token = auth.access_token.clone();
     let http_client = reqwest::Client::new();
     let resp = http_client
         .post(format!(
@@ -2116,86 +2509,12 @@ async fn suspension_endpoint_requires_api_key() -> anyhow::Result<()> {
             base = base_addr,
             user = user_addr
         ))
+        .bearer_auth(access_token)
         .json(&UpdateUserSuspensionRequest { suspended: true })
         .send()
         .await?;
 
-    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
-    let body: serde_json::Value = resp.json().await?;
-    assert_eq!(
-        body.get("error"),
-        Some(&serde_json::Value::String("missing api key".into()))
-    );
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::serial]
-async fn api_key_scope_is_enforced() -> anyhow::Result<()> {
-    let (config, core_client, ctx) = setup_clean_db().await?;
-    let user_addr = random_address();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let restricted = core_client
-        .create_admin_api_key(CreateAdminApiKeyRequest {
-            name: "support".into(),
-            scopes: vec![ADMIN_SCOPE_MANAGE_KEYS.into()],
-        })
-        .await?;
-
-    let restricted_client = RpcProxy::new(&format!(
-        "http://{}:{}",
-        config.server_config.host, config.server_config.port
-    ))?
-    .with_admin_api_key(restricted.api_key);
-
-    let err = restricted_client
-        .update_user_suspension(user_addr.clone(), true)
-        .await
-        .expect_err("missing scope should reject");
-    match err {
-        ApiClientError::Api { status, message } => {
-            assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
-            assert!(
-                message.contains("missing scope"),
-                "unexpected message: {message}"
-            );
-        }
-        other => panic!("unexpected error: {:?}", other),
-    }
-    // ensure main admin key still works to clean up
-    core_client
-        .update_user_suspension(user_addr, false)
-        .await
-        .expect("default admin key should work");
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::serial]
-async fn admin_api_key_lifecycle() -> anyhow::Result<()> {
-    let (_, core_client, _) = setup_clean_db().await?;
-
-    let created = core_client
-        .create_admin_api_key(CreateAdminApiKeyRequest {
-            name: "ops-team".into(),
-            scopes: vec![ADMIN_SCOPE_SUSPEND_USERS.into()],
-        })
-        .await?;
-    assert_eq!(created.name, "ops-team");
-    assert!(created.api_key.starts_with(ADMIN_API_KEY_PREFIX));
-
-    let keys = core_client.list_admin_api_keys().await?;
-    assert!(
-        keys.iter()
-            .any(|k| k.id == created.id && k.revoked_at.is_none()),
-        "new key not found in list"
-    );
-
-    let revoked = core_client.revoke_admin_api_key(created.id.clone()).await?;
-    assert!(revoked.revoked_at.is_some());
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
     Ok(())
 }

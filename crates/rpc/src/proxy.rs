@@ -1,15 +1,15 @@
 use alloy_primitives::U256;
+use reqwest::header::AUTHORIZATION;
 use reqwest::{Client, Url};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    ADMIN_API_KEY_HEADER, ApiClientError,
+    ApiClientError,
     common::{
-        AdminApiKeyInfo, AdminApiKeySecret, AssetBalanceInfo, CollateralEventInfo,
-        CreateAdminApiKeyRequest, CreatePaymentTabRequest, CreatePaymentTabResult, GuaranteeInfo,
-        PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus,
-        UserTransactionInfo,
+        AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
+        GuaranteeInfo, PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest,
+        UserSuspensionStatus, UserTransactionInfo,
     },
     core::CorePublicParameters,
     guarantee::PaymentGuaranteeRequest,
@@ -24,7 +24,7 @@ fn serialize_tab_id(val: U256) -> String {
 pub struct RpcProxy {
     client: Client,
     base_url: Url,
-    admin_api_key: Option<String>,
+    bearer_token: Option<String>,
 }
 
 impl RpcProxy {
@@ -37,12 +37,12 @@ impl RpcProxy {
         Ok(Self {
             client,
             base_url,
-            admin_api_key: None,
+            bearer_token: None,
         })
     }
 
-    pub fn with_admin_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.admin_api_key = Some(api_key.into());
+    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer_token = Some(token.into());
         self
     }
 
@@ -50,9 +50,9 @@ impl RpcProxy {
         self.base_url.join(path).map_err(ApiClientError::InvalidUrl)
     }
 
-    fn apply_admin_header(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(key) = &self.admin_api_key {
-            builder.header(ADMIN_API_KEY_HEADER, key)
+    fn apply_auth_header(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(token) = &self.bearer_token {
+            builder.header(AUTHORIZATION, format!("Bearer {token}"))
         } else {
             builder
         }
@@ -62,7 +62,9 @@ impl RpcProxy {
     where
         T: DeserializeOwned,
     {
-        let response = self.client.get(url).send().await?;
+        let builder = self.client.get(url);
+        let builder = self.apply_auth_header(builder);
+        let response = builder.send().await?;
         Self::decode_response(response).await
     }
 
@@ -71,7 +73,9 @@ impl RpcProxy {
         Req: Serialize + ?Sized,
         Resp: DeserializeOwned,
     {
-        let response = self.client.post(url).json(body).send().await?;
+        let builder = self.client.post(url).json(body);
+        let builder = self.apply_auth_header(builder);
+        let response = builder.send().await?;
         Self::decode_response(response).await
     }
 
@@ -221,37 +225,7 @@ impl RpcProxy {
         let path = format!("/core/users/{user_address}/suspension");
         let url = self.url(&path)?;
         let body = UpdateUserSuspensionRequest { suspended };
-        let request = self.apply_admin_header(self.client.post(url).json(&body));
-        let response = request.send().await?;
-        Self::decode_response(response).await
-    }
-
-    pub async fn create_admin_api_key(
-        &self,
-        req: CreateAdminApiKeyRequest,
-    ) -> Result<AdminApiKeySecret, ApiClientError> {
-        let url = self.url("/core/admin/api-keys")?;
-        let request = self.apply_admin_header(self.client.post(url).json(&req));
-        let response = request.send().await?;
-        Self::decode_response(response).await
-    }
-
-    pub async fn list_admin_api_keys(&self) -> Result<Vec<AdminApiKeyInfo>, ApiClientError> {
-        let url = self.url("/core/admin/api-keys")?;
-        let request = self.apply_admin_header(self.client.get(url));
-        let response = request.send().await?;
-        Self::decode_response(response).await
-    }
-
-    pub async fn revoke_admin_api_key(
-        &self,
-        id: String,
-    ) -> Result<AdminApiKeyInfo, ApiClientError> {
-        let path = format!("/core/admin/api-keys/{id}/revoke");
-        let url = self.url(&path)?;
-        let request = self.apply_admin_header(self.client.post(url));
-        let response = request.send().await?;
-        Self::decode_response(response).await
+        self.post(url, &body).await
     }
 }
 

@@ -1,6 +1,10 @@
 use crate::service::CoreService;
 use crate::{
-    auth::verify_guarantee_request_signature,
+    auth::{
+        access::{self, AccessContext},
+        constants::SCOPE_GUARANTEE_ISSUE,
+        verify_guarantee_request_signature,
+    },
     error::{ServiceError, ServiceResult},
     persist::repo,
     util::u256_to_string,
@@ -143,8 +147,12 @@ impl CoreService {
 
     pub async fn issue_payment_guarantee(
         &self,
+        auth: &AccessContext,
         req: PaymentGuaranteeRequest,
     ) -> ServiceResult<BLSCert> {
+        access::require_scope(auth, SCOPE_GUARANTEE_ISSUE)?;
+        access::require_recipient_match(auth, req.claims.recipient_address())?;
+
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
 
@@ -156,6 +164,11 @@ impl CoreService {
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
 
         repo::ensure_user_is_active(&self.inner.persist_ctx, req.claims.user_address()).await?;
+        repo::ensure_user_is_active_if_exists(
+            &self.inner.persist_ctx,
+            req.claims.recipient_address(),
+        )
+        .await?;
 
         match &req.claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
