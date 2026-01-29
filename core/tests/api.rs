@@ -2386,7 +2386,7 @@ async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> 
     )
     .await?;
 
-    let tab_id = core_client
+    let tab_id = recipient_client
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
