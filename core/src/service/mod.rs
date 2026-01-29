@@ -264,11 +264,7 @@ impl CoreService {
         req: CreatePaymentTabRequest,
     ) -> ServiceResult<CreatePaymentTabResult> {
         access::require_scope(auth, SCOPE_TAB_CREATE)?;
-        if let Err(e) = access::require_recipient_match(auth, &req.recipient_address)
-            && access::require_admin_role(auth).is_err()
-        {
-            return Err(e);
-        }
+        access::require_recipient_match_or_facilitator(auth, &req.recipient_address)?;
 
         let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
         let max_ttl = self.tab_expiration_time();
@@ -361,7 +357,7 @@ impl CoreService {
         settlement_statuses: Vec<SettlementStatus>,
     ) -> ServiceResult<Vec<TabInfo>> {
         access::require_scope(auth, SCOPE_TAB_READ)?;
-        access::require_recipient_match(auth, &recipient_address)?;
+        access::require_recipient_match_or_facilitator(auth, &recipient_address)?;
 
         let status_refs = if settlement_statuses.is_empty() {
             None
@@ -384,7 +380,7 @@ impl CoreService {
         recipient_address: String,
     ) -> ServiceResult<Vec<PendingRemunerationInfo>> {
         access::require_scope(auth, SCOPE_TAB_READ)?;
-        access::require_recipient_match(auth, &recipient_address)?;
+        access::require_recipient_match_or_facilitator(auth, &recipient_address)?;
 
         let tabs = repo::get_tabs_for_recipient(
             &self.inner.persist_ctx,
@@ -421,7 +417,7 @@ impl CoreService {
         let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? else {
             return Ok(None);
         };
-        access::require_tab_owner(auth, &tab)?;
+        access::require_tab_owner_or_facilitator(auth, &tab)?;
 
         Some(mapper::tab_model_to_info(tab)).transpose()
     }
@@ -436,7 +432,8 @@ impl CoreService {
         let tab = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id)
             .await?
             .ok_or_else(|| ServiceError::NotFound(u256_to_string(tab_id)))?;
-        access::require_tab_owner(auth, &tab)?;
+        access::require_tab_owner_or_facilitator(auth, &tab)?;
+
         Ok(tab)
     }
 

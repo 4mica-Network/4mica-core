@@ -1,3 +1,4 @@
+use super::constants::{ROLE_ADMIN, ROLE_FACILITATOR};
 use crate::error::{ServiceError, ServiceResult};
 use entities::tabs;
 
@@ -34,6 +35,20 @@ pub fn require_recipient_match(auth: &AccessContext, recipient_address: &str) ->
     Ok(())
 }
 
+pub fn require_recipient_match_or_facilitator(
+    auth: &AccessContext,
+    recipient_address: &str,
+) -> ServiceResult<()> {
+    if !addresses_match(&auth.wallet_address, recipient_address)
+        && require_facilitator_role(auth).is_err()
+    {
+        return Err(ServiceError::Unauthorized(
+            "recipient address does not match token subject and role is not facilitator".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn require_user_match(auth: &AccessContext, user_address: &str) -> ServiceResult<()> {
     if !addresses_match(&auth.wallet_address, user_address) {
         return Err(ServiceError::Unauthorized(
@@ -43,18 +58,33 @@ pub fn require_user_match(auth: &AccessContext, user_address: &str) -> ServiceRe
     Ok(())
 }
 
-pub fn require_tab_owner(auth: &AccessContext, tab: &tabs::Model) -> ServiceResult<()> {
+pub fn require_tab_owner_or_facilitator(
+    auth: &AccessContext,
+    tab: &tabs::Model,
+) -> ServiceResult<()> {
     if addresses_match(&auth.wallet_address, &tab.user_address)
         || addresses_match(&auth.wallet_address, &tab.server_address)
+        || require_facilitator_role(auth).is_ok()
     {
         return Ok(());
     }
-    Err(ServiceError::Unauthorized("tab access denied".into()))
+    Err(ServiceError::Unauthorized(
+        "tab access denied, must be owner or facilitator".into(),
+    ))
 }
 
 pub fn require_admin_role(auth: &AccessContext) -> ServiceResult<()> {
-    if !auth.role.trim().eq_ignore_ascii_case("admin") {
+    if !auth.role.trim().eq_ignore_ascii_case(ROLE_ADMIN) {
         return Err(ServiceError::Unauthorized("admin role required".into()));
+    }
+    Ok(())
+}
+
+pub fn require_facilitator_role(auth: &AccessContext) -> ServiceResult<()> {
+    if !auth.role.trim().eq_ignore_ascii_case(ROLE_FACILITATOR) {
+        return Err(ServiceError::Unauthorized(
+            "facilitator role required".into(),
+        ));
     }
     Ok(())
 }

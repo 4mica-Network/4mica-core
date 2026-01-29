@@ -1,5 +1,5 @@
 use crate::auth;
-use crate::auth::constants::DEFAULT_SCOPES;
+use crate::auth::constants::{DEFAULT_ROLE, DEFAULT_SCOPES};
 use crate::auth::jwt::AccessTokenClaims;
 use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
@@ -59,7 +59,7 @@ impl CoreService {
                 Ok((model.role, scopes))
             }
             None => Ok((
-                "user".to_string(),
+                DEFAULT_ROLE.to_string(),
                 DEFAULT_SCOPES.map(|s| s.to_string()).to_vec(),
             )),
         }
