@@ -292,14 +292,31 @@ jobs:
     needs: build-and-test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        server:
+          - ethereum-sepolia
     steps:
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
+      - name: Resolve deploy target
+        run: |
+          case "${{ matrix.server }}" in
+            ethereum-sepolia)
+              echo "DEPLOY_HOST=${{ secrets.PROD_SERVER_ETHEREUM_SEPOLIA }}" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unknown server id: ${{ matrix.server }}"
+              exit 1
+              ;;
+          esac
+          echo "DEPLOY_USER=${{ secrets.PROD_USER }}" >> "$GITHUB_ENV"
       - name: Deploy to production
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no "${DEPLOY_USER}@${DEPLOY_HOST}" << 'EOF'
           cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           cd /home/deploy/4mica-core
           git fetch origin main

@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
+import {
+    AccessManaged
+} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    SafeERC20
+} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -23,7 +29,9 @@ struct Guarantee {
 }
 
 interface IGuaranteeDecoder {
-    function decode(bytes calldata data) external view returns (Guarantee memory);
+    function decode(
+        bytes calldata data
+    ) external view returns (Guarantee memory);
 }
 
 /// @title Core4Mica
@@ -298,7 +306,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         BLS.G1Point calldata verificationKey
     ) external restricted {
         GUARANTEE_VERIFICATION_KEY = verificationKey;
-        VersionConfig storage config = guaranteeVersions[INITIAL_GUARANTEE_VERSION];
+        VersionConfig storage config = guaranteeVersions[
+            INITIAL_GUARANTEE_VERSION
+        ];
         config.verificationKey = verificationKey;
         emit VerificationKeyUpdated(verificationKey);
         emit GuaranteeVersionUpdated(
@@ -324,7 +334,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
         VersionConfig storage config = guaranteeVersions[version];
         address decoderToUse = decoder;
-        if (version != INITIAL_GUARANTEE_VERSION && decoderToUse == address(0)) {
+        if (
+            version != INITIAL_GUARANTEE_VERSION && decoderToUse == address(0)
+        ) {
             if (enabled) revert MissingGuaranteeDecoder(version);
             decoderToUse = config.decoder;
         }
@@ -397,11 +409,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         emit CollateralDeposited(msg.sender, asset, amount);
     }
 
-    function requestWithdrawal(uint256 amount)
-        external
-        nonZero(amount)
-        whenNotPaused
-    {
+    function requestWithdrawal(
+        uint256 amount
+    ) external nonZero(amount) whenNotPaused {
         requestWithdrawalInternal(msg.sender, ETH_ASSET, amount);
     }
 
@@ -431,11 +441,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         cancelWithdrawalInternal(msg.sender, ETH_ASSET);
     }
 
-    function cancelWithdrawal(address asset)
-        external
-        supportedAsset(asset)
-        whenNotPaused
-    {
+    function cancelWithdrawal(
+        address asset
+    ) external supportedAsset(asset) whenNotPaused {
         cancelWithdrawalInternal(msg.sender, asset);
     }
 
@@ -703,8 +711,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             g = IGuaranteeDecoder(config.decoder).decode(encodedGuarantee);
         }
 
-        if (g.domain != config.domainSeparator)
-            revert InvalidGuaranteeDomain();
+        if (g.domain != config.domainSeparator) revert InvalidGuaranteeDomain();
         return g;
     }
 
