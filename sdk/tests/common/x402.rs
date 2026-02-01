@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use alloy::primitives::U256;
 use axum::{
     Json, Router,
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode},
     routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -12,11 +12,10 @@ use rust_sdk_4mica::{
     PaymentSignature, SigningScheme,
     x402::{
         FacilitatorSettleParams, FlowSigner, PaymentRequirements, TabRequestParams, TabResponse,
-        X402PaymentEnvelope,
+        X402PaymentEnvelope, X402PaymentRequiredV2, X402ResourceInfo,
     },
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tokio::net::TcpListener;
 
 #[derive(Clone)]
@@ -56,9 +55,9 @@ pub fn sample_requirements(tab_endpoint: &str) -> PaymentRequirements {
         pay_to: "0x000000000000000000000000000000000000dead".into(),
         max_timeout_seconds: Some(300),
         asset: "0x000000000000000000000000000000000000c0de".into(),
-        extra: json!({
+        extra: Some(serde_json::json!({
             "tabEndpoint": tab_endpoint,
-        }),
+        })),
     }
 }
 
@@ -84,9 +83,43 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
             }),
         )
         .route(
+            "/resource/v2",
+            get({
+                let requirements = requirements.clone();
+                move || {
+                    let requirements = requirements.clone();
+                    async move {
+                        let payment_required = X402PaymentRequiredV2 {
+                            x402_version: 2,
+                            error: Some("Payment is required to access this resource".into()),
+                            resource: X402ResourceInfo {
+                                url: "http://example.com/resource".into(),
+                                description: "Protected resource".into(),
+                                mime_type: "application/json".into(),
+                            },
+                            accepts: vec![requirements.into()],
+                            extensions: None,
+                        };
+
+                        let payment_header = serde_json::to_vec(&payment_required)
+                            .expect("serialize payment required");
+                        let payment_header = BASE64_STANDARD.encode(payment_header);
+
+                        let mut headers = HeaderMap::new();
+                        headers.insert(
+                            "PAYMENT-REQUIRED",
+                            HeaderValue::from_str(&payment_header).expect("valid header value"),
+                        );
+
+                        (StatusCode::PAYMENT_REQUIRED, headers)
+                    }
+                }
+            }),
+        )
+        .route(
             "/tab",
             post({
-                move |Json(body): Json<TabRequestParams>| async move {
+                move |Json(body): Json<TabRequestParams<serde_json::Value>>| async move {
                     Json(TabResponse {
                         tab_id: "0x1234".into(),
                         user_address: body.user_address,
@@ -119,7 +152,7 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
 
                         (
                             StatusCode::OK,
-                            Json(json!({
+                            Json(serde_json::json!({
                                 "settled": true,
                                 "networkId": requirements.network
                             })),
@@ -166,4 +199,33 @@ pub async fn request_server_and_fetch_payment_requirements(
             response.status()
         ))
     }
+}
+
+pub async fn request_server_and_fetch_payment_requirements_v2(
+    server_url: &str,
+) -> anyhow::Result<X402PaymentRequiredV2> {
+    let resource_url = format!("{}/resource/v2", server_url);
+    let response = reqwest::get(resource_url).await?;
+
+    if response.status() != StatusCode::PAYMENT_REQUIRED {
+        return Err(anyhow::anyhow!(
+            "Expected 402 status, got {}",
+            response.status()
+        ));
+    }
+
+    let payment_header = response
+        .headers()
+        .get("payment-required")
+        .ok_or_else(|| anyhow::anyhow!("Missing payment-required header"))?
+        .to_str()
+        .map_err(|e| anyhow::anyhow!("Invalid header value: {}", e))?;
+
+    let decoded = BASE64_STANDARD
+        .decode(payment_header)
+        .map_err(|e| anyhow::anyhow!("Failed to decode payment header: {}", e))?;
+    let payment_required: X402PaymentRequiredV2 = serde_json::from_slice(&decoded)
+        .map_err(|e| anyhow::anyhow!("Failed to parse payment-required: {}", e))?;
+
+    Ok(payment_required)
 }

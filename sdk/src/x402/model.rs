@@ -1,9 +1,16 @@
 use reqwest::Url;
-use rpc::{PaymentGuaranteeRequest, PaymentGuaranteeRequestClaimsV1};
+use rpc::PaymentGuaranteeRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::PaymentSignature;
+
+pub trait X402PaymentRequirements {
+    fn amount(&self) -> &str;
+    fn asset(&self) -> &str;
+    fn pay_to(&self) -> &str;
+    fn extra(&self) -> Option<&Value>;
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -18,7 +25,22 @@ pub struct PaymentRequirements {
     pub pay_to: String,
     pub max_timeout_seconds: Option<u64>,
     pub asset: String,
-    pub extra: Value,
+    pub extra: Option<Value>,
+}
+
+impl X402PaymentRequirements for PaymentRequirements {
+    fn amount(&self) -> &str {
+        &self.max_amount_required
+    }
+    fn asset(&self) -> &str {
+        &self.asset
+    }
+    fn pay_to(&self) -> &str {
+        &self.pay_to
+    }
+    fn extra(&self) -> Option<&Value> {
+        self.extra.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,7 +52,7 @@ pub struct PaymentRequirementsExtra {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct X402PaymentEnvelope {
-    pub x402_version: u64,
+    pub x402_version: u8,
     pub scheme: String,
     pub network: String,
     pub payload: PaymentGuaranteeRequest,
@@ -40,7 +62,7 @@ pub struct X402PaymentEnvelope {
 #[derive(Debug, Clone, Deserialize)]
 pub struct X402SignedPayment {
     pub header: String,
-    pub claims: PaymentGuaranteeRequestClaimsV1,
+    pub payload: PaymentGuaranteeRequest,
     pub signature: PaymentSignature,
 }
 
@@ -53,9 +75,11 @@ pub struct X402SettledPayment {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct TabRequestParams {
+pub struct TabRequestParams<TRequirements> {
+    pub x402_version: u8,
     pub user_address: String,
-    pub payment_requirements: PaymentRequirements,
+    pub payment_requirements: TRequirements,
+    pub resource: Option<X402ResourceInfo>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -71,7 +95,77 @@ pub struct TabResponse {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FacilitatorSettleParams {
-    pub x402_version: u64,
+    pub x402_version: u8,
     pub payment_header: String,
     pub payment_requirements: PaymentRequirements,
+}
+
+// X402 V2 Models
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentRequirementsV2 {
+    pub scheme: String,
+    pub network: String,
+    pub asset: String,
+    pub amount: String,
+    pub pay_to: String,
+    pub max_timeout_seconds: Option<u64>,
+    pub extra: Option<Value>,
+}
+
+impl X402PaymentRequirements for PaymentRequirementsV2 {
+    fn amount(&self) -> &str {
+        &self.amount
+    }
+    fn asset(&self) -> &str {
+        &self.asset
+    }
+    fn pay_to(&self) -> &str {
+        &self.pay_to
+    }
+    fn extra(&self) -> Option<&Value> {
+        self.extra.as_ref()
+    }
+}
+
+impl From<PaymentRequirements> for PaymentRequirementsV2 {
+    fn from(requirements: PaymentRequirements) -> Self {
+        PaymentRequirementsV2 {
+            scheme: requirements.scheme,
+            network: requirements.network,
+            asset: requirements.asset,
+            amount: requirements.max_amount_required,
+            pay_to: requirements.pay_to,
+            max_timeout_seconds: requirements.max_timeout_seconds,
+            extra: requirements.extra,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct X402ResourceInfo {
+    pub url: String,
+    pub description: String,
+    pub mime_type: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct X402PaymentRequiredV2 {
+    pub x402_version: u8,
+    pub error: Option<String>,
+    pub resource: X402ResourceInfo,
+    pub accepts: Vec<PaymentRequirementsV2>,
+    pub extensions: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct X402PaymentEnvelopeV2 {
+    pub x402_version: u8,
+    pub accepted: PaymentRequirementsV2,
+    pub payload: PaymentGuaranteeRequest,
+    pub resource: X402ResourceInfo,
 }
