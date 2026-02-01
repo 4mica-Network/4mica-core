@@ -151,7 +151,7 @@ impl CoreService {
         req: PaymentGuaranteeRequest,
     ) -> ServiceResult<BLSCert> {
         access::require_scope(auth, SCOPE_GUARANTEE_ISSUE)?;
-        access::require_recipient_match(auth, req.claims.recipient_address())?;
+        access::require_recipient_match_or_facilitator(auth, req.claims.recipient_address())?;
 
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
