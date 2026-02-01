@@ -105,19 +105,27 @@ The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Requir
 
 ##### X402 Version 1
 
-Typical sequence (as in `https://github.com/4mica-Network/x402-4mica/examples/server/mock_paid_api.py`):
-- GET the protected endpoint; capture `paymentRequirementsTemplate`. 
-- POST `tabEndpoint` with `{ userAddress, paymentRequirements }` to mint requirements bound to your wallet.
+Version 1 returns payment requirements in the JSON response body:
+- GET the protected endpoint; parse the JSON body to get the response with `accepts` array.
+- Select a payment option from `accepts` array.
 - Call `X402Flow::sign_payment` to get the base64 `X-PAYMENT` header.
 - Retry the protected endpoint with `X-PAYMENT`; the resource server will call the facilitator `/verify` and `/settle`.
 
 ```rust
 use rust_sdk_4mica::{Client, ConfigBuilder, X402Flow};
 use rust_sdk_4mica::x402::PaymentRequirements;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceResponse {
+    x402_version: u64,
+    accepts: Vec<PaymentRequirements>,
+    error: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1) Core client (only the payer key is required by default)
     let payer = Client::new(
         ConfigBuilder::default()
             .wallet_private_key(std::env::var("PAYER_KEY")?)
@@ -125,15 +133,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    let payment_requirements: PaymentRequirements =
-        serde_json::from_value(tab_response["paymentRequirements"].clone())?;
+    // 1) GET the protected endpoint and parse JSON body
+    let response = reqwest::get("https://resource-url/resource").await?;
+    let body: ResourceResponse = response.json().await?;
+
+    // 2) Select a payment option (first one for simplicity)
+    let payment_requirements = body.accepts
+        .first()
+        .ok_or("No payment options available")?
+        .clone();
 
     // 3) Build the X-PAYMENT header with the SDK
     let flow = X402Flow::new(payer)?;
     let signed = flow
-        .sign_payment(payment_requirements.clone(), user_address.clone())
+        .sign_payment(payment_requirements, user_address)
         .await?;
-    let x_payment_header = signed.header; // send as `X-PAYMENT: {header}`
+    let x_payment_header = signed.header;
 
     // 4) Call the protected resource with the header
     let _paid = reqwest::Client::new()
