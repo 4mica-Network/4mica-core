@@ -129,20 +129,10 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
 #[tokio::test]
 #[serial_test::serial]
 async fn returns_existing_pending_tab_when_active() {
-    let ctx = match PersistCtx::new().await {
-        Ok(ctx) => ctx,
-        Err(err) => {
-            eprintln!("skipping returns_existing_pending_tab_when_active: {err}");
-            return;
-        }
-    };
-    let core_service = match build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME).await {
-        Ok(cs) => cs,
-        Err(err) => {
-            eprintln!("skipping returns_existing_pending_tab_when_active: {err}");
-            return;
-        }
-    };
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
+        .await
+        .expect("core service");
 
     let user = format!("0x{:040x}", rand::random::<u128>());
     let recipient = format!("0x{:040x}", rand::random::<u128>());
@@ -191,20 +181,10 @@ async fn returns_existing_pending_tab_when_active() {
 #[tokio::test]
 #[serial_test::serial]
 async fn reuses_pending_tab_even_when_expired() {
-    let ctx = match PersistCtx::new().await {
-        Ok(ctx) => ctx,
-        Err(err) => {
-            eprintln!("skipping creates_new_tab_when_existing_pending_is_expired: {err}");
-            return;
-        }
-    };
-    let core_service = match build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME).await {
-        Ok(cs) => cs,
-        Err(err) => {
-            eprintln!("skipping creates_new_tab_when_existing_pending_is_expired: {err}");
-            return;
-        }
-    };
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
+        .await
+        .expect("core service");
 
     let user = format!("0x{:040x}", rand::random::<u128>());
     let recipient = format!("0x{:040x}", rand::random::<u128>());
@@ -261,20 +241,10 @@ async fn reuses_pending_tab_even_when_expired() {
 #[tokio::test]
 #[serial_test::serial]
 async fn uses_default_ttl_when_not_provided() {
-    let ctx = match PersistCtx::new().await {
-        Ok(ctx) => ctx,
-        Err(err) => {
-            eprintln!("skipping uses_default_ttl_when_not_provided: {err}");
-            return;
-        }
-    };
-    let core_service = match build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME).await {
-        Ok(cs) => cs,
-        Err(err) => {
-            eprintln!("skipping uses_default_ttl_when_not_provided: {err}");
-            return;
-        }
-    };
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
+        .await
+        .expect("core service");
 
     let user = format!("0x{:040x}", rand::random::<u128>());
     let recipient = format!("0x{:040x}", rand::random::<u128>());
@@ -307,20 +277,10 @@ async fn uses_default_ttl_when_not_provided() {
 #[tokio::test]
 #[serial_test::serial]
 async fn rejects_ttl_exceeding_tab_expiration() {
-    let ctx = match PersistCtx::new().await {
-        Ok(ctx) => ctx,
-        Err(err) => {
-            eprintln!("skipping rejects_ttl_exceeding_tab_expiration: {err}");
-            return;
-        }
-    };
-    let core_service = match build_core_service(ctx.clone(), 300).await {
-        Ok(cs) => cs,
-        Err(err) => {
-            eprintln!("skipping rejects_ttl_exceeding_tab_expiration: {err}");
-            return;
-        }
-    };
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    let core_service = build_core_service(ctx.clone(), 300)
+        .await
+        .expect("core service");
 
     let user = format!("0x{:040x}", rand::random::<u128>());
     let recipient = format!("0x{:040x}", rand::random::<u128>());

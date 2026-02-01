@@ -274,6 +274,8 @@ pub enum VerifyGuaranteeError {
 pub enum X402Error {
     #[error("invalid scheme: {0}")]
     InvalidScheme(String),
+    #[error("invalid x402 version: {0}")]
+    InvalidVersion(String),
     #[error("invalid facilitator url: {0}")]
     InvalidFacilitatorUrl(String),
     #[error("failed to resolve tab endpoint: {0}")]
