@@ -182,7 +182,7 @@ jobs:
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
-        run: cargo test --workspace --exclude rust-sdk-4mica
+        run: cargo test --workspace --exclude sdk-4mica
 
       - name: Stop API service (core tests)
         if: always()
@@ -264,7 +264,7 @@ jobs:
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
-        run: cargo test -p rust-sdk-4mica -j 1 -- --test-threads=1
+        run: cargo test -p sdk-4mica -j 1 -- --test-threads=1
 
   deploy-develop:
     needs: build-and-test
