@@ -58,9 +58,7 @@ jobs:
                       echo "::group::Publishing ${crate_path}"
                       pushd "$crate_path" >/dev/null
 
-                      read -r NAME VERSION <<EOF
-                      $(cargo metadata --no-deps --format-version 1 --locked | jq -r --arg manifest "$PWD/Cargo.toml" '.packages[] | select(.manifest_path==$manifest) | "\(.name) \(.version)"')
-                      EOF
+                      read -r NAME VERSION <<<"$(cargo metadata --no-deps --format-version 1 --locked | jq -r --arg manifest "$PWD/Cargo.toml" '.packages[] | select(.manifest_path==$manifest) | "\(.name) \(.version)"')"
 
                       if curl -fsS "https://crates.io/api/v1/crates/${NAME}/${VERSION}" >/dev/null; then
                           echo "crate ${NAME} v${VERSION} already published; skipping."
