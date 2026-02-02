@@ -1,6 +1,6 @@
 [package]
 name = "blockchain"
-version = "0.4.1"
+version = "0.5.0"
 edition.workspace = true
 authors = ["4Mica Network <team@4mica.xyz>"]
 description = "Blockchain data providers and schedulers for the 4Mica payment network."
