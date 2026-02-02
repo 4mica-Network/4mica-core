@@ -17,11 +17,19 @@ use entities::tabs;
 use rand::random;
 use rpc::CreatePaymentTabRequest;
 use sea_orm::{EntityTrait, Set};
-use std::{panic, sync::Arc};
+use std::{panic, sync::Arc, sync::Once};
 
 const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
 const DEFAULT_ROLE: &str = "user";
 const FACILITATOR_ROLE: &str = "facilitator";
+static TEST_ENV: Once = Once::new();
+
+fn load_test_env() {
+    TEST_ENV.call_once(|| {
+        dotenv::dotenv().ok();
+        dotenv::from_filename("../.env").ok();
+    });
+}
 
 fn recipient_auth(recipient: &str) -> AccessContext {
     AccessContext {
@@ -129,6 +137,7 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
 #[tokio::test]
 #[serial_test::serial]
 async fn returns_existing_pending_tab_when_active() {
+    load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
         .await
@@ -181,6 +190,7 @@ async fn returns_existing_pending_tab_when_active() {
 #[tokio::test]
 #[serial_test::serial]
 async fn reuses_pending_tab_even_when_expired() {
+    load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
         .await
@@ -241,6 +251,7 @@ async fn reuses_pending_tab_even_when_expired() {
 #[tokio::test]
 #[serial_test::serial]
 async fn uses_default_ttl_when_not_provided() {
+    load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
         .await
@@ -277,6 +288,7 @@ async fn uses_default_ttl_when_not_provided() {
 #[tokio::test]
 #[serial_test::serial]
 async fn rejects_ttl_exceeding_tab_expiration() {
+    load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), 300)
         .await
@@ -311,6 +323,7 @@ async fn rejects_ttl_exceeding_tab_expiration() {
 #[tokio::test]
 #[serial_test::serial]
 async fn facilitator_can_create_tab_for_recipient() {
+    load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), 300)
         .await

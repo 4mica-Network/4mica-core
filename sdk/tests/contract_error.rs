@@ -1,4 +1,4 @@
-use rust_sdk_4mica::{
+use sdk_4mica::{
     Client, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::RemunerateError,
 };
 

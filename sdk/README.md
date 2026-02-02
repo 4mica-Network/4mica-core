@@ -1,4 +1,4 @@
-[![Crates.io](https://img.shields.io/crates/v/rust-sdk-4mica.svg)](https://crates.io/crates/rust-sdk-4mica)
+[![Crates.io](https://img.shields.io/crates/v/sdk-4mica.svg)](https://crates.io/crates/sdk-4mica)
 
 # 4Mica Rust SDK
 
@@ -18,7 +18,7 @@ Add the SDK to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rust-sdk-4mica = "0.3.3"
+sdk-4mica = "0.5.0"
 ```
 
 ## Initialization and Configuration
@@ -42,7 +42,7 @@ The following parameters are **optional** and will be automatically fetched from
 #### 1. Using ConfigBuilder
 
 ```rust
-use rust_sdk_4mica::{Config, ConfigBuilder, Client};
+use sdk_4mica::{Config, ConfigBuilder, Client};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,7 +70,7 @@ export 4MICA_CONTRACT_ADDRESS="0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
 Then in your code:
 
 ```rust
-use rust_sdk_4mica::{ConfigBuilder, Client};
+use sdk_4mica::{ConfigBuilder, Client};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -97,7 +97,7 @@ The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Requir
 
 #### What the SDK expects from `paymentRequirements`
 
-`rust-sdk-4mica` accepts the canonical X402 JSON (camelCase). At minimum you need:
+`sdk-4mica` accepts the canonical X402 JSON (camelCase). At minimum you need:
 - `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
 `X402Flow` will refresh the tab by calling `extra.tabEndpoint` before signing. 
 
@@ -112,8 +112,8 @@ Version 1 returns payment requirements in the JSON response body:
 - Retry the protected endpoint with `X-PAYMENT`; the resource server will call the facilitator `/verify` and `/settle`.
 
 ```rust
-use rust_sdk_4mica::{Client, ConfigBuilder, X402Flow};
-use rust_sdk_4mica::x402::PaymentRequirements;
+use sdk_4mica::{Client, ConfigBuilder, X402Flow};
+use sdk_4mica::x402::PaymentRequirements;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -171,8 +171,8 @@ Version 2 uses the `PAYMENT-REQUIRED` header (base64-encoded) instead of a JSON 
 - Retry the protected endpoint with `PAYMENT-SIGNATURE`; the resource server will call the facilitator `/verify` and `/settle`.
 
 ```rust
-use rust_sdk_4mica::{Client, ConfigBuilder, X402Flow};
-use rust_sdk_4mica::x402::{X402PaymentRequiredV2, PaymentRequirementsV2};
+use sdk_4mica::{Client, ConfigBuilder, X402Flow};
+use sdk_4mica::x402::{X402PaymentRequiredV2, PaymentRequirementsV2};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 #[tokio::main]
@@ -225,8 +225,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 If your resource server proxies to the facilitator (the pattern used in `examples/server/mock_paid_api.py`), you can reuse the SDK to settle after verifying:
 
 ```rust
-use rust_sdk_4mica::{Client, ConfigBuilder, X402Flow, X402SignedPayment};
-use rust_sdk_4mica::x402::PaymentRequirements;
+use sdk_4mica::{Client, ConfigBuilder, X402Flow, X402SignedPayment};
+use sdk_4mica::x402::PaymentRequirements;
 
 async fn settle(
     facilitator_url: &str,
@@ -263,7 +263,6 @@ Notes:
 - `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment
-- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
 - `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String, erc20_token: Option<String>) -> Result<TransactionReceipt, PayTabError>`: Pay a tab directly on-chain in ETH or ERC20 token
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
@@ -274,6 +273,7 @@ Notes:
 - `create_tab(user_address: String, recipient_address: String, erc20_token: Option<String>, ttl: Option<u64>) -> Result<U256, CreateTabError>`: Create a new payment tab in ETH or ERC20 token
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
+- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
 - `remunerate(cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>`: Claim from user collateral using BLS certificate
 - `list_settled_tabs() -> Result<Vec<TabInfo>, RecipientQueryError>`: List all settled tabs for the recipient
 - `list_pending_remunerations() -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError>`: List pending remunerations for the recipient
@@ -295,7 +295,7 @@ The user client allows you to manage your collateral and sign payments in ETH or
 #### Approve ERC20 Token (Required before depositing or paying with ERC20)
 
 ```rust
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 
 // Approve the 4Mica contract to spend 1000 USDC on your behalf
 let token_address = "0x1234567890123456789012345678901234567890".to_string();
@@ -314,7 +314,7 @@ match client.user.approve_erc20(token_address, amount).await {
 #### Deposit Collateral
 
 ```rust
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 
 // Deposit 1 ETH as collateral
 let amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH in wei
@@ -351,7 +351,7 @@ for user_info in user_assets {
 #### Get Tab Payment Status
 
 ```rust
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 
 let tab_id = U256::from(1);
 let status = client.user.get_tab_payment_status(tab_id).await?;
@@ -363,7 +363,7 @@ println!("Asset: {}", status.asset);
 #### Sign a Payment
 
 ```rust
-use rust_sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
+use sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
 
 // Create payment claims for ETH payment
 let claims = PaymentGuaranteeRequestClaims::new(
@@ -407,7 +407,7 @@ let payment_sig_usdc = client.user.sign_payment(claims_usdc, SigningScheme::Eip7
 #### Pay a Tab
 
 ```rust
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 
 // Pay 1 ETH to a tab
 let tab_id = U256::from(1);
@@ -435,7 +435,7 @@ println!("USDC payment successful: {:?}", receipt.transaction_hash);
 #### Request Withdrawal
 
 ```rust
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 
 // Request to withdraw 0.5 ETH
 let amount = U256::from(500_000_000_000_000_000u128);
@@ -482,7 +482,7 @@ The recipient client allows you to create payment tabs, issue payment guarantees
 #### Create Payment Tab
 
 ```rust
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 
 // Create a new payment tab for ETH
 let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
@@ -511,7 +511,7 @@ println!("Created USDC tab with ID: {}", tab_id_usdc);
 #### Get Tab Payment Status
 
 ```rust
-use rust_sdk_4mica::U256;
+use sdk_4mica::U256;
 
 let tab_id = U256::from(1);
 let status = client.recipient.get_tab_payment_status(tab_id).await?;
@@ -523,7 +523,7 @@ println!("Asset: {}", status.asset);
 #### Issue Payment Guarantee
 
 ```rust
-use rust_sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
+use sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
 
 // First, the user signs the payment (see User Client example above)
 let claims = PaymentGuaranteeRequestClaims::new(
@@ -561,7 +561,7 @@ println!("Transaction hash: {:?}", receipt.transaction_hash);
 Here's a complete example showing a payment flow with ETH:
 
 ```rust
-use rust_sdk_4mica::{
+use sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
 
@@ -608,8 +608,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Payment signed");
 
     // 5. User issues guarantee
-    let bls_cert = user_client
-        .user
+    let bls_cert = recipient_client
+        .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
@@ -628,7 +628,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Here's a complete example showing a payment flow with an ERC20 token:
 
 ```rust
-use rust_sdk_4mica::{
+use sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
 
@@ -687,8 +687,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Payment signed");
 
     // 5. User issues guarantee
-    let bls_cert = user_client
-        .user
+    let bls_cert = recipient_client
+        .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
@@ -710,7 +710,7 @@ The SDK provides comprehensive, type-safe error handling with specific error typ
 
 ```rust
 // Import specific error types when needed
-use rust_sdk_4mica::error::{
+use sdk_4mica::error::{
     ApproveErc20Error, DepositError, RemunerateError, RequestWithdrawalError,
     SignPaymentError, FinalizeWithdrawalError, CreateTabError, PayTabError,
     IssuePaymentGuaranteeError, VerifyGuaranteeError, RecipientQueryError,

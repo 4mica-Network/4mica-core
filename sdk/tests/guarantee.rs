@@ -1,5 +1,5 @@
-use rust_sdk_4mica::client::recipient::RecipientClient;
-use rust_sdk_4mica::{
+use sdk_4mica::client::recipient::RecipientClient;
+use sdk_4mica::{
     Client, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::VerifyGuaranteeError,
 };
 use std::time::Duration;
