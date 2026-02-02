@@ -1,5 +1,5 @@
 [package]
-name = "rust-sdk-4mica"
+name = "sdk-4mica"
 version = "0.4.0"
 edition.workspace = true
 authors = ["4Mica Network <cto@4mica.xyz>"]

@@ -23,6 +23,11 @@ const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
 const DEFAULT_ROLE: &str = "user";
 const FACILITATOR_ROLE: &str = "facilitator";
 
+fn init_test_env() {
+    dotenv::dotenv().ok();
+    dotenv::from_filename("../.env").ok();
+}
+
 fn recipient_auth(recipient: &str) -> AccessContext {
     AccessContext {
         wallet_address: recipient.to_string(),
@@ -129,6 +134,7 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
 #[tokio::test]
 #[serial_test::serial]
 async fn returns_existing_pending_tab_when_active() {
+    init_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
         .await
@@ -181,6 +187,7 @@ async fn returns_existing_pending_tab_when_active() {
 #[tokio::test]
 #[serial_test::serial]
 async fn reuses_pending_tab_even_when_expired() {
+    init_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
         .await
@@ -241,6 +248,7 @@ async fn reuses_pending_tab_even_when_expired() {
 #[tokio::test]
 #[serial_test::serial]
 async fn uses_default_ttl_when_not_provided() {
+    init_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
         .await
@@ -277,6 +285,7 @@ async fn uses_default_ttl_when_not_provided() {
 #[tokio::test]
 #[serial_test::serial]
 async fn rejects_ttl_exceeding_tab_expiration() {
+    init_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), 300)
         .await
@@ -311,6 +320,7 @@ async fn rejects_ttl_exceeding_tab_expiration() {
 #[tokio::test]
 #[serial_test::serial]
 async fn facilitator_can_create_tab_for_recipient() {
+    init_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), 300)
         .await
