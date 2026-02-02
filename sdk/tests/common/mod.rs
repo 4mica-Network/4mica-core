@@ -4,6 +4,7 @@ use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, bail};
 use core_service::persist::{PersistCtx, repo};
+use rpc::RpcProxy;
 use sdk_4mica::{
     Address, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
 };
@@ -25,6 +26,42 @@ pub fn get_now() -> Duration {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
+}
+
+pub async fn get_chain_timestamp(config: &Config) -> anyhow::Result<u64> {
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    let public_params = rpc_proxy.get_public_params().await?;
+    let res = reqwest::Client::new()
+        .post(public_params.ethereum_http_rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getBlockByNumber",
+            "params": ["latest", false]
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let payload: serde_json::Value = res.json().await?;
+    let ts_hex = payload
+        .get("result")
+        .and_then(|result| result.get("timestamp"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing timestamp in latest block response"))?;
+    let ts = u64::from_str_radix(ts_hex.trim_start_matches("0x"), 16)?;
+    Ok(ts)
+}
+
+pub async fn close_tab(tab_id: U256) -> anyhow::Result<()> {
+    load_core_env();
+    let ctx = PersistCtx::new()
+        .await
+        .context("connect to core database")?;
+    repo::close_tab(&ctx, tab_id).await.context("close tab")?;
+    Ok(())
 }
 
 pub fn extract_asset_info(assets: &[UserInfo], asset_address: Address) -> Option<&UserInfo> {

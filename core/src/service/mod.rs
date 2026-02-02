@@ -13,10 +13,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
 };
 use anyhow::anyhow;
-use entities::{
-    sea_orm_active_enums::{SettlementStatus, TabStatus},
-    tabs,
-};
+use entities::{sea_orm_active_enums::SettlementStatus, tabs};
 use log::{error, info};
 use parking_lot::Mutex;
 use rpc::{
@@ -291,9 +288,10 @@ impl CoreService {
             let expiry_ts = start_ts.saturating_add(existing.ttl);
             let expired = existing.ttl <= 0 || expiry_ts < now_ts;
 
-            // Reuse an existing tab when it is still valid, or when it is a pending tab (which can
-            // be re-opened even if expired).
-            if !expired || existing.status == TabStatus::Pending {
+            if expired {
+                let id = crate::util::parse_tab_id(&existing.id)?;
+                repo::close_tab(&self.inner.persist_ctx, id).await?;
+            } else {
                 if existing.ttl <= 0 || existing.ttl as u64 > max_ttl {
                     return Err(ServiceError::InvalidParams(format!(
                         "tab ttl exceeds tab expiration time (ttl={}, max={})",
