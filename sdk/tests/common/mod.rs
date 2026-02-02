@@ -4,7 +4,7 @@ use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, bail};
 use core_service::persist::{PersistCtx, repo};
-use rust_sdk_4mica::{
+use sdk_4mica::{
     Address, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
 };
 use serde::Deserialize;

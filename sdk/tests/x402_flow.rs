@@ -1,7 +1,7 @@
 use alloy::primitives::U256;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rpc::{PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestEssentials};
-use rust_sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2};
+use sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2};
 
 mod common;
 

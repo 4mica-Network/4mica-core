@@ -37,23 +37,23 @@ pub enum AuthError {
     Internal(String),
 }
 
-impl Into<ApiClientError> for AuthError {
-    fn into(self) -> ApiClientError {
-        let status = match &self {
-            Self::Api { status, .. } => *status,
-            Self::InvalidUrl(_) | Self::MissingConfig => StatusCode::BAD_REQUEST,
-            Self::MissingRefreshToken => StatusCode::UNAUTHORIZED,
-            Self::Transport(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Decode(_) => StatusCode::BAD_GATEWAY,
-            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::Signing(_) => StatusCode::UNAUTHORIZED,
+impl From<AuthError> for ApiClientError {
+    fn from(val: AuthError) -> Self {
+        let status = match &val {
+            AuthError::Api { status, .. } => *status,
+            AuthError::InvalidUrl(_) | AuthError::MissingConfig => StatusCode::BAD_REQUEST,
+            AuthError::MissingRefreshToken => StatusCode::UNAUTHORIZED,
+            AuthError::Transport(_) => StatusCode::SERVICE_UNAVAILABLE,
+            AuthError::Decode(_) => StatusCode::BAD_GATEWAY,
+            AuthError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AuthError::Signing(_) => StatusCode::UNAUTHORIZED,
         };
 
-        match self {
-            Self::InvalidUrl(err) => ApiClientError::InvalidUrl(err),
-            Self::Transport(err) => ApiClientError::Transport(err),
-            Self::Decode(err) => ApiClientError::Decode(err),
-            Self::Api { status, message } => ApiClientError::Api { status, message },
+        match val {
+            AuthError::InvalidUrl(err) => ApiClientError::InvalidUrl(err),
+            AuthError::Transport(err) => ApiClientError::Transport(err),
+            AuthError::Decode(err) => ApiClientError::Decode(err),
+            AuthError::Api { status, message } => ApiClientError::Api { status, message },
             other => ApiClientError::Api {
                 status,
                 message: other.to_string(),

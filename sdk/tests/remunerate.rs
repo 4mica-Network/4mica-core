@@ -1,6 +1,6 @@
 use alloy::hex;
 use rpc::RpcProxy;
-use rust_sdk_4mica::{
+use sdk_4mica::{
     Client, Config, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::RemunerateError,
 };
 use std::time::{Duration, Instant};

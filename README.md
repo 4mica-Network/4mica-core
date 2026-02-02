@@ -8,8 +8,8 @@
   <a href="https://github.com/4mica-Network/4mica-core/actions/workflows/deploy.yml">
     <img src="https://github.com/4mica-Network/4mica-core/actions/workflows/deploy.yml/badge.svg" alt="CD Status"/>
   </a>
-  <a href="https://crates.io/crates/rust-sdk-4mica">
-    <img src="https://img.shields.io/crates/v/rust-sdk-4mica.svg" alt="Rust SDK on crates.io"/>
+  <a href="https://crates.io/crates/sdk-4mica">
+    <img src="https://img.shields.io/crates/v/sdk-4mica.svg" alt="Rust SDK on crates.io"/>
   </a>
   <a href="https://4mica.xyz/resources/technical-docs">
     <img src="https://img.shields.io/badge/docs-4mica.xyz-0A84FF.svg" alt="Docs"/>
@@ -31,7 +31,7 @@ Visit the official website: [https://4mica.xyz](https://4mica.xyz)
 ## 📚 Documentation
 
 - Developer docs: [https://4mica.xyz/resources/technical-docs](https://4mica.xyz/resources/technical-docsz)
-- Rust SDK API: [crates.io/rust-sdk-4mica](https://crates.io/crates/rust-sdk-4mica) · [docs.rs](https://docs.rs/rust-sdk-4mica)
+- Rust SDK API: [crates.io/sdk-4mica](https://crates.io/crates/sdk-4mica) · [docs.rs](https://docs.rs/sdk-4mica)
 
 ---
 
@@ -47,13 +47,13 @@ Install from crates.io:
 
 ```toml
 [dependencies]
-rust-sdk-4mica = "0.3.2"
+sdk-4mica = "0.5.0"
 ```
 
 Minimal bootstrap:
 
 ```rust
-use rust_sdk_4mica::{Client, ConfigBuilder};
+use sdk_4mica::{Client, ConfigBuilder};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

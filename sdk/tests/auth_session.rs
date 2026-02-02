@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 use url::Url;
 
 use alloy::signers::local::PrivateKeySigner;
-use rust_sdk_4mica::{AuthConfig, AuthSession};
+use sdk_4mica::{AuthConfig, AuthSession};
 
 #[derive(Clone)]
 struct AuthTestState {
