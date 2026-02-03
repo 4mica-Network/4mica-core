@@ -13,45 +13,37 @@ jobs:
       - name: Build hosts matrix
         id: build
         env:
-          ALL_VARS: ${{ toJSON(vars) }}
+          PROD_HOSTS: ${{ secrets.PROD_HOSTS }}
         run: |
           python - <<'PY'
-          import json
-          import os
-          import sys
+          import json, os, sys
 
-          raw_vars = (os.getenv("ALL_VARS") or "").strip()
-          if not raw_vars:
-              print("No workflow vars available to read.", file=sys.stderr)
-              sys.exit(1)
-
-          try:
-              vars_map = json.loads(raw_vars)
-              if not isinstance(vars_map, dict):
-                  raise ValueError("vars is not a JSON object")
-          except Exception as exc:
-              print(f"Invalid vars payload: {exc}", file=sys.stderr)
+          raw = (os.getenv("PROD_HOSTS") or "").strip()
+          if not raw:
+              print("Missing PROD_HOSTS secret.", file=sys.stderr)
               sys.exit(1)
 
           hosts = []
-          for key, value in vars_map.items():
-              if not key.startswith("PROD_SERVER_"):
-                  continue
-              value = (value or "").strip()
-              if value:
-                  hosts.append(value)
+          # Accept JSON array OR newline/comma separated
+          if raw.lstrip().startswith("["):
+              try:
+                  hosts = json.loads(raw)
+              except Exception as e:
+                  print(f"PROD_HOSTS is not valid JSON: {e}", file=sys.stderr)
+                  sys.exit(1)
+          else:
+              parts = []
+              for line in raw.splitlines():
+                  parts.extend(line.split(","))
+              hosts = [h.strip() for h in parts if h.strip()]
 
-          hosts.sort()
-
-          if not hosts:
-              print(
-                  "No production hosts configured. Set vars with prefix PROD_SERVER_.",
-                  file=sys.stderr,
-              )
+          if not isinstance(hosts, list) or not all(isinstance(h, str) and h.strip() for h in hosts):
+              print("PROD_HOSTS must be a list of non-empty host strings.", file=sys.stderr)
               sys.exit(1)
 
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"hosts={json.dumps(hosts)}\n")
+          hosts = sorted(set(h.strip() for h in hosts))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"hosts={json.dumps(hosts)}\n")
           PY
 
   deploy:
@@ -66,13 +58,19 @@ jobs:
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
+
       - name: Deploy to production
         env:
-          PROD_USER: ${{ vars.PROD_USER }}
+          PROD_USER: ${{ secrets.PROD_USER }}
           PROD_HOST: ${{ matrix.host }}
         run: |
           ssh -o StrictHostKeyChecking=no "${PROD_USER}@${PROD_HOST}" << 'EOF'
-          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          set -euo pipefail
+
+          if [ ! -d /home/deploy/4mica-core/.git ]; then
+            git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          fi
+
           cd /home/deploy/4mica-core
           git fetch origin main
           git reset --hard origin/main
