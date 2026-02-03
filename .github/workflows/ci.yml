@@ -1,4 +1,4 @@
-name: CI/CD
+name: CI
 
 on:
   push:
@@ -265,47 +265,3 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
         run: cargo test -p sdk-4mica -j 1 -- --test-threads=1
-
-  deploy-develop:
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop'
-    steps:
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
-      - name: Deploy to staging
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
-          cd /home/deploy/4mica-core
-          git fetch origin develop
-          git reset --hard origin/develop
-          git submodule update --init --recursive
-          cargo build --release --workspace
-          cargo run -p migration --release -- up
-          systemctl --user restart 4mica
-          EOF
-
-  deploy-main:
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
-      - name: Deploy to production
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.PROD_USER }}@${{ secrets.PROD_SERVER_ETHEREUM_SEPOLIA }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
-          cd /home/deploy/4mica-core
-          git fetch origin main
-          git reset --hard origin/main
-          git submodule update --init --recursive
-          cargo build --release --workspace
-          cargo run -p migration --release -- up
-          systemctl --user restart 4mica
-          EOF

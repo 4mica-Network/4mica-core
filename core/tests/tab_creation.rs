@@ -189,7 +189,7 @@ async fn returns_existing_pending_tab_when_active() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reuses_pending_tab_even_when_expired() {
+async fn closes_expired_pending_tab_and_creates_new_one() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
     let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
@@ -225,7 +225,7 @@ async fn reuses_pending_tab_even_when_expired() {
         .await
         .expect("seed expired tab");
 
-    let reused = core_service
+    let created = core_service
         .create_payment_tab(
             &auth,
             CreatePaymentTabRequest {
@@ -236,16 +236,75 @@ async fn reuses_pending_tab_even_when_expired() {
             },
         )
         .await
-        .expect("tab reused even if expired");
+        .expect("tab created after closing expired");
 
-    assert_eq!(reused.id, expired_id);
+    assert_ne!(created.id, expired_id);
 
-    let fetched = repo::get_tab_by_id(&ctx, reused.id)
+    let fetched = repo::get_tab_by_id(&ctx, expired_id)
         .await
         .expect("tab fetch")
         .expect("tab present");
     assert_eq!(fetched.ttl, expired_ttl);
-    assert_eq!(fetched.status, TabStatus::Pending);
+    assert_eq!(fetched.status, TabStatus::Closed);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn returns_existing_open_tab_when_active() {
+    load_test_env();
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
+        .await
+        .expect("core service");
+
+    let user = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user).await;
+    seed_user(&ctx, &recipient).await;
+    let auth = recipient_auth(&recipient);
+
+    let open_id = U256::from(random::<u128>());
+    let open_ttl = 600i64;
+    let open_start = (Utc::now() - Duration::seconds(30)).naive_utc();
+    let open_tab = tabs::ActiveModel {
+        id: Set(u256_to_string(open_id)),
+        user_address: Set(user.clone()),
+        server_address: Set(recipient.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
+        start_ts: Set(open_start),
+        ttl: Set(open_ttl),
+        status: Set(TabStatus::Open),
+        settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
+        created_at: Set(open_start),
+        updated_at: Set(open_start),
+    };
+    tabs::Entity::insert(open_tab)
+        .exec(ctx.db.as_ref())
+        .await
+        .expect("seed open tab");
+
+    let reused = core_service
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user,
+                recipient_address: recipient,
+                erc20_token: None,
+                ttl: Some(1200),
+            },
+        )
+        .await
+        .expect("open tab reused");
+
+    assert_eq!(reused.id, open_id);
+    let fetched = repo::get_tab_by_id(&ctx, reused.id)
+        .await
+        .expect("tab fetch")
+        .expect("tab present");
+    assert_eq!(fetched.status, TabStatus::Open);
+    assert_eq!(fetched.ttl, open_ttl);
 }
 
 #[tokio::test]
