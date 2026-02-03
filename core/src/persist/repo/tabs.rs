@@ -99,7 +99,7 @@ pub async fn find_active_tab_by_triplet(
         .filter(tabs::Column::UserAddress.eq(user_address.as_str()))
         .filter(tabs::Column::ServerAddress.eq(server_address.as_str()))
         .filter(tabs::Column::AssetAddress.eq(asset_address.as_str()))
-        .filter(tabs::Column::Status.eq(TabStatus::Pending))
+        .filter(tabs::Column::Status.is_in(vec![TabStatus::Pending, TabStatus::Open]))
         .filter(
             Condition::all()
                 .add(tabs::Column::SettlementStatus.ne(SettlementStatus::Settled))
@@ -111,6 +111,24 @@ pub async fn find_active_tab_by_triplet(
         .map_err(PersistDbError::DatabaseFailure)?;
 
     Ok(tab)
+}
+
+pub async fn close_tab(
+    ctx: &PersistCtx,
+    tab_id: alloy::primitives::U256,
+) -> Result<(), PersistDbError> {
+    tabs::Entity::update_many()
+        .filter(tabs::Column::Id.eq(u256_to_string(tab_id)))
+        .filter(tabs::Column::Status.ne(TabStatus::Closed))
+        .set(tabs::ActiveModel {
+            status: Set(TabStatus::Closed),
+            updated_at: Set(now()),
+            ..Default::default()
+        })
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    Ok(())
 }
 
 pub async fn get_tab_by_id(

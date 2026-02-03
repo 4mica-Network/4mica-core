@@ -265,6 +265,12 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
         )
         .await?;
 
+    let guarantees_before = recipient_client
+        .recipient
+        .get_tab_guarantees(tab_id)
+        .await?;
+    let guarantees_before_len = guarantees_before.len();
+
     let base_ts = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
 
     // Issue first guarantee.
@@ -315,9 +321,12 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
         .recipient
         .get_tab_guarantees(tab_id)
         .await?;
-    assert_eq!(guarantees.len(), 2);
-    assert_eq!(guarantees[0].req_id, first_req_id);
-    assert_eq!(guarantees[1].req_id, parsed_second.req_id);
+    assert_eq!(guarantees.len(), guarantees_before_len + 2);
+    assert_eq!(guarantees[guarantees_before_len].req_id, first_req_id);
+    assert_eq!(
+        guarantees[guarantees_before_len + 1].req_id,
+        parsed_second.req_id
+    );
 
     Ok(())
 }

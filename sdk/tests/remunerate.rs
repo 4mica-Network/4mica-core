@@ -1,5 +1,6 @@
 use alloy::hex;
 use rpc::RpcProxy;
+use sdk_4mica::client::recipient::RecipientClient;
 use sdk_4mica::{
     Client, Config, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::RemunerateError,
 };
@@ -7,10 +8,13 @@ use std::time::{Duration, Instant};
 
 use crate::common::{
     ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config,
-    wait_for_collateral_increase,
+    get_chain_timestamp, wait_for_collateral_increase,
 };
 
 mod common;
+
+const REMUNERATION_GRACE_SECS: u64 = 14 * 24 * 60 * 60;
+const OVERDUE_BUFFER_SECS: u64 = 5;
 
 async fn ensure_core_available(tag: &str, config: &Config) -> anyhow::Result<()> {
     let rpc_url = config.rpc_url.as_str();
@@ -47,6 +51,75 @@ async fn wait_for_tab_remunerated(recipient_client: &Client, tab_id: U256) -> an
 
         tokio::time::sleep(poll_interval).await;
     }
+}
+
+async fn resolve_next_req_id(recipient: &RecipientClient, tab_id: U256) -> anyhow::Result<U256> {
+    if let Some(latest) = recipient.get_latest_guarantee(tab_id).await? {
+        return Ok(latest.req_id + U256::from(1u64));
+    }
+
+    Ok(U256::ZERO)
+}
+
+async fn resolve_overdue_timestamp(
+    recipient: &RecipientClient,
+    config: &Config,
+    tab_id: U256,
+) -> anyhow::Result<u64> {
+    let chain_now = get_chain_timestamp(config).await?;
+    let server_now = common::get_now().as_secs();
+    let now = std::cmp::min(chain_now, server_now);
+    let overdue = now.saturating_sub(REMUNERATION_GRACE_SECS + OVERDUE_BUFFER_SECS);
+    if let Some(tab) = recipient.get_tab(tab_id).await?
+        && tab.status == "OPEN"
+        && tab.start_timestamp > 0
+    {
+        return Ok(std::cmp::max(tab.start_timestamp as u64, overdue));
+    }
+
+    Ok(overdue)
+}
+
+async fn ensure_overdue_tab(
+    recipient: &RecipientClient,
+    config: &Config,
+    user_address: &str,
+    recipient_address: &str,
+    ttl_secs: u64,
+) -> anyhow::Result<U256> {
+    let chain_now = get_chain_timestamp(config).await?;
+    let server_now = common::get_now().as_secs();
+    let now = std::cmp::min(chain_now, server_now);
+    let overdue_cutoff = now.saturating_sub(REMUNERATION_GRACE_SECS + OVERDUE_BUFFER_SECS);
+
+    let mut tab_id = recipient
+        .create_tab(
+            user_address.to_string(),
+            recipient_address.to_string(),
+            None,
+            Some(ttl_secs),
+        )
+        .await?;
+
+    if let Some(tab) = recipient.get_tab(tab_id).await?
+        && tab.status == "OPEN"
+        && tab.start_timestamp > 0
+    {
+        let start_ts = tab.start_timestamp as u64;
+        if start_ts > overdue_cutoff {
+            common::close_tab(tab_id).await?;
+            tab_id = recipient
+                .create_tab(
+                    user_address.to_string(),
+                    recipient_address.to_string(),
+                    None,
+                    Some(ttl_secs),
+                )
+                .await?;
+        }
+    }
+
+    Ok(tab_id)
 }
 
 #[tokio::test]
@@ -107,24 +180,27 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     )
     .await?;
 
-    let tab_id = recipient_client
-        .recipient
-        .create_tab(
-            user_address.clone(),
-            recipient_address.clone(),
-            None,
-            Some(3600 * 24 * 21),
-        )
-        .await?;
+    let tab_id = ensure_overdue_tab(
+        &recipient_client.recipient,
+        &recipient_config_clone,
+        &user_address,
+        &recipient_address,
+        3600 * 24 * 21,
+    )
+    .await?;
 
     let guarantee_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
+    let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
+    let start_timestamp =
+        resolve_overdue_timestamp(&recipient_client.recipient, &recipient_config_clone, tab_id)
+            .await?;
     let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
-        req_id: U256::ZERO,
+        req_id,
         amount: guarantee_amount,
-        timestamp: common::get_now().as_secs() - 3600 * 24 * 15,
+        timestamp: start_timestamp,
         asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     // println!("[recipient] claims struct: {:?}", claims);
@@ -154,12 +230,17 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     //     "[recipient] encoded claims bytes=0x{}",
     //     hex::encode(&claims_bytes)
     // );
-    let expected_bytes: Vec<u8> = guarantee.try_into()?;
+    let expected_bytes: Vec<u8> = guarantee.clone().try_into()?;
     // println!(
     //     "[recipient] expected claims bytes=0x{}",
     //     hex::encode(&expected_bytes)
     // );
     assert_eq!(claims_bytes, expected_bytes);
+
+    let status_before = recipient_client
+        .recipient
+        .get_tab_payment_status(tab_id)
+        .await?;
 
     recipient_client
         .recipient
@@ -172,9 +253,10 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     let user_info_after = user_client.user.get_user().await?;
     let eth_asset = common::extract_asset_info(&user_info_after, ETH_ASSET_ADDRESS)
         .expect("ETH asset not found");
+    let remaining = guarantee.total_amount.saturating_sub(status_before.paid);
     assert_eq!(
         eth_asset.collateral,
-        eth_asset_before.collateral + deposit_amount - guarantee_amount
+        eth_asset_before.collateral + deposit_amount - remaining
     );
 
     Ok(())
@@ -226,24 +308,27 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     )
     .await?;
 
-    let tab_id = recipient_client
-        .recipient
-        .create_tab(
-            user_address.clone(),
-            recipient_address.clone(),
-            None,
-            Some(3600 * 24 * 21),
-        )
-        .await?;
+    let tab_id = ensure_overdue_tab(
+        &recipient_client.recipient,
+        &recipient_config_clone,
+        &user_address,
+        &recipient_address,
+        3600 * 24 * 21,
+    )
+    .await?;
 
     let guarantee_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
+    let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
+    let start_timestamp =
+        resolve_overdue_timestamp(&recipient_client.recipient, &recipient_config_clone, tab_id)
+            .await?;
     let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
         tab_id,
-        req_id: U256::ZERO,
+        req_id,
         amount: guarantee_amount,
-        timestamp: common::get_now().as_secs() - 3600 * 24 * 15,
+        timestamp: start_timestamp,
         asset_address: "0x0000000000000000000000000000000000000000".into(),
     };
     println!("[double] claims struct: {:?}", claims);

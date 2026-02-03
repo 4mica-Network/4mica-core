@@ -1,0 +1,41 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: >-
+      ${{
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(vars.PROD_HOSTS_JSON) }}
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
+      - name: Deploy to production
+        env:
+          PROD_USER: ${{ vars.PROD_USER }}
+          PROD_HOST: ${{ matrix.host }}
+        run: |
+          ssh -o StrictHostKeyChecking=no "${PROD_USER}@${PROD_HOST}" << 'EOF'
+          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core
+          git fetch origin main
+          git reset --hard origin/main
+          git submodule update --init --recursive
+          cargo build --release --workspace
+          cargo run -p migration --release -- up
+          systemctl --user restart 4mica
+          EOF

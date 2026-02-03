@@ -1,0 +1,34 @@
+name: Deploy staging
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [develop]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: >-
+      ${{
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+        || github.event_name == 'workflow_dispatch'
+      }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+      - name: Deploy to staging
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
+          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          cd /home/deploy/4mica-core
+          git fetch origin develop
+          git reset --hard origin/develop
+          git submodule update --init --recursive
+          cargo build --release --workspace
+          cargo run -p migration --release -- up
+          systemctl --user restart 4mica
+          EOF
