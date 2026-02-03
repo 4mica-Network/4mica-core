@@ -52,21 +52,23 @@ jobs:
           path.write_text("\n".join(hosts) + "\n", encoding="utf-8")
           PY
 
+          cat <<'EOF' > "${RUNNER_TEMP}/deploy.sh"
+          set -euo pipefail
+
+          if [ ! -d /home/deploy/4mica-core/.git ]; then
+            git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          fi
+
+          cd /home/deploy/4mica-core
+          git fetch origin main
+          git reset --hard origin/main
+          git submodule update --init --recursive
+          cargo build --release --workspace
+          cargo run -p migration --release -- up
+          systemctl --user restart 4mica
+          EOF
+
           while IFS= read -r host; do
             [ -z "${host}" ] && continue
-            ssh -o StrictHostKeyChecking=no "${PROD_USER}@${host}" << 'EOF'
-            set -euo pipefail
-
-            if [ ! -d /home/deploy/4mica-core/.git ]; then
-              git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
-            fi
-
-            cd /home/deploy/4mica-core
-            git fetch origin main
-            git reset --hard origin/main
-            git submodule update --init --recursive
-            cargo build --release --workspace
-            cargo run -p migration --release -- up
-            systemctl --user restart 4mica
-            EOF
+            ssh -o StrictHostKeyChecking=no "${PROD_USER}@${host}" "bash -s" < "${RUNNER_TEMP}/deploy.sh"
           done < "${RUNNER_TEMP}/prod_hosts"
