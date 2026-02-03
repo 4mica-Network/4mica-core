@@ -1,24 +1,26 @@
 name: Deploy production
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
+  push:
     branches: [main]
-  workflow_dispatch:
 
 jobs:
+  validate-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure PROD_HOSTS_JSON is set
+        if: ${{ vars.PROD_HOSTS_JSON == '' }}
+        run: |
+          echo "PROD_HOSTS_JSON is empty. Define it as a JSON array of hosts in repo or environment variables."
+          exit 1
+
   deploy:
-    if: >-
-      ${{
-        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
-        || github.event_name == 'workflow_dispatch'
-      }}
+    needs: validate-config
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        host: ${{ fromJSON(vars.PROD_HOSTS_JSON) }}
+        host: ${{ fromJSON(vars.PROD_HOSTS_JSON || '[]') }}
     steps:
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
