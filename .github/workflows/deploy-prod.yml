@@ -1,12 +1,15 @@
 name: Deploy production
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
