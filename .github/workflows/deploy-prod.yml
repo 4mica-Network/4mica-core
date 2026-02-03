@@ -55,6 +55,14 @@ jobs:
           cat <<'EOF' > "${RUNNER_TEMP}/deploy.sh"
           set -euo pipefail
 
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+
+          if [ -f "${HOME}/.cargo/env" ]; then
+            . "${HOME}/.cargo/env"
+          fi
+
           if [ ! -d /home/deploy/4mica-core/.git ]; then
             git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
           fi
