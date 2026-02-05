@@ -23,9 +23,9 @@ sdk-4mica = "0.5.0"
 
 ## Initialization and Configuration
 
-The SDK requires a signing key and can use sensible defaults for the rest:
+The SDK requires a signer and can use sensible defaults for the rest:
 
-- `wallet_private_key` (**required**): Private key for signing transactions (hex string with or without `0x` prefix)
+- `signer` (**required**): Any `alloy::signers::Signer` (typically `PrivateKeySigner` from a hex private key). On-chain methods require a signer that also implements `TxSigner<Signature>`.
 - `rpc_url` (optional): URL of the 4Mica RPC server. Defaults to `https://api.4mica.xyz/`; override for local development.
 
 The following parameters are **optional** and will be automatically fetched from the server if not provided.
@@ -42,13 +42,14 @@ The following parameters are **optional** and will be automatically fetched from
 #### 1. Using ConfigBuilder
 
 ```rust
-use sdk_4mica::{Config, ConfigBuilder, Client};
+use alloy::signers::local::PrivateKeySigner;
+use sdk_4mica::{ConfigBuilder, Client};
+use std::str::FromStr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = ConfigBuilder::default()
-        .wallet_private_key("your_private_key".to_string())
-        .build()?;
+    let signer = PrivateKeySigner::from_str("your_private_key")?;
+    let config = ConfigBuilder::default().signer(signer).build()?;
 
     let client = Client::new(config).await?;
     Ok(())
@@ -74,8 +75,7 @@ use sdk_4mica::{ConfigBuilder, Client};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = ConfigBuilder::default()
-        .from_env()  // Loads environment variables
+    let config = ConfigBuilder::from_env()? // Loads environment variables
         .build()?;
 
     let client = Client::new(config).await?;
@@ -112,9 +112,11 @@ Version 1 returns payment requirements in the JSON response body:
 - Retry the protected endpoint with `X-PAYMENT`; the resource server will call the facilitator `/verify` and `/settle`.
 
 ```rust
+use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{Client, ConfigBuilder, X402Flow};
 use sdk_4mica::x402::PaymentRequirements;
 use serde::Deserialize;
+use std::str::FromStr;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,9 +128,10 @@ struct ResourceResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let payer_signer = PrivateKeySigner::from_str(&std::env::var("PAYER_KEY")?)?;
     let payer = Client::new(
         ConfigBuilder::default()
-            .wallet_private_key(std::env::var("PAYER_KEY")?)
+            .signer(payer_signer)
             .build()?,
     )
     .await?;
@@ -171,15 +174,18 @@ Version 2 uses the `PAYMENT-REQUIRED` header (base64-encoded) instead of a JSON 
 - Retry the protected endpoint with `PAYMENT-SIGNATURE`; the resource server will call the facilitator `/verify` and `/settle`.
 
 ```rust
+use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{Client, ConfigBuilder, X402Flow};
 use sdk_4mica::x402::{X402PaymentRequiredV2, PaymentRequirementsV2};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use std::str::FromStr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let payer_signer = PrivateKeySigner::from_str(&std::env::var("PAYER_KEY")?)?;
     let payer = Client::new(
         ConfigBuilder::default()
-            .wallet_private_key(std::env::var("PAYER_KEY")?)
+            .signer(payer_signer)
             .build()?,
     )
     .await?;
@@ -225,17 +231,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 If your resource server proxies to the facilitator (the pattern used in `examples/server/mock_paid_api.py`), you can reuse the SDK to settle after verifying:
 
 ```rust
+use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{Client, ConfigBuilder, X402Flow, X402SignedPayment};
 use sdk_4mica::x402::PaymentRequirements;
+use std::str::FromStr;
 
 async fn settle(
     facilitator_url: &str,
     payment_requirements: PaymentRequirements,
     payment: X402SignedPayment,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let resource_signer = PrivateKeySigner::from_str(&std::env::var("RESOURCE_SIGNER_KEY")?)?;
     let core = Client::new(
         ConfigBuilder::default()
-            .wallet_private_key(std::env::var("RESOURCE_SIGNER_KEY")?)
+            .signer(resource_signer)
             .build()?,
     )
     .await?;
@@ -561,20 +570,22 @@ println!("Transaction hash: {:?}", receipt.transaction_hash);
 Here's a complete example showing a payment flow with ETH:
 
 ```rust
+use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
+use std::str::FromStr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup clients (user and recipient each have their own)
-    let user_config = ConfigBuilder::default()
-        .wallet_private_key("user_private_key".to_string())
-        .build()?;
+    let user_signer = PrivateKeySigner::from_str("user_private_key")?;
+    let user_config = ConfigBuilder::default().signer(user_signer).build()?;
     let user_client = Client::new(user_config).await?;
 
+    let recipient_signer = PrivateKeySigner::from_str("recipient_private_key")?;
     let recipient_config = ConfigBuilder::default()
-        .wallet_private_key("recipient_private_key".to_string())
+        .signer(recipient_signer)
         .build()?;
     let recipient_client = Client::new(recipient_config).await?;
 
@@ -628,20 +639,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Here's a complete example showing a payment flow with an ERC20 token:
 
 ```rust
+use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{
     Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
+use std::str::FromStr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup
-    let user_config = ConfigBuilder::default()
-        .wallet_private_key("user_private_key".to_string())
-        .build()?;
+    let user_signer = PrivateKeySigner::from_str("user_private_key")?;
+    let user_config = ConfigBuilder::default().signer(user_signer).build()?;
     let user_client = Client::new(user_config).await?;
 
+    let recipient_signer = PrivateKeySigner::from_str("recipient_private_key")?;
     let recipient_config = ConfigBuilder::default()
-        .wallet_private_key("recipient_private_key".to_string())
+        .signer(recipient_signer)
         .build()?;
     let recipient_client = Client::new(recipient_config).await?;
 
@@ -750,6 +763,7 @@ use sdk_4mica::error::{
 **`ApproveErc20Error`**
 
 - `InvalidParams(String)`: Invalid parameters provided (e.g., invalid token address)
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
@@ -757,6 +771,7 @@ use sdk_4mica::error::{
 
 - `InvalidParams(String)`: Invalid parameters provided (e.g., invalid token address)
 - `AmountZero`: Cannot deposit zero amount
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
@@ -767,6 +782,7 @@ use sdk_4mica::error::{
 - `InvalidParams(String)`: Invalid parameters provided (e.g., invalid token address)
 - `AmountZero`: Cannot withdraw zero amount
 - `InsufficientAvailable`: Not enough available balance to withdraw
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
@@ -774,6 +790,7 @@ use sdk_4mica::error::{
 
 - `InvalidParams(String)`: Invalid parameters provided (e.g., invalid token address)
 - `NoWithdrawalRequested`: No withdrawal request exists to cancel
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
@@ -783,6 +800,7 @@ use sdk_4mica::error::{
 - `NoWithdrawalRequested`: No withdrawal request exists to finalize
 - `GracePeriodNotElapsed`: Grace period has not elapsed yet
 - `TransferFailed`: Transfer of funds failed
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
@@ -797,6 +815,7 @@ use sdk_4mica::error::{
 
 - `InvalidParams(String)`: Invalid parameters provided
 - `InvalidAsset`: Asset does not match the tab asset
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
@@ -854,6 +873,7 @@ use sdk_4mica::error::{
 - `CertificateMismatch`: Certificate signature mismatch before submission
 - `GuaranteeDomainMismatch`: Guarantee domain mismatch
 - `UnsupportedGuaranteeVersion(u64)`: Unsupported guarantee version
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 

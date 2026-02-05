@@ -19,7 +19,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     )
     .await?;
 
-    let user_address = user_config.wallet_private_key.address().to_string();
+    let user_address = user_config.signer.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     // Step 1: User deposits collateral (1 ETH)
@@ -101,7 +101,7 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
     )
     .await?;
 
-    let user_address = user_config.wallet_private_key.address().to_string();
+    let user_address = user_config.signer.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
@@ -155,7 +155,7 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     )
     .await?;
 
-    let user_address = user_config.wallet_private_key.address().to_string();
+    let user_address = user_config.signer.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     // Step 1: User deposits collateral (0.5 ETH)
