@@ -11,11 +11,14 @@ use crate::{
     validators::{validate_address, validate_url},
 };
 use alloy::{
+    network::{EthereumWallet, TxSigner},
     primitives::Address,
     providers::{DynProvider, Provider, ProviderBuilder},
-    signers::local::PrivateKeySigner,
+    signers::{Signature, Signer},
 };
 use rpc::{ApiClientError, CorePublicParameters, RpcProxy};
+use tokio::sync::Mutex;
+use url::Url;
 
 use self::{recipient::RecipientClient, user::UserClient};
 
@@ -23,30 +26,32 @@ pub mod model;
 pub mod recipient;
 pub mod user;
 
-struct Inner {
-    cfg: Config,
+struct Inner<S> {
+    cfg: Config<S>,
     rpc_proxy: RpcProxy,
+    ethereum_http_rpc_url: Url,
     provider: DynProvider,
+    wallet_provider: Mutex<Option<DynProvider>>,
     contract_address: Address,
     operator_public_key: [u8; 48],
     guarantee_domain: [u8; 32],
-    auth_session: Option<AuthSession>,
+    auth_session: Option<AuthSession<S>>,
 }
 
 #[derive(Clone)]
-struct ClientCtx(Arc<Inner>);
+struct ClientCtx<S>(Arc<Inner<S>>);
 
-impl ClientCtx {
-    async fn new(cfg: Config) -> Result<Self, ClientError> {
+impl<S> ClientCtx<S> {
+    async fn new(cfg: Config<S>) -> Result<Self, ClientError>
+    where
+        S: Signer + Sync + Clone,
+    {
         let rpc_proxy = Self::build_rpc_proxy(&cfg)?;
         let auth_session = cfg.auth.as_ref().and_then(|auth_cfg| {
             if cfg.bearer_token.is_some() {
                 None
             } else {
-                Some(AuthSession::new(
-                    auth_cfg.clone(),
-                    cfg.wallet_private_key.clone(),
-                ))
+                Some(AuthSession::new(auth_cfg.clone(), cfg.signer.clone()))
             }
         });
         let public_params = rpc_proxy
@@ -54,7 +59,13 @@ impl ClientCtx {
             .await
             .map_err(|e| ClientError::Rpc(e.to_string()))?;
 
-        let provider = Self::build_provider(&cfg, &public_params).await?;
+        let ethereum_http_rpc_url = match &cfg.ethereum_http_rpc_url {
+            Some(url) => url.clone(),
+            None => validate_url(&public_params.ethereum_http_rpc_url)
+                .map_err(|e| ClientError::Initialization(e.to_string()))?,
+        };
+
+        let provider = Self::build_provider(&public_params, &ethereum_http_rpc_url).await?;
         let operator_public_key = Self::parse_operator_public_key(&public_params.public_key)?;
         let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
@@ -64,7 +75,9 @@ impl ClientCtx {
         Ok(Self(Arc::new(Inner {
             cfg,
             rpc_proxy,
+            ethereum_http_rpc_url,
             provider,
+            wallet_provider: Mutex::new(None),
             contract_address,
             operator_public_key,
             guarantee_domain: on_chain_domain,
@@ -72,7 +85,7 @@ impl ClientCtx {
         })))
     }
 
-    fn build_rpc_proxy(cfg: &Config) -> Result<RpcProxy, ClientError> {
+    fn build_rpc_proxy(cfg: &Config<S>) -> Result<RpcProxy, ClientError> {
         let mut proxy =
             RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))?;
         if let Some(token) = &cfg.bearer_token {
@@ -82,17 +95,10 @@ impl ClientCtx {
     }
 
     async fn build_provider(
-        cfg: &Config,
         public_params: &CorePublicParameters,
+        ethereum_http_rpc_url: &Url,
     ) -> Result<DynProvider, ClientError> {
-        let ethereum_http_rpc_url = match &cfg.ethereum_http_rpc_url {
-            Some(url) => url.clone(),
-            None => validate_url(&public_params.ethereum_http_rpc_url)
-                .map_err(|e| ClientError::Initialization(e.to_string()))?,
-        };
-
         let provider = ProviderBuilder::new()
-            .wallet(cfg.wallet_private_key.clone())
             .connect(ethereum_http_rpc_url.as_ref())
             .await
             .map_err(|e| ClientError::Provider(e.to_string()))?
@@ -127,7 +133,7 @@ impl ClientCtx {
     }
 
     fn resolve_contract_address(
-        cfg: &Config,
+        cfg: &Config<S>,
         public_params: &CorePublicParameters,
     ) -> Result<Address, ClientError> {
         match cfg.contract_address {
@@ -156,15 +162,29 @@ impl ClientCtx {
         Core4Mica::new(self.0.contract_address, self.0.provider.clone())
     }
 
-    fn get_erc20_contract(&self, token_address: Address) -> ERC20Instance<DynProvider> {
-        ERC20::new(token_address, self.0.provider.clone())
+    fn operator_public_key(&self) -> &[u8; 48] {
+        &self.0.operator_public_key
     }
 
-    fn provider(&self) -> &DynProvider {
-        &self.0.provider
+    fn guarantee_domain(&self) -> &[u8; 32] {
+        &self.0.guarantee_domain
     }
 
-    async fn rpc_proxy(&self) -> Result<RpcProxy, ApiClientError> {
+    fn signer(&self) -> &S {
+        &self.0.cfg.signer
+    }
+
+    fn signer_address(&self) -> Address
+    where
+        S: Signer,
+    {
+        self.0.cfg.signer.address()
+    }
+
+    async fn rpc_proxy(&self) -> Result<RpcProxy, ApiClientError>
+    where
+        S: Signer + Sync,
+    {
         let mut proxy = self.0.rpc_proxy.clone();
         if let Some(auth) = &self.0.auth_session {
             let token = auth
@@ -176,19 +196,10 @@ impl ClientCtx {
         Ok(proxy)
     }
 
-    fn signer(&self) -> &PrivateKeySigner {
-        &self.0.cfg.wallet_private_key
-    }
-
-    fn operator_public_key(&self) -> &[u8; 48] {
-        &self.0.operator_public_key
-    }
-
-    fn guarantee_domain(&self) -> &[u8; 32] {
-        &self.0.guarantee_domain
-    }
-
-    async fn login(&self) -> Result<AuthTokens, AuthError> {
+    async fn login(&self) -> Result<AuthTokens, AuthError>
+    where
+        S: Signer + Sync,
+    {
         let session = self
             .0
             .auth_session
@@ -196,17 +207,69 @@ impl ClientCtx {
             .ok_or(AuthError::MissingConfig)?;
         session.login().await
     }
+
+    async fn get_wallet_provider(&self) -> Result<DynProvider, ClientError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let mut wallet_provider = self.0.wallet_provider.lock().await;
+        if let Some(wallet_provider) = wallet_provider.as_ref() {
+            return Ok(wallet_provider.clone());
+        }
+
+        let wallet = EthereumWallet::new(self.0.cfg.signer.clone());
+        let provider = ProviderBuilder::new()
+            .wallet(wallet)
+            .connect(self.0.ethereum_http_rpc_url.as_ref())
+            .await
+            .map_err(|e| ClientError::Provider(e.to_string()))?
+            .erased();
+
+        wallet_provider.replace(provider.clone());
+        Ok(provider.clone())
+    }
+
+    async fn get_write_contract(&self) -> Result<Core4MicaInstance<DynProvider>, ClientError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let provider = self.get_wallet_provider().await?;
+        Ok(Core4Mica::new(self.0.contract_address, provider))
+    }
+
+    async fn get_erc20_write_contract(
+        &self,
+        token_address: Address,
+    ) -> Result<ERC20Instance<DynProvider>, ClientError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let provider = self.get_wallet_provider().await?;
+        Ok(ERC20::new(token_address, provider))
+    }
 }
 
-#[derive(Clone)]
-pub struct Client {
-    ctx: ClientCtx,
-    pub recipient: RecipientClient,
-    pub user: UserClient,
+pub struct Client<S> {
+    ctx: ClientCtx<S>,
+    pub recipient: RecipientClient<S>,
+    pub user: UserClient<S>,
 }
 
-impl Client {
-    pub async fn new(cfg: Config) -> Result<Self, ClientError> {
+impl<S: Clone> Clone for Client<S> {
+    fn clone(&self) -> Self {
+        Self {
+            ctx: self.ctx.clone(),
+            recipient: self.recipient.clone(),
+            user: self.user.clone(),
+        }
+    }
+}
+
+impl<S> Client<S> {
+    pub async fn new(cfg: Config<S>) -> Result<Self, ClientError>
+    where
+        S: Signer + Sync + Clone,
+    {
         let ctx = ClientCtx::new(cfg).await?;
 
         Ok(Self {
@@ -216,7 +279,10 @@ impl Client {
         })
     }
 
-    pub async fn login(&self) -> Result<AuthTokens, AuthError> {
+    pub async fn login(&self) -> Result<AuthTokens, AuthError>
+    where
+        S: Signer + Sync,
+    {
         self.ctx.login().await
     }
 }
