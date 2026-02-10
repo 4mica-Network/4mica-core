@@ -818,6 +818,61 @@ async fn accepts_timestamp_within_tab_window_without_opening_tab() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn rejects_recipient_mismatch_on_guarantee_claims() {
+    load_env();
+    let ctx = match PersistCtx::new().await {
+        Ok(ctx) => ctx,
+        Err(err) => {
+            eprintln!("skipping rejects_recipient_mismatch_on_guarantee_claims: {err}");
+            return;
+        }
+    };
+    let core_service = match build_core_service(ctx.clone()).await {
+        Ok(cs) => cs,
+        Err(err) => {
+            eprintln!("skipping rejects_recipient_mismatch_on_guarantee_claims: {err}");
+            return;
+        }
+    };
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let mut wrong_recipient = format!("0x{:040x}", rand::random::<u128>());
+    while wrong_recipient == recipient_addr {
+        wrong_recipient = format!("0x{:040x}", rand::random::<u128>());
+    }
+    seed_user(&ctx, &user_addr).await;
+    seed_user(&ctx, &recipient_addr).await;
+
+    let tab_id = U256::from(random::<u64>());
+    let start_ts = (Utc::now() - Duration::seconds(300)).naive_utc();
+    let ttl = 600i64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_addr.clone(),
+        recipient_addr.clone(),
+        start_ts,
+        ttl,
+    )
+    .await;
+
+    let claims_ts = (start_ts + Duration::seconds(60)).and_utc().timestamp() as u64;
+    let claims = build_claims(tab_id, user_addr, wrong_recipient, U256::ZERO, claims_ts);
+
+    let err = core_service
+        .verify_guarantee_request_claims_v1(&claims)
+        .await
+        .expect_err("recipient mismatch should be rejected");
+    assert!(matches!(
+        err,
+        core_service::error::ServiceError::InvalidParams(msg)
+            if msg.contains("Recipient address does not match tab")
+    ));
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn rejects_timestamp_outside_tab_window() {
     load_env();
     let ctx = match PersistCtx::new().await {
