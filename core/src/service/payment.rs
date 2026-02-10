@@ -140,6 +140,75 @@ impl CoreService {
             return Ok(());
         };
 
+        let cfg = &self.inner.config.ethereum_config;
+        if let Some(cursor) = repo::get_chain_cursor(&self.inner.persist_ctx, cfg.chain_id).await? {
+            let cursor_block_number = cursor.last_confirmed_block_number as u64;
+            let cursor_block = self
+                .inner
+                .read_provider
+                .get_block_by_number(BlockNumberOrTag::Number(cursor_block_number))
+                .full()
+                .await
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+
+            let mut reorg_detected = false;
+            let current_hash = match cursor_block {
+                Some(block) => format!("{:#x}", block.hash()),
+                None => {
+                    reorg_detected = true;
+                    String::new()
+                }
+            };
+
+            if !reorg_detected
+                && !current_hash.eq_ignore_ascii_case(&cursor.last_confirmed_block_hash)
+            {
+                reorg_detected = true;
+            }
+
+            if reorg_detected {
+                let mut start = cursor_block_number.saturating_sub(cfg.number_of_pending_blocks);
+                let end = safe_head.number;
+                if start > end {
+                    start = end;
+                }
+
+                let reverted = repo::mark_payment_transactions_reverted_in_block_range(
+                    &self.inner.persist_ctx,
+                    start,
+                    end,
+                )
+                .await?;
+
+                warn!(
+                    "Reorg detected at block {} (stored hash {}, current hash {}); reverted {} tx(s) from {} to {}",
+                    cursor_block_number,
+                    cursor.last_confirmed_block_hash,
+                    if current_hash.is_empty() {
+                        "<missing>".to_string()
+                    } else {
+                        current_hash.clone()
+                    },
+                    reverted,
+                    start,
+                    end
+                );
+
+                let latest = self
+                    .inner
+                    .read_provider
+                    .get_block_number()
+                    .await
+                    .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+                let lookback = latest.saturating_sub(start);
+                if lookback > 0
+                    && let Err(err) = self.scan_blockchain(lookback).await
+                {
+                    error!("Failed to rescan payments after reorg: {err}");
+                }
+            }
+        }
+
         let pending =
             repo::get_pending_transactions_upto(&self.inner.persist_ctx, safe_head.number).await?;
 

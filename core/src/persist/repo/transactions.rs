@@ -4,8 +4,8 @@ use alloy::primitives::U256;
 use entities::user_transaction;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set,
-    TransactionTrait,
+    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, IntoActiveModel, QueryFilter,
+    QueryOrder, Set, TransactionTrait,
 };
 use std::str::FromStr;
 
@@ -225,6 +225,45 @@ pub async fn mark_payment_transaction_reverted(
         .exec(ctx.db.as_ref())
         .await?;
     Ok(())
+}
+
+pub async fn mark_payment_transactions_reverted_in_block_range(
+    ctx: &PersistCtx,
+    start_block: u64,
+    end_block: u64,
+) -> Result<u64, PersistDbError> {
+    if start_block > end_block {
+        return Ok(0);
+    }
+
+    let range_condition = Condition::any()
+        .add(
+            user_transaction::Column::BlockNumber
+                .gte(start_block as i64)
+                .and(user_transaction::Column::BlockNumber.lte(end_block as i64)),
+        )
+        .add(
+            user_transaction::Column::RecordTxBlockNumber
+                .gte(start_block as i64)
+                .and(user_transaction::Column::RecordTxBlockNumber.lte(end_block as i64)),
+        );
+
+    let result = user_transaction::Entity::update_many()
+        .filter(user_transaction::Column::Finalized.eq(false))
+        .filter(user_transaction::Column::Status.is_in(["pending", "confirmed", "recorded"]))
+        .filter(range_condition)
+        .col_expr(
+            user_transaction::Column::Status,
+            sea_orm::sea_query::Expr::value("reverted"),
+        )
+        .col_expr(
+            user_transaction::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    Ok(result.rows_affected)
 }
 
 pub async fn delete_unfinalized_payment_transaction(

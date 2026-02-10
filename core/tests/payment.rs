@@ -1,4 +1,5 @@
 use alloy::primitives::{Address, B256, U256};
+use alloy::providers::Provider;
 use blockchain::txtools::PaymentTx;
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS, persist::repo, service::payment::process_discovered_payment,
@@ -10,6 +11,7 @@ use std::str::FromStr;
 #[path = "common/mod.rs"]
 mod common;
 use common::fixtures::{clear_all_tables, ensure_user, init_test_env, random_address};
+use common::setup::setup_e2e_environment;
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
@@ -209,5 +211,57 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
     assert!(tx_row.is_none(), "mismatched asset should be ignored");
 
     clear_all_tables(&ctx).await?;
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn reorg_reverts_pending_transactions() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let scheduler = env.scheduler;
+    drop(scheduler);
+
+    let persist_ctx = core_service.persist_ctx();
+    let chain_id = provider.get_chain_id().await?;
+    let latest = provider.get_block_number().await?;
+    let safe_head = latest.saturating_sub(1);
+
+    repo::upsert_chain_cursor(persist_ctx, chain_id, safe_head, "0xdeadbeef".to_string()).await?;
+
+    let user_address = random_address();
+    repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_address).await?;
+
+    let tx_hash = B256::from(random::<[u8; 32]>());
+    let tx_hash_str = format!("{:#x}", tx_hash);
+    let tab_id = U256::from(777u64);
+
+    repo::submit_pending_payment_transaction(
+        persist_ctx,
+        repo::PendingPaymentInput {
+            user_address,
+            recipient_address: random_address(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            transaction_id: tx_hash_str.clone(),
+            amount: U256::from(10u64),
+            tab_id: format!("{:#x}", tab_id),
+            block_number: safe_head,
+            block_hash: None,
+        },
+    )
+    .await?;
+
+    core_service.confirm_pending_payments().await?;
+
+    let tx_row = user_transaction::Entity::find()
+        .filter(user_transaction::Column::TxId.eq(tx_hash_str))
+        .one(persist_ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+
+    assert_eq!(tx_row.status, "reverted");
+
+    clear_all_tables(persist_ctx).await?;
     Ok(())
 }
