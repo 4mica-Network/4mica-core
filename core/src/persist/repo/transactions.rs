@@ -55,6 +55,111 @@ pub async fn submit_payment_transaction(
     Ok(rows_affected)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub struct PendingPaymentInput {
+    pub user_address: String,
+    pub recipient_address: String,
+    pub asset_address: String,
+    pub transaction_id: String,
+    pub amount: U256,
+    pub block_number: u64,
+    pub block_hash: Option<String>,
+}
+
+pub async fn submit_pending_payment_transaction(
+    ctx: &PersistCtx,
+    pending: PendingPaymentInput,
+) -> Result<u64, PersistDbError> {
+    parse_address(&pending.user_address)?;
+    parse_address(&pending.recipient_address)?;
+    parse_address(&pending.asset_address)?;
+    ensure_user_exists_on(ctx.db.as_ref(), &pending.user_address).await?;
+
+    let tx = user_transaction::ActiveModel {
+        tx_id: Set(pending.transaction_id),
+        user_address: Set(pending.user_address),
+        recipient_address: Set(pending.recipient_address),
+        asset_address: Set(pending.asset_address),
+        amount: Set(pending.amount.to_string()),
+        block_number: Set(Some(pending.block_number as i64)),
+        block_hash: Set(pending.block_hash),
+        status: Set("pending".to_string()),
+        confirmed_at: Set(None),
+        verified: Set(false),
+        finalized: Set(false),
+        failed: Set(false),
+        created_at: Set(now()),
+        updated_at: Set(now()),
+    };
+
+    let rows_affected = user_transaction::Entity::insert(tx)
+        .on_conflict(
+            OnConflict::column(user_transaction::Column::TxId)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(ctx.db.as_ref())
+        .await?;
+
+    Ok(rows_affected)
+}
+
+pub async fn get_pending_transactions_upto(
+    ctx: &PersistCtx,
+    max_block_number: u64,
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
+    let rows = user_transaction::Entity::find()
+        .filter(user_transaction::Column::Status.eq("pending"))
+        .filter(user_transaction::Column::BlockNumber.lte(max_block_number as i64))
+        .order_by_asc(user_transaction::Column::BlockNumber)
+        .all(ctx.db.as_ref())
+        .await?;
+    Ok(rows)
+}
+
+pub async fn mark_payment_transaction_confirmed(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<(), PersistDbError> {
+    user_transaction::Entity::update_many()
+        .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .filter(user_transaction::Column::Status.eq("pending"))
+        .col_expr(
+            user_transaction::Column::Status,
+            sea_orm::sea_query::Expr::value("confirmed"),
+        )
+        .col_expr(
+            user_transaction::Column::ConfirmedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .col_expr(
+            user_transaction::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .exec(ctx.db.as_ref())
+        .await?;
+    Ok(())
+}
+
+pub async fn mark_payment_transaction_reverted(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<(), PersistDbError> {
+    user_transaction::Entity::update_many()
+        .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .col_expr(
+            user_transaction::Column::Status,
+            sea_orm::sea_query::Expr::value("reverted"),
+        )
+        .col_expr(
+            user_transaction::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .exec(ctx.db.as_ref())
+        .await?;
+    Ok(())
+}
+
 pub async fn delete_unfinalized_payment_transaction(
     ctx: &PersistCtx,
     transaction_id: &str,
