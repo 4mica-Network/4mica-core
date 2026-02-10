@@ -18,7 +18,7 @@ async fn sign_payment_respects_payment_requirements() {
             .await
             .expect("fetch resource");
 
-    let flow: X402Flow<MockSigner> = X402Flow::new(MockSigner).expect("flow");
+    let flow: X402Flow<MockSigner> = X402Flow::with_signer(MockSigner).expect("flow");
     let payment = flow
         .sign_payment(payment_requirements.clone(), user_address.to_string())
         .await
@@ -55,7 +55,7 @@ async fn sign_payment_v2_respects_payment_requirements() {
 
     let accepted = payment_required.accepts.first().expect("accepted");
 
-    let flow: X402Flow<MockSigner> = X402Flow::new(MockSigner).expect("flow");
+    let flow: X402Flow<MockSigner> = X402Flow::with_signer(MockSigner).expect("flow");
     let payment = flow
         .sign_payment_v2(
             payment_required.clone(),
@@ -94,7 +94,7 @@ async fn sign_payment_requests_tab_correctly() {
             .await
             .expect("fetch resource");
 
-    let flow: X402Flow<MockSigner> = X402Flow::new(MockSigner).expect("flow");
+    let flow: X402Flow<MockSigner> = X402Flow::with_signer(MockSigner).expect("flow");
     let payment = flow
         .sign_payment(payment_requirements.clone(), user_address.to_string())
         .await
@@ -118,7 +118,7 @@ async fn sign_payment_v2_requests_tab_correctly() {
 
     let accepted = payment_required.accepts.first().expect("accepted");
 
-    let flow: X402Flow<MockSigner> = X402Flow::new(MockSigner).expect("flow");
+    let flow: X402Flow<MockSigner> = X402Flow::with_signer(MockSigner).expect("flow");
     let payment = flow
         .sign_payment_v2(
             payment_required.clone(),
@@ -144,7 +144,7 @@ async fn complete_payment_flow_through_facilitator() {
             .await
             .expect("fetch requirements");
 
-    let flow: X402Flow<MockSigner> = X402Flow::new(MockSigner).expect("flow");
+    let flow: X402Flow<MockSigner> = X402Flow::with_signer(MockSigner).expect("flow");
     let payment = flow
         .sign_payment(payment_requirements.clone(), user_address.to_string())
         .await

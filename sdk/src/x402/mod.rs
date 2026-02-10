@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloy::{primitives::U256, signers::Signer};
+use alloy::primitives::U256;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::{Client as HttpClient, Url};
@@ -25,10 +25,7 @@ pub trait FlowSigner: Send + Sync {
 }
 
 #[async_trait]
-impl<S> FlowSigner for Client<S>
-where
-    S: Signer + Send + Sync,
-{
+impl FlowSigner for Client {
     async fn sign_payment(
         &self,
         claims: PaymentGuaranteeRequestClaimsV1,
@@ -43,18 +40,15 @@ where
 
 /// High-level helper that handles the 402 -> tab -> signed-claim flow for a paid resource.
 #[derive(Clone)]
-pub struct X402Flow<S> {
+pub struct X402Flow<S = Client> {
     http: HttpClient,
     signer: S,
 }
 
-impl<S> X402Flow<S> {
+impl X402Flow<Client> {
     /// Create a flow helper that will default to the local x402 URL.
-    pub fn new(signer: S) -> Result<Self, X402Error> {
-        Ok(Self {
-            http: HttpClient::new(),
-            signer,
-        })
+    pub fn new(core: Client) -> Result<Self, X402Error> {
+        Self::with_signer(core)
     }
 }
 
@@ -62,6 +56,14 @@ impl<S> X402Flow<S>
 where
     S: FlowSigner,
 {
+    /// Create a flow helper with a custom signer.
+    pub fn with_signer(signer: S) -> Result<Self, X402Error> {
+        Ok(Self {
+            http: HttpClient::new(),
+            signer,
+        })
+    }
+
     /// Build a signed payment envelope for the given payment requirements, for x402 version 1.
     pub async fn sign_payment(
         &self,

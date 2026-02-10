@@ -5,8 +5,8 @@
 <h1 align="center">4Mica</h1>
 
 <p align="center">
-  <a href="https://github.com/4mica-Network/4mica-core/actions/workflows/deploy-prod.yml">
-    <img src="https://github.com/4mica-Network/4mica-core/actions/workflows/deploy-prod.yml/badge.svg" alt="CD Status"/>
+  <a href="https://github.com/4mica-Network/4mica-core/actions/workflows/deploy.yml">
+    <img src="https://github.com/4mica-Network/4mica-core/actions/workflows/deploy.yml/badge.svg" alt="CD Status"/>
   </a>
   <a href="https://crates.io/crates/sdk-4mica">
     <img src="https://img.shields.io/crates/v/sdk-4mica.svg" alt="Rust SDK on crates.io"/>

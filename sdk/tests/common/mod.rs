@@ -28,7 +28,7 @@ pub fn get_now() -> Duration {
         .unwrap()
 }
 
-pub async fn get_chain_timestamp<S>(config: &Config<S>) -> anyhow::Result<u64> {
+pub async fn get_chain_timestamp(config: &Config) -> anyhow::Result<u64> {
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
     if let Some(token) = &config.bearer_token {
         rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
@@ -70,8 +70,8 @@ pub fn extract_asset_info(assets: &[UserInfo], asset_address: Address) -> Option
         .find(|info| info.asset == asset_address.to_string())
 }
 
-pub async fn wait_for_collateral_increase<S: Signer + Sync>(
-    recipient_client: &RecipientClient<S>,
+pub async fn wait_for_collateral_increase(
+    recipient_client: &RecipientClient,
     user_address: &str,
     asset_address: Address,
     starting_total: U256,
@@ -206,20 +206,17 @@ async fn build_authed_config(
     private_key: &str,
     role: &str,
     scopes: &[String],
-) -> anyhow::Result<Config<PrivateKeySigner>> {
+) -> anyhow::Result<Config> {
     let access_token = login_with_siwe(base_url, private_key, role, scopes).await?;
     let config = ConfigBuilder::default()
         .rpc_url(base_url.to_string())
-        .signer(PrivateKeySigner::from_str(private_key)?)
+        .wallet_private_key(private_key.to_string())
         .bearer_token(access_token)
         .build()?;
     Ok(config)
 }
 
-pub async fn build_authed_user_config(
-    base_url: &str,
-    private_key: &str,
-) -> anyhow::Result<Config<PrivateKeySigner>> {
+pub async fn build_authed_user_config(base_url: &str, private_key: &str) -> anyhow::Result<Config> {
     let scopes = vec![SCOPE_TAB_READ.to_string()];
     build_authed_config(base_url, private_key, ROLE_USER, &scopes).await
 }
@@ -227,7 +224,7 @@ pub async fn build_authed_user_config(
 pub async fn build_authed_recipient_config(
     base_url: &str,
     private_key: &str,
-) -> anyhow::Result<Config<PrivateKeySigner>> {
+) -> anyhow::Result<Config> {
     let scopes = vec![
         SCOPE_TAB_CREATE.to_string(),
         SCOPE_TAB_READ.to_string(),

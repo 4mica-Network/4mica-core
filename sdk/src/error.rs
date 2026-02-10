@@ -130,9 +130,6 @@ pub enum RemunerateError {
     #[error("unsupported guarantee version: {0}")]
     UnsupportedGuaranteeVersion(u64),
 
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
@@ -150,9 +147,6 @@ pub enum FinalizeWithdrawalError {
     #[error("transfer failed")]
     TransferFailed,
 
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
@@ -168,9 +162,6 @@ pub enum RequestWithdrawalError {
     #[error("insufficient available")]
     InsufficientAvailable,
 
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
@@ -183,9 +174,6 @@ pub enum CancelWithdrawalError {
     InvalidParams(String),
     #[error("no withdrawal requested")]
     NoWithdrawalRequested,
-
-    #[error(transparent)]
-    Client(#[from] ClientError),
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
@@ -200,9 +188,6 @@ pub enum DepositError {
     #[error("amount is zero")]
     AmountZero,
 
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
@@ -213,9 +198,6 @@ pub enum DepositError {
 pub enum ApproveErc20Error {
     #[error("invalid params: {0}")]
     InvalidParams(String),
-
-    #[error(transparent)]
-    Client(#[from] ClientError),
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
@@ -229,9 +211,6 @@ pub enum PayTabError {
     InvalidParams(String),
     #[error("invalid asset")]
     InvalidAsset,
-
-    #[error(transparent)]
-    Client(#[from] ClientError),
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
