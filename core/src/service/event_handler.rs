@@ -103,14 +103,13 @@ impl EthereumEventHandler for CoreService {
             ..
         } = *log.log_decode()?.data();
         info!(
-            "PaymentRecorded: tab={}, amount={}",
+            "PaymentRecorded: tab={}, amount={}, asset={}",
             crate::util::u256_to_string(tab_id),
-            amount
+            amount,
+            asset
         );
 
-        repo::unlock_user_collateral(&self.inner.persist_ctx, tab_id, asset.to_string(), amount)
-            .await?;
-
+        // Unlocking collateral is handled after record-payment finalization.
         Ok(())
     }
 

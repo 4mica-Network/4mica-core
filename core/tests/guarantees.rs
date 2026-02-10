@@ -4,13 +4,13 @@ use std::{
     sync::{Arc, Once},
 };
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};
 use core_service::{
     config::{AppConfig, DEFAULT_ASSET_ADDRESS},
     error::PersistDbError,
-    ethereum::CoreContractApi,
+    ethereum::{CoreContractApi, RecordPaymentTx},
     persist::*,
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -1204,7 +1204,11 @@ impl CoreContractApi for MockContractApi {
         _tab_id: U256,
         _asset: alloy::primitives::Address,
         _amount: U256,
-    ) -> Result<(), core_service::error::CoreContractApiError> {
-        Ok(())
+    ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
+        Ok(RecordPaymentTx {
+            tx_hash: B256::ZERO,
+            block_number: None,
+            block_hash: None,
+        })
     }
 }

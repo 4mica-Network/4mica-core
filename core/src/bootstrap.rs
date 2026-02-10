@@ -6,7 +6,7 @@ use core_service::{
     scheduler::TaskScheduler,
     service::{
         CoreService,
-        payment::{ConfirmPaymentsTask, ScanPaymentsTask},
+        payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask},
     },
 };
 use env_logger::Env;
@@ -49,6 +49,9 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         .await?;
     scheduler
         .add_task(Arc::new(ConfirmPaymentsTask::new(service.clone())))
+        .await?;
+    scheduler
+        .add_task(Arc::new(FinalizePaymentsTask::new(service.clone())))
         .await?;
     scheduler.start().await?;
 

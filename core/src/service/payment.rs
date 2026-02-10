@@ -250,20 +250,177 @@ impl CoreService {
                 ServiceError::InvalidParams(format!("invalid amount {}: {e}", tx.amount))
             })?;
 
-            if let Err(err) = self
+            let record_tx = match self
                 .inner
                 .contract_api
                 .record_payment(tab_id, asset_address, amount)
                 .await
             {
+                Ok(tx) => tx,
+                Err(err) => {
+                    error!(
+                        "record_payment failed for tx {} (tab {}): {err}",
+                        tx.tx_id, tab_id
+                    );
+                    continue;
+                }
+            };
+
+            let record_hash = format!("{:#x}", record_tx.tx_hash);
+            let record_block_hash = record_tx.block_hash.map(|hash| format!("{:#x}", hash));
+
+            repo::mark_payment_transaction_recorded(
+                &self.inner.persist_ctx,
+                &tx.tx_id,
+                record_hash,
+                record_tx.block_number,
+                record_block_hash,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn finalize_recorded_payments(&self) -> ServiceResult<()> {
+        let Some(safe_head) = self.safe_head().await? else {
+            warn!("Safe head unavailable; skipping recorded payment finalization");
+            return Ok(());
+        };
+
+        let recorded =
+            repo::get_recorded_transactions_upto(&self.inner.persist_ctx, safe_head).await?;
+
+        for tx in recorded {
+            let record_tx_hash = match tx.record_tx_hash.as_deref() {
+                Some(hash) => hash,
+                None => {
+                    warn!(
+                        "Recorded tx {} missing record_tx_hash; marking reverted",
+                        tx.tx_id
+                    );
+                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                        .await?;
+                    continue;
+                }
+            };
+
+            let tx_hash = match B256::from_str(record_tx_hash) {
+                Ok(hash) => hash,
+                Err(err) => {
+                    warn!(
+                        "Invalid record_tx_hash {} (err: {err}); marking reverted",
+                        record_tx_hash
+                    );
+                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                        .await?;
+                    continue;
+                }
+            };
+
+            let record_block_number = match tx.record_tx_block_number {
+                Some(num) => num as u64,
+                None => {
+                    warn!(
+                        "Recorded tx {} missing record_tx_block_number; marking reverted",
+                        tx.tx_id
+                    );
+                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                        .await?;
+                    continue;
+                }
+            };
+
+            let receipt = self
+                .inner
+                .read_provider
+                .get_transaction_receipt(tx_hash)
+                .await
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+
+            let Some(receipt) = receipt else {
+                warn!(
+                    "Receipt missing for record tx {}; marking reverted",
+                    record_tx_hash
+                );
+                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                continue;
+            };
+
+            if receipt.block_number != Some(record_block_number) {
+                warn!(
+                    "Record receipt block mismatch for tx {} (expected {}, got {:?}); marking reverted",
+                    record_tx_hash, record_block_number, receipt.block_number
+                );
+                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                continue;
+            }
+
+            if let Some(expected_hash) = tx.record_tx_block_hash.as_deref()
+                && let Some(receipt_hash) = receipt.block_hash
+            {
+                let actual_hash = format!("{:#x}", receipt_hash);
+                if !actual_hash.eq_ignore_ascii_case(expected_hash) {
+                    warn!(
+                        "Record receipt hash mismatch for tx {} (expected {}, got {}); marking reverted",
+                        record_tx_hash, expected_hash, actual_hash
+                    );
+                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                        .await?;
+                    continue;
+                }
+            }
+
+            let tab_id = match tx.tab_id.as_deref() {
+                Some(id) => match U256::from_str(id) {
+                    Ok(parsed) => parsed,
+                    Err(err) => {
+                        warn!(
+                            "Invalid tab_id {} for tx {} (err: {err}); marking reverted",
+                            id, tx.tx_id
+                        );
+                        repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                            .await?;
+                        continue;
+                    }
+                },
+                None => {
+                    warn!("Recorded tx {} missing tab_id; marking reverted", tx.tx_id);
+                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                        .await?;
+                    continue;
+                }
+            };
+
+            let amount = match U256::from_str(&tx.amount) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!(
+                        "Invalid amount {} for tx {} (err: {err}); marking reverted",
+                        tx.amount, tx.tx_id
+                    );
+                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                        .await?;
+                    continue;
+                }
+            };
+
+            if let Err(err) = repo::unlock_user_collateral(
+                &self.inner.persist_ctx,
+                tab_id,
+                tx.asset_address.clone(),
+                amount,
+            )
+            .await
+            {
                 error!(
-                    "record_payment failed for tx {} (tab {}): {err}",
+                    "Failed to unlock collateral for tx {} (tab {}): {err}",
                     tx.tx_id, tab_id
                 );
                 continue;
             }
 
-            repo::mark_payment_transaction_confirmed(&self.inner.persist_ctx, &tx.tx_id).await?;
+            repo::mark_payment_transaction_finalized(&self.inner.persist_ctx, &tx.tx_id).await?;
         }
 
         Ok(())
@@ -324,6 +481,7 @@ impl CoreService {
 
 pub struct ScanPaymentsTask(CoreService);
 pub struct ConfirmPaymentsTask(CoreService);
+pub struct FinalizePaymentsTask(CoreService);
 
 impl ScanPaymentsTask {
     pub fn new(service: CoreService) -> Self {
@@ -336,6 +494,16 @@ impl ScanPaymentsTask {
 }
 
 impl ConfirmPaymentsTask {
+    pub fn new(service: CoreService) -> Self {
+        Self(service)
+    }
+
+    fn ethereum_config(&self) -> &EthereumConfig {
+        &self.0.inner.config.ethereum_config
+    }
+}
+
+impl FinalizePaymentsTask {
     pub fn new(service: CoreService) -> Self {
         Self(service)
     }
@@ -366,6 +534,20 @@ impl Task for ConfirmPaymentsTask {
     async fn run(&self) -> anyhow::Result<()> {
         self.0
             .confirm_pending_payments()
+            .await
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[async_trait]
+impl Task for FinalizePaymentsTask {
+    fn cron_pattern(&self) -> String {
+        self.ethereum_config().cron_job_settings.clone()
+    }
+
+    async fn run(&self) -> anyhow::Result<()> {
+        self.0
+            .finalize_recorded_payments()
             .await
             .map_err(anyhow::Error::from)
     }

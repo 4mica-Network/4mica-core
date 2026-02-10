@@ -35,6 +35,10 @@ pub async fn submit_payment_transaction(
         tab_id: Set(None),
         block_number: Set(None),
         block_hash: Set(None),
+        record_tx_hash: Set(None),
+        record_tx_block_number: Set(None),
+        record_tx_block_hash: Set(None),
+        recorded_at: Set(None),
         status: Set("confirmed".to_string()),
         confirmed_at: Set(None),
         verified: Set(false),
@@ -86,6 +90,10 @@ pub async fn submit_pending_payment_transaction(
         tab_id: Set(Some(pending.tab_id)),
         block_number: Set(Some(pending.block_number as i64)),
         block_hash: Set(pending.block_hash),
+        record_tx_hash: Set(None),
+        record_tx_block_number: Set(None),
+        record_tx_block_hash: Set(None),
+        recorded_at: Set(None),
         status: Set("pending".to_string()),
         confirmed_at: Set(None),
         verified: Set(false),
@@ -112,9 +120,22 @@ pub async fn get_pending_transactions_upto(
     max_block_number: u64,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let rows = user_transaction::Entity::find()
-        .filter(user_transaction::Column::Status.eq("pending"))
+        .filter(user_transaction::Column::Status.is_in(["pending", "confirmed"]))
         .filter(user_transaction::Column::BlockNumber.lte(max_block_number as i64))
         .order_by_asc(user_transaction::Column::BlockNumber)
+        .all(ctx.db.as_ref())
+        .await?;
+    Ok(rows)
+}
+
+pub async fn get_recorded_transactions_upto(
+    ctx: &PersistCtx,
+    max_block_number: u64,
+) -> Result<Vec<user_transaction::Model>, PersistDbError> {
+    let rows = user_transaction::Entity::find()
+        .filter(user_transaction::Column::Status.eq("recorded"))
+        .filter(user_transaction::Column::RecordTxBlockNumber.lte(max_block_number as i64))
+        .order_by_asc(user_transaction::Column::RecordTxBlockNumber)
         .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
@@ -126,10 +147,53 @@ pub async fn mark_payment_transaction_confirmed(
 ) -> Result<(), PersistDbError> {
     user_transaction::Entity::update_many()
         .filter(user_transaction::Column::TxId.eq(transaction_id))
-        .filter(user_transaction::Column::Status.eq("pending"))
+        .filter(user_transaction::Column::Status.is_in(["pending", "confirmed"]))
         .col_expr(
             user_transaction::Column::Status,
             sea_orm::sea_query::Expr::value("confirmed"),
+        )
+        .col_expr(
+            user_transaction::Column::ConfirmedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .col_expr(
+            user_transaction::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .exec(ctx.db.as_ref())
+        .await?;
+    Ok(())
+}
+
+pub async fn mark_payment_transaction_recorded(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+    record_tx_hash: String,
+    record_tx_block_number: Option<u64>,
+    record_tx_block_hash: Option<String>,
+) -> Result<(), PersistDbError> {
+    user_transaction::Entity::update_many()
+        .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .filter(user_transaction::Column::Status.eq("pending"))
+        .col_expr(
+            user_transaction::Column::Status,
+            sea_orm::sea_query::Expr::value("recorded"),
+        )
+        .col_expr(
+            user_transaction::Column::RecordTxHash,
+            sea_orm::sea_query::Expr::value(record_tx_hash),
+        )
+        .col_expr(
+            user_transaction::Column::RecordTxBlockNumber,
+            sea_orm::sea_query::Expr::value(record_tx_block_number.map(|n| n as i64)),
+        )
+        .col_expr(
+            user_transaction::Column::RecordTxBlockHash,
+            sea_orm::sea_query::Expr::value(record_tx_block_hash),
+        )
+        .col_expr(
+            user_transaction::Column::RecordedAt,
+            sea_orm::sea_query::Expr::value(now()),
         )
         .col_expr(
             user_transaction::Column::ConfirmedAt,
@@ -190,6 +254,10 @@ pub async fn mark_payment_transaction_finalized(
         .col_expr(
             user_transaction::Column::Verified,
             sea_orm::sea_query::Expr::value(true),
+        )
+        .col_expr(
+            user_transaction::Column::Status,
+            sea_orm::sea_query::Expr::value("finalized"),
         )
         .col_expr(
             user_transaction::Column::UpdatedAt,

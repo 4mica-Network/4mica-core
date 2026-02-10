@@ -1,4 +1,4 @@
-use alloy::primitives::U256;
+use alloy::primitives::{B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};
 use core_service::{
@@ -7,7 +7,7 @@ use core_service::{
         constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
     },
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
-    ethereum::CoreContractApi,
+    ethereum::{CoreContractApi, RecordPaymentTx},
     persist::{PersistCtx, repo},
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -408,7 +408,11 @@ impl CoreContractApi for MockContractApi {
         _tab_id: U256,
         _asset: alloy::primitives::Address,
         _amount: U256,
-    ) -> Result<(), core_service::error::CoreContractApiError> {
-        Ok(())
+    ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
+        Ok(RecordPaymentTx {
+            tx_hash: B256::ZERO,
+            block_number: None,
+            block_hash: None,
+        })
     }
 }
