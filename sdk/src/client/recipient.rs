@@ -1,4 +1,9 @@
-use alloy::{primitives::U256, rpc::types::TransactionReceipt};
+use alloy::{
+    network::TxSigner,
+    primitives::U256,
+    rpc::types::TransactionReceipt,
+    signers::{Signature, Signer},
+};
 use crypto::bls::BLSCert;
 use rpc::{
     CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
@@ -18,12 +23,12 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct RecipientClient {
-    ctx: ClientCtx,
+pub struct RecipientClient<S> {
+    ctx: ClientCtx<S>,
 }
 
-impl RecipientClient {
-    pub(super) fn new(ctx: ClientCtx) -> Self {
+impl<S> RecipientClient<S> {
+    pub(super) fn new(ctx: ClientCtx<S>) -> Self {
         Self { ctx }
     }
 
@@ -45,7 +50,10 @@ impl RecipientClient {
         recipient_address: String,
         erc20_token: Option<String>,
         ttl: Option<u64>,
-    ) -> Result<U256, CreateTabError> {
+    ) -> Result<U256, CreateTabError>
+    where
+        S: Signer + Sync,
+    {
         let result = self
             .ctx
             .rpc_proxy()
@@ -84,7 +92,10 @@ impl RecipientClient {
         claims: PaymentGuaranteeRequestClaimsV1,
         signature: String,
         scheme: SigningScheme,
-    ) -> Result<BLSCert, IssuePaymentGuaranteeError> {
+    ) -> Result<BLSCert, IssuePaymentGuaranteeError>
+    where
+        S: Signer + Sync,
+    {
         let cert = self
             .ctx
             .rpc_proxy()
@@ -121,7 +132,10 @@ impl RecipientClient {
         Ok(claims)
     }
 
-    pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError> {
+    pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
         self.verify_payment_guarantee(&cert)
             .map_err(|err| match err {
                 VerifyGuaranteeError::InvalidCertificate(source) => {
@@ -146,7 +160,8 @@ impl RecipientClient {
 
         // Static call first to surface a revert without submitting a transaction
         self.ctx
-            .get_contract()
+            .get_write_contract()
+            .await?
             .remunerate(claims_bytes.clone().into(), sig_words.into())
             .call()
             .await
@@ -154,7 +169,8 @@ impl RecipientClient {
 
         let send_result = self
             .ctx
-            .get_contract()
+            .get_write_contract()
+            .await?
             .remunerate(claims_bytes.into(), sig_words.into())
             .send()
             .await
@@ -169,8 +185,11 @@ impl RecipientClient {
         Ok(receipt)
     }
 
-    pub async fn list_settled_tabs(&self) -> Result<Vec<TabInfo>, RecipientQueryError> {
-        let address = self.ctx.signer().address().to_string();
+    pub async fn list_settled_tabs(&self) -> Result<Vec<TabInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
+        let address = self.ctx.signer_address().to_string();
         let tabs = self
             .ctx
             .rpc_proxy()
@@ -185,8 +204,11 @@ impl RecipientClient {
 
     pub async fn list_pending_remunerations(
         &self,
-    ) -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError> {
-        let address = self.ctx.signer().address().to_string();
+    ) -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
+        let address = self.ctx.signer_address().to_string();
         let items = self
             .ctx
             .rpc_proxy()
@@ -199,7 +221,10 @@ impl RecipientClient {
         Ok(items)
     }
 
-    pub async fn get_tab(&self, tab_id: U256) -> Result<Option<TabInfo>, RecipientQueryError> {
+    pub async fn get_tab(&self, tab_id: U256) -> Result<Option<TabInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
         let result = self.ctx.rpc_proxy().await?.get_tab(tab_id).await?;
         Ok(result.map(Into::into))
     }
@@ -207,8 +232,11 @@ impl RecipientClient {
     pub async fn list_recipient_tabs(
         &self,
         settlement_statuses: Option<Vec<String>>,
-    ) -> Result<Vec<TabInfo>, RecipientQueryError> {
-        let address = self.ctx.signer().address().to_string();
+    ) -> Result<Vec<TabInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
+        let address = self.ctx.signer_address().to_string();
         let tabs = self
             .ctx
             .rpc_proxy()
@@ -224,7 +252,10 @@ impl RecipientClient {
     pub async fn get_tab_guarantees(
         &self,
         tab_id: U256,
-    ) -> Result<Vec<GuaranteeInfo>, RecipientQueryError> {
+    ) -> Result<Vec<GuaranteeInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
         let guarantees = self
             .ctx
             .rpc_proxy()
@@ -240,7 +271,10 @@ impl RecipientClient {
     pub async fn get_latest_guarantee(
         &self,
         tab_id: U256,
-    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError> {
+    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
         let result = self
             .ctx
             .rpc_proxy()
@@ -255,7 +289,10 @@ impl RecipientClient {
         &self,
         tab_id: U256,
         req_id: U256,
-    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError> {
+    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
         let result = self
             .ctx
             .rpc_proxy()
@@ -268,8 +305,11 @@ impl RecipientClient {
 
     pub async fn list_recipient_payments(
         &self,
-    ) -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError> {
-        let address = self.ctx.signer().address().to_string();
+    ) -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
+        let address = self.ctx.signer_address().to_string();
         let payments = self
             .ctx
             .rpc_proxy()
@@ -285,7 +325,10 @@ impl RecipientClient {
     pub async fn get_collateral_events_for_tab(
         &self,
         tab_id: U256,
-    ) -> Result<Vec<CollateralEventInfo>, RecipientQueryError> {
+    ) -> Result<Vec<CollateralEventInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
         let events = self
             .ctx
             .rpc_proxy()
@@ -302,7 +345,10 @@ impl RecipientClient {
         &self,
         user_address: String,
         asset_address: String,
-    ) -> Result<Option<AssetBalanceInfo>, RecipientQueryError> {
+    ) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>
+    where
+        S: Signer + Sync,
+    {
         let balance = self
             .ctx
             .rpc_proxy()
