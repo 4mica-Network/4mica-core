@@ -141,6 +141,9 @@ impl CoreService {
         };
 
         let cfg = &self.inner.config.ethereum_config;
+        let mut reverted_count = 0u64;
+        let mut recorded_count = 0u64;
+        let mut record_failed_count = 0u64;
         if let Some(cursor) = repo::get_chain_cursor(&self.inner.persist_ctx, cfg.chain_id).await? {
             let cursor_block_number = cursor.last_confirmed_block_number as u64;
             let cursor_block = self
@@ -179,6 +182,7 @@ impl CoreService {
                     end,
                 )
                 .await?;
+                reverted_count += reverted;
 
                 warn!(
                     "Reorg detected at block {} (stored hash {}, current hash {}); reverted {} tx(s) from {} to {}",
@@ -212,6 +216,7 @@ impl CoreService {
         let pending =
             repo::get_pending_transactions_upto(&self.inner.persist_ctx, safe_head.number).await?;
 
+        let pending_total = pending.len() as u64;
         for tx in pending {
             let tx_hash = match B256::from_str(&tx.tx_id) {
                 Ok(hash) => hash,
@@ -222,6 +227,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             };
@@ -235,6 +241,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             };
@@ -253,6 +260,7 @@ impl CoreService {
                     block_number, tx.tx_id
                 );
                 repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                reverted_count += 1;
                 continue;
             };
 
@@ -265,6 +273,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             }
@@ -279,6 +288,7 @@ impl CoreService {
             let Some(receipt) = receipt else {
                 warn!("Receipt missing for tx {}; marking reverted", tx.tx_id);
                 repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                reverted_count += 1;
                 continue;
             };
 
@@ -288,6 +298,7 @@ impl CoreService {
                     tx.tx_id, block_number, receipt.block_number
                 );
                 repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                reverted_count += 1;
                 continue;
             }
 
@@ -302,6 +313,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             }
@@ -309,6 +321,7 @@ impl CoreService {
             let Some(tab_id) = tx.tab_id.as_deref() else {
                 warn!("Pending tx {} missing tab_id; marking reverted", tx.tx_id);
                 repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                reverted_count += 1;
                 continue;
             };
             let tab_id = U256::from_str(tab_id).map_err(|e| {
@@ -336,6 +349,7 @@ impl CoreService {
                         "record_payment failed for tx {} (tab {}): {err}",
                         tx.tx_id, tab_id
                     );
+                    record_failed_count += 1;
                     continue;
                 }
             };
@@ -351,6 +365,7 @@ impl CoreService {
                 record_block_hash,
             )
             .await?;
+            recorded_count += 1;
         }
 
         repo::upsert_chain_cursor(
@@ -360,6 +375,11 @@ impl CoreService {
             format!("{:#x}", safe_head.hash),
         )
         .await?;
+
+        info!(
+            "Confirmed pending payments: safe_head={} pending={} recorded={} reverted={} record_failed={}",
+            safe_head.number, pending_total, recorded_count, reverted_count, record_failed_count
+        );
 
         Ok(())
     }
@@ -373,6 +393,11 @@ impl CoreService {
         let recorded =
             repo::get_recorded_transactions_upto(&self.inner.persist_ctx, safe_head.number).await?;
 
+        let recorded_total = recorded.len() as u64;
+        let mut finalized_count = 0u64;
+        let mut reverted_count = 0u64;
+        let mut unlock_failed = 0u64;
+
         for tx in recorded {
             let record_tx_hash = match tx.record_tx_hash.as_deref() {
                 Some(hash) => hash,
@@ -383,6 +408,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             };
@@ -396,6 +422,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             };
@@ -409,6 +436,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             };
@@ -426,6 +454,7 @@ impl CoreService {
                     record_tx_hash
                 );
                 repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                reverted_count += 1;
                 continue;
             };
 
@@ -435,6 +464,7 @@ impl CoreService {
                     record_tx_hash, record_block_number, receipt.block_number
                 );
                 repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                reverted_count += 1;
                 continue;
             }
 
@@ -449,6 +479,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             }
@@ -463,6 +494,7 @@ impl CoreService {
                         );
                         repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                             .await?;
+                        reverted_count += 1;
                         continue;
                     }
                 },
@@ -470,6 +502,7 @@ impl CoreService {
                     warn!("Recorded tx {} missing tab_id; marking reverted", tx.tx_id);
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             };
@@ -483,6 +516,7 @@ impl CoreService {
                     );
                     repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
                         .await?;
+                    reverted_count += 1;
                     continue;
                 }
             };
@@ -499,11 +533,18 @@ impl CoreService {
                     "Failed to unlock collateral for tx {} (tab {}): {err}",
                     tx.tx_id, tab_id
                 );
+                unlock_failed += 1;
                 continue;
             }
 
             repo::mark_payment_transaction_finalized(&self.inner.persist_ctx, &tx.tx_id).await?;
+            finalized_count += 1;
         }
+
+        info!(
+            "Finalized recorded payments: safe_head={} recorded={} finalized={} reverted={} unlock_failed={}",
+            safe_head.number, recorded_total, finalized_count, reverted_count, unlock_failed
+        );
 
         Ok(())
     }
