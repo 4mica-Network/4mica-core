@@ -208,7 +208,7 @@ async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
     .await
     .expect_err("expected optimistic lock conflict");
     match err {
-        PersistDbError::OptimisticLockConflict { .. } => { /* expected */ }
+        PersistDbError::UserBalanceLockConflict { .. } => { /* expected */ }
         other => panic!("unexpected error: {other:?}"),
     }
 
@@ -426,6 +426,8 @@ async fn make_tab(
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set(total_amount.to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),
     };

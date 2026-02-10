@@ -103,9 +103,10 @@ impl From<ServiceError> for ApiError {
         match err {
             ServiceError::InvalidParams(msg) => ApiError::new(StatusCode::BAD_REQUEST, msg),
             ServiceError::NotFound(msg) => ApiError::new(StatusCode::NOT_FOUND, msg),
-            ServiceError::OptimisticLockConflict => {
-                ApiError::new(StatusCode::CONFLICT, "optimistic lock conflict")
-            }
+            ServiceError::OptimisticLockConflict => ApiError::new(
+                StatusCode::CONFLICT,
+                "detected data race between concurrent requests",
+            ),
             ServiceError::UserNotRegistered => {
                 ApiError::new(StatusCode::BAD_REQUEST, "user not registered")
             }
@@ -118,6 +119,10 @@ impl From<ServiceError> for ApiError {
             ServiceError::InvalidRequestID => {
                 ApiError::new(StatusCode::BAD_REQUEST, "req_id not valid")
             }
+            ServiceError::DuplicateGuarantee { req_id } => ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("another guarantee with req_id {req_id} already exists"),
+            ),
             ServiceError::ModifiedStartTs => {
                 ApiError::new(StatusCode::BAD_REQUEST, "start timestamp modified")
             }

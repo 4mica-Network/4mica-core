@@ -20,7 +20,7 @@ use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::{guarantee, user};
 use rand::random;
 use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 use test_log::test;
 
 mod common;
@@ -61,6 +61,8 @@ async fn insert_test_tab(
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -186,6 +188,8 @@ async fn insert_tab_with_status(ctx: &PersistCtx, spec: TestTabSpec) {
         settlement_status: Set(spec.settlement_status),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -339,6 +343,8 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -428,6 +434,8 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(123),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -447,7 +455,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
 
 #[test(tokio::test)]
 #[serial_test::serial]
-async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
+async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
     let now = Utc::now().naive_utc();
@@ -471,7 +479,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     // Insert two guarantees with different req_ids
     let g1 = GuaranteeData {
         tab_id,
-        req_id: U256::from(0xf),
+        req_id: U256::from(0x12),
         from: user_addr.clone(),
         to: random_eth_address(),
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -493,7 +501,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
     };
     repo::store_guarantee_on(ctx.db.as_ref(), g2).await?;
 
-    // The function should return the row with req_id = 0xB
+    // The function should return the row with req_id 0x10 because it was created later
     let last = repo::get_last_guarantee_for_tab(&ctx, tab_id).await?;
     assert!(last.is_some());
     let last = last.unwrap();
@@ -505,7 +513,7 @@ async fn get_last_guarantee_for_tab_orders_by_req_id() -> anyhow::Result<()> {
 
 #[test(tokio::test)]
 #[serial_test::serial]
-async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
+async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
 
@@ -531,27 +539,33 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     // build a minimal PaymentGuaranteeClaims and dummy cert
-    let promise = PaymentGuaranteeClaims::from_request(
-        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            tab_id,
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            req_id: U256::ZERO,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-            amount: U256::from(40u64),
-            timestamp: Utc::now().timestamp() as u64,
-        }),
-        domain,
-        U256::from(40u64),
-    );
+    let claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id: U256::ZERO,
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(40u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
 
-    // BLSCert::new requires an exact 32-byte scalar
     let mut sk_be32 = [0u8; 32];
     sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
+
+    let txn = ctx.db.begin().await?;
+    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims).await?;
+
+    assert_eq!(total_amount, U256::from(40u64));
+
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(claims),
+        domain,
+        total_amount,
+    );
     let cert = BLSCert::new(&sk_be32, promise.clone())?;
 
-    // --- call the new atomic repo method ---
-    repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
+    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert).await?;
+    txn.commit().await?;
 
     // check locked collateral updated
     assert_eq!(
@@ -572,8 +586,8 @@ async fn lock_and_store_guarantee_locks_and_inserts_atomically() -> anyhow::Resu
 
 #[test(tokio::test)]
 #[serial_test::serial]
-async fn lock_and_store_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
-    let config = init()?;
+async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
+    let _config = init()?;
     let ctx = PersistCtx::new().await?;
 
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
@@ -598,29 +612,17 @@ async fn lock_and_store_guarantee_respects_pending_withdrawal() -> anyhow::Resul
     let tab_id = random_u256();
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
-    let domain = common::fixtures::compute_guarantee_domain_separator(
-        config.ethereum_config.chain_id,
-        config.ethereum_config.contract_address.parse()?,
-    )?;
-    let promise = PaymentGuaranteeClaims::from_request(
-        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            tab_id,
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr,
-            req_id: U256::ZERO,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-            amount: U256::from(30u64),
-            timestamp: Utc::now().timestamp() as u64,
-        }),
-        domain,
-        U256::from(30u64),
-    );
+    let claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id: U256::ZERO,
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(30u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
 
-    let mut sk_be32 = [0u8; 32];
-    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
-    let cert = BLSCert::new(&sk_be32, promise.clone())?;
-
-    let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
+    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims).await;
     assert!(matches!(res, Err(PersistDbError::InsufficientCollateral)));
 
     assert_eq!(
@@ -629,7 +631,7 @@ async fn lock_and_store_guarantee_respects_pending_withdrawal() -> anyhow::Resul
     );
     let g = entities::guarantee::Entity::find()
         .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
-        .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(promise.req_id)))
+        .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(claims.req_id)))
         .one(ctx.db.as_ref())
         .await?;
     assert!(g.is_none());
@@ -639,7 +641,7 @@ async fn lock_and_store_guarantee_respects_pending_withdrawal() -> anyhow::Resul
 
 #[test(tokio::test)]
 #[serial_test::serial]
-async fn lock_and_store_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Result<()> {
+async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
 
@@ -669,25 +671,35 @@ async fn lock_and_store_guarantee_allows_with_pending_withdrawal_headroom() -> a
         config.ethereum_config.chain_id,
         config.ethereum_config.contract_address.parse()?,
     )?;
+
+    let claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id: U256::ZERO,
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(30u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
+
+    let txn = ctx.db.begin().await?;
+    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims).await?;
+
+    assert_eq!(total_amount, U256::from(30u64));
+
     let promise = PaymentGuaranteeClaims::from_request(
-        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            tab_id,
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr,
-            req_id: U256::ZERO,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-            amount: U256::from(30u64),
-            timestamp: Utc::now().timestamp() as u64,
-        }),
+        &PaymentGuaranteeRequestClaims::V1(claims),
         domain,
-        U256::from(30u64),
+        total_amount,
     );
 
     let mut sk_be32 = [0u8; 32];
     sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
     let cert = BLSCert::new(&sk_be32, promise.clone())?;
 
-    repo::lock_and_store_guarantee(&ctx, &promise, &cert).await?;
+    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert).await?;
+    txn.commit().await?;
+
     assert_eq!(
         read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
         U256::from(30u64)
@@ -698,8 +710,8 @@ async fn lock_and_store_guarantee_allows_with_pending_withdrawal_headroom() -> a
 
 #[test(tokio::test)]
 #[serial_test::serial]
-async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
-    let config = init()?;
+async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
+    let _config = init()?;
     let ctx = PersistCtx::new().await?;
     let user_addr = format!("0x{:040x}", rand::random::<u128>());
     repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
@@ -715,32 +727,17 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     let tab_id = random_u256();
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
-    let domain = common::fixtures::compute_guarantee_domain_separator(
-        config.ethereum_config.chain_id,
-        config.ethereum_config.contract_address.parse()?,
-    )?;
+    let claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id: random_u256(),
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(10u64),
+        timestamp: i64::MAX as u64,
+    };
 
-    let promise = PaymentGuaranteeClaims::from_request(
-        &PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            tab_id,
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            req_id: random_u256(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-            amount: U256::from(10u64),
-            // deliberately invalid: chrono cannot represent this
-            timestamp: i64::MAX as u64,
-        }),
-        domain,
-        U256::from(10u64),
-    );
-
-    // BLSCert::new requires an exact 32-byte scalar
-    let mut sk_be32 = [0u8; 32];
-    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
-    let cert = BLSCert::new(&sk_be32, promise.clone())?;
-
-    let res = repo::lock_and_store_guarantee(&ctx, &promise, &cert).await;
+    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims).await;
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));
 
     // locked collateral unchanged
@@ -752,7 +749,7 @@ async fn lock_and_store_guarantee_invalid_timestamp_errors() -> anyhow::Result<(
     // no guarantee row inserted
     let g = entities::guarantee::Entity::find()
         .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
-        .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(promise.req_id)))
+        .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(claims.req_id)))
         .one(ctx.db.as_ref())
         .await?;
     assert!(g.is_none());
@@ -799,11 +796,10 @@ async fn accepts_timestamp_within_tab_window_without_opening_tab() {
     let claims_ts = (start_ts + Duration::seconds(120)).and_utc().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
-    let req_id = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims)
         .await
         .expect("claims should be valid");
-    assert_eq!(req_id, U256::ZERO);
 
     let tab = repo::get_tab_by_id(&ctx, tab_id)
         .await
@@ -1035,11 +1031,10 @@ async fn pending_tab_expired_accepts_first_claim_without_reopening() {
     let claim_ts = Utc::now().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claim_ts);
 
-    let req_id = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims)
         .await
         .expect("expired pending tab should be reopened");
-    assert_eq!(req_id, U256::ZERO);
 
     let tab = repo::get_tab_by_id(&ctx, tab_id)
         .await
