@@ -1,11 +1,14 @@
 use alloy::network::TransactionBuilder;
 use alloy::primitives::U256;
 use alloy::providers::Provider;
+use alloy::providers::ext::AnvilApi;
 use alloy::rpc::types::TransactionRequest;
 use alloy_primitives::{Address, B256};
 use blockchain::txtools::PaymentTx;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::{PersistCtx, repo};
+use core_service::scheduler::Task;
+use core_service::service::payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask};
 use entities::{
     sea_orm_active_enums::{SettlementStatus, TabStatus},
     tabs, user_transaction,
@@ -428,6 +431,109 @@ async fn payment_transaction_does_not_unlock_collateral_before_confirmation() ->
         }
         if tries > NUMBER_OF_TRIALS {
             panic!("Collateral unexpectedly changed after PaymentRecorded");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    Ok(())
+}
+
+/// Unlocking happens only after record tx finalizes.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::serial]
+async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> {
+    let E2eEnvironment {
+        provider,
+        core_service,
+        signer_addr,
+        scheduler,
+        ..
+    } = setup_e2e_environment().await?;
+    drop(scheduler);
+
+    let persist_ctx = core_service.persist_ctx();
+    let user_addr = signer_addr.to_string();
+    let server_addr = unique_addr();
+
+    repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_addr).await?;
+
+    let start_collateral = U256::from(500u64);
+    repo::deposit(
+        persist_ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        start_collateral,
+    )
+    .await?;
+
+    // Insert dummy tab
+    let tab_id = U256::from(rand::random::<u64>());
+    let tab_id_str = format!("{tab_id:#x}");
+    insert_tab(persist_ctx, tab_id, &user_addr, &server_addr).await?;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    // Lock 100 ETH
+    let balance =
+        repo::get_user_balance_on(persist_ctx.db.as_ref(), &user_addr, DEFAULT_ASSET_ADDRESS)
+            .await?;
+    repo::update_user_balance_and_version_on(
+        persist_ctx.db.as_ref(),
+        &user_addr,
+        DEFAULT_ASSET_ADDRESS,
+        balance.version,
+        balance.total.parse::<U256>().unwrap(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    // Pay 60 ETH
+    let req_id = U256::from(1);
+    let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, req_id);
+    let tx = TransactionRequest::default()
+        .with_to(server_addr.parse().unwrap())
+        .with_value(U256::from(60u64))
+        .with_input(input.into_bytes());
+    provider.send_transaction(tx).await?.watch().await?;
+
+    // Advance chain so safe head includes the payment block.
+    provider.anvil_mine(Some(1), None).await?;
+
+    ScanPaymentsTask::new(core_service.clone()).run().await?;
+    ConfirmPaymentsTask::new(core_service.clone()).run().await?;
+
+    let tx_row = user_transaction::Entity::find()
+        .filter(user_transaction::Column::TabId.eq(tab_id_str.clone()))
+        .one(persist_ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+    assert_eq!(tx_row.status, "recorded");
+
+    let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(locked, U256::from(100u64));
+
+    // Advance chain so record tx is past the safe head.
+    provider.anvil_mine(Some(2), None).await?;
+    FinalizePaymentsTask::new(core_service.clone())
+        .run()
+        .await?;
+
+    let mut tries = 0;
+    loop {
+        let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let tx_row = user_transaction::Entity::find()
+            .filter(user_transaction::Column::TabId.eq(tab_id_str.clone()))
+            .one(persist_ctx.db.as_ref())
+            .await?
+            .expect("transaction should exist");
+
+        if tx_row.status == "finalized" && locked == U256::from(40u64) {
+            break;
+        }
+
+        if tries > NUMBER_OF_TRIALS {
+            panic!("Collateral did not unlock after finalization");
         }
         tries += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
