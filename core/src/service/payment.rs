@@ -1,24 +1,18 @@
 use crate::config::{DEFAULT_ASSET_ADDRESS, EthereumConfig};
-use crate::ethereum::CoreContractApi;
 use crate::scheduler::Task;
 use crate::service::CoreService;
 use crate::{
-    error::{ServiceError, ServiceResult},
+    error::ServiceResult,
     persist::{PersistCtx, repo},
     util::u256_to_string,
 };
 use alloy::primitives::Address;
-use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
 use blockchain::txtools::PaymentTx;
 use log::{error, info, warn};
 
-pub async fn process_discovered_payment(
-    ctx: &PersistCtx,
-    contract_api: &dyn CoreContractApi,
-    payment: PaymentTx,
-) -> ServiceResult<()> {
+pub async fn process_discovered_payment(ctx: &PersistCtx, payment: PaymentTx) -> ServiceResult<()> {
     let tab_id_str = u256_to_string(payment.tab_id);
     let tx_hash = format!("{:#x}", payment.tx_hash);
     let amount = payment.amount;
@@ -91,14 +85,20 @@ pub async fn process_discovered_payment(
         return Ok(());
     }
 
-    // Submit a user transaction if it doesn't already exist
-    let rows_affected = repo::submit_payment_transaction(
+    let block_hash = payment.block_hash.map(|hash| format!("{:#x}", hash));
+
+    // Record a pending user transaction if it doesn't already exist
+    let rows_affected = repo::submit_pending_payment_transaction(
         ctx,
-        tab.user_address.clone(),
-        tab.server_address.clone(),
-        asset_address.to_string(),
-        tx_hash.clone(),
-        amount,
+        repo::PendingPaymentInput {
+            user_address: tab.user_address.clone(),
+            recipient_address: tab.server_address.clone(),
+            asset_address: asset_address.to_string(),
+            transaction_id: tx_hash.clone(),
+            amount,
+            block_number: payment.block_number,
+            block_hash,
+        },
     )
     .await?;
 
@@ -110,26 +110,6 @@ pub async fn process_discovered_payment(
         return Ok(());
     }
 
-    if let Err(err) = contract_api
-        .record_payment(payment.tab_id, asset_address, amount)
-        .await
-    {
-        if let Err(cleanup_err) = repo::delete_unfinalized_payment_transaction(ctx, &tx_hash).await
-        {
-            error!(
-                "Failed to delete payment transaction {} after record_payment error: {}",
-                tx_hash, cleanup_err
-            );
-        }
-        return Err(ServiceError::Other(anyhow!(
-            "Failed to record payment on-chain for tab {} (tx {}): {err}",
-            tab_id_str,
-            tx_hash
-        )));
-    }
-
-    repo::mark_payment_transaction_finalized(ctx, &tx_hash).await?;
-
     Ok(())
 }
 
@@ -137,12 +117,7 @@ impl CoreService {
     /// Submit user transactions and record payments on-chain for each discovered on-chain payment.
     pub async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
         for payment in events {
-            process_discovered_payment(
-                &self.inner.persist_ctx,
-                self.inner.contract_api.as_ref(),
-                payment,
-            )
-            .await?;
+            process_discovered_payment(&self.inner.persist_ctx, payment).await?;
         }
         Ok(())
     }

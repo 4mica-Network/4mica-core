@@ -364,7 +364,8 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
-async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
+async fn payment_transaction_does_not_unlock_collateral_before_confirmation() -> anyhow::Result<()>
+{
     let E2eEnvironment {
         provider,
         core_service,
@@ -408,7 +409,7 @@ async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Pay 60 ETH
+    // Pay 60 ETH (should remain pending until confirmed)
     let req_id = U256::from(1);
     let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, req_id);
     let tx = TransactionRequest::default()
@@ -421,8 +422,8 @@ async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
     loop {
         let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
 
-        // locked should now be 40 ETH (100 - 60)
-        if locked == U256::from(40u64) {
+        // locked should remain 100 ETH until confirmation
+        if locked == U256::from(100u64) {
             break;
         }
         if tries > NUMBER_OF_TRIALS {

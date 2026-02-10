@@ -55,10 +55,10 @@ async fn insert_tab(
 // ────────────────────── TESTS ──────────────────────
 //
 
-/// `Transfer` → collateral unlocked.
+/// `Transfer` does not unlock collateral before confirmation.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
-async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
+async fn transfer_usdc_does_not_unlock_collateral_before_confirmation() -> anyhow::Result<()> {
     let E2eEnvironment {
         contract,
         core_service,
@@ -143,15 +143,15 @@ async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
     // poll DB
     let mut tries = 0;
     loop {
-        // we expect the user to have 10 USDC locked (20 - 10)
+        // locked should remain 20 USDC until confirmation
         let locked =
             read_locked_collateral(persist_ctx, &user_address, &usdc.address().to_string()).await?;
-        if locked == U256::from(10u64) {
+        if locked == U256::from(20u64) {
             break;
         }
 
         if tries > NUMBER_OF_TRIALS {
-            panic!("Transaction not recorded in DB");
+            panic!("Collateral unexpectedly changed before confirmation");
         }
         tries += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;

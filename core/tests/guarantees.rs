@@ -1,8 +1,4 @@
-use std::{
-    panic,
-    str::FromStr,
-    sync::{Arc, Once},
-};
+use std::{panic, str::FromStr, sync::Once};
 
 use alloy::primitives::{Address, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
@@ -10,7 +6,6 @@ use chrono::{Duration, Utc};
 use core_service::{
     config::{AppConfig, DEFAULT_ASSET_ADDRESS},
     error::PersistDbError,
-    ethereum::CoreContractApi,
     persist::*,
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -80,40 +75,6 @@ fn load_env() {
     });
 }
 
-struct MockContractApi {
-    chain_id: u64,
-    domain: [u8; 32],
-    tab_expiration_time: u64,
-}
-
-#[async_trait::async_trait]
-impl CoreContractApi for MockContractApi {
-    async fn get_chain_id(&self) -> Result<u64, core_service::error::CoreContractApiError> {
-        Ok(self.chain_id)
-    }
-
-    async fn get_guarantee_domain_separator(
-        &self,
-    ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
-        Ok(self.domain)
-    }
-
-    async fn get_tab_expiration_time(
-        &self,
-    ) -> Result<u64, core_service::error::CoreContractApiError> {
-        Ok(self.tab_expiration_time)
-    }
-
-    async fn record_payment(
-        &self,
-        _tab_id: U256,
-        _asset: alloy::primitives::Address,
-        _amount: U256,
-    ) -> Result<(), core_service::error::CoreContractApiError> {
-        Ok(())
-    }
-}
-
 fn build_read_provider() -> anyhow::Result<DynProvider> {
     let provider_res = panic::catch_unwind(|| {
         ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| anvil.port(40105u16))
@@ -133,18 +94,11 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
 
-    let contract_api: Arc<dyn CoreContractApi> = Arc::new(MockContractApi {
-        chain_id,
-        domain: [0u8; 32],
-        tab_expiration_time: 3600,
-    });
-
     let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let core_service = CoreService::new_with_dependencies(
         config,
         CoreServiceDeps {
             persist_ctx,
-            contract_api,
             chain_id,
             read_provider,
             guarantee_domain: [0u8; 32],

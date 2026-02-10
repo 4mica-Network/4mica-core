@@ -44,7 +44,6 @@ pub struct Inner {
     tab_expiration_time: AtomicU64,
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
-    contract_api: Arc<dyn CoreContractApi>,
     listener_handle: Mutex<Option<JoinHandle<()>>>,
     listener_ready_rx: Mutex<Option<oneshot::Receiver<()>>>,
     listener_ready: AtomicBool,
@@ -66,7 +65,6 @@ pub struct CoreService {
 
 pub struct CoreServiceDeps {
     pub persist_ctx: PersistCtx,
-    pub contract_api: Arc<dyn CoreContractApi>,
     pub chain_id: u64,
     pub read_provider: DynProvider,
     pub guarantee_domain: [u8; 32],
@@ -80,7 +78,7 @@ impl CoreService {
         let eth_cfg = config.ethereum_config.clone();
         let listener_cfg = eth_cfg.clone();
 
-        let contract_api = Arc::new(CoreContractProxy::new(eth_cfg.clone()).await?);
+        let contract_api = CoreContractProxy::new(eth_cfg.clone()).await?;
 
         let actual_chain_id = contract_api
             .get_chain_id()
@@ -107,7 +105,6 @@ impl CoreService {
             config,
             CoreServiceDeps {
                 persist_ctx: persist_ctx.clone(),
-                contract_api,
                 chain_id: actual_chain_id,
                 read_provider: read_provider.clone(),
                 guarantee_domain: on_chain_domain,
@@ -184,7 +181,6 @@ impl CoreService {
             tab_expiration_time: AtomicU64::new(deps.tab_expiration_time),
             persist_ctx: deps.persist_ctx,
             read_provider: deps.read_provider,
-            contract_api: deps.contract_api,
             listener_handle: Mutex::default(),
             listener_ready_rx: Mutex::new(Some(deps.listener_ready_rx)),
             listener_ready: AtomicBool::new(false),
