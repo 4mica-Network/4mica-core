@@ -35,10 +35,55 @@ pub struct EthereumConfig {
     pub cron_job_settings: String,
     #[envconfig(from = "NUMBER_OF_BLOCKS_TO_CONFIRM", default = "20")]
     pub number_of_blocks_to_confirm: u64,
+    /// Confirmation policy for on-chain data:
+    /// `depth` = confirm after N blocks (NUMBER_OF_BLOCKS_TO_CONFIRM),
+    /// `safe` = confirm at the chain's "safe" head,
+    /// `finalized` = confirm at the chain's finalized head (safest).
+    #[envconfig(from = "CONFIRMATION_MODE", default = "finalized")]
+    pub confirmation_mode: String,
     #[envconfig(from = "NUMBER_OF_PENDING_BLOCKS", default = "5")]
     pub number_of_pending_blocks: u64,
     #[envconfig(from = "ETHEREUM_PRIVATE_KEY")]
     pub ethereum_private_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationMode {
+    Depth,
+    Safe,
+    Finalized,
+}
+
+impl ConfirmationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConfirmationMode::Depth => "depth",
+            ConfirmationMode::Safe => "safe",
+            ConfirmationMode::Finalized => "finalized",
+        }
+    }
+}
+
+impl EthereumConfig {
+    pub fn confirmation_mode(&self) -> anyhow::Result<ConfirmationMode> {
+        match self.confirmation_mode.trim().to_lowercase().as_str() {
+            "depth" => Ok(ConfirmationMode::Depth),
+            "safe" => Ok(ConfirmationMode::Safe),
+            "finalized" => Ok(ConfirmationMode::Finalized),
+            other => bail!(
+                "Invalid CONFIRMATION_MODE '{}'. Use one of: depth, safe, finalized",
+                other
+            ),
+        }
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let mode = self.confirmation_mode()?;
+        if mode == ConfirmationMode::Depth && self.number_of_blocks_to_confirm == 0 {
+            bail!("NUMBER_OF_BLOCKS_TO_CONFIRM must be > 0 when CONFIRMATION_MODE=depth");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Envconfig)]
@@ -119,6 +164,9 @@ impl AppConfig {
             ServerConfig::init_from_env().context("Failed to load server config")?;
         let ethereum_config =
             EthereumConfig::init_from_env().context("Failed to load ethereum config")?;
+        ethereum_config
+            .validate()
+            .context("Invalid ethereum config")?;
         let secrets = Secrets::init_from_env().context("Failed to load secrets")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;

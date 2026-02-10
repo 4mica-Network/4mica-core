@@ -144,6 +144,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         cron_job_settings: "*/2 * * * * *".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
+        confirmation_mode: "depth".to_string(),
         number_of_pending_blocks: 1,
         ethereum_private_key: operator_key,
     };
