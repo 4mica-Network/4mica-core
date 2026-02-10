@@ -177,6 +177,7 @@ impl EthereumEventHandler for CoreService {
 
         let payment = PaymentTx {
             block_number: log.block_number.unwrap_or_default(),
+            block_hash: log.block_hash,
             tx_hash: log.transaction_hash.unwrap_or_default(),
             from: user,
             to: recipient,

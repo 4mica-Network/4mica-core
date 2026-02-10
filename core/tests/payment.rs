@@ -117,6 +117,7 @@ async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<(
     let tx_hash = B256::from(random::<[u8; 32]>());
     let payment = PaymentTx {
         block_number: 1,
+        block_hash: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
@@ -184,6 +185,7 @@ async fn successful_record_payment_marks_transaction_finalized() -> anyhow::Resu
     let tx_hash = B256::from(random::<[u8; 32]>());
     let payment = PaymentTx {
         block_number: 1,
+        block_hash: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
@@ -259,6 +261,7 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
     let tx_hash = B256::from(random::<[u8; 32]>());
     let payment = PaymentTx {
         block_number: 1,
+        block_hash: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
