@@ -520,7 +520,7 @@ impl Task for ScanPaymentsTask {
     }
 
     async fn run(&self) -> anyhow::Result<()> {
-        let lookback = self.ethereum_config().number_of_blocks_to_confirm;
+        let lookback = self.ethereum_config().number_of_pending_blocks;
         self.0.scan_blockchain(lookback).await
     }
 }

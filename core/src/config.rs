@@ -82,6 +82,9 @@ impl EthereumConfig {
         if mode == ConfirmationMode::Depth && self.number_of_blocks_to_confirm == 0 {
             bail!("NUMBER_OF_BLOCKS_TO_CONFIRM must be > 0 when CONFIRMATION_MODE=depth");
         }
+        if self.number_of_pending_blocks == 0 {
+            bail!("NUMBER_OF_PENDING_BLOCKS must be > 0");
+        }
         Ok(())
     }
 }
