@@ -1,9 +1,8 @@
 use alloy::{
-    network::{TransactionBuilder, TxSigner},
+    network::TransactionBuilder,
     primitives::{Address, U256},
     providers::Provider,
     rpc::types::{TransactionReceipt, TransactionRequest},
-    signers::{Signature, Signer},
 };
 use rpc::{PaymentGuaranteeRequestClaimsV1, SigningScheme};
 
@@ -22,12 +21,12 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct UserClient<S> {
-    ctx: ClientCtx<S>,
+pub struct UserClient {
+    ctx: ClientCtx,
 }
 
-impl<S> UserClient<S> {
-    pub(super) fn new(ctx: ClientCtx<S>) -> Self {
+impl UserClient {
+    pub(super) fn new(ctx: ClientCtx) -> Self {
         Self { ctx }
     }
 
@@ -45,16 +44,13 @@ impl<S> UserClient<S> {
         &self,
         token: String,
         amount: U256,
-    ) -> Result<TransactionReceipt, ApproveErc20Error>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
+    ) -> Result<TransactionReceipt, ApproveErc20Error> {
         let token = validate_address(&token).map_err(|_| {
             ApproveErc20Error::InvalidParams(format!("invalid ERC20 token address: {token}"))
         })?;
 
         let spender = self.ctx.contract_address();
-        let contract = self.ctx.get_erc20_write_contract(token).await?;
+        let contract = self.ctx.get_erc20_contract(token);
 
         let send_result = contract
             .approve(spender, amount)
@@ -83,28 +79,18 @@ impl<S> UserClient<S> {
         &self,
         amount: U256,
         erc20_token: Option<String>,
-    ) -> Result<TransactionReceipt, DepositError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
+    ) -> Result<TransactionReceipt, DepositError> {
         let send_result = if let Some(token) = erc20_token {
             let token = validate_address(&token).map_err(|_| {
                 DepositError::InvalidParams(format!("invalid ERC20 token address: {token}"))
             })?;
             self.ctx
-                .get_write_contract()
-                .await?
+                .get_contract()
                 .depositStablecoin(token, amount)
                 .send()
                 .await
         } else {
-            self.ctx
-                .get_write_contract()
-                .await?
-                .deposit()
-                .value(amount)
-                .send()
-                .await
+            self.ctx.get_contract().deposit().value(amount).send().await
         };
 
         let receipt = send_result
@@ -118,10 +104,7 @@ impl<S> UserClient<S> {
     }
 
     /// Returns information about user's assets and withdrawal requests
-    pub async fn get_user(&self) -> Result<Vec<UserInfo>, GetUserError>
-    where
-        S: Signer,
-    {
+    pub async fn get_user(&self) -> Result<Vec<UserInfo>, GetUserError> {
         let signer_address = self.ctx.signer().address();
         let assets = self
             .ctx
@@ -157,10 +140,7 @@ impl<S> UserClient<S> {
         &self,
         claims: PaymentGuaranteeRequestClaimsV1,
         scheme: SigningScheme,
-    ) -> Result<PaymentSignature, SignPaymentError>
-    where
-        S: Signer + Send + Sync,
-    {
+    ) -> Result<PaymentSignature, SignPaymentError> {
         // TODO: Cache public parameters for a while
         let pub_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
 
@@ -179,18 +159,14 @@ impl<S> UserClient<S> {
         amount: U256,
         erc20_token: String,
         recipient: Address,
-    ) -> Result<TransactionReceipt, PayTabError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
+    ) -> Result<TransactionReceipt, PayTabError> {
         let token = validate_address(&erc20_token).map_err(|_| {
             PayTabError::InvalidParams(format!("invalid ERC20 token address: {erc20_token}"))
         })?;
 
         let send_result = self
             .ctx
-            .get_write_contract()
-            .await?
+            .get_contract()
             .payTabInERC20Token(tab_id, token, amount, recipient)
             .send()
             .await
@@ -220,10 +196,7 @@ impl<S> UserClient<S> {
         amount: U256,
         recipient_address: String,
         erc20_token: Option<String>,
-    ) -> Result<TransactionReceipt, PayTabError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
+    ) -> Result<TransactionReceipt, PayTabError> {
         let recipient = validate_address(&recipient_address)
             .map_err(|e| PayTabError::InvalidParams(e.to_string()))?;
 
@@ -242,8 +215,7 @@ impl<S> UserClient<S> {
 
         let pending_tx = self
             .ctx
-            .get_wallet_provider()
-            .await?
+            .provider()
             .send_transaction(tx)
             .await
             .map_err(|e| PayTabError::Transport(e.to_string()))?;
@@ -265,10 +237,7 @@ impl<S> UserClient<S> {
         &self,
         amount: U256,
         erc20_token: Option<String>,
-    ) -> Result<TransactionReceipt, RequestWithdrawalError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
+    ) -> Result<TransactionReceipt, RequestWithdrawalError> {
         let send_result = if let Some(token) = erc20_token {
             let token = validate_address(&token).map_err(|_| {
                 RequestWithdrawalError::InvalidParams(format!(
@@ -276,15 +245,13 @@ impl<S> UserClient<S> {
                 ))
             })?;
             self.ctx
-                .get_write_contract()
-                .await?
+                .get_contract()
                 .requestWithdrawal_1(token, amount)
                 .send()
                 .await
         } else {
             self.ctx
-                .get_write_contract()
-                .await?
+                .get_contract()
                 .requestWithdrawal_0(amount)
                 .send()
                 .await
@@ -308,10 +275,7 @@ impl<S> UserClient<S> {
     pub async fn cancel_withdrawal(
         &self,
         erc20_token: Option<String>,
-    ) -> Result<TransactionReceipt, CancelWithdrawalError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
+    ) -> Result<TransactionReceipt, CancelWithdrawalError> {
         let send_result = if let Some(token) = erc20_token {
             let token = validate_address(&token).map_err(|_| {
                 CancelWithdrawalError::InvalidParams(format!(
@@ -319,18 +283,12 @@ impl<S> UserClient<S> {
                 ))
             })?;
             self.ctx
-                .get_write_contract()
-                .await?
+                .get_contract()
                 .cancelWithdrawal_1(token)
                 .send()
                 .await
         } else {
-            self.ctx
-                .get_write_contract()
-                .await?
-                .cancelWithdrawal_0()
-                .send()
-                .await
+            self.ctx.get_contract().cancelWithdrawal_0().send().await
         };
 
         let receipt = send_result
@@ -351,10 +309,7 @@ impl<S> UserClient<S> {
     pub async fn finalize_withdrawal(
         &self,
         erc20_token: Option<String>,
-    ) -> Result<TransactionReceipt, FinalizeWithdrawalError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
+    ) -> Result<TransactionReceipt, FinalizeWithdrawalError> {
         let send_result = if let Some(token) = erc20_token {
             let token = validate_address(&token).map_err(|_| {
                 FinalizeWithdrawalError::InvalidParams(format!(
@@ -362,18 +317,12 @@ impl<S> UserClient<S> {
                 ))
             })?;
             self.ctx
-                .get_write_contract()
-                .await?
+                .get_contract()
                 .finalizeWithdrawal_1(token)
                 .send()
                 .await
         } else {
-            self.ctx
-                .get_write_contract()
-                .await?
-                .finalizeWithdrawal_0()
-                .send()
-                .await
+            self.ctx.get_contract().finalizeWithdrawal_0().send().await
         };
 
         let receipt = send_result

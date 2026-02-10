@@ -1,5 +1,4 @@
 use alloy::hex;
-use alloy::signers::Signer;
 use rpc::RpcProxy;
 use sdk_4mica::client::recipient::RecipientClient;
 use sdk_4mica::{
@@ -17,7 +16,7 @@ mod common;
 const REMUNERATION_GRACE_SECS: u64 = 14 * 24 * 60 * 60;
 const OVERDUE_BUFFER_SECS: u64 = 5;
 
-async fn ensure_core_available<S>(tag: &str, config: &Config<S>) -> anyhow::Result<()> {
+async fn ensure_core_available(tag: &str, config: &Config) -> anyhow::Result<()> {
     let rpc_url = config.rpc_url.as_str();
     tokio::time::timeout(Duration::from_secs(5), async {
         let rpc_proxy = RpcProxy::new(rpc_url)
@@ -32,10 +31,7 @@ async fn ensure_core_available<S>(tag: &str, config: &Config<S>) -> anyhow::Resu
     Ok(())
 }
 
-async fn wait_for_tab_remunerated<S>(
-    recipient_client: &Client<S>,
-    tab_id: U256,
-) -> anyhow::Result<()> {
+async fn wait_for_tab_remunerated(recipient_client: &Client, tab_id: U256) -> anyhow::Result<()> {
     let poll_interval = Duration::from_millis(200);
     let timeout = Duration::from_secs(10);
     let start = Instant::now();
@@ -57,13 +53,7 @@ async fn wait_for_tab_remunerated<S>(
     }
 }
 
-async fn resolve_next_req_id<S>(
-    recipient: &RecipientClient<S>,
-    tab_id: U256,
-) -> anyhow::Result<U256>
-where
-    S: Signer + Sync,
-{
+async fn resolve_next_req_id(recipient: &RecipientClient, tab_id: U256) -> anyhow::Result<U256> {
     if let Some(latest) = recipient.get_latest_guarantee(tab_id).await? {
         return Ok(latest.req_id + U256::from(1u64));
     }
@@ -71,14 +61,11 @@ where
     Ok(U256::ZERO)
 }
 
-async fn resolve_overdue_timestamp<S>(
-    recipient: &RecipientClient<S>,
-    config: &Config<S>,
+async fn resolve_overdue_timestamp(
+    recipient: &RecipientClient,
+    config: &Config,
     tab_id: U256,
-) -> anyhow::Result<u64>
-where
-    S: Signer + Sync,
-{
+) -> anyhow::Result<u64> {
     let chain_now = get_chain_timestamp(config).await?;
     let server_now = common::get_now().as_secs();
     let now = std::cmp::min(chain_now, server_now);
@@ -93,16 +80,13 @@ where
     Ok(overdue)
 }
 
-async fn ensure_overdue_tab<S>(
-    recipient: &RecipientClient<S>,
-    config: &Config<S>,
+async fn ensure_overdue_tab(
+    recipient: &RecipientClient,
+    config: &Config,
     user_address: &str,
     recipient_address: &str,
     ttl_secs: u64,
-) -> anyhow::Result<U256>
-where
-    S: Signer + Sync,
-{
+) -> anyhow::Result<U256> {
     let chain_now = get_chain_timestamp(config).await?;
     let server_now = common::get_now().as_secs();
     let now = std::cmp::min(chain_now, server_now);
@@ -150,7 +134,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     let user_config_clone = user_config.clone();
 
     ensure_core_available("test_recipient_remuneration:user", &user_config_clone).await?;
-    let user_address = user_config_clone.signer.address().to_string();
+    let user_address = user_config_clone.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     let recipient_config = build_authed_recipient_config(
@@ -160,7 +144,10 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     .await?;
     let recipient_config_clone = recipient_config.clone();
 
-    let recipient_address = recipient_config_clone.signer.address().to_string();
+    let recipient_address = recipient_config_clone
+        .wallet_private_key
+        .address()
+        .to_string();
     let recipient_client = Client::new(recipient_config).await?;
 
     let user_info = user_client.user.get_user().await?;
@@ -286,7 +273,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     .await?;
     let user_config_clone = user_config.clone();
 
-    let user_address = user_config_clone.signer.address().to_string();
+    let user_address = user_config_clone.wallet_private_key.address().to_string();
     ensure_core_available("test_double_remuneration_fails:user", &user_config_clone).await?;
     let user_client = Client::new(user_config).await?;
 
@@ -297,7 +284,10 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     .await?;
     let recipient_config_clone = recipient_config.clone();
 
-    let recipient_address = recipient_config_clone.signer.address().to_string();
+    let recipient_address = recipient_config_clone
+        .wallet_private_key
+        .address()
+        .to_string();
     let recipient_client = Client::new(recipient_config).await?;
 
     let core_total_before = recipient_client

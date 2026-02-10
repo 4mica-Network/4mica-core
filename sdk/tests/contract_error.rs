@@ -20,7 +20,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     )
     .await?;
 
-    let user_address = user_config.signer.address().to_string();
+    let user_address = user_config.wallet_private_key.address().to_string();
     let user_client = Client::new(user_config).await?;
 
     let recipient_config = build_authed_recipient_config(
@@ -29,7 +29,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     )
     .await?;
 
-    let recipient_address = recipient_config.signer.address().to_string();
+    let recipient_address = recipient_config.wallet_private_key.address().to_string();
     let recipient_client = Client::new(recipient_config).await?;
 
     // Step 1: User deposits collateral (2 ETH)
