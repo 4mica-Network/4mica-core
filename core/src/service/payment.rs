@@ -16,6 +16,11 @@ use blockchain::txtools::PaymentTx;
 use log::{error, info, warn};
 use std::str::FromStr;
 
+struct SafeHead {
+    number: u64,
+    hash: B256,
+}
+
 pub async fn process_discovered_payment(ctx: &PersistCtx, payment: PaymentTx) -> ServiceResult<()> {
     let tab_id_str = u256_to_string(payment.tab_id);
     let tx_hash = format!("{:#x}", payment.tx_hash);
@@ -136,7 +141,7 @@ impl CoreService {
         };
 
         let pending =
-            repo::get_pending_transactions_upto(&self.inner.persist_ctx, safe_head).await?;
+            repo::get_pending_transactions_upto(&self.inner.persist_ctx, safe_head.number).await?;
 
         for tx in pending {
             let tx_hash = match B256::from_str(&tx.tx_id) {
@@ -279,6 +284,14 @@ impl CoreService {
             .await?;
         }
 
+        repo::upsert_chain_cursor(
+            &self.inner.persist_ctx,
+            self.inner.config.ethereum_config.chain_id,
+            safe_head.number,
+            format!("{:#x}", safe_head.hash),
+        )
+        .await?;
+
         Ok(())
     }
 
@@ -289,7 +302,7 @@ impl CoreService {
         };
 
         let recorded =
-            repo::get_recorded_transactions_upto(&self.inner.persist_ctx, safe_head).await?;
+            repo::get_recorded_transactions_upto(&self.inner.persist_ctx, safe_head.number).await?;
 
         for tx in recorded {
             let record_tx_hash = match tx.record_tx_hash.as_deref() {
@@ -443,7 +456,7 @@ impl CoreService {
         Ok(())
     }
 
-    async fn safe_head(&self) -> ServiceResult<Option<u64>> {
+    async fn safe_head(&self) -> ServiceResult<Option<SafeHead>> {
         let cfg = &self.inner.config.ethereum_config;
         match cfg.confirmation_mode()? {
             crate::config::ConfirmationMode::Depth => {
@@ -453,7 +466,18 @@ impl CoreService {
                     .get_block_number()
                     .await
                     .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                Ok(Some(latest.saturating_sub(cfg.number_of_blocks_to_confirm)))
+                let head = latest.saturating_sub(cfg.number_of_blocks_to_confirm);
+                let block = self
+                    .inner
+                    .read_provider
+                    .get_block_by_number(BlockNumberOrTag::Number(head))
+                    .full()
+                    .await
+                    .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+                Ok(block.map(|b| SafeHead {
+                    number: b.header.number,
+                    hash: b.hash(),
+                }))
             }
             crate::config::ConfirmationMode::Safe => {
                 let block = self
@@ -463,7 +487,10 @@ impl CoreService {
                     .full()
                     .await
                     .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                Ok(block.map(|b| b.header.number))
+                Ok(block.map(|b| SafeHead {
+                    number: b.header.number,
+                    hash: b.hash(),
+                }))
             }
             crate::config::ConfirmationMode::Finalized => {
                 let block = self
@@ -473,7 +500,10 @@ impl CoreService {
                     .full()
                     .await
                     .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                Ok(block.map(|b| b.header.number))
+                Ok(block.map(|b| SafeHead {
+                    number: b.header.number,
+                    hash: b.hash(),
+                }))
             }
         }
     }
