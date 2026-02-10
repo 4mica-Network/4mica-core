@@ -7,6 +7,7 @@ use core_service::{
         constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
     },
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
+    ethereum::CoreContractApi,
     persist::{PersistCtx, repo},
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -16,7 +17,7 @@ use entities::tabs;
 use rand::random;
 use rpc::CreatePaymentTabRequest;
 use sea_orm::{EntityTrait, Set};
-use std::{panic, sync::Once};
+use std::{panic, sync::Arc, sync::Once};
 
 const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
 const DEFAULT_ROLE: &str = "user";
@@ -70,11 +71,18 @@ async fn build_core_service(
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
 
+    let contract_api: Arc<dyn CoreContractApi> = Arc::new(MockContractApi {
+        chain_id,
+        domain: [0u8; 32],
+        tab_expiration_time,
+    });
+
     let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     CoreService::new_with_dependencies(
         config,
         CoreServiceDeps {
             persist_ctx,
+            contract_api,
             chain_id,
             read_provider,
             guarantee_domain: [0u8; 32],
@@ -370,4 +378,37 @@ async fn facilitator_can_create_tab_for_recipient() {
 
     assert_eq!(tab.user_address, user);
     assert_eq!(tab.recipient_address, recipient);
+}
+struct MockContractApi {
+    chain_id: u64,
+    domain: [u8; 32],
+    tab_expiration_time: u64,
+}
+
+#[async_trait::async_trait]
+impl CoreContractApi for MockContractApi {
+    async fn get_chain_id(&self) -> Result<u64, core_service::error::CoreContractApiError> {
+        Ok(self.chain_id)
+    }
+
+    async fn get_guarantee_domain_separator(
+        &self,
+    ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
+        Ok(self.domain)
+    }
+
+    async fn get_tab_expiration_time(
+        &self,
+    ) -> Result<u64, core_service::error::CoreContractApiError> {
+        Ok(self.tab_expiration_time)
+    }
+
+    async fn record_payment(
+        &self,
+        _tab_id: U256,
+        _asset: alloy::primitives::Address,
+        _amount: U256,
+    ) -> Result<(), core_service::error::CoreContractApiError> {
+        Ok(())
+    }
 }

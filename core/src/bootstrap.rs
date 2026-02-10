@@ -4,7 +4,10 @@ use core_service::{
     config::{AppConfig, ServerConfig},
     http,
     scheduler::TaskScheduler,
-    service::{CoreService, payment::ScanPaymentsTask},
+    service::{
+        CoreService,
+        payment::{ConfirmPaymentsTask, ScanPaymentsTask},
+    },
 };
 use env_logger::Env;
 use log::info;
@@ -43,6 +46,9 @@ pub async fn bootstrap() -> anyhow::Result<()> {
     let mut scheduler = TaskScheduler::new().await?;
     scheduler
         .add_task(Arc::new(ScanPaymentsTask::new(service.clone())))
+        .await?;
+    scheduler
+        .add_task(Arc::new(ConfirmPaymentsTask::new(service.clone())))
         .await?;
     scheduler.start().await?;
 

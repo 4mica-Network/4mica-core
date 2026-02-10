@@ -32,6 +32,7 @@ pub async fn submit_payment_transaction(
         recipient_address: Set(recipient_address),
         asset_address: Set(asset_address),
         amount: Set(amount.to_string()),
+        tab_id: Set(None),
         block_number: Set(None),
         block_hash: Set(None),
         status: Set("confirmed".to_string()),
@@ -62,6 +63,7 @@ pub struct PendingPaymentInput {
     pub asset_address: String,
     pub transaction_id: String,
     pub amount: U256,
+    pub tab_id: String,
     pub block_number: u64,
     pub block_hash: Option<String>,
 }
@@ -81,6 +83,7 @@ pub async fn submit_pending_payment_transaction(
         recipient_address: Set(pending.recipient_address),
         asset_address: Set(pending.asset_address),
         amount: Set(pending.amount.to_string()),
+        tab_id: Set(Some(pending.tab_id)),
         block_number: Set(Some(pending.block_number as i64)),
         block_hash: Set(pending.block_hash),
         status: Set("pending".to_string()),
