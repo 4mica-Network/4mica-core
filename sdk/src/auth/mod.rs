@@ -3,7 +3,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use alloy::signers::{Signer, local::PrivateKeySigner};
+use alloy::signers::Signer;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as AsyncMutex;
@@ -110,17 +110,17 @@ impl AuthClient {
 }
 
 #[derive(Clone)]
-pub struct AuthSession {
+pub struct AuthSession<S> {
     client: AuthClient,
-    signer: PrivateKeySigner,
+    signer: S,
     address: String,
     refresh_margin: Duration,
     state: Arc<Mutex<Option<AuthState>>>,
     refresh_lock: Arc<AsyncMutex<()>>,
 }
 
-impl AuthSession {
-    pub fn new(cfg: AuthConfig, signer: PrivateKeySigner) -> Self {
+impl<S: Signer + Sync> AuthSession<S> {
+    pub fn new(cfg: AuthConfig, signer: S) -> Self {
         let address = signer.address().to_string();
         Self {
             client: AuthClient::new(cfg.auth_url),
