@@ -5,6 +5,7 @@ pub mod prelude;
 pub mod auth_nonce;
 pub mod auth_refresh_token;
 pub mod blockchain_event;
+pub mod chain_cursor;
 pub mod collateral_event;
 pub mod guarantee;
 pub mod sea_orm_active_enums;

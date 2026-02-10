@@ -3,6 +3,7 @@
 pub use super::auth_nonce::Entity as AuthNonce;
 pub use super::auth_refresh_token::Entity as AuthRefreshToken;
 pub use super::blockchain_event::Entity as BlockchainEvent;
+pub use super::chain_cursor::Entity as ChainCursor;
 pub use super::collateral_event::Entity as CollateralEvent;
 pub use super::guarantee::Entity as Guarantee;
 pub use super::tabs::Entity as Tabs;

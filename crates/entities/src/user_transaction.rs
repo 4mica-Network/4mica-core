@@ -15,6 +15,13 @@ pub struct Model {
     pub asset_address: String,
     #[sea_orm(column_type = "Text")]
     pub amount: String,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub block_number: Option<i64>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub block_hash: Option<String>,
+    #[sea_orm(column_type = "Text")]
+    pub status: String,
+    pub confirmed_at: Option<DateTime>,
     #[sea_orm(column_type = "Text", nullable)]
     pub verified: bool,
     pub finalized: bool,
