@@ -55,6 +55,8 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("10".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -140,6 +142,8 @@ async fn remuneration_reduces_locked_collateral() -> anyhow::Result<()> {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("10".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -227,6 +231,8 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -294,6 +300,8 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -385,6 +393,8 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -463,6 +473,8 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)
@@ -567,6 +579,8 @@ async fn remuneration_is_noop_after_settlement() -> anyhow::Result<()> {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     entities::tabs::Entity::insert(tab_am)

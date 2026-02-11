@@ -1,30 +1,20 @@
-use crate::auth::access::{self, AccessContext};
-use crate::auth::constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ};
-use crate::persist::mapper;
-use crate::{
-    config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS, EthereumConfig},
-    error::{ServiceError, ServiceResult},
-    ethereum::{CoreContractApi, CoreContractProxy, EthereumListener},
-    persist::{IntoUserTxInfo, PersistCtx, repo},
-    util::u256_to_string,
-};
-use alloy::{
-    primitives::U256,
-    providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
-};
-use anyhow::anyhow;
-use entities::{sea_orm_active_enums::SettlementStatus, tabs};
-use log::{error, info};
-use parking_lot::Mutex;
-use rpc::{
-    AssetBalanceInfo, CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest,
-    CreatePaymentTabResult, GuaranteeInfo, PendingRemunerationInfo, TabInfo, UserSuspensionStatus,
-    UserTransactionInfo,
-};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+
+use crate::persist::mapper;
+use crate::{
+    config::{AppConfig, EthereumConfig},
+    error::{ServiceError, ServiceResult},
+    ethereum::{CoreContractApi, CoreContractProxy, EthereumListener},
+    persist::{PersistCtx, repo},
+};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
+use anyhow::anyhow;
+use log::{error, info};
+use parking_lot::Mutex;
+use rpc::{CorePublicParameters, UserSuspensionStatus};
 use tokio::{
     sync::{Notify, oneshot},
     task::JoinHandle,
@@ -35,6 +25,8 @@ pub mod auth;
 pub mod event_handler;
 mod guarantee;
 pub mod payment;
+mod query;
+mod tab;
 
 pub struct Inner {
     config: AppConfig,
@@ -253,268 +245,6 @@ impl CoreService {
             .erased();
 
         Ok(provider)
-    }
-
-    pub async fn create_payment_tab(
-        &self,
-        auth: &AccessContext,
-        req: CreatePaymentTabRequest,
-    ) -> ServiceResult<CreatePaymentTabResult> {
-        access::require_scope(auth, SCOPE_TAB_CREATE)?;
-        access::require_recipient_match_or_facilitator(auth, &req.recipient_address)?;
-
-        let ttl = req.ttl.unwrap_or(DEFAULT_TTL_SECS);
-        let max_ttl = self.tab_expiration_time();
-        let now = crate::util::now_naive();
-        let now_ts = now.and_utc().timestamp();
-        if now_ts < 0 {
-            return Err(anyhow!("System time before epoch").into());
-        }
-
-        let asset_address = req
-            .erc20_token
-            .clone()
-            .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
-
-        if let Some(existing) = repo::find_active_tab_by_triplet(
-            &self.inner.persist_ctx,
-            &req.user_address,
-            &req.recipient_address,
-            &asset_address,
-        )
-        .await?
-        {
-            let start_ts = existing.start_ts.and_utc().timestamp();
-            let expiry_ts = start_ts.saturating_add(existing.ttl);
-            let expired = existing.ttl <= 0 || expiry_ts < now_ts;
-
-            if expired {
-                let id = crate::util::parse_tab_id(&existing.id)?;
-                repo::close_tab(&self.inner.persist_ctx, id).await?;
-            } else {
-                if existing.ttl <= 0 || existing.ttl as u64 > max_ttl {
-                    return Err(ServiceError::InvalidParams(format!(
-                        "tab ttl exceeds tab expiration time (ttl={}, max={})",
-                        existing.ttl, max_ttl
-                    )));
-                }
-                let id = crate::util::parse_tab_id(&existing.id)?;
-                let next_req_id =
-                    match repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, id).await? {
-                        Some(model) => {
-                            let last = mapper::guarantee_model_to_info(model)?;
-                            last.req_id
-                                .checked_add(U256::from(1u8))
-                                .ok_or(ServiceError::InvalidRequestID)?
-                        }
-                        None => U256::ZERO,
-                    };
-                return Ok(CreatePaymentTabResult {
-                    id,
-                    user_address: existing.user_address,
-                    recipient_address: existing.server_address,
-                    erc20_token: Some(asset_address),
-                    next_req_id,
-                });
-            }
-        }
-
-        if ttl > max_ttl {
-            return Err(ServiceError::InvalidParams(format!(
-                "tab ttl exceeds tab expiration time (ttl={}, max={})",
-                ttl, max_ttl
-            )));
-        }
-
-        let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
-
-        repo::create_pending_tab(
-            &self.inner.persist_ctx,
-            tab_id,
-            &req.user_address,
-            &req.recipient_address,
-            &asset_address,
-            now,
-            ttl as i64,
-        )
-        .await?;
-
-        Ok(CreatePaymentTabResult {
-            id: tab_id,
-            user_address: req.user_address,
-            recipient_address: req.recipient_address,
-            erc20_token: req.erc20_token,
-            next_req_id: U256::ZERO,
-        })
-    }
-
-    pub async fn list_tabs_for_recipient(
-        &self,
-        auth: &AccessContext,
-        recipient_address: String,
-        settlement_statuses: Vec<SettlementStatus>,
-    ) -> ServiceResult<Vec<TabInfo>> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
-        access::require_recipient_match_or_facilitator(auth, &recipient_address)?;
-
-        let status_refs = if settlement_statuses.is_empty() {
-            None
-        } else {
-            Some(settlement_statuses.as_slice())
-        };
-
-        let tabs =
-            repo::get_tabs_for_recipient(&self.inner.persist_ctx, &recipient_address, status_refs)
-                .await?;
-
-        tabs.into_iter()
-            .map(mapper::tab_model_to_info)
-            .collect::<ServiceResult<Vec<_>>>()
-    }
-
-    pub async fn list_pending_remunerations(
-        &self,
-        auth: &AccessContext,
-        recipient_address: String,
-    ) -> ServiceResult<Vec<PendingRemunerationInfo>> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
-        access::require_recipient_match_or_facilitator(auth, &recipient_address)?;
-
-        let tabs = repo::get_tabs_for_recipient(
-            &self.inner.persist_ctx,
-            &recipient_address,
-            Some(&[SettlementStatus::Pending]),
-        )
-        .await?;
-
-        let mut items = Vec::with_capacity(tabs.len());
-        for tab in tabs {
-            let tab_info = mapper::tab_model_to_info(tab)?;
-            let latest_guarantee =
-                repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, tab_info.tab_id)
-                    .await?
-                    .map(mapper::guarantee_model_to_info)
-                    .transpose()?;
-
-            items.push(PendingRemunerationInfo {
-                tab: tab_info,
-                latest_guarantee,
-            });
-        }
-
-        Ok(items)
-    }
-
-    pub async fn get_tab(
-        &self,
-        auth: &AccessContext,
-        tab_id: U256,
-    ) -> ServiceResult<Option<TabInfo>> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
-
-        let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? else {
-            return Ok(None);
-        };
-        access::require_tab_owner_or_facilitator(auth, &tab)?;
-
-        Some(mapper::tab_model_to_info(tab)).transpose()
-    }
-
-    async fn load_tab_for_read(
-        &self,
-        auth: &AccessContext,
-        tab_id: U256,
-    ) -> ServiceResult<tabs::Model> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
-
-        let tab = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(u256_to_string(tab_id)))?;
-        access::require_tab_owner_or_facilitator(auth, &tab)?;
-
-        Ok(tab)
-    }
-
-    pub async fn get_tab_guarantees(
-        &self,
-        auth: &AccessContext,
-        tab_id: U256,
-    ) -> ServiceResult<Vec<GuaranteeInfo>> {
-        self.load_tab_for_read(auth, tab_id).await?;
-
-        let rows = repo::get_guarantees_for_tab(&self.inner.persist_ctx, tab_id).await?;
-        rows.into_iter()
-            .map(mapper::guarantee_model_to_info)
-            .collect::<ServiceResult<Vec<_>>>()
-    }
-
-    pub async fn get_latest_guarantee(
-        &self,
-        auth: &AccessContext,
-        tab_id: U256,
-    ) -> ServiceResult<Option<GuaranteeInfo>> {
-        self.load_tab_for_read(auth, tab_id).await?;
-
-        let maybe = repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, tab_id).await?;
-        maybe.map(mapper::guarantee_model_to_info).transpose()
-    }
-
-    pub async fn get_guarantee(
-        &self,
-        auth: &AccessContext,
-        tab_id: U256,
-        req_id: U256,
-    ) -> ServiceResult<Option<GuaranteeInfo>> {
-        self.load_tab_for_read(auth, tab_id).await?;
-
-        let maybe = repo::get_guarantee(&self.inner.persist_ctx, tab_id, req_id).await?;
-        maybe.map(mapper::guarantee_model_to_info).transpose()
-    }
-
-    pub async fn list_recipient_payments(
-        &self,
-        auth: &AccessContext,
-        recipient_address: String,
-    ) -> ServiceResult<Vec<UserTransactionInfo>> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
-        access::require_recipient_match(auth, &recipient_address)?;
-
-        let rows =
-            repo::get_recipient_transactions(&self.inner.persist_ctx, &recipient_address).await?;
-        rows.into_iter()
-            .map(|row| row.into_user_tx_info())
-            .collect::<ServiceResult<Vec<_>>>()
-    }
-
-    pub async fn get_collateral_events_for_tab(
-        &self,
-        auth: &AccessContext,
-        tab_id: U256,
-    ) -> ServiceResult<Vec<CollateralEventInfo>> {
-        self.load_tab_for_read(auth, tab_id).await?;
-
-        let rows = repo::get_collateral_events_for_tab(&self.inner.persist_ctx, tab_id).await?;
-        rows.into_iter()
-            .map(mapper::collateral_event_model_to_info)
-            .collect::<ServiceResult<Vec<_>>>()
-    }
-
-    pub async fn get_user_asset_balance(
-        &self,
-        auth: &AccessContext,
-        user_address: String,
-        asset_address: String,
-    ) -> ServiceResult<Option<AssetBalanceInfo>> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
-
-        let Some(balance) =
-            repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
-                .await?
-        else {
-            return Ok(None);
-        };
-
-        Some(mapper::asset_balance_model_to_info(balance)).transpose()
     }
 
     pub async fn set_user_suspension(

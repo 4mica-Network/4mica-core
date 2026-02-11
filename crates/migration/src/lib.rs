@@ -7,6 +7,7 @@ mod m20250901_000004_admin_api_keys;
 mod m20251116_000005_blockchain_event;
 mod m20251118_000006_tab_payment_totals;
 mod m20251120_000007_auth_tables;
+mod m20260210_000008_tab_version_and_last_req_id;
 
 pub struct Migrator;
 
@@ -21,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20251116_000005_blockchain_event::Migration),
             Box::new(m20251118_000006_tab_payment_totals::Migration),
             Box::new(m20251120_000007_auth_tables::Migration),
+            Box::new(m20260210_000008_tab_version_and_last_req_id::Migration),
         ]
     }
 }

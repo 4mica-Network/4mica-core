@@ -102,6 +102,8 @@ async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<(
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     tabs::Entity::insert(tab_am).exec(ctx.db.as_ref()).await?;
@@ -169,6 +171,8 @@ async fn successful_record_payment_marks_transaction_finalized() -> anyhow::Resu
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     tabs::Entity::insert(tab_am).exec(ctx.db.as_ref()).await?;
@@ -252,6 +256,8 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
         settlement_status: Set(entities::sea_orm_active_enums::SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         ttl: Set(300),
     };
     tabs::Entity::insert(tab_am).exec(ctx.db.as_ref()).await?;

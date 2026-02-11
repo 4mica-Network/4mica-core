@@ -1,3 +1,4 @@
+use crate::error::PersistDbError;
 use crate::service::CoreService;
 use crate::{
     auth::{
@@ -9,7 +10,7 @@ use crate::{
     persist::repo,
     util::u256_to_string,
 };
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 use anyhow::anyhow;
 use chrono::TimeZone;
 use crypto::bls::BLSCert;
@@ -19,38 +20,20 @@ use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
     PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestEssentials,
 };
+use sea_orm::TransactionTrait;
 use std::str::FromStr;
 
 impl CoreService {
     pub async fn verify_guarantee_request_claims_v1(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV1,
-    ) -> ServiceResult<U256> {
-        let last_opt = repo::get_last_guarantee_for_tab(&self.inner.persist_ctx, claims.tab_id)
-            .await
-            .map_err(ServiceError::from)?;
-
-        let expected_req_id = match last_opt {
-            Some(ref last) => {
-                let prev_req_id = U256::from_str(&last.req_id).map_err(|e| {
-                    ServiceError::InvalidParams(format!("Invalid prev_req_id: {}", e))
-                })?;
-
-                prev_req_id
-                    .checked_add(U256::from(1u8))
-                    .ok_or(ServiceError::InvalidRequestID)?
-            }
-            None => {
-                info!(
-                    "No previous guarantee found for tab_id={}. This must be the first request.",
-                    claims.tab_id,
-                );
-                U256::ZERO
-            }
-        };
-
-        if claims.req_id != expected_req_id {
-            return Err(ServiceError::InvalidRequestID);
+    ) -> ServiceResult<()> {
+        let existing_guarantee =
+            repo::get_guarantee(&self.inner.persist_ctx, claims.tab_id, claims.req_id).await?;
+        if existing_guarantee.is_some() {
+            return Err(ServiceError::DuplicateGuarantee {
+                req_id: claims.req_id,
+            });
         }
 
         let now_i64 = chrono::Utc::now().timestamp();
@@ -69,10 +52,6 @@ impl CoreService {
 
         if tab.status == TabStatus::Closed || tab.settlement_status != SettlementStatus::Pending {
             return Err(ServiceError::TabClosed);
-        }
-
-        if (tab.status == TabStatus::Pending) != (expected_req_id == U256::ZERO) {
-            return Err(ServiceError::InvalidRequestID);
         }
 
         let tab_user = Address::from_str(&tab.user_address)
@@ -137,7 +116,7 @@ impl CoreService {
             return Err(ServiceError::TabClosed);
         }
 
-        Ok(claims.req_id)
+        Ok(())
     }
 
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
@@ -170,38 +149,41 @@ impl CoreService {
         )
         .await?;
 
-        match &req.claims {
-            PaymentGuaranteeRequestClaims::V1(claims) => {
-                self.verify_guarantee_request_claims_v1(claims).await?
-            }
-        };
+        let cert = self
+            .inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let self_clone = self.clone();
+                Box::pin(async move {
+                    let total_amount = match &req.claims {
+                        PaymentGuaranteeRequestClaims::V1(claims) => {
+                            self_clone
+                                .verify_guarantee_request_claims_v1(claims)
+                                .await?;
+                            repo::update_user_balance_and_tab_for_guarantee_on(txn, claims).await?
+                        }
+                    };
 
-        let total_amount = {
-            let tab_guarantees =
-                repo::get_guarantees_for_tab(&self.inner.persist_ctx, tab_id).await?;
-            let total_until_now: U256 = tab_guarantees
-                .into_iter()
-                .map(|g| U256::from_str(&g.value))
-                .collect::<Result<Vec<U256>, _>>()
-                .map_err(|e| ServiceError::Other(anyhow!(e)))?
-                .iter()
-                .sum();
+                    let claims = PaymentGuaranteeClaims::from_request(
+                        &req.claims,
+                        self_clone.inner.guarantee_domain,
+                        total_amount,
+                    );
+                    let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;
+                    repo::prepare_and_store_guarantee_on(txn, &claims, &cert).await?;
 
-            total_until_now
-                .checked_add(amount)
-                .ok_or_else(|| ServiceError::Other(anyhow!("Total amount overflow")))?
-        };
-
-        let guarantee_claims = PaymentGuaranteeClaims::from_request(
-            &req.claims,
-            self.inner.guarantee_domain,
-            total_amount,
-        );
-        let cert: BLSCert = self.create_bls_cert(guarantee_claims.clone()).await?;
-
-        repo::lock_and_store_guarantee(&self.inner.persist_ctx, &guarantee_claims, &cert)
+                    Ok(cert)
+                })
+            })
             .await
-            .map_err(ServiceError::from)?;
+            .map_err(|e| match e {
+                sea_orm::TransactionError::Transaction(inner) => inner,
+                sea_orm::TransactionError::Connection(err) => {
+                    PersistDbError::DatabaseFailure(err).into()
+                }
+            })?;
+
         Ok(cert)
     }
 }

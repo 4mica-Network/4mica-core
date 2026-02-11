@@ -1,4 +1,5 @@
 use alloy::signers::local::LocalSignerError;
+use alloy_primitives::U256;
 use anyhow::anyhow;
 use sea_orm::TransactionError as SeaTransactionError;
 use thiserror::Error;
@@ -136,9 +137,15 @@ pub enum PersistDbError {
     #[error(
         "optimistic lock conflict for user {user}, asset {asset_address}, expected version {expected_version}"
     )]
-    OptimisticLockConflict {
+    UserBalanceLockConflict {
         user: String,
         asset_address: String,
+        expected_version: i32,
+    },
+
+    #[error("tab lock conflict for tab {tab_id}, expected version {expected_version}")]
+    TabLockConflict {
+        tab_id: String,
         expected_version: i32,
     },
 
@@ -174,6 +181,9 @@ pub enum ServiceError {
 
     #[error("req_id not valid")]
     InvalidRequestID,
+
+    #[error("another guarantee with req_id {req_id} already exists")]
+    DuplicateGuarantee { req_id: U256 },
 
     #[error("start timestamp modified")]
     ModifiedStartTs,
@@ -218,7 +228,8 @@ impl From<PersistDbError> for ServiceError {
                 ))
             }
             PersistDbError::AuthTokenInvalid(msg) => ServiceError::Unauthorized(msg),
-            PersistDbError::OptimisticLockConflict { .. } => ServiceError::OptimisticLockConflict,
+            PersistDbError::UserBalanceLockConflict { .. } => ServiceError::OptimisticLockConflict,
+            PersistDbError::TabLockConflict { .. } => ServiceError::OptimisticLockConflict,
             PersistDbError::InvariantViolation(msg) => ServiceError::Other(anyhow!(msg)),
             PersistDbError::DatabaseFailure(e) => {
                 ServiceError::Db(PersistDbError::DatabaseFailure(e))

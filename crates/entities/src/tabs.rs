@@ -22,6 +22,9 @@ pub struct Model {
     pub total_amount: String,
     #[sea_orm(column_type = "Text")]
     pub paid_amount: String,
+    #[sea_orm(column_type = "Text")]
+    pub last_req_id: String,
+    pub version: i32,
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub ttl: i64,

@@ -3,6 +3,7 @@ use alloy_primitives::{Address, U256};
 use async_trait::async_trait;
 use blockchain::txtools::PaymentTx;
 use log::{info, warn};
+use tokio::time::{Duration, sleep};
 
 use crate::{
     error::BlockchainListenerError,
@@ -108,8 +109,32 @@ impl EthereumEventHandler for CoreService {
             amount
         );
 
-        repo::unlock_user_collateral(&self.inner.persist_ctx, tab_id, asset.to_string(), amount)
-            .await?;
+        let retries = self.inner.config.database_config.conflict_retries;
+        for attempt in 0..retries {
+            match repo::unlock_user_collateral(
+                &self.inner.persist_ctx,
+                tab_id,
+                asset.to_string(),
+                amount,
+            )
+            .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    warn!(
+                        "Failed to unlock user collateral (attempt {}/{}): {}",
+                        attempt + 1,
+                        retries,
+                        e
+                    );
+
+                    if attempt == retries - 1 {
+                        return Err(e.into());
+                    }
+                    sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
 
         Ok(())
     }

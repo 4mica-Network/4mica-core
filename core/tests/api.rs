@@ -5,10 +5,10 @@ use alloy::{
     sol_types::{SolStruct, eip712_domain, sol},
 };
 use alloy_sol_types::SolValue;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ};
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
-use core_service::persist::{GuaranteeData, PersistCtx, repo};
+use core_service::persist::{PersistCtx, repo};
 use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
 use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
@@ -1216,90 +1216,6 @@ async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyho
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn issue_guarantee_advances_req_id_from_manual_gap() -> anyhow::Result<()> {
-    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
-
-    let public_params = core_client.get_public_params().await.unwrap();
-    let tab = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(7200),
-        })
-        .await
-        .expect("create tab");
-    let tab_id = tab.id;
-
-    let start_ts = chrono::Utc::now().timestamp() as u64;
-    let req0 = build_signed_req(
-        &public_params,
-        &user_addr,
-        &recipient_addr,
-        tab_id,
-        U256::ZERO,
-        U256::from(4u64),
-        &wallet,
-        Some(start_ts),
-        DEFAULT_ASSET_ADDRESS,
-    )
-    .await;
-    core_client.issue_guarantee(req0).await.expect("first ok");
-
-    // Manually insert a guarantee with a higher req_id to emulate a gap.
-    let forced_req_id = U256::from(5u64);
-    let start_dt = DateTime::from_timestamp(start_ts as i64, 0)
-        .ok_or_else(|| anyhow::anyhow!("invalid timestamp"))?
-        .naive_utc();
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
-        GuaranteeData {
-            tab_id,
-            req_id: forced_req_id,
-            from: user_addr.clone(),
-            to: recipient_addr.clone(),
-            asset: DEFAULT_ASSET_ADDRESS.to_string(),
-            value: U256::from(2u64),
-            start_ts: start_dt,
-            cert: "{}".into(),
-        },
-    )
-    .await?;
-
-    let req_next = build_signed_req(
-        &public_params,
-        &user_addr,
-        &recipient_addr,
-        tab_id,
-        forced_req_id + U256::from(1u64),
-        U256::from(3u64),
-        &wallet,
-        Some(start_ts),
-        DEFAULT_ASSET_ADDRESS,
-    )
-    .await;
-    core_client
-        .issue_guarantee(req_next)
-        .await
-        .expect("next guarantee ok");
-
-    let latest = core_client
-        .get_latest_guarantee(tab_id)
-        .await
-        .expect("latest guarantee")
-        .expect("exists");
-    assert_eq!(latest.req_id, forced_req_id + U256::from(1u64));
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::serial]
 async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1479,59 +1395,140 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn issue_guarantee_rejects_pending_tab_with_existing_history() -> anyhow::Result<()> {
+async fn issue_guarantee_rejects_duplicate_tab_id_and_req_id() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = auth.address.clone();
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
 
-    let tab_result = core_client
+    let tab = core_client
         .create_payment_tab(CreatePaymentTabRequest {
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
-            ttl: None,
+            ttl: Some(3600),
         })
         .await
         .expect("create tab");
 
-    // Simulate a bad state where a pending tab already has a guarantee history.
-    let fake_start = chrono::Utc::now().naive_utc();
-    repo::store_guarantee_on(
-        ctx.db.as_ref(),
-        GuaranteeData {
-            tab_id: tab_result.id,
-            req_id: U256::ZERO,
-            from: user_addr.clone(),
-            to: recipient_addr.clone(),
-            asset: DEFAULT_ASSET_ADDRESS.to_string(),
-            value: U256::from(1u64),
-            start_ts: fake_start,
-            cert: "{}".into(),
-        },
-    )
-    .await?;
-
     let public_params = core_client.get_public_params().await.unwrap();
-    let req = build_signed_req(
+    let req1 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab_result.id,
-        U256::from(1u64),
+        tab.id,
+        U256::ZERO,
         U256::from(1u64),
         &wallet,
-        Some(fake_start.and_utc().timestamp() as u64),
+        None,
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
 
-    let result = core_client.issue_guarantee(req).await;
+    let result1 = core_client.issue_guarantee(req1).await;
+    assert!(result1.is_ok(), "First guarantee should succeed");
+
+    let req2 = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab.id,
+        U256::ZERO,
+        U256::from(2u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let result2 = core_client.issue_guarantee(req2).await;
     assert!(
-        result.is_err(),
-        "must reject if pending tab already has history"
+        result2.is_err(),
+        "Second guarantee with same tab_id and req_id should fail"
+    );
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = auth.address.clone();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
+
+    let tab_a = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(3600),
+        })
+        .await
+        .expect("create tab first time");
+
+    let tab_b = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: Some(3600),
+        })
+        .await
+        .expect("create tab second time");
+
+    assert_eq!(tab_a.id, tab_b.id, "Should return same tab_id");
+    assert_eq!(
+        tab_a.next_req_id,
+        U256::ZERO,
+        "First call should return req_id 0"
+    );
+    assert_eq!(
+        tab_b.next_req_id,
+        U256::from(1u64),
+        "Second call should return req_id 1"
+    );
+
+    let public_params = core_client.get_public_params().await.unwrap();
+
+    let req_b = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_b.id,
+        tab_b.next_req_id,
+        U256::from(5u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let result_b = core_client.issue_guarantee(req_b).await;
+    assert!(result_b.is_ok(), "Guarantee with req_id 1 should succeed");
+
+    let req_a = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab_a.id,
+        tab_a.next_req_id,
+        U256::from(3u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let result_a = core_client.issue_guarantee(req_a).await;
+    assert!(
+        result_a.is_ok(),
+        "Guarantee with req_id 0 should succeed even after req_id 1"
     );
 
     Ok(())

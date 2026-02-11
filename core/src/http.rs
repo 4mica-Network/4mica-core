@@ -104,7 +104,7 @@ impl From<ServiceError> for ApiError {
             ServiceError::InvalidParams(msg) => ApiError::new(StatusCode::BAD_REQUEST, msg),
             ServiceError::NotFound(msg) => ApiError::new(StatusCode::NOT_FOUND, msg),
             ServiceError::OptimisticLockConflict => {
-                ApiError::new(StatusCode::CONFLICT, "optimistic lock conflict")
+                ApiError::new(StatusCode::CONFLICT, "request failed, please retry")
             }
             ServiceError::UserNotRegistered => {
                 ApiError::new(StatusCode::BAD_REQUEST, "user not registered")
@@ -118,6 +118,10 @@ impl From<ServiceError> for ApiError {
             ServiceError::InvalidRequestID => {
                 ApiError::new(StatusCode::BAD_REQUEST, "req_id not valid")
             }
+            ServiceError::DuplicateGuarantee { req_id } => ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("another guarantee with req_id {req_id} already exists"),
+            ),
             ServiceError::ModifiedStartTs => {
                 ApiError::new(StatusCode::BAD_REQUEST, "start timestamp modified")
             }

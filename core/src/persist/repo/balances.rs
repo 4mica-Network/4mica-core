@@ -102,7 +102,7 @@ pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
 
     match res.rows_affected {
         1 => Ok(()),
-        0 => Err(PersistDbError::OptimisticLockConflict {
+        0 => Err(PersistDbError::UserBalanceLockConflict {
             user: user_address.into_inner(),
             asset_address: asset_address.into_inner(),
             expected_version: current_version,
