@@ -67,7 +67,7 @@ pub async fn request_withdrawal(
                             withdrawal::Column::AssetAddress,
                         ])
                         // Must use a literal 'PENDING' here so Postgres can match our partial unique index.
-                        // Otherwise, SeaORM will use a bind param and Postgres complains that there's not unique index covering the predicate.
+                        // Otherwise, SeaORM will use a bind param and Postgres complains that there's no unique index covering the predicate.
                         .target_and_where(Expr::cust(r#""Withdrawal"."status" = 'PENDING'"#))
                         .update_columns([
                             withdrawal::Column::RequestedAmount,
