@@ -45,30 +45,29 @@ impl CoreService {
             let expiry_ts = start_ts.saturating_add(existing.ttl);
             let expired = existing.ttl <= 0 || expiry_ts < now_ts;
 
+            let id = crate::util::parse_tab_id(&existing.id)?;
             if expired {
-                let id = crate::util::parse_tab_id(&existing.id)?;
                 repo::close_tab(&self.inner.persist_ctx, id).await?;
             } else {
+                // We should close the tab if the ttl is not valid.
+                // Otherwise, the user won't be able to get a tab with the same triplet.
                 if existing.ttl <= 0 || existing.ttl as u64 > max_ttl {
-                    return Err(ServiceError::InvalidParams(format!(
-                        "tab ttl exceeds tab expiration time (ttl={}, max={})",
-                        existing.ttl, max_ttl
-                    )));
+                    repo::close_tab(&self.inner.persist_ctx, id).await?;
+                } else {
+                    let next_req_id = repo::increment_and_get_last_req_id(
+                        &self.inner.persist_ctx,
+                        id,
+                        self.inner.config.database_config.conflict_retries,
+                    )
+                    .await?;
+                    return Ok(CreatePaymentTabResult {
+                        id,
+                        user_address: existing.user_address,
+                        recipient_address: existing.server_address,
+                        erc20_token: Some(asset_address),
+                        next_req_id,
+                    });
                 }
-                let id = crate::util::parse_tab_id(&existing.id)?;
-                let next_req_id = repo::increment_and_get_last_req_id(
-                    &self.inner.persist_ctx,
-                    id,
-                    self.inner.config.database_config.conflict_retries,
-                )
-                .await?;
-                return Ok(CreatePaymentTabResult {
-                    id,
-                    user_address: existing.user_address,
-                    recipient_address: existing.server_address,
-                    erc20_token: Some(asset_address),
-                    next_req_id,
-                });
             }
         }
 
