@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::error::PersistDbError;
 use crate::persist::{GuaranteeData, PersistCtx};
 use crate::util::u256_to_string;
@@ -6,134 +8,121 @@ use chrono::{TimeZone, Utc};
 use crypto::bls::BLSCert;
 use entities::guarantee;
 use entities::sea_orm_active_enums::TabStatus;
-use log::info;
-use rpc::PaymentGuaranteeClaims;
-use sea_orm::prelude::Expr;
+use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequestClaimsV1};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{
-    ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
-};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::{now, parse_address};
-use super::tabs::{get_tab_by_id_on, open_tab_on};
+use super::common::parse_address;
+use super::tabs::{get_tab_by_id_on, lock_and_update_tab_on, open_tab_on};
 use super::users::ensure_user_exists_on;
 use super::withdrawals::get_pending_withdrawal_on;
 use entities::tabs;
-pub async fn lock_and_store_guarantee(
-    ctx: &PersistCtx,
-    promise: &PaymentGuaranteeClaims,
+
+/// Returns the new total amount of the tab.
+pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
+    conn: &C,
+    claims: &PaymentGuaranteeRequestClaimsV1,
+) -> Result<U256, PersistDbError> {
+    parse_address(&claims.user_address)?;
+    parse_address(&claims.recipient_address)?;
+    parse_address(&claims.asset_address)?;
+
+    ensure_user_exists_on(conn, &claims.user_address).await?;
+    ensure_user_exists_on(conn, &claims.recipient_address).await?;
+
+    let start_dt = Utc
+        .timestamp_opt(claims.timestamp as i64, 0)
+        .single()
+        .ok_or_else(|| PersistDbError::InvalidTimestamp(claims.timestamp as i64))?
+        .naive_utc();
+
+    let asset_balance =
+        get_user_balance_on(conn, &claims.user_address, &claims.asset_address).await?;
+    let total = U256::from_str(&asset_balance.total)
+        .map_err(|_| PersistDbError::InvalidCollateral("invalid collateral".into()))?;
+    let locked = U256::from_str(&asset_balance.locked)
+        .map_err(|_| PersistDbError::InvalidCollateral("invalid locked collateral".into()))?;
+
+    let pending_amount =
+        match get_pending_withdrawal_on(conn, &claims.user_address, &claims.asset_address).await? {
+            Some(withdrawal) => U256::from_str(&withdrawal.requested_amount)
+                .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?,
+            None => U256::ZERO,
+        };
+
+    let free = total.saturating_sub(locked).saturating_sub(pending_amount);
+    if free < claims.amount {
+        return Err(PersistDbError::InsufficientCollateral);
+    }
+
+    let new_locked = locked
+        .checked_add(claims.amount)
+        .ok_or_else(|| PersistDbError::InvariantViolation("locked overflow".into()))?;
+
+    update_user_balance_and_version_on(
+        conn,
+        &claims.user_address,
+        &claims.asset_address,
+        asset_balance.version,
+        total,
+        new_locked,
+    )
+    .await?;
+
+    let tab = get_tab_by_id_on(conn, claims.tab_id).await?;
+
+    let current_total = U256::from_str(&tab.total_amount)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let new_total = current_total
+        .checked_add(claims.amount)
+        .ok_or_else(|| PersistDbError::InvariantViolation("total amount overflow".into()))?;
+
+    lock_and_update_tab_on(
+        conn,
+        claims.tab_id,
+        tab.version,
+        tabs::ActiveModel {
+            total_amount: Set(new_total.to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    if tab.status == TabStatus::Pending {
+        open_tab_on(conn, claims.tab_id, start_dt).await?;
+    }
+
+    Ok(new_total)
+}
+
+pub async fn prepare_and_store_guarantee_on<C: ConnectionTrait>(
+    conn: &C,
+    claims: &PaymentGuaranteeClaims,
     cert: &BLSCert,
 ) -> Result<(), PersistDbError> {
-    use std::str::FromStr;
-
-    let now = now();
-    parse_address(&promise.user_address)?;
-    parse_address(&promise.recipient_address)?;
-    parse_address(&promise.asset_address)?;
-
     let cert_str = serde_json::to_string(cert)
         .map_err(|e| PersistDbError::InvariantViolation(e.to_string()))?;
 
     let start_dt = Utc
-        .timestamp_opt(promise.timestamp as i64, 0)
+        .timestamp_opt(claims.timestamp as i64, 0)
         .single()
-        .ok_or_else(|| PersistDbError::InvalidTimestamp(promise.timestamp as i64))?
+        .ok_or_else(|| PersistDbError::InvalidTimestamp(claims.timestamp as i64))?
         .naive_utc();
 
-    ctx.db
-        .transaction(|txn| {
-            let promise = promise.clone();
-            let cert_str = cert_str.clone();
-            Box::pin(async move {
-                ensure_user_exists_on(txn, &promise.user_address).await?;
-                ensure_user_exists_on(txn, &promise.recipient_address).await?;
+    let data = GuaranteeData {
+        tab_id: claims.tab_id,
+        req_id: claims.req_id,
+        from: claims.user_address.clone(),
+        to: claims.recipient_address.clone(),
+        asset: claims.asset_address.clone(),
+        value: claims.amount,
+        start_ts: start_dt,
+        cert: cert_str,
+    };
+    store_guarantee_on(conn, data).await?;
 
-                let asset_balance =
-                    get_user_balance_on(txn, &promise.user_address, &promise.asset_address).await?;
-                let total = U256::from_str(&asset_balance.total)
-                    .map_err(|_| PersistDbError::InvalidCollateral("invalid collateral".into()))?;
-                let locked = U256::from_str(&asset_balance.locked).map_err(|_| {
-                    PersistDbError::InvalidCollateral("invalid locked collateral".into())
-                })?;
-
-                let pending_amount = match get_pending_withdrawal_on(
-                    txn,
-                    &promise.user_address,
-                    &promise.asset_address,
-                )
-                .await?
-                {
-                    Some(withdrawal) => U256::from_str(&withdrawal.requested_amount)
-                        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?,
-                    None => U256::ZERO,
-                };
-
-                let free = total.saturating_sub(locked).saturating_sub(pending_amount);
-                if free < promise.amount {
-                    return Err(PersistDbError::InsufficientCollateral);
-                }
-
-                let new_locked = locked
-                    .checked_add(promise.amount)
-                    .ok_or_else(|| PersistDbError::InvariantViolation("locked overflow".into()))?;
-
-                update_user_balance_and_version_on(
-                    txn,
-                    &promise.user_address,
-                    &promise.asset_address,
-                    asset_balance.version,
-                    total,
-                    new_locked,
-                )
-                .await?;
-
-                let tab = get_tab_by_id_on(txn, promise.tab_id).await?;
-                let tab_id_str = tab.id.clone();
-                let current_total = U256::from_str(&tab.total_amount)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                if promise.total_amount < current_total {
-                    return Err(PersistDbError::InvariantViolation(format!(
-                        "total_amount decreased for tab {}",
-                        tab_id_str
-                    )));
-                }
-                if promise.total_amount > current_total {
-                    tabs::Entity::update_many()
-                        .filter(tabs::Column::Id.eq(tab_id_str))
-                        .set(tabs::ActiveModel {
-                            total_amount: Set(promise.total_amount.to_string()),
-                            updated_at: Set(now),
-                            ..Default::default()
-                        })
-                        .exec(txn)
-                        .await?;
-                }
-
-                if tab.status == TabStatus::Pending {
-                    open_tab_on(txn, promise.tab_id, start_dt).await?;
-                }
-
-                let data = GuaranteeData {
-                    tab_id: promise.tab_id,
-                    req_id: promise.req_id,
-                    from: promise.user_address.clone(),
-                    to: promise.recipient_address.clone(),
-                    asset: promise.asset_address.clone(),
-                    value: promise.amount,
-                    start_ts: start_dt,
-                    cert: cert_str.clone(),
-                };
-                store_guarantee_on(txn, data).await?;
-
-                Ok::<_, PersistDbError>(())
-            })
-        })
-        .await
-        .map_err(|e| match e {
-            sea_orm::TransactionError::Transaction(inner) => inner,
-            sea_orm::TransactionError::Connection(err) => PersistDbError::DatabaseFailure(err),
-        })
+    Ok(())
 }
 
 pub async fn store_guarantee_on<C: ConnectionTrait>(
@@ -189,11 +178,7 @@ pub async fn get_guarantees_for_tab(
 ) -> Result<Vec<guarantee::Model>, PersistDbError> {
     let rows = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
-        // Pad the prefix-stripped req_id to 64 characters (256 bits) and decode it to bytes, then sort by that.
-        // 'i' is for case-insensitive matching.
-        .order_by_asc(Expr::cust(
-            r#"decode(lpad(regexp_replace(req_id, '^0x', '', 'i'), 64, '0'), 'hex')"#,
-        ))
+        .order_by_asc(guarantee::Column::CreatedAt)
         .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
@@ -204,14 +189,9 @@ pub async fn get_last_guarantee_for_tab(
     tab_id: U256,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
     let tab_id = u256_to_string(tab_id);
-    info!("Fetching last guarantee for tab {}", tab_id);
     let row = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(tab_id))
-        // Pad the prefix-stripped req_id to 64 characters (256 bits) and decode it to bytes, then sort by that.
-        // 'i' is for case-insensitive matching.
-        .order_by_desc(Expr::cust(
-            r#"decode(lpad(regexp_replace(req_id, '^0x', '', 'i'), 64, '0'), 'hex')"#,
-        ))
+        .order_by_desc(guarantee::Column::CreatedAt)
         .one(ctx.db.as_ref())
         .await?;
     Ok(row)
