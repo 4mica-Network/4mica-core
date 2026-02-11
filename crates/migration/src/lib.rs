@@ -10,6 +10,7 @@ mod m20251120_000007_auth_tables;
 mod m20260210_000008_payment_confirmations;
 mod m20260210_000009_user_transaction_tab_id;
 mod m20260210_000010_user_transaction_record_tx;
+mod m20260211_000011_blockchain_event_cursor;
 
 pub struct Migrator;
 
@@ -27,6 +28,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260210_000008_payment_confirmations::Migration),
             Box::new(m20260210_000009_user_transaction_tab_id::Migration),
             Box::new(m20260210_000010_user_transaction_record_tx::Migration),
+            Box::new(m20260211_000011_blockchain_event_cursor::Migration),
         ]
     }
 }
