@@ -103,10 +103,9 @@ impl From<ServiceError> for ApiError {
         match err {
             ServiceError::InvalidParams(msg) => ApiError::new(StatusCode::BAD_REQUEST, msg),
             ServiceError::NotFound(msg) => ApiError::new(StatusCode::NOT_FOUND, msg),
-            ServiceError::OptimisticLockConflict => ApiError::new(
-                StatusCode::CONFLICT,
-                "request failed, please retry",
-            ),
+            ServiceError::OptimisticLockConflict => {
+                ApiError::new(StatusCode::CONFLICT, "request failed, please retry")
+            }
             ServiceError::UserNotRegistered => {
                 ApiError::new(StatusCode::BAD_REQUEST, "user not registered")
             }
