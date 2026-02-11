@@ -105,7 +105,7 @@ impl From<ServiceError> for ApiError {
             ServiceError::NotFound(msg) => ApiError::new(StatusCode::NOT_FOUND, msg),
             ServiceError::OptimisticLockConflict => ApiError::new(
                 StatusCode::CONFLICT,
-                "detected data race between concurrent requests, please retry the request",
+                "request failed, please retry",
             ),
             ServiceError::UserNotRegistered => {
                 ApiError::new(StatusCode::BAD_REQUEST, "user not registered")
