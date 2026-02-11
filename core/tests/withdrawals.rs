@@ -41,7 +41,7 @@ async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
 
 #[test(tokio::test)]
 #[serial_test::serial]
-async fn duplicate_withdrawal_request_returns_domain_error() -> anyhow::Result<()> {
+async fn duplicate_withdrawal_request_updates_existing_pending() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
@@ -55,33 +55,179 @@ async fn duplicate_withdrawal_request_returns_domain_error() -> anyhow::Result<(
     )
     .await?;
 
-    let res = repo::request_withdrawal(
+    let first_withdrawal = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("First withdrawal should exist");
+
+    assert_eq!(
+        first_withdrawal.requested_amount,
+        U256::from(10u64).to_string()
+    );
+
+    repo::request_withdrawal(
         &ctx,
         user_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
         2,
         U256::from(5u64),
     )
-    .await;
-
-    match res {
-        Err(core_service::error::PersistDbError::MultiplePendingWithdrawals {
-            user,
-            asset,
-            ..
-        }) => {
-            assert_eq!(user, user_addr);
-            assert_eq!(asset, DEFAULT_ASSET_ADDRESS);
-        }
-        other => panic!("expected MultiplePendingWithdrawals error, got {:?}", other),
-    }
+    .await?;
 
     let pending = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
         .all(ctx.db.as_ref())
         .await?;
+
     assert_eq!(pending.len(), 1, "only one pending withdrawal should exist");
+
+    let updated_withdrawal = &pending[0];
+    assert_eq!(
+        updated_withdrawal.requested_amount,
+        U256::from(5u64).to_string(),
+        "requested amount should be updated to new value"
+    );
+    assert_eq!(
+        updated_withdrawal.executed_amount, "0",
+        "executed amount should be reset to 0"
+    );
+    assert_eq!(
+        updated_withdrawal.id, first_withdrawal.id,
+        "same withdrawal record should be updated, not a new one created"
+    );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
+async fn request_withdrawal_after_cancelled_creates_new_pending() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
+
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        1,
+        U256::from(10u64),
+    )
+    .await?;
+
+    let first_id = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("First withdrawal should exist")
+        .id;
+
+    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
+
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        2,
+        U256::from(5u64),
+    )
+    .await?;
+
+    let withdrawals = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .all(ctx.db.as_ref())
+        .await?;
+
+    assert_eq!(withdrawals.len(), 2, "should have two withdrawal records");
+
+    let cancelled = withdrawals
+        .iter()
+        .find(|w| w.status == WithdrawalStatus::Cancelled)
+        .expect("should have cancelled withdrawal");
+    assert_eq!(cancelled.id, first_id);
+    assert_eq!(cancelled.requested_amount, U256::from(10u64).to_string());
+
+    let pending = withdrawals
+        .iter()
+        .find(|w| w.status == WithdrawalStatus::Pending)
+        .expect("should have new pending withdrawal");
+    assert_ne!(pending.id, first_id, "should be a new withdrawal record");
+    assert_eq!(pending.requested_amount, U256::from(5u64).to_string());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
+async fn request_withdrawal_after_executed_creates_new_pending() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
+
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        1,
+        U256::from(8u64),
+    )
+    .await?;
+
+    let first_id = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("First withdrawal should exist")
+        .id;
+
+    repo::finalize_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(8u64),
+    )
+    .await?;
+
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        2,
+        U256::from(5u64),
+    )
+    .await?;
+
+    let withdrawals = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .all(ctx.db.as_ref())
+        .await?;
+
+    assert_eq!(withdrawals.len(), 2, "should have two withdrawal records");
+
+    let executed = withdrawals
+        .iter()
+        .find(|w| w.status == WithdrawalStatus::Executed)
+        .expect("should have executed withdrawal");
+    assert_eq!(executed.id, first_id);
+    assert_eq!(executed.requested_amount, U256::from(8u64).to_string());
+    assert_eq!(executed.executed_amount, U256::from(8u64).to_string());
+
+    let pending = withdrawals
+        .iter()
+        .find(|w| w.status == WithdrawalStatus::Pending)
+        .expect("should have new pending withdrawal");
+    assert_ne!(pending.id, first_id, "should be a new withdrawal record");
+    assert_eq!(pending.requested_amount, U256::from(5u64).to_string());
+    assert_eq!(pending.executed_amount, "0");
 
     Ok(())
 }
@@ -322,11 +468,11 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
 
 #[test(tokio::test)]
 #[serial_test::serial]
-async fn finalize_withdrawal_underflow_errors() -> anyhow::Result<()> {
+async fn finalize_withdrawal_exceeding_requested_amount_takes_minimum() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
 
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(3u64)).await?;
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
     repo::request_withdrawal(
         &ctx,
         user_addr.clone(),
@@ -336,19 +482,38 @@ async fn finalize_withdrawal_underflow_errors() -> anyhow::Result<()> {
     )
     .await?;
 
-    let res = repo::finalize_withdrawal(
+    repo::finalize_withdrawal(
         &ctx,
         user_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
         U256::from(5u64),
     )
-    .await;
-    assert!(res.is_err());
+    .await?;
 
     assert_eq!(
         read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
-        U256::from(3u64)
+        U256::from(8u64),
+        "Collateral should be reduced by minimum(executed, requested) = min(5, 2) = 2"
     );
+
+    let w = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .one(ctx.db.as_ref())
+        .await?
+        .unwrap();
+    assert_eq!(w.status, WithdrawalStatus::Executed);
+    assert_eq!(
+        w.executed_amount,
+        U256::from(2u64).to_string(),
+        "Executed amount should be min(5, 2) = 2"
+    );
+    assert_eq!(
+        w.requested_amount,
+        U256::from(2u64).to_string(),
+        "Requested amount unchanged"
+    );
+
     Ok(())
 }
 
@@ -460,51 +625,6 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
         "executed amount persisted correctly"
     );
 
-    Ok(())
-}
-
-#[test(tokio::test)]
-#[serial_test::serial]
-async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> {
-    let (_cfg, ctx) = init_test_env().await?;
-    let user_addr = random_address();
-    ensure_user(&ctx, &user_addr).await?;
-
-    let now = Utc::now().naive_utc();
-
-    // insert the first Pending withdrawal – should succeed
-    let w1 = ActiveModel {
-        id: Set(Uuid::new_v4().to_string()),
-        user_address: Set(user_addr.clone()),
-        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        requested_amount: Set(U256::from(5u64).to_string()),
-        executed_amount: Set("0".into()),
-        request_ts: Set(Utc::now().naive_utc()),
-        status: Set(WithdrawalStatus::Pending),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
-    Entity::insert(w1).exec(ctx.db.as_ref()).await?;
-
-    // insert a second Pending withdrawal for the same user – should violate the
-    // partial unique index and return a database error.
-    let w2 = ActiveModel {
-        id: Set(Uuid::new_v4().to_string()),
-        user_address: Set(user_addr.clone()),
-        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        requested_amount: Set(U256::from(5u64).to_string()),
-        executed_amount: Set("0".into()),
-        request_ts: Set(Utc::now().naive_utc()),
-        status: Set(WithdrawalStatus::Pending),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
-
-    let res = Entity::insert(w2).exec(ctx.db.as_ref()).await;
-    assert!(
-        res.is_err(),
-        "Second pending withdrawal for same user should violate unique index"
-    );
     Ok(())
 }
 
