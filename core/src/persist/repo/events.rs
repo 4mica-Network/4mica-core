@@ -1,6 +1,6 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
-use entities::blockchain_event;
+use entities::{blockchain_event, blockchain_event_cursor};
 use sea_orm::ColumnTrait;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{EntityTrait, QueryFilter, QueryOrder, Set};
@@ -56,5 +56,44 @@ pub async fn delete_blockchain_event(
         .filter(blockchain_event::Column::LogIndex.eq(log_index as i64))
         .exec(ctx.db.as_ref())
         .await?;
+    Ok(())
+}
+
+pub async fn get_blockchain_event_cursor(
+    ctx: &PersistCtx,
+    chain_id: u64,
+) -> Result<Option<blockchain_event_cursor::Model>, PersistDbError> {
+    blockchain_event_cursor::Entity::find()
+        .filter(blockchain_event_cursor::Column::ChainId.eq(chain_id as i64))
+        .one(ctx.db.as_ref())
+        .await
+        .map_err(Into::into)
+}
+
+pub async fn upsert_blockchain_event_cursor(
+    ctx: &PersistCtx,
+    chain_id: u64,
+    last_confirmed_block_number: u64,
+) -> Result<(), PersistDbError> {
+    let now = now();
+    let row = blockchain_event_cursor::ActiveModel {
+        chain_id: Set(chain_id as i64),
+        last_confirmed_block_number: Set(last_confirmed_block_number as i64),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+
+    blockchain_event_cursor::Entity::insert(row)
+        .on_conflict(
+            OnConflict::column(blockchain_event_cursor::Column::ChainId)
+                .update_columns([
+                    blockchain_event_cursor::Column::LastConfirmedBlockNumber,
+                    blockchain_event_cursor::Column::UpdatedAt,
+                ])
+                .to_owned(),
+        )
+        .exec_without_returning(ctx.db.as_ref())
+        .await?;
+
     Ok(())
 }
