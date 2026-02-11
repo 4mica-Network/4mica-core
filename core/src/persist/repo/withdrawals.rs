@@ -7,6 +7,7 @@ use entities::withdrawal;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter,
     QueryOrder, Set, TransactionTrait,
+    sea_query::{Expr, OnConflict},
 };
 use std::str::FromStr;
 
@@ -54,7 +55,29 @@ pub async fn request_withdrawal(
                     created_at: Set(now),
                     updated_at: Set(now),
                 };
+
+                // We have a partial unique index on (user_address, asset_address) where status = 'PENDING'
+                // which means that a user can only have one pending withdrawal per asset,
+                //   so we need to handle the conflict here.
+                // And we can't throw here because this request has been already updated on the chain.
                 withdrawal::Entity::insert(withdrawal_model)
+                    .on_conflict(
+                        OnConflict::columns([
+                            withdrawal::Column::UserAddress,
+                            withdrawal::Column::AssetAddress,
+                        ])
+                        // Must use a literal 'PENDING' here so Postgres can match our partial unique index.
+                        // Otherwise, SeaORM will use a bind param and Postgres complains that there's not unique index covering the predicate.
+                        .target_and_where(Expr::cust(r#""Withdrawal"."status" = 'PENDING'"#))
+                        .update_columns([
+                            withdrawal::Column::RequestedAmount,
+                            withdrawal::Column::ExecutedAmount,
+                            withdrawal::Column::RequestTs,
+                            withdrawal::Column::Status,
+                            withdrawal::Column::UpdatedAt,
+                        ])
+                        .to_owned(),
+                    )
                     .exec(txn)
                     .await
                     .map_err(|e| map_pending_withdrawal_err(e, &user_address, &asset_address))?;
@@ -117,6 +140,7 @@ pub async fn finalize_withdrawal(
                         asset: asset_address.clone(),
                     });
                 }
+                // This should never happen!
                 if pending.len() > 1 {
                     return Err(PersistDbError::MultiplePendingWithdrawals {
                         user: user_address.clone(),
@@ -128,11 +152,10 @@ pub async fn finalize_withdrawal(
 
                 let requested = U256::from_str(&withdrawal.requested_amount)
                     .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
-                if executed_amount > requested {
-                    return Err(PersistDbError::InvalidTxAmount(
-                        "executed_amount exceeds requested_amount".into(),
-                    ));
-                }
+
+                // `executed_amount` and `requested` should be the same, but if not, we take the minimum as a best effort.
+                //  We can't throw here because it's been already executed on the chain.
+                let executed_amount = std::cmp::min(executed_amount, requested);
 
                 let asset_balance =
                     get_user_balance_on(txn, &user_address, &withdrawal.asset_address).await?;
