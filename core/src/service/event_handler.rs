@@ -109,9 +109,8 @@ impl EthereumEventHandler for CoreService {
             amount
         );
 
-        const MAX_RETRIES: u32 = 5;
-
-        for attempt in 0..MAX_RETRIES {
+        let retries = self.inner.config.database_config.conflict_retries;
+        for attempt in 0..retries {
             match repo::unlock_user_collateral(
                 &self.inner.persist_ctx,
                 tab_id,
@@ -125,11 +124,11 @@ impl EthereumEventHandler for CoreService {
                     warn!(
                         "Failed to unlock user collateral (attempt {}/{}): {}",
                         attempt + 1,
-                        MAX_RETRIES,
+                        retries,
                         e
                     );
 
-                    if attempt == MAX_RETRIES - 1 {
+                    if attempt == retries - 1 {
                         return Err(e.into());
                     }
                     sleep(Duration::from_secs(2)).await;

@@ -198,11 +198,11 @@ pub async fn get_tab_ttl_seconds(
 pub async fn increment_and_get_last_req_id(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
+    retries: usize,
 ) -> Result<U256, PersistDbError> {
     let tab_id_str = u256_to_string(tab_id);
 
-    const MAX_RETRIES: u32 = 5;
-    for attempt in 0..MAX_RETRIES {
+    for attempt in 0..retries {
         let tab = tabs::Entity::find_by_id(&tab_id_str)
             .one(ctx.db.as_ref())
             .await?
@@ -229,7 +229,7 @@ pub async fn increment_and_get_last_req_id(
         {
             Ok(()) => return Ok(next_req_id),
             Err(PersistDbError::TabLockConflict { .. }) => {
-                if attempt == MAX_RETRIES - 1 {
+                if attempt == retries - 1 {
                     return Err(PersistDbError::InvariantViolation(
                         "Failed to increment req_id after maximum retries (version conflict)"
                             .into(),

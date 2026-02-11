@@ -56,8 +56,12 @@ impl CoreService {
                     )));
                 }
                 let id = crate::util::parse_tab_id(&existing.id)?;
-                let next_req_id =
-                    repo::increment_and_get_last_req_id(&self.inner.persist_ctx, id).await?;
+                let next_req_id = repo::increment_and_get_last_req_id(
+                    &self.inner.persist_ctx,
+                    id,
+                    self.inner.config.database_config.conflict_retries,
+                )
+                .await?;
                 return Ok(CreatePaymentTabResult {
                     id,
                     user_address: existing.user_address,
