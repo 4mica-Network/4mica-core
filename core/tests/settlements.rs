@@ -19,7 +19,7 @@ use test_log::test;
 
 mod common;
 use crate::common::fixtures::{clear_all_tables, read_collateral, read_locked_collateral};
-use crate::common::setup::{E2eEnvironment, setup_e2e_environment};
+use crate::common::setup::setup_e2e_environment;
 
 static NUMBER_OF_TRIALS: u32 = 60;
 //
@@ -71,13 +71,10 @@ async fn insert_tab(
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -147,13 +144,10 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -241,12 +235,9 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
 
     let expected_user = unique_addr();
@@ -296,13 +287,10 @@ async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -369,13 +357,10 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 #[serial_test::serial]
 async fn payment_transaction_does_not_unlock_collateral_before_confirmation() -> anyhow::Result<()>
 {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -443,14 +428,10 @@ async fn payment_transaction_does_not_unlock_collateral_before_confirmation() ->
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler,
-        ..
-    } = setup_e2e_environment().await?;
-    drop(scheduler);
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
 
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();

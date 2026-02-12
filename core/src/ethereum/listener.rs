@@ -23,6 +23,20 @@ pub struct EthereumListener {
     handler: Arc<dyn EthereumEventHandler>,
 }
 
+struct ListenLoopArgs<P>
+where
+    P: alloy::providers::Provider + 'static,
+{
+    provider: P,
+    base_filter: Filter,
+    address: Address,
+    config: EthereumConfig,
+    persist_ctx: PersistCtx,
+    handler: Arc<dyn EthereumEventHandler>,
+    ready_tx: Option<oneshot::Sender<()>>,
+    initial_backfill_blocks: u64,
+}
+
 impl EthereumListener {
     pub fn new(
         config: EthereumConfig,
@@ -53,122 +67,174 @@ impl EthereumListener {
             .events(all_event_signatures());
 
         let persist_ctx = self.persist_ctx.clone();
+        let config = self.config.clone();
         let initial_backfill_blocks = self
             .config
             .number_of_blocks_to_confirm
             .saturating_add(self.config.number_of_pending_blocks);
-        let handle = tokio::spawn(Self::listen_loop(
-            self.provider.clone(),
+        let handle = tokio::spawn(Self::listen_loop(ListenLoopArgs {
+            provider: self.provider.clone(),
             base_filter,
             address,
+            config,
             persist_ctx,
-            self.handler.clone(),
+            handler: self.handler.clone(),
             ready_tx,
             initial_backfill_blocks,
-        ));
+        }));
         Ok(handle)
     }
 
-    async fn listen_loop(
-        provider: impl alloy::providers::Provider + 'static,
-        base_filter: Filter,
-        address: Address,
-        persist_ctx: PersistCtx,
-        handler: Arc<dyn EthereumEventHandler>,
-        mut ready_tx: Option<oneshot::Sender<()>>,
-        initial_backfill_blocks: u64,
-    ) {
+    async fn listen_loop<P>(args: ListenLoopArgs<P>)
+    where
+        P: alloy::providers::Provider + 'static,
+    {
+        let ListenLoopArgs {
+            provider,
+            base_filter,
+            address,
+            config,
+            persist_ctx,
+            handler,
+            mut ready_tx,
+            initial_backfill_blocks,
+        } = args;
         let mut delay = Duration::from_secs(5);
 
         loop {
-            let last_event = match repo::get_last_processed_blockchain_event(&persist_ctx).await {
-                Ok(event) => event,
+            let confirmed_head = match Self::confirmed_head(&provider, &config).await {
+                Ok(Some(head)) => head,
+                Ok(None) => {
+                    warn!("Confirmed head unavailable; retrying in {delay:?}...");
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
                 Err(e) => {
-                    error!("Failed to get the last processed blockchain event: {}", e);
+                    error!("Failed to resolve confirmed head: {e}");
                     warn!("Restarting listener in {delay:?}...");
                     tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(300));
                     continue;
                 }
             };
 
-            let sub_filter = base_filter.clone().from_block(BlockNumberOrTag::Latest);
-            match provider.subscribe_logs(&sub_filter).await {
-                Ok(sub) => {
-                    info!(
-                        "Subscribed to new events from address {address:?} starting at latest block"
-                    );
-
-                    // Fetch historical logs from last processed event (or a small backfill window) to latest
-                    let last_processed_block = last_event.map(|e| e.block_number as u64);
-                    let mut backfill_start = last_processed_block;
-                    if backfill_start.is_none() && initial_backfill_blocks > 0 {
-                        match provider.get_block_number().await {
-                            Ok(latest) => {
-                                let start = latest.saturating_sub(initial_backfill_blocks);
-                                backfill_start = Some(start);
-                                info!(
-                                    "No last processed event found; backfilling from block {start} to latest"
-                                );
-                            }
-                            Err(e) => {
-                                error!("Failed to fetch latest block for backfill: {e}");
-                            }
-                        }
-                    }
-
-                    let historical_logs = if let Some(start_block) = backfill_start {
-                        let historical_filter = base_filter
-                            .clone()
-                            .from_block(start_block)
-                            .to_block(BlockNumberOrTag::Latest);
-
-                        info!("Fetching historical logs from block {start_block:?} to latest");
-
-                        match provider.get_logs(&historical_filter).await {
-                            Ok(logs) => {
-                                info!("Fetched {} historical log(s)", logs.len());
-                                logs
-                            }
-                            Err(e) => {
-                                error!("Failed to fetch historical logs: {e}");
-                                warn!("Restarting listener in {delay:?}...");
-                                tokio::time::sleep(delay).await;
-                                delay = (delay * 2).min(Duration::from_secs(300));
-                                continue;
-                            }
-                        }
-                    } else {
-                        vec![]
-                    };
-
-                    // Chain historical logs with live subscription stream
-                    let historical_stream = stream::iter(historical_logs);
-                    let live_stream = sub.into_stream();
-                    let mut combined_stream = historical_stream.chain(live_stream);
-
-                    // Reset the delay to 5 seconds on successful subscription
-                    delay = Duration::from_secs(5);
-
-                    // Signal that the listener is ready
-                    if let Some(tx) = ready_tx.take() {
-                        let _ = tx.send(());
-                        info!("Listener is ready and signaled readiness");
-                    }
-
-                    if let Err(e) =
-                        Self::process_events(&handler, &persist_ctx, &mut combined_stream).await
-                    {
-                        error!("Listener crashed: {e:?}");
-                    }
-                }
-                Err(err) => {
-                    error!("Failed to subscribe to logs: {err}");
-                }
+            if let Some(tx) = ready_tx.take() {
+                let _ = tx.send(());
+                info!("Listener is ready and signaled readiness");
             }
 
-            warn!("Restarting listener in {delay:?}...");
+            let cursor =
+                match repo::get_blockchain_event_cursor(&persist_ctx, config.chain_id).await {
+                    Ok(cursor) => cursor,
+                    Err(e) => {
+                        error!("Failed to get blockchain event cursor: {e}");
+                        warn!("Restarting listener in {delay:?}...");
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(300));
+                        continue;
+                    }
+                };
+
+            let start_block = match cursor {
+                Some(cursor) => (cursor.last_confirmed_block_number as u64).saturating_add(1),
+                None => confirmed_head.saturating_sub(initial_backfill_blocks),
+            };
+
+            if start_block > confirmed_head {
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+
+            let filter = base_filter
+                .clone()
+                .from_block(start_block)
+                .to_block(BlockNumberOrTag::Number(confirmed_head));
+
+            info!(
+                "Fetching confirmed logs from block {start_block} to {confirmed_head} for address {address:?}"
+            );
+
+            let logs = match provider.get_logs(&filter).await {
+                Ok(logs) => {
+                    if !logs.is_empty() {
+                        info!("Fetched {} confirmed log(s)", logs.len());
+                    }
+                    logs
+                }
+                Err(e) => {
+                    error!("Failed to fetch confirmed logs: {e}");
+                    warn!("Restarting listener in {delay:?}...");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(300));
+                    continue;
+                }
+            };
+
+            let mut logs = logs;
+            logs.sort_by(|a, b| {
+                let block_cmp = a.block_number.cmp(&b.block_number);
+                if block_cmp == std::cmp::Ordering::Equal {
+                    a.log_index.cmp(&b.log_index)
+                } else {
+                    block_cmp
+                }
+            });
+
+            let mut log_stream = stream::iter(logs);
+            if let Err(e) = Self::process_events(&handler, &persist_ctx, &mut log_stream).await {
+                error!("Event processing error: {e}");
+                warn!("Retrying listener in {delay:?}...");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(300));
+                continue;
+            }
+
+            if let Err(e) =
+                repo::upsert_blockchain_event_cursor(&persist_ctx, config.chain_id, confirmed_head)
+                    .await
+            {
+                error!("Failed to update blockchain event cursor: {e}");
+                warn!("Retrying listener in {delay:?}...");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(300));
+                continue;
+            }
+
+            delay = Duration::from_secs(5);
             tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(Duration::from_secs(300));
+        }
+    }
+
+    async fn confirmed_head(
+        provider: &impl alloy::providers::Provider,
+        config: &EthereumConfig,
+    ) -> Result<Option<u64>, BlockchainListenerError> {
+        match config.confirmation_mode()? {
+            crate::config::ConfirmationMode::Depth => {
+                let latest = provider
+                    .get_block_number()
+                    .await
+                    .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+                Ok(Some(
+                    latest.saturating_sub(config.number_of_blocks_to_confirm),
+                ))
+            }
+            crate::config::ConfirmationMode::Safe => {
+                let block = provider
+                    .get_block_by_number(BlockNumberOrTag::Safe)
+                    .full()
+                    .await
+                    .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+                Ok(block.map(|b| b.header.number))
+            }
+            crate::config::ConfirmationMode::Finalized => {
+                let block = provider
+                    .get_block_by_number(BlockNumberOrTag::Finalized)
+                    .full()
+                    .await
+                    .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+                Ok(block.map(|b| b.header.number))
+            }
         }
     }
 
@@ -287,14 +353,14 @@ impl EthereumListener {
 
                         error!("Event handler error: {e}");
                         if inserted
-                            && is_retryable_handler_error(&e)
                             && let Err(err) =
                                 repo::delete_blockchain_event(persist_ctx, block_number, log_index)
                                     .await
                         {
                             error!("Failed to delete blockchain event: {err}");
                         }
-                        break;
+
+                        return Err(e);
                     }
                 }
             }

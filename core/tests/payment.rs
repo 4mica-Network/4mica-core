@@ -220,8 +220,6 @@ async fn reorg_reverts_pending_transactions() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
     let core_service = env.core_service.clone();
-    let scheduler = env.scheduler;
-    drop(scheduler);
 
     let persist_ctx = core_service.persist_ctx();
     let chain_id = provider.get_chain_id().await?;

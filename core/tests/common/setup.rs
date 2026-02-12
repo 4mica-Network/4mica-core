@@ -41,6 +41,13 @@ pub struct E2eEnvironment {
     pub signer_addr: Address,
 }
 
+impl Drop for E2eEnvironment {
+    fn drop(&mut self) {
+        // Prevent background listeners from leaking across tests and contaminating DB state.
+        self.core_service.kill_listener();
+    }
+}
+
 pub fn dummy_verification_key() -> (
     FixedBytes<32>,
     FixedBytes<32>,
