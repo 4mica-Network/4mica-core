@@ -12,7 +12,7 @@ use std::str::FromStr;
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{new_uuid, now, parse_address};
 use super::settlement::transition_settlement;
-use super::tabs::get_tab_by_id_on;
+use super::tabs::{get_tab_by_id_on, lock_and_update_tab_on};
 use super::users::ensure_user_exists_on;
 use crate::ethereum::event_data::EventMeta;
 
@@ -174,17 +174,13 @@ pub async fn unlock_user_collateral(
 
                 let mut tab_update = tabs::ActiveModel {
                     paid_amount: Set(new_paid.to_string()),
-                    updated_at: Set(now),
                     ..Default::default()
                 };
                 if tab.settlement_status == SettlementStatus::Pending && new_paid >= total_amount {
                     tab_update.settlement_status = Set(SettlementStatus::Settled);
                 }
-                tabs::Entity::update_many()
-                    .filter(tabs::Column::Id.eq(tab_id_str.clone()))
-                    .set(tab_update)
-                    .exec(txn)
-                    .await?;
+
+                lock_and_update_tab_on(txn, tab_id, tab.version, tab_update).await?;
 
                 let ev = collateral_event::ActiveModel {
                     id: Set(new_uuid()),

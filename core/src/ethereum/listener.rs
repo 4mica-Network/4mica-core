@@ -623,7 +623,7 @@ impl EthereumListener {
 fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
     matches!(
         err,
-        BlockchainListenerError::Db(PersistDbError::OptimisticLockConflict { .. })
+        BlockchainListenerError::Db(PersistDbError::UserBalanceLockConflict { .. })
             | BlockchainListenerError::Db(PersistDbError::DatabaseFailure(_))
             | BlockchainListenerError::DatabaseFailure(_)
     )

@@ -167,10 +167,17 @@ impl AuthConfig {
     }
 }
 
+#[derive(Debug, Clone, Envconfig)]
+pub struct DatabaseConfig {
+    #[envconfig(from = "DATABASE_CONFLICT_RETRIES", default = "5")]
+    pub conflict_retries: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub server_config: ServerConfig,
     pub ethereum_config: EthereumConfig,
+    pub database_config: DatabaseConfig,
     pub secrets: Secrets,
     pub eip712: Eip712Config,
     pub auth: AuthConfig,
@@ -185,6 +192,8 @@ impl AppConfig {
         ethereum_config
             .validate()
             .context("Invalid ethereum config")?;
+        let database_config =
+            DatabaseConfig::init_from_env().context("Failed to load database config")?;
         let secrets = Secrets::init_from_env().context("Failed to load secrets")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
@@ -193,6 +202,7 @@ impl AppConfig {
         Ok(Self {
             server_config,
             ethereum_config,
+            database_config,
             secrets,
             eip712,
             auth,

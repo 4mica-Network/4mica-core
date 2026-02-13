@@ -142,6 +142,8 @@ async fn returns_existing_pending_tab_when_active() {
         .expect("second tab");
 
     assert_eq!(first.id, second.id);
+    assert_eq!(first.next_req_id, U256::ZERO);
+    assert_eq!(second.next_req_id, U256::from(1u8));
 
     // TTL should remain what the first tab was created with.
     let stored = repo::get_tab_by_id(&ctx, first.id)
@@ -151,6 +153,7 @@ async fn returns_existing_pending_tab_when_active() {
     assert_eq!(stored.ttl, 600);
     assert_eq!(stored.status, TabStatus::Pending);
     assert_eq!(stored.settlement_status, SettlementStatus::Pending);
+    assert_eq!(stored.last_req_id, "0x1");
 }
 
 #[tokio::test]
@@ -183,6 +186,8 @@ async fn closes_expired_pending_tab_and_creates_new_one() {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         created_at: Set(expired_start),
         updated_at: Set(expired_start),
     };
@@ -205,6 +210,7 @@ async fn closes_expired_pending_tab_and_creates_new_one() {
         .expect("tab created after closing expired");
 
     assert_ne!(created.id, expired_id);
+    assert_eq!(created.next_req_id, U256::ZERO);
 
     let fetched = repo::get_tab_by_id(&ctx, expired_id)
         .await
@@ -243,6 +249,8 @@ async fn returns_existing_open_tab_when_active() {
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         created_at: Set(open_start),
         updated_at: Set(open_start),
     };
@@ -265,12 +273,15 @@ async fn returns_existing_open_tab_when_active() {
         .expect("open tab reused");
 
     assert_eq!(reused.id, open_id);
+    assert_eq!(reused.next_req_id, U256::from(1u8));
+
     let fetched = repo::get_tab_by_id(&ctx, reused.id)
         .await
         .expect("tab fetch")
         .expect("tab present");
     assert_eq!(fetched.status, TabStatus::Open);
     assert_eq!(fetched.ttl, open_ttl);
+    assert_eq!(fetched.last_req_id, "0x1");
 }
 
 #[tokio::test]
@@ -301,6 +312,8 @@ async fn uses_default_ttl_when_not_provided() {
         .await
         .expect("tab with default ttl");
 
+    assert_eq!(tab.next_req_id, U256::ZERO);
+
     let stored = repo::get_tab_by_id(&ctx, tab.id)
         .await
         .expect("tab fetch")
@@ -308,6 +321,7 @@ async fn uses_default_ttl_when_not_provided() {
     assert_eq!(stored.ttl, DEFAULT_TTL_SECS as i64);
     assert_eq!(stored.user_address, user);
     assert_eq!(stored.server_address, recipient);
+    assert_eq!(stored.last_req_id, "0x0");
 }
 
 #[tokio::test]
@@ -378,6 +392,7 @@ async fn facilitator_can_create_tab_for_recipient() {
 
     assert_eq!(tab.user_address, user);
     assert_eq!(tab.recipient_address, recipient);
+    assert_eq!(tab.next_req_id, U256::ZERO);
 }
 struct MockContractApi {
     chain_id: u64,

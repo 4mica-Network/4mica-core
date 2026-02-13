@@ -1,11 +1,13 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use crate::util::u256_to_string;
+use alloy::primitives::U256;
 use chrono::NaiveDateTime;
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::tabs;
 use log::info;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use std::str::FromStr;
 
 use super::common::{now, parse_address};
 use super::users::ensure_user_is_active;
@@ -36,6 +38,8 @@ pub async fn create_pending_tab(
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         created_at: Set(now()),
         updated_at: Set(now()),
     };
@@ -189,4 +193,80 @@ pub async fn get_tab_ttl_seconds(
         .ok_or_else(|| PersistDbError::TabNotFound(tab_id))?;
 
     Ok(tab.ttl as u64)
+}
+
+pub async fn increment_and_get_last_req_id(
+    ctx: &PersistCtx,
+    tab_id: alloy::primitives::U256,
+    retries: usize,
+) -> Result<U256, PersistDbError> {
+    let tab_id_str = u256_to_string(tab_id);
+
+    for attempt in 0..retries {
+        let tab = tabs::Entity::find_by_id(&tab_id_str)
+            .one(ctx.db.as_ref())
+            .await?
+            .ok_or_else(|| PersistDbError::TabNotFound(tab_id_str.clone()))?;
+
+        let current_req_id = U256::from_str(&tab.last_req_id).map_err(|e| {
+            PersistDbError::InvariantViolation(format!("Invalid last_req_id: {}", e))
+        })?;
+
+        let next_req_id = current_req_id
+            .checked_add(U256::from(1u8))
+            .ok_or_else(|| PersistDbError::InvariantViolation("req_id overflow".into()))?;
+
+        match lock_and_update_tab_on(
+            ctx.db.as_ref(),
+            tab_id,
+            tab.version,
+            tabs::ActiveModel {
+                last_req_id: Set(u256_to_string(next_req_id)),
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            Ok(()) => return Ok(next_req_id),
+            Err(PersistDbError::TabLockConflict { .. }) => {
+                if attempt == retries - 1 {
+                    return Err(PersistDbError::InvariantViolation(
+                        "Failed to increment req_id after maximum retries (version conflict)"
+                            .into(),
+                    ));
+                }
+            }
+            Err(e) => return Err(e),
+        };
+    }
+
+    unreachable!()
+}
+
+pub async fn lock_and_update_tab_on<C: ConnectionTrait>(
+    conn: &C,
+    tab_id: U256,
+    current_version: i32,
+    mut update: tabs::ActiveModel,
+) -> Result<(), PersistDbError> {
+    let tab_id_str = u256_to_string(tab_id);
+
+    update.version = Set(current_version + 1);
+    update.updated_at = Set(now());
+
+    let result = tabs::Entity::update_many()
+        .filter(tabs::Column::Id.eq(&tab_id_str))
+        .filter(tabs::Column::Version.eq(current_version))
+        .set(update)
+        .exec(conn)
+        .await?;
+
+    if result.rows_affected == 0 {
+        return Err(PersistDbError::TabLockConflict {
+            tab_id: tab_id_str,
+            expected_version: current_version,
+        });
+    }
+
+    Ok(())
 }

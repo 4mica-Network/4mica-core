@@ -50,6 +50,8 @@ async fn insert_tab(
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),
         ttl: Set(3600i64),
