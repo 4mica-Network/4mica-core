@@ -157,8 +157,9 @@ pub async fn mark_payment_transaction_confirmed(
         ]))
         .col_expr(
             user_transaction::Column::Status,
-            user_transaction::Column::Status
-                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Confirmed)),
+            user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                UserTransactionStatus::Confirmed,
+            )),
         )
         .col_expr(
             user_transaction::Column::ConfirmedAt,
@@ -185,8 +186,9 @@ pub async fn mark_payment_transaction_recorded(
         .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Pending))
         .col_expr(
             user_transaction::Column::Status,
-            user_transaction::Column::Status
-                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Recorded)),
+            user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                UserTransactionStatus::Recorded,
+            )),
         )
         .col_expr(
             user_transaction::Column::RecordTxHash,
@@ -225,8 +227,9 @@ pub async fn mark_payment_transaction_reverted(
         .filter(user_transaction::Column::TxId.eq(transaction_id))
         .col_expr(
             user_transaction::Column::Status,
-            user_transaction::Column::Status
-                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Reverted)),
+            user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                UserTransactionStatus::Reverted,
+            )),
         )
         .col_expr(
             user_transaction::Column::UpdatedAt,
@@ -268,8 +271,9 @@ pub async fn mark_payment_transactions_reverted_in_block_range(
         .filter(range_condition)
         .col_expr(
             user_transaction::Column::Status,
-            user_transaction::Column::Status
-                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Reverted)),
+            user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                UserTransactionStatus::Reverted,
+            )),
         )
         .col_expr(
             user_transaction::Column::UpdatedAt,
@@ -311,8 +315,9 @@ pub async fn mark_payment_transaction_finalized(
         )
         .col_expr(
             user_transaction::Column::Status,
-            user_transaction::Column::Status
-                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Finalized)),
+            user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                UserTransactionStatus::Finalized,
+            )),
         )
         .col_expr(
             user_transaction::Column::UpdatedAt,
