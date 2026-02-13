@@ -1,6 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
+use entities::sea_orm_active_enums::UserTransactionStatus;
 use entities::user_transaction;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
@@ -39,7 +40,7 @@ pub async fn submit_payment_transaction(
         record_tx_block_number: Set(None),
         record_tx_block_hash: Set(None),
         recorded_at: Set(None),
-        status: Set("confirmed".to_string()),
+        status: Set(UserTransactionStatus::Confirmed),
         confirmed_at: Set(None),
         verified: Set(false),
         finalized: Set(false),
@@ -94,7 +95,7 @@ pub async fn submit_pending_payment_transaction(
         record_tx_block_number: Set(None),
         record_tx_block_hash: Set(None),
         recorded_at: Set(None),
-        status: Set("pending".to_string()),
+        status: Set(UserTransactionStatus::Pending),
         confirmed_at: Set(None),
         verified: Set(false),
         finalized: Set(false),
@@ -120,7 +121,10 @@ pub async fn get_pending_transactions_upto(
     max_block_number: u64,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let rows = user_transaction::Entity::find()
-        .filter(user_transaction::Column::Status.is_in(["pending", "confirmed"]))
+        .filter(user_transaction::Column::Status.is_in([
+            UserTransactionStatus::Pending,
+            UserTransactionStatus::Confirmed,
+        ]))
         .filter(user_transaction::Column::BlockNumber.lte(max_block_number as i64))
         .order_by_asc(user_transaction::Column::BlockNumber)
         .all(ctx.db.as_ref())
@@ -133,7 +137,7 @@ pub async fn get_recorded_transactions_upto(
     max_block_number: u64,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let rows = user_transaction::Entity::find()
-        .filter(user_transaction::Column::Status.eq("recorded"))
+        .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Recorded))
         .filter(user_transaction::Column::RecordTxBlockNumber.lte(max_block_number as i64))
         .order_by_asc(user_transaction::Column::RecordTxBlockNumber)
         .all(ctx.db.as_ref())
@@ -147,10 +151,14 @@ pub async fn mark_payment_transaction_confirmed(
 ) -> Result<(), PersistDbError> {
     user_transaction::Entity::update_many()
         .filter(user_transaction::Column::TxId.eq(transaction_id))
-        .filter(user_transaction::Column::Status.is_in(["pending", "confirmed"]))
+        .filter(user_transaction::Column::Status.is_in([
+            UserTransactionStatus::Pending,
+            UserTransactionStatus::Confirmed,
+        ]))
         .col_expr(
             user_transaction::Column::Status,
-            sea_orm::sea_query::Expr::value("confirmed"),
+            user_transaction::Column::Status
+                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Confirmed)),
         )
         .col_expr(
             user_transaction::Column::ConfirmedAt,
@@ -174,10 +182,11 @@ pub async fn mark_payment_transaction_recorded(
 ) -> Result<(), PersistDbError> {
     user_transaction::Entity::update_many()
         .filter(user_transaction::Column::TxId.eq(transaction_id))
-        .filter(user_transaction::Column::Status.eq("pending"))
+        .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Pending))
         .col_expr(
             user_transaction::Column::Status,
-            sea_orm::sea_query::Expr::value("recorded"),
+            user_transaction::Column::Status
+                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Recorded)),
         )
         .col_expr(
             user_transaction::Column::RecordTxHash,
@@ -216,7 +225,8 @@ pub async fn mark_payment_transaction_reverted(
         .filter(user_transaction::Column::TxId.eq(transaction_id))
         .col_expr(
             user_transaction::Column::Status,
-            sea_orm::sea_query::Expr::value("reverted"),
+            user_transaction::Column::Status
+                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Reverted)),
         )
         .col_expr(
             user_transaction::Column::UpdatedAt,
@@ -250,11 +260,16 @@ pub async fn mark_payment_transactions_reverted_in_block_range(
 
     let result = user_transaction::Entity::update_many()
         .filter(user_transaction::Column::Finalized.eq(false))
-        .filter(user_transaction::Column::Status.is_in(["pending", "confirmed", "recorded"]))
+        .filter(user_transaction::Column::Status.is_in([
+            UserTransactionStatus::Pending,
+            UserTransactionStatus::Confirmed,
+            UserTransactionStatus::Recorded,
+        ]))
         .filter(range_condition)
         .col_expr(
             user_transaction::Column::Status,
-            sea_orm::sea_query::Expr::value("reverted"),
+            user_transaction::Column::Status
+                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Reverted)),
         )
         .col_expr(
             user_transaction::Column::UpdatedAt,
@@ -296,7 +311,8 @@ pub async fn mark_payment_transaction_finalized(
         )
         .col_expr(
             user_transaction::Column::Status,
-            sea_orm::sea_query::Expr::value("finalized"),
+            user_transaction::Column::Status
+                .save_as(sea_orm::sea_query::Expr::val(UserTransactionStatus::Finalized)),
         )
         .col_expr(
             user_transaction::Column::UpdatedAt,

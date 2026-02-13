@@ -252,7 +252,8 @@ pub async fn revert_withdrawal_cancel(
         .filter(withdrawal::Column::CancelEventLogIndex.eq(event.log_index as i64))
         .col_expr(
             withdrawal::Column::Status,
-            sea_orm::sea_query::Expr::value(WithdrawalStatus::Pending),
+            withdrawal::Column::Status
+                .save_as(sea_orm::sea_query::Expr::val(WithdrawalStatus::Pending)),
         )
         .col_expr(
             withdrawal::Column::CancelEventChainId,
@@ -316,7 +317,8 @@ pub async fn revert_withdrawal_execution(
                     .filter(withdrawal::Column::ExecuteEventLogIndex.eq(event.log_index as i64))
                     .col_expr(
                         withdrawal::Column::Status,
-                        sea_orm::sea_query::Expr::value(WithdrawalStatus::Pending),
+                        withdrawal::Column::Status
+                            .save_as(sea_orm::sea_query::Expr::val(WithdrawalStatus::Pending)),
                     )
                     .col_expr(
                         withdrawal::Column::ExecutedAmount,

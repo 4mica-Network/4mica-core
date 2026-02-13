@@ -1,8 +1,8 @@
 use alloy::primitives::{Address, FixedBytes, U256, keccak256};
 use alloy::sol_types::SolEvent;
 
-use alloy::providers::{DynProvider, Provider};
 use alloy::providers::ext::AnvilApi;
+use alloy::providers::{DynProvider, Provider};
 use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::PersistCtx;

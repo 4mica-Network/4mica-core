@@ -4,6 +4,7 @@ use blockchain::txtools::PaymentTx;
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS, persist::repo, service::payment::process_discovered_payment,
 };
+use entities::sea_orm_active_enums::UserTransactionStatus;
 use entities::{tabs, user_transaction};
 use rand::random;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -73,7 +74,7 @@ async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Res
         .await?
         .expect("transaction should exist");
 
-    assert_eq!(tx_row.status, "pending");
+    assert_eq!(tx_row.status, UserTransactionStatus::Pending);
     assert!(!tx_row.finalized, "transaction should not be finalized");
     assert!(!tx_row.verified, "transaction should not be verified");
     assert!(!tx_row.failed, "transaction should not be failed");
@@ -146,7 +147,7 @@ async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
         .await?;
 
     assert_eq!(tx_rows.len(), 1, "transaction should be unique");
-    assert_eq!(tx_rows[0].status, "pending");
+    assert_eq!(tx_rows[0].status, UserTransactionStatus::Pending);
 
     clear_all_tables(&ctx).await?;
     Ok(())
@@ -258,7 +259,7 @@ async fn reorg_does_not_mutate_without_finality() -> anyhow::Result<()> {
         .await?
         .expect("transaction should exist");
 
-    assert_eq!(tx_row.status, "pending");
+    assert_eq!(tx_row.status, UserTransactionStatus::Pending);
 
     clear_all_tables(persist_ctx).await?;
     Ok(())

@@ -10,7 +10,7 @@ use core_service::persist::{PersistCtx, repo};
 use core_service::scheduler::Task;
 use core_service::service::payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask};
 use entities::{
-    sea_orm_active_enums::{SettlementStatus, TabStatus},
+    sea_orm_active_enums::{SettlementStatus, TabStatus, UserTransactionStatus},
     tabs, user_transaction,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -505,7 +505,7 @@ async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> 
         .one(persist_ctx.db.as_ref())
         .await?
         .expect("transaction should exist");
-    assert_eq!(tx_row.status, "recorded");
+    assert_eq!(tx_row.status, UserTransactionStatus::Recorded);
 
     let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
     assert_eq!(locked, U256::from(100u64));
@@ -525,7 +525,7 @@ async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> 
             .await?
             .expect("transaction should exist");
 
-        if tx_row.status == "finalized" && locked == U256::from(40u64) {
+        if tx_row.status == UserTransactionStatus::Finalized && locked == U256::from(40u64) {
             break;
         }
 

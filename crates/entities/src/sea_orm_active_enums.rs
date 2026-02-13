@@ -57,3 +57,22 @@ pub enum WithdrawalStatus {
     #[sea_orm(string_value = "CANCELLED")]
     Cancelled,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "Enum",
+    enum_name = "user_transaction_status"
+)]
+pub enum UserTransactionStatus {
+    #[sea_orm(string_value = "pending")]
+    Pending,
+    #[sea_orm(string_value = "confirmed")]
+    Confirmed,
+    #[sea_orm(string_value = "recorded")]
+    Recorded,
+    #[sea_orm(string_value = "finalized")]
+    Finalized,
+    #[sea_orm(string_value = "reverted")]
+    Reverted,
+}

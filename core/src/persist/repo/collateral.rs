@@ -398,7 +398,8 @@ pub async fn revert_remuneration(
                     .filter(tabs::Column::SettlementStatus.eq(SettlementStatus::Remunerated))
                     .col_expr(
                         tabs::Column::SettlementStatus,
-                        sea_orm::sea_query::Expr::value(SettlementStatus::Pending),
+                        tabs::Column::SettlementStatus
+                            .save_as(sea_orm::sea_query::Expr::val(SettlementStatus::Pending)),
                     )
                     .col_expr(
                         tabs::Column::UpdatedAt,
