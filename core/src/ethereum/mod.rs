@@ -1,4 +1,5 @@
 pub mod contract;
+pub mod event_data;
 pub mod event_handler;
 pub mod listener;
 pub mod proxy;

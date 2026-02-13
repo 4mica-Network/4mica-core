@@ -1,3 +1,4 @@
+use crate::ethereum::event_data::StoredEventData;
 use crate::{
     config::EthereumConfig,
     error::{BlockchainListenerError, PersistDbError},
@@ -13,6 +14,7 @@ use alloy::{
 };
 use futures_util::{StreamExt, stream};
 use log::{error, info, warn};
+use serde_json;
 use std::{sync::Arc, time::Duration};
 use tokio::{self, sync::oneshot, task::JoinHandle};
 
@@ -135,10 +137,31 @@ impl EthereumListener {
                     }
                 };
 
-            let start_block = match cursor {
+            let mut start_block = match cursor.as_ref() {
                 Some(cursor) => (cursor.last_confirmed_block_number as u64).saturating_add(1),
                 None => confirmed_head.saturating_sub(initial_backfill_blocks),
             };
+
+            if let Some(cursor_model) = cursor.as_ref() {
+                match Self::maybe_handle_reorg(
+                    &provider,
+                    &persist_ctx,
+                    config.chain_id,
+                    cursor_model,
+                )
+                .await
+                {
+                    Ok(Some(new_start)) => start_block = new_start,
+                    Ok(None) => {}
+                    Err(e) => {
+                        error!("Failed to handle reorg: {e}");
+                        warn!("Restarting listener in {delay:?}...");
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(300));
+                        continue;
+                    }
+                }
+            }
 
             if start_block > confirmed_head {
                 tokio::time::sleep(delay).await;
@@ -180,8 +203,29 @@ impl EthereumListener {
                 }
             });
 
+            let confirmed_head_hash = match Self::store_block_hashes(
+                &provider,
+                &persist_ctx,
+                config.chain_id,
+                start_block,
+                confirmed_head,
+            )
+            .await
+            {
+                Ok(hash) => hash,
+                Err(e) => {
+                    error!("Failed to store block hashes: {e}");
+                    warn!("Retrying listener in {delay:?}...");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(300));
+                    continue;
+                }
+            };
+
             let mut log_stream = stream::iter(logs);
-            if let Err(e) = Self::process_events(&handler, &persist_ctx, &mut log_stream).await {
+            if let Err(e) =
+                Self::process_events(&handler, &persist_ctx, config.chain_id, &mut log_stream).await
+            {
                 error!("Event processing error: {e}");
                 warn!("Retrying listener in {delay:?}...");
                 tokio::time::sleep(delay).await;
@@ -189,9 +233,13 @@ impl EthereumListener {
                 continue;
             }
 
-            if let Err(e) =
-                repo::upsert_blockchain_event_cursor(&persist_ctx, config.chain_id, confirmed_head)
-                    .await
+            if let Err(e) = repo::upsert_blockchain_event_cursor(
+                &persist_ctx,
+                config.chain_id,
+                confirmed_head,
+                confirmed_head_hash,
+            )
+            .await
             {
                 error!("Failed to update blockchain event cursor: {e}");
                 warn!("Retrying listener in {delay:?}...");
@@ -228,12 +276,20 @@ impl EthereumListener {
                 Ok(block.map(|b| b.header.number))
             }
             crate::config::ConfirmationMode::Finalized => {
-                let block = provider
-                    .get_block_by_number(BlockNumberOrTag::Finalized)
-                    .full()
-                    .await
-                    .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-                Ok(block.map(|b| b.header.number))
+                if config.finalized_head_depth > 0 {
+                    let latest = provider
+                        .get_block_number()
+                        .await
+                        .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+                    Ok(Some(latest.saturating_sub(config.finalized_head_depth)))
+                } else {
+                    let block = provider
+                        .get_block_by_number(BlockNumberOrTag::Finalized)
+                        .full()
+                        .await
+                        .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+                    Ok(block.map(|b| b.header.number))
+                }
             }
         }
     }
@@ -241,6 +297,7 @@ impl EthereumListener {
     async fn process_events(
         handler: &Arc<dyn EthereumEventHandler>,
         persist_ctx: &PersistCtx,
+        chain_id: u64,
         stream: &mut (impl futures_util::Stream<Item = Log> + Unpin),
     ) -> Result<(), BlockchainListenerError> {
         const MAX_HANDLER_RETRIES: usize = 5;
@@ -260,6 +317,21 @@ impl EthereumListener {
                 warn!("Log has no signature, skipping...");
                 continue;
             };
+            let Some(block_hash) = log.block_hash else {
+                warn!("Log has no block hash, skipping...");
+                continue;
+            };
+            let Some(tx_hash) = log.transaction_hash else {
+                warn!("Log has no tx hash, skipping...");
+                continue;
+            };
+
+            let event_data = Self::encode_event_data(&log)?;
+            let data_json = serde_json::to_string(&event_data)
+                .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+            let block_hash_str = format!("{:#x}", block_hash);
+            let tx_hash_str = format!("{:#x}", tx_hash);
+            let address_str = format!("{:#x}", log.address());
 
             info!(
                 "Storing blockchain event: {signature} at block {block_number} with log index {log_index}"
@@ -267,9 +339,14 @@ impl EthereumListener {
 
             let inserted = match repo::store_blockchain_event(
                 persist_ctx,
+                chain_id,
                 &signature,
                 block_number,
+                &block_hash_str,
+                &tx_hash_str,
                 log_index,
+                &address_str,
+                &data_json,
             )
             .await
             {
@@ -353,9 +430,14 @@ impl EthereumListener {
 
                         error!("Event handler error: {e}");
                         if inserted
-                            && let Err(err) =
-                                repo::delete_blockchain_event(persist_ctx, block_number, log_index)
-                                    .await
+                            && let Err(err) = repo::delete_blockchain_event(
+                                persist_ctx,
+                                chain_id,
+                                block_number,
+                                &block_hash_str,
+                                log_index,
+                            )
+                            .await
                         {
                             error!("Failed to delete blockchain event: {err}");
                         }
@@ -368,6 +450,173 @@ impl EthereumListener {
 
         warn!("Event stream ended unexpectedly");
         Ok(())
+    }
+
+    async fn block_hash_at(
+        provider: &impl alloy::providers::Provider,
+        block_number: u64,
+    ) -> Result<Option<String>, BlockchainListenerError> {
+        let block = provider
+            .get_block_by_number(BlockNumberOrTag::Number(block_number))
+            .full()
+            .await
+            .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+        Ok(block.map(|b| format!("{:#x}", b.hash())))
+    }
+
+    async fn store_block_hashes(
+        provider: &impl alloy::providers::Provider,
+        persist_ctx: &PersistCtx,
+        chain_id: u64,
+        start_block: u64,
+        end_block: u64,
+    ) -> Result<Option<String>, BlockchainListenerError> {
+        let mut confirmed_head_hash = None;
+        for number in start_block..=end_block {
+            let block = provider
+                .get_block_by_number(BlockNumberOrTag::Number(number))
+                .full()
+                .await
+                .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+            let Some(block) = block else {
+                continue;
+            };
+            let hash = format!("{:#x}", block.hash());
+            repo::upsert_blockchain_block(persist_ctx, chain_id, number, &hash).await?;
+            if number == end_block {
+                confirmed_head_hash = Some(hash);
+            }
+        }
+        Ok(confirmed_head_hash)
+    }
+
+    async fn maybe_handle_reorg(
+        provider: &impl alloy::providers::Provider,
+        persist_ctx: &PersistCtx,
+        chain_id: u64,
+        cursor: &entities::blockchain_event_cursor::Model,
+    ) -> Result<Option<u64>, BlockchainListenerError> {
+        let Some(stored_hash) = cursor.last_confirmed_block_hash.as_deref() else {
+            return Ok(None);
+        };
+        let chain_hash =
+            Self::block_hash_at(provider, cursor.last_confirmed_block_number as u64).await?;
+        if chain_hash.as_deref() == Some(stored_hash) {
+            return Ok(None);
+        }
+
+        error!(
+            "Finalized block hash mismatch at {} (stored {}, chain {:?}); refusing to mutate DB without rollback",
+            cursor.last_confirmed_block_number, stored_hash, chain_hash
+        );
+        let _ = persist_ctx;
+        let _ = chain_id;
+        Err(BlockchainListenerError::EventHandlerError(
+            "finalized reorg detected; rollback disabled".to_string(),
+        ))
+    }
+
+    fn encode_event_data(log: &Log) -> Result<StoredEventData, BlockchainListenerError> {
+        match log.topic0() {
+            Some(&CollateralDeposited::SIGNATURE_HASH) => {
+                let CollateralDeposited {
+                    user,
+                    asset,
+                    amount,
+                    ..
+                } = *log.log_decode()?.data();
+                Ok(StoredEventData::CollateralDeposited {
+                    user: user.to_string(),
+                    asset: asset.to_string(),
+                    amount: amount.to_string(),
+                })
+            }
+            Some(&RecipientRemunerated::SIGNATURE_HASH) => {
+                let RecipientRemunerated {
+                    tab_id,
+                    asset,
+                    amount,
+                    ..
+                } = *log.log_decode()?.data();
+                Ok(StoredEventData::RecipientRemunerated {
+                    tab_id: format!("{:#x}", tab_id),
+                    asset: asset.to_string(),
+                    amount: amount.to_string(),
+                })
+            }
+            Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
+                let CollateralWithdrawn {
+                    user,
+                    asset,
+                    amount,
+                    ..
+                } = *log.log_decode()?.data();
+                Ok(StoredEventData::CollateralWithdrawn {
+                    user: user.to_string(),
+                    asset: asset.to_string(),
+                    amount: amount.to_string(),
+                })
+            }
+            Some(&WithdrawalRequested::SIGNATURE_HASH) => {
+                let WithdrawalRequested {
+                    user,
+                    asset,
+                    when,
+                    amount,
+                    ..
+                } = *log.log_decode()?.data();
+                Ok(StoredEventData::WithdrawalRequested {
+                    user: user.to_string(),
+                    asset: asset.to_string(),
+                    when: when.to(),
+                    amount: amount.to_string(),
+                })
+            }
+            Some(&WithdrawalCanceled::SIGNATURE_HASH) => {
+                let WithdrawalCanceled { user, asset, .. } = *log.log_decode()?.data();
+                Ok(StoredEventData::WithdrawalCanceled {
+                    user: user.to_string(),
+                    asset: asset.to_string(),
+                })
+            }
+            Some(&TabPaid::SIGNATURE_HASH) => {
+                let TabPaid {
+                    tab_id,
+                    asset,
+                    user,
+                    recipient,
+                    amount,
+                    ..
+                } = *log.log_decode()?.data();
+                let tx_hash = log
+                    .transaction_hash
+                    .map(|h| format!("{:#x}", h))
+                    .unwrap_or_default();
+                Ok(StoredEventData::TabPaid {
+                    tab_id: format!("{:#x}", tab_id),
+                    user: user.to_string(),
+                    recipient: recipient.to_string(),
+                    asset: asset.to_string(),
+                    amount: amount.to_string(),
+                    tx_hash,
+                })
+            }
+            Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
+                name: "WithdrawalGracePeriodUpdated".to_string(),
+            }),
+            Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
+                name: "RemunerationGracePeriodUpdated".to_string(),
+            }),
+            Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
+                name: "TabExpirationTimeUpdated".to_string(),
+            }),
+            Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
+                name: "SynchronizationDelayUpdated".to_string(),
+            }),
+            _ => Ok(StoredEventData::Unknown {
+                name: "unknown".to_string(),
+            }),
+        }
     }
 }
 

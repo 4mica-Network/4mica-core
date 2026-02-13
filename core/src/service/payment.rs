@@ -154,62 +154,23 @@ impl CoreService {
                 .await
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?;
 
-            let mut reorg_detected = false;
             let current_hash = match cursor_block {
                 Some(block) => format!("{:#x}", block.hash()),
                 None => {
-                    reorg_detected = true;
-                    String::new()
+                    warn!(
+                        "Cursor block {} missing; refusing to mutate DB without finalized data",
+                        cursor_block_number
+                    );
+                    return Ok(());
                 }
             };
 
-            if !reorg_detected
-                && !current_hash.eq_ignore_ascii_case(&cursor.last_confirmed_block_hash)
-            {
-                reorg_detected = true;
-            }
-
-            if reorg_detected {
-                let mut start = cursor_block_number.saturating_sub(cfg.number_of_pending_blocks);
-                let end = safe_head.number;
-                if start > end {
-                    start = end;
-                }
-
-                let reverted = repo::mark_payment_transactions_reverted_in_block_range(
-                    &self.inner.persist_ctx,
-                    start,
-                    end,
-                )
-                .await?;
-                reverted_count += reverted;
-
-                warn!(
-                    "Reorg detected at block {} (stored hash {}, current hash {}); reverted {} tx(s) from {} to {}",
-                    cursor_block_number,
-                    cursor.last_confirmed_block_hash,
-                    if current_hash.is_empty() {
-                        "<missing>".to_string()
-                    } else {
-                        current_hash.clone()
-                    },
-                    reverted,
-                    start,
-                    end
+            if !current_hash.eq_ignore_ascii_case(&cursor.last_confirmed_block_hash) {
+                error!(
+                    "Finalized block hash mismatch at {} (stored {}, current {}); refusing to mutate DB",
+                    cursor_block_number, cursor.last_confirmed_block_hash, current_hash
                 );
-
-                let latest = self
-                    .inner
-                    .read_provider
-                    .get_block_number()
-                    .await
-                    .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                let lookback = latest.saturating_sub(start);
-                if lookback > 0
-                    && let Err(err) = self.scan_blockchain(lookback).await
-                {
-                    error!("Failed to rescan payments after reorg: {err}");
-                }
+                return Ok(());
             }
         }
 
@@ -551,11 +512,20 @@ impl CoreService {
 
     /// Periodically scan Ethereum for tab payments.
     async fn scan_blockchain(&self, lookback: u64) -> anyhow::Result<()> {
-        let events = txtools::scan_tab_payments(&self.inner.read_provider, lookback)
-            .await
-            .inspect_err(|e| {
-                error!("scan_tab_payments failed: {e}");
-            })?;
+        let Some(safe_head) = self.safe_head().await? else {
+            warn!("Safe head unavailable; skipping payment scan");
+            return Ok(());
+        };
+
+        let events = txtools::scan_tab_payments(
+            &self.inner.read_provider,
+            lookback,
+            BlockNumberOrTag::Number(safe_head.number),
+        )
+        .await
+        .inspect_err(|e| {
+            error!("scan_tab_payments failed: {e}");
+        })?;
 
         self.handle_discovered_payments(events)
             .await
@@ -603,17 +573,38 @@ impl CoreService {
                 }))
             }
             crate::config::ConfirmationMode::Finalized => {
-                let block = self
-                    .inner
-                    .read_provider
-                    .get_block_by_number(BlockNumberOrTag::Finalized)
-                    .full()
-                    .await
-                    .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                Ok(block.map(|b| SafeHead {
-                    number: b.header.number,
-                    hash: b.hash(),
-                }))
+                if cfg.finalized_head_depth > 0 {
+                    let latest = self
+                        .inner
+                        .read_provider
+                        .get_block_number()
+                        .await
+                        .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+                    let head = latest.saturating_sub(cfg.finalized_head_depth);
+                    let block = self
+                        .inner
+                        .read_provider
+                        .get_block_by_number(BlockNumberOrTag::Number(head))
+                        .full()
+                        .await
+                        .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+                    Ok(block.map(|b| SafeHead {
+                        number: b.header.number,
+                        hash: b.hash(),
+                    }))
+                } else {
+                    let block = self
+                        .inner
+                        .read_provider
+                        .get_block_by_number(BlockNumberOrTag::Finalized)
+                        .full()
+                        .await
+                        .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+                    Ok(block.map(|b| SafeHead {
+                        number: b.header.number,
+                        hash: b.hash(),
+                    }))
+                }
             }
         }
     }

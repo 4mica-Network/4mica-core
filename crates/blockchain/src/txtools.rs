@@ -57,13 +57,27 @@ pub fn parse_eth_address(addr: &str, field: &str) -> Result<Address> {
         .map_err(|_| TxProcessingError::InvalidParams(format!("Invalid {field} address")))
 }
 
-/// Scan the last `lookback` blocks and return all matching payment transactions,
-/// parsed into `PaymentTx`. No DB writes, no on-chain calls.
-pub async fn scan_tab_payments<P: Provider>(provider: &P, lookback: u64) -> Result<Vec<PaymentTx>> {
-    let latest = provider
-        .get_block_number()
-        .await
-        .map_err(|e| TxProcessingError::Rpc(e.into()))?;
+/// Scan the last `lookback` blocks up to the provided head and return all matching
+/// payment transactions, parsed into `PaymentTx`. No DB writes, no on-chain calls.
+pub async fn scan_tab_payments<P: Provider>(
+    provider: &P,
+    lookback: u64,
+    head: BlockNumberOrTag,
+) -> Result<Vec<PaymentTx>> {
+    let latest = match head {
+        BlockNumberOrTag::Number(n) => n,
+        tag => {
+            let block = provider
+                .get_block_by_number(tag)
+                .full()
+                .await
+                .map_err(|e| TxProcessingError::Rpc(e.into()))?;
+            let Some(block) = block else {
+                return Ok(Vec::new());
+            };
+            block.header.number
+        }
+    };
     let start = latest.saturating_sub(lookback);
 
     let mut found = Vec::new();

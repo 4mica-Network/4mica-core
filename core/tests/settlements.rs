@@ -1,7 +1,7 @@
 use alloy::network::TransactionBuilder;
 use alloy::primitives::U256;
-use alloy::providers::Provider;
 use alloy::providers::ext::AnvilApi;
+use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::TransactionRequest;
 use alloy_primitives::{Address, B256};
 use blockchain::txtools::PaymentTx;
@@ -22,6 +22,18 @@ use crate::common::fixtures::{clear_all_tables, read_collateral, read_locked_col
 use crate::common::setup::setup_e2e_environment;
 
 static NUMBER_OF_TRIALS: u32 = 60;
+
+async fn mine_finalized(provider: &DynProvider) -> anyhow::Result<()> {
+    let depth = std::env::var("FINALIZED_HEAD_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let total = depth.saturating_add(1);
+    if total > 0 {
+        provider.anvil_mine(Some(total), None).await?;
+    }
+    Ok(())
+}
 //
 // ────────────────────── HELPERS ──────────────────────
 //
@@ -118,6 +130,7 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
         .with_input(input.into_bytes());
 
     provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
 
     // poll DB
     let mut tries = 0;
@@ -191,6 +204,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
         .with_input(input.into_bytes());
 
     provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
 
     let mut tries = 0;
     let tx_record = loop {
@@ -335,6 +349,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
         .with_value(amount)
         .with_input(input.into_bytes());
     provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
 
     let mut tries = 0;
     loop {
@@ -405,6 +420,7 @@ async fn payment_transaction_does_not_unlock_collateral_before_confirmation() ->
         .with_value(U256::from(60u64))
         .with_input(input.into_bytes());
     provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
 
     let mut tries = 0;
     loop {
@@ -479,7 +495,7 @@ async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> 
     provider.send_transaction(tx).await?.watch().await?;
 
     // Advance chain so safe head includes the payment block.
-    provider.anvil_mine(Some(1), None).await?;
+    mine_finalized(&provider).await?;
 
     ScanPaymentsTask::new(core_service.clone()).run().await?;
     ConfirmPaymentsTask::new(core_service.clone()).run().await?;
@@ -495,7 +511,7 @@ async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> 
     assert_eq!(locked, U256::from(100u64));
 
     // Advance chain so record tx is past the safe head.
-    provider.anvil_mine(Some(2), None).await?;
+    mine_finalized(&provider).await?;
     FinalizePaymentsTask::new(core_service.clone())
         .run()
         .await?;

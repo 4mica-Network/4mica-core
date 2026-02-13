@@ -2,6 +2,7 @@
 
 pub use super::auth_nonce::Entity as AuthNonce;
 pub use super::auth_refresh_token::Entity as AuthRefreshToken;
+pub use super::blockchain_block::Entity as BlockchainBlock;
 pub use super::blockchain_event::Entity as BlockchainEvent;
 pub use super::blockchain_event_cursor::Entity as BlockchainEventCursor;
 pub use super::chain_cursor::Entity as ChainCursor;

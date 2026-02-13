@@ -1922,6 +1922,10 @@ async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
         tab_id: sea_orm::ActiveValue::Set(Some(u256_to_string(tab_id))),
         req_id: sea_orm::ActiveValue::Set(None),
         tx_id: sea_orm::ActiveValue::Set(None),
+        event_chain_id: sea_orm::ActiveValue::Set(None),
+        event_block_hash: sea_orm::ActiveValue::Set(None),
+        event_tx_hash: sea_orm::ActiveValue::Set(None),
+        event_log_index: sea_orm::ActiveValue::Set(None),
         created_at: sea_orm::ActiveValue::Set(now - Duration::minutes(1)),
     };
     unlock_event
@@ -1938,6 +1942,10 @@ async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
         tab_id: sea_orm::ActiveValue::Set(Some(u256_to_string(tab_id))),
         req_id: sea_orm::ActiveValue::Set(None),
         tx_id: sea_orm::ActiveValue::Set(None),
+        event_chain_id: sea_orm::ActiveValue::Set(None),
+        event_block_hash: sea_orm::ActiveValue::Set(None),
+        event_tx_hash: sea_orm::ActiveValue::Set(None),
+        event_log_index: sea_orm::ActiveValue::Set(None),
         created_at: sea_orm::ActiveValue::Set(now),
     };
     remunerate_event

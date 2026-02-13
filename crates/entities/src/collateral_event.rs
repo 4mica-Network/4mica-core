@@ -20,6 +20,14 @@ pub struct Model {
     pub req_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub tx_id: Option<String>,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub event_chain_id: Option<i64>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub event_block_hash: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub event_tx_hash: Option<String>,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub event_log_index: Option<i64>,
     pub created_at: DateTime,
 }
 

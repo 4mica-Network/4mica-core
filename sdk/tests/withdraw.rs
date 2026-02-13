@@ -7,8 +7,7 @@ use std::time::Duration;
 mod common;
 
 use crate::common::{
-    ETH_ASSET_ADDRESS, build_authed_user_config, mine_confirmations,
-    wait_for_collateral_increase,
+    ETH_ASSET_ADDRESS, build_authed_user_config, mine_confirmations, wait_for_collateral_increase,
 };
 
 #[tokio::test]
@@ -22,7 +21,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     )
     .await?;
 
-    let user_address = user_config.signer.address().to_string();
+    let _user_address = user_config.signer.address().to_string();
     let user_client = Client::new(user_config.clone()).await?;
 
     // Step 1: User deposits collateral (1 ETH)

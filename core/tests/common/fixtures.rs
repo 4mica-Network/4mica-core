@@ -98,6 +98,7 @@ pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
             "WalletRole",
             "BlockchainEvent",
             "BlockchainEventCursor",
+            "BlockchainBlock",
             "ChainCursor",
         ],
     )

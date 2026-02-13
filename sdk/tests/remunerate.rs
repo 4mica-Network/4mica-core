@@ -266,9 +266,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     match remunerate_result {
         Ok(_) => {}
         Err(RemunerateError::Transport(msg)) if is_historical_state_error(&msg) => {
-            eprintln!(
-                "Skipping remunerate assertions due to non-archive RPC: {msg}"
-            );
+            eprintln!("Skipping remunerate assertions due to non-archive RPC: {msg}");
             return Ok(());
         }
         Err(e) => return Err(anyhow::anyhow!("Failed to remunerate the tab: {}", e)),
@@ -387,13 +385,14 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     );
     assert_eq!(claims_bytes, expected_bytes);
 
-    let first_result = recipient_client.recipient.remunerate(bls_cert.clone()).await;
+    let first_result = recipient_client
+        .recipient
+        .remunerate(bls_cert.clone())
+        .await;
     match first_result {
         Ok(_) => {}
         Err(RemunerateError::Transport(msg)) if is_historical_state_error(&msg) => {
-            eprintln!(
-                "Skipping double-remuneration assertions due to non-archive RPC: {msg}"
-            );
+            eprintln!("Skipping double-remuneration assertions due to non-archive RPC: {msg}");
             return Ok(());
         }
         Err(e) => return Err(e.into()),

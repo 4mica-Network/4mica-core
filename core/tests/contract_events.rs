@@ -28,8 +28,13 @@ fn fn_selector(sig: &str) -> FixedBytes<4> {
 }
 
 async fn mine_confirmations(provider: &DynProvider, blocks: u64) -> anyhow::Result<()> {
-    if blocks > 0 {
-        provider.anvil_mine(Some(blocks), None).await?;
+    let finalized_depth = std::env::var("FINALIZED_HEAD_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let total = blocks.saturating_add(finalized_depth);
+    if total > 0 {
+        provider.anvil_mine(Some(total), None).await?;
     }
     Ok(())
 }

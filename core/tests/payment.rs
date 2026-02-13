@@ -216,7 +216,7 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn reorg_reverts_pending_transactions() -> anyhow::Result<()> {
+async fn reorg_does_not_mutate_without_finality() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
     let core_service = env.core_service.clone();
@@ -258,7 +258,7 @@ async fn reorg_reverts_pending_transactions() -> anyhow::Result<()> {
         .await?
         .expect("transaction should exist");
 
-    assert_eq!(tx_row.status, "reverted");
+    assert_eq!(tx_row.status, "pending");
 
     clear_all_tables(persist_ctx).await?;
     Ok(())

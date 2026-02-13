@@ -43,6 +43,10 @@ pub struct EthereumConfig {
     pub confirmation_mode: String,
     #[envconfig(from = "NUMBER_OF_PENDING_BLOCKS", default = "5")]
     pub number_of_pending_blocks: u64,
+    /// When CONFIRMATION_MODE=finalized and the provider doesn't advance finalized head,
+    /// treat blocks as finalized after this depth (useful for local dev/test only).
+    #[envconfig(from = "FINALIZED_HEAD_DEPTH", default = "0")]
+    pub finalized_head_depth: u64,
     #[envconfig(from = "ETHEREUM_PRIVATE_KEY")]
     pub ethereum_private_key: String,
 }
@@ -79,6 +83,11 @@ impl EthereumConfig {
 
     pub fn validate(&self) -> anyhow::Result<()> {
         let mode = self.confirmation_mode()?;
+        if mode != ConfirmationMode::Finalized {
+            bail!(
+                "CONFIRMATION_MODE must be finalized when processing on-chain data without rollback"
+            );
+        }
         if mode == ConfirmationMode::Depth && self.number_of_blocks_to_confirm == 0 {
             bail!("NUMBER_OF_BLOCKS_TO_CONFIRM must be > 0 when CONFIRMATION_MODE=depth");
         }

@@ -4,6 +4,7 @@ pub mod prelude;
 
 pub mod auth_nonce;
 pub mod auth_refresh_token;
+pub mod blockchain_block;
 pub mod blockchain_event;
 pub mod blockchain_event_cursor;
 pub mod chain_cursor;
