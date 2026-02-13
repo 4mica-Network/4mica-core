@@ -141,6 +141,7 @@ jobs:
           SERVER_PORT: 3000
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
@@ -178,6 +179,7 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
@@ -223,6 +225,7 @@ jobs:
           SERVER_PORT: 3000
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
@@ -260,6 +263,7 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
