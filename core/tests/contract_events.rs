@@ -1,11 +1,12 @@
 use alloy::primitives::{Address, FixedBytes, U256, keccak256};
 use alloy::sol_types::SolEvent;
 
-use alloy::providers::DynProvider;
+use alloy::providers::{DynProvider, Provider};
 use alloy::providers::ext::AnvilApi;
 use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::PersistCtx;
+use core_service::persist::repo;
 use entities::sea_orm_active_enums::*;
 use entities::*;
 use sea_orm::sea_query::OnConflict;
@@ -163,6 +164,109 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         tries += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+
+    Ok(())
+}
+
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::serial]
+async fn deposit_waits_for_finalized_head() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let contract = env.contract.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
+    let user_addr = signer_addr.to_string();
+    let persist_ctx = core_service.persist_ctx();
+
+    ensure_user(persist_ctx, &user_addr).await?;
+
+    let deposit_amount = U256::from(5_000_000_000_000_000_000u128);
+    contract
+        .deposit()
+        .value(deposit_amount)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    // Without confirmations, finalized head should not include this deposit yet.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(
+        current,
+        U256::ZERO,
+        "deposit should not be persisted before finalized head advances"
+    );
+
+    mine_confirmations(&provider, 1).await?;
+
+    let mut tries = 0;
+    loop {
+        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        if current == deposit_amount {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("Deposit not persisted after finalized head advanced");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    Ok(())
+}
+
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::serial]
+async fn listener_refuses_to_mutate_on_cursor_hash_mismatch() -> anyhow::Result<()> {
+    let mut env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let chain_id = provider.get_chain_id().await?;
+
+    let persist_ctx = env.core_service.persist_ctx();
+    env.core_service.kill_listener();
+
+    // Set a cursor with a mismatched hash at a real block height.
+    let latest = provider.get_block_number().await?;
+    repo::upsert_blockchain_event_cursor(
+        persist_ctx,
+        chain_id,
+        latest,
+        Some("0xdeadbeef".to_string()),
+    )
+    .await?;
+
+    let core_service = spawn_core_service_in_existing_environment(&mut env).await?;
+    let persist_ctx = core_service.persist_ctx();
+
+    let user_addr = env.signer_addr.to_string();
+    ensure_user(persist_ctx, &user_addr).await?;
+
+    let deposit_amount = U256::from(9_000_000_000_000_000_000u128);
+    env.contract
+        .deposit()
+        .value(deposit_amount)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mine_confirmations(&provider, 1).await?;
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let last_event = repo::get_last_processed_blockchain_event(persist_ctx).await?;
+    assert!(
+        last_event.is_none(),
+        "listener should not store events when cursor hash mismatches"
+    );
+
+    let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(
+        current,
+        U256::ZERO,
+        "collateral should not update when listener refuses to mutate"
+    );
 
     Ok(())
 }

@@ -88,6 +88,12 @@ impl EthereumConfig {
                 "CONFIRMATION_MODE must be finalized when processing on-chain data without rollback"
             );
         }
+        if mode == ConfirmationMode::Finalized && self.finalized_head_depth > 0 {
+            warn!(
+                "FINALIZED_HEAD_DEPTH={} is set; finalized mode will treat latest-N blocks as finalized. This is not safe for production.",
+                self.finalized_head_depth
+            );
+        }
         if mode == ConfirmationMode::Depth && self.number_of_blocks_to_confirm == 0 {
             bail!("NUMBER_OF_BLOCKS_TO_CONFIRM must be > 0 when CONFIRMATION_MODE=depth");
         }
