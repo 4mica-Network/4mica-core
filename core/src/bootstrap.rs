@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use core_service::{
     config::{AppConfig, ServerConfig},
+    ethereum::EthereumEventScanner,
     http,
     scheduler::TaskScheduler,
     service::{
@@ -41,9 +42,17 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         .allow_origin(Any)
         .allow_headers(Any);
 
-    let service = CoreService::new(app_config).await?;
+    let service = CoreService::new(app_config.clone()).await?;
+
+    let ethereum_scanner = Arc::new(EthereumEventScanner::new(
+        app_config.ethereum_config.clone(),
+        service.persist_ctx().clone(),
+        service.read_provider().clone(),
+        Arc::new(service.clone()),
+    ));
 
     let mut scheduler = TaskScheduler::new().await?;
+    scheduler.add_task(ethereum_scanner).await?;
     scheduler
         .add_task(Arc::new(ScanPaymentsTask::new(service.clone())))
         .await?;

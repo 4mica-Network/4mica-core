@@ -1,5 +1,4 @@
 use alloy::primitives::{Address, FixedBytes, U256, keccak256};
-use alloy::sol_types::SolEvent;
 
 use alloy::providers::ext::AnvilApi;
 use alloy::providers::{DynProvider, Provider};
@@ -17,9 +16,7 @@ use test_log::test;
 mod common;
 use crate::common::contract::Core4Mica;
 use crate::common::fixtures::read_collateral;
-use crate::common::setup::{
-    dummy_verification_key, setup_e2e_environment, spawn_core_service_in_existing_environment,
-};
+use crate::common::setup::{dummy_verification_key, setup_e2e_environment};
 
 static NUMBER_OF_TRIALS: u32 = 120;
 
@@ -109,7 +106,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
-    const NUMBER_OF_TRIALS: usize = 60;
+    const NUMBER_OF_TRIALS: usize = 20;
 
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -119,14 +116,11 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     let user_addr = signer_addr.to_string();
     let persist_ctx = core_service.persist_ctx();
 
-    // small delay so the WS subscription is up before we emit events
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
     // strictly ensure user exists before deposit events
     ensure_user(persist_ctx, &user_addr).await?;
 
     let amount = U256::from(1_000_000_000_000_000_000u128);
-    let expected = amount * U256::from(2u8);
+    let expected = amount * U256::from(3u8);
 
     // two deposits
     contract
@@ -137,9 +131,10 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
         .watch()
         .await?;
     mine_confirmations(&provider, 1).await?;
+
     contract
         .deposit()
-        .value(amount)
+        .value(amount * U256::from(2u8))
         .send()
         .await?
         .watch()
@@ -219,13 +214,12 @@ async fn deposit_waits_for_finalized_head() -> anyhow::Result<()> {
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
-async fn listener_refuses_to_mutate_on_cursor_hash_mismatch() -> anyhow::Result<()> {
-    let mut env = setup_e2e_environment().await?;
+async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
     let chain_id = provider.get_chain_id().await?;
 
     let persist_ctx = env.core_service.persist_ctx();
-    env.core_service.kill_listener();
 
     // Set a cursor with a mismatched hash at a real block height.
     let latest = provider.get_block_number().await?;
@@ -236,9 +230,6 @@ async fn listener_refuses_to_mutate_on_cursor_hash_mismatch() -> anyhow::Result<
         Some("0xdeadbeef".to_string()),
     )
     .await?;
-
-    let core_service = spawn_core_service_in_existing_environment(&mut env).await?;
-    let persist_ctx = core_service.persist_ctx();
 
     let user_addr = env.signer_addr.to_string();
     ensure_user(persist_ctx, &user_addr).await?;
@@ -253,19 +244,37 @@ async fn listener_refuses_to_mutate_on_cursor_hash_mismatch() -> anyhow::Result<
         .await?;
     mine_confirmations(&provider, 1).await?;
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // Sleeping for 2 seconds to let the listener scan
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let cursor_after = repo::get_blockchain_event_cursor(persist_ctx, chain_id).await?;
+    assert!(cursor_after.is_none(), "cursor should be deleted");
+
+    // Sleeping for 3 seconds to let the listener rescan
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let cursor_after = repo::get_blockchain_event_cursor(persist_ctx, chain_id).await?;
+    assert!(cursor_after.is_some(), "cursor should be created again");
+    assert_ne!(
+        cursor_after
+            .as_ref()
+            .unwrap()
+            .last_confirmed_block_hash
+            .as_deref(),
+        Some("0xdeadbeef"),
+        "cursor hash should be updated to the correct hash"
+    );
 
     let last_event = repo::get_last_processed_blockchain_event(persist_ctx).await?;
     assert!(
-        last_event.is_none(),
-        "listener should not store events when cursor hash mismatches"
+        last_event.is_some(),
+        "listener should store events after deleting bad cursor and rescanning"
     );
 
     let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
     assert_eq!(
-        current,
-        U256::ZERO,
-        "collateral should not update when listener refuses to mutate"
+        current, deposit_amount,
+        "collateral should be updated after cursor deletion and rescan"
     );
 
     Ok(())
@@ -550,126 +559,6 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
         tries += 1;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-
-    Ok(())
-}
-
-#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
-async fn listener_catches_up_on_missed_events() -> anyhow::Result<()> {
-    // Setup environment with fresh DB and make first deposit
-    let mut test_env = setup_e2e_environment().await?;
-    let user_addr = test_env.signer_addr.to_string();
-    let persist_ctx = test_env.core_service.persist_ctx();
-
-    ensure_user(persist_ctx, &user_addr).await?;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // First deposit while service is running
-    let deposit_amount_1 = U256::from(1_000_000_000_000_000_000u128);
-    test_env
-        .contract
-        .deposit()
-        .value(deposit_amount_1)
-        .send()
-        .await?
-        .watch()
-        .await?;
-    mine_confirmations(&test_env.provider, 1).await?;
-
-    // Wait for first deposit to be processed
-    let mut tries = 0;
-    loop {
-        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
-        if current == deposit_amount_1 {
-            break;
-        }
-        if tries > NUMBER_OF_TRIALS {
-            panic!("First deposit not processed");
-        }
-        tries += 1;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    // Kill the listener
-    test_env.core_service.kill_listener();
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Make 2 deposits while service is down
-    let deposit_amount_2 = U256::from(2_000_000_000_000_000_000u128);
-    test_env
-        .contract
-        .deposit()
-        .value(deposit_amount_2)
-        .send()
-        .await?
-        .watch()
-        .await?;
-    mine_confirmations(&test_env.provider, 1).await?;
-
-    let deposit_amount_3 = U256::from(3_000_000_000_000_000_000u128);
-    test_env
-        .contract
-        .deposit()
-        .value(deposit_amount_3)
-        .send()
-        .await?
-        .watch()
-        .await?;
-    mine_confirmations(&test_env.provider, 1).await?;
-
-    let core_service = spawn_core_service_in_existing_environment(&mut test_env).await?;
-    let persist_ctx = core_service.persist_ctx();
-
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-    // Make 4th deposit while service is running
-    let deposit_amount_4 = U256::from(4_000_000_000_000_000_000u128);
-    test_env
-        .contract
-        .deposit()
-        .value(deposit_amount_4)
-        .send()
-        .await?
-        .watch()
-        .await?;
-    mine_confirmations(&test_env.provider, 1).await?;
-
-    // Wait for the service to catch up and process the missed events
-    let expected_total = deposit_amount_1 + deposit_amount_2 + deposit_amount_3 + deposit_amount_4;
-    let mut tries = 0;
-    loop {
-        let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
-        if current == expected_total {
-            break;
-        }
-        if tries > NUMBER_OF_TRIALS {
-            panic!(
-                "Service did not catch up on missed events. Expected: {}, Got: {}",
-                expected_total, current
-            );
-        }
-        tries += 1;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    // Verify there are 4 CollateralDeposited events in the DB
-    let deposit_sig = format!(
-        "{:x}",
-        core_service::ethereum::contract::CollateralDeposited::SIGNATURE_HASH
-    );
-    let event_count = blockchain_event::Entity::find()
-        .filter(blockchain_event::Column::Signature.eq(deposit_sig))
-        .all(persist_ctx.db.as_ref())
-        .await?
-        .len();
-    assert!(
-        event_count >= 4,
-        "Expected at least 4 deposit blockchain events, found {}",
-        event_count
-    );
 
     Ok(())
 }

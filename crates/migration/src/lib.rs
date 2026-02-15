@@ -32,11 +32,11 @@ impl MigratorTrait for Migrator {
             Box::new(m20260210_000008_payment_confirmations::Migration),
             Box::new(m20260210_000009_user_transaction_tab_id::Migration),
             Box::new(m20260210_000010_user_transaction_record_tx::Migration),
+            Box::new(m20260210_000015_tab_version_and_last_req_id::Migration),
             Box::new(m20260211_000011_blockchain_event_cursor::Migration),
             Box::new(m20260213_000012_blockchain_event_v2::Migration),
             Box::new(m20260213_000013_event_metadata::Migration),
             Box::new(m20260213_000014_user_transaction_status_enum::Migration),
-            Box::new(m20260210_000015_tab_version_and_last_req_id::Migration),
         ]
     }
 }

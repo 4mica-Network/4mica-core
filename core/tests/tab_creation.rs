@@ -77,7 +77,6 @@ async fn build_core_service(
         tab_expiration_time,
     });
 
-    let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     CoreService::new_with_dependencies(
         config,
         CoreServiceDeps {
@@ -87,7 +86,6 @@ async fn build_core_service(
             read_provider,
             guarantee_domain: [0u8; 32],
             tab_expiration_time,
-            listener_ready_rx: ready_rx,
         },
     )
 }

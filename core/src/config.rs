@@ -33,16 +33,22 @@ pub struct EthereumConfig {
     pub contract_address: String,
     #[envconfig(from = "CRON_JOB_SETTINGS", default = "0 */1 * * * *")]
     pub cron_job_settings: String,
-    #[envconfig(from = "NUMBER_OF_BLOCKS_TO_CONFIRM", default = "20")]
-    pub number_of_blocks_to_confirm: u64,
+    #[envconfig(from = "ETHEREUM_EVENT_SCANNER_CRON", default = "*/5 * * * * *")]
+    pub event_scanner_cron: String,
     /// Confirmation policy for on-chain data:
     /// `depth` = confirm after N blocks (NUMBER_OF_BLOCKS_TO_CONFIRM),
     /// `safe` = confirm at the chain's "safe" head,
     /// `finalized` = confirm at the chain's finalized head (safest).
     #[envconfig(from = "CONFIRMATION_MODE", default = "finalized")]
     pub confirmation_mode: String,
-    #[envconfig(from = "NUMBER_OF_PENDING_BLOCKS", default = "5")]
-    pub number_of_pending_blocks: u64,
+    /// Only used when CONFIRMATION_MODE=depth.
+    #[envconfig(from = "NUMBER_OF_BLOCKS_TO_CONFIRM", default = "20")]
+    pub number_of_blocks_to_confirm: u64,
+    #[envconfig(from = "PAYMENT_SCAN_LOOKBACK_BLOCKS", default = "5")]
+    pub payment_scan_lookback_blocks: u64,
+    /// When scanning for events and cursor is not found in the database, scan back this many blocks.
+    #[envconfig(from = "INITIAL_EVENT_SCAN_LOOKBACK_BLOCKS", default = "25")]
+    pub initial_event_scan_lookback_blocks: u64,
     /// When CONFIRMATION_MODE=finalized and the provider doesn't advance finalized head,
     /// treat blocks as finalized after this depth (useful for local dev/test only).
     #[envconfig(from = "FINALIZED_HEAD_DEPTH", default = "0")]
@@ -97,8 +103,8 @@ impl EthereumConfig {
         if mode == ConfirmationMode::Depth && self.number_of_blocks_to_confirm == 0 {
             bail!("NUMBER_OF_BLOCKS_TO_CONFIRM must be > 0 when CONFIRMATION_MODE=depth");
         }
-        if self.number_of_pending_blocks == 0 {
-            bail!("NUMBER_OF_PENDING_BLOCKS must be > 0");
+        if self.payment_scan_lookback_blocks == 0 {
+            bail!("PAYMENT_SCAN_LOOKBACK_BLOCKS must be > 0");
         }
         Ok(())
     }

@@ -65,14 +65,14 @@ pub enum WithdrawalStatus {
     enum_name = "user_transaction_status"
 )]
 pub enum UserTransactionStatus {
-    #[sea_orm(string_value = "pending")]
+    #[sea_orm(string_value = "PENDING")]
     Pending,
-    #[sea_orm(string_value = "confirmed")]
+    #[sea_orm(string_value = "CONFIRMED")]
     Confirmed,
-    #[sea_orm(string_value = "recorded")]
+    #[sea_orm(string_value = "RECORDED")]
     Recorded,
-    #[sea_orm(string_value = "finalized")]
+    #[sea_orm(string_value = "FINALIZED")]
     Finalized,
-    #[sea_orm(string_value = "reverted")]
+    #[sea_orm(string_value = "REVERTED")]
     Reverted,
 }

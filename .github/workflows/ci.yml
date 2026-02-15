@@ -147,6 +147,7 @@ jobs:
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: |
           # Run the API in the background for core API tests.
           stdbuf -oL -eL cargo run -p core-service 2>&1 | tee core/api-core.log &
@@ -184,6 +185,7 @@ jobs:
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: cargo test --workspace --exclude sdk-4mica
 
       - name: Stop API service (core tests)
@@ -231,6 +233,7 @@ jobs:
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: |
           # Stream API logs to the job output while persisting to api.log
           stdbuf -oL -eL cargo run -p core-service 2>&1 | tee api.log &
@@ -268,4 +271,5 @@ jobs:
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: cargo test -p sdk-4mica -j 1 -- --test-threads=1

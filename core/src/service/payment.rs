@@ -114,11 +114,7 @@ pub async fn process_discovered_payment(ctx: &PersistCtx, payment: PaymentTx) ->
     .await?;
 
     if rows_affected == 0 {
-        info!(
-            "Payment transaction already exists for tab {}. Skipping.",
-            tab_id_str
-        );
-        return Ok(());
+        info!("Payment transaction already exists for tab {}.", tab_id_str);
     }
 
     Ok(())
@@ -337,10 +333,17 @@ impl CoreService {
         )
         .await?;
 
-        info!(
-            "Confirmed pending payments: safe_head={} pending={} recorded={} reverted={} record_failed={}",
-            safe_head.number, pending_total, recorded_count, reverted_count, record_failed_count
-        );
+        if pending_total > 0 || recorded_count > 0 || reverted_count > 0 || record_failed_count > 0
+        {
+            info!(
+                "Confirmed pending payments: safe_head={} pending={} recorded={} reverted={} record_failed={}",
+                safe_head.number,
+                pending_total,
+                recorded_count,
+                reverted_count,
+                record_failed_count
+            );
+        }
 
         Ok(())
     }
@@ -502,10 +505,12 @@ impl CoreService {
             finalized_count += 1;
         }
 
-        info!(
-            "Finalized recorded payments: safe_head={} recorded={} finalized={} reverted={} unlock_failed={}",
-            safe_head.number, recorded_total, finalized_count, reverted_count, unlock_failed
-        );
+        if recorded_total > 0 || finalized_count > 0 || reverted_count > 0 || unlock_failed > 0 {
+            info!(
+                "Finalized recorded payments: safe_head={} recorded={} finalized={} reverted={} unlock_failed={}",
+                safe_head.number, recorded_total, finalized_count, reverted_count, unlock_failed
+            );
+        }
 
         Ok(())
     }
@@ -651,7 +656,7 @@ impl Task for ScanPaymentsTask {
     }
 
     async fn run(&self) -> anyhow::Result<()> {
-        let lookback = self.ethereum_config().number_of_pending_blocks;
+        let lookback = self.ethereum_config().payment_scan_lookback_blocks;
         self.0.scan_blockchain(lookback).await
     }
 }

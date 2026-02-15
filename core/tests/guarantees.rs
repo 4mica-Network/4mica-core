@@ -107,7 +107,6 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
         tab_expiration_time: 3600,
     });
 
-    let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let core_service = CoreService::new_with_dependencies(
         config,
         CoreServiceDeps {
@@ -117,7 +116,6 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
             read_provider,
             guarantee_domain: [0u8; 32],
             tab_expiration_time: 3600,
-            listener_ready_rx: ready_rx,
         },
     )?;
     Ok(core_service)

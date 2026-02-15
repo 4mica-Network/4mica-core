@@ -30,7 +30,7 @@ TYPE user_transaction_status
 USING status::user_transaction_status;
 ALTER TABLE "UserTransaction"
 ALTER COLUMN status
-SET DEFAULT 'confirmed'::user_transaction_status;
+SET DEFAULT 'CONFIRMED'::user_transaction_status;
 "#,
             )
             .await?;

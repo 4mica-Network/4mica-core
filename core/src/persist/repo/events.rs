@@ -145,6 +145,17 @@ pub async fn upsert_blockchain_event_cursor(
     Ok(())
 }
 
+pub async fn delete_blockchain_event_cursor(
+    ctx: &PersistCtx,
+    chain_id: u64,
+) -> Result<(), PersistDbError> {
+    blockchain_event_cursor::Entity::delete_many()
+        .filter(blockchain_event_cursor::Column::ChainId.eq(chain_id as i64))
+        .exec(ctx.db.as_ref())
+        .await?;
+    Ok(())
+}
+
 pub async fn upsert_blockchain_block(
     ctx: &PersistCtx,
     chain_id: u64,
