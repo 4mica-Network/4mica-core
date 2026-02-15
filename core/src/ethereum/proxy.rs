@@ -1,7 +1,7 @@
 use crate::{config::EthereumConfig, error::CoreContractApiError, ethereum::contract_abi::*};
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, U256},
+    primitives::{Address, B256, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
@@ -12,6 +12,13 @@ use log::info;
 pub struct CoreContractProxy {
     provider: DynProvider,
     contract_address: Address,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordPaymentTx {
+    pub tx_hash: B256,
+    pub block_number: Option<u64>,
+    pub block_hash: Option<B256>,
 }
 
 #[async_trait]
@@ -27,7 +34,7 @@ pub trait CoreContractApi: Send + Sync {
         tab_id: U256,
         asset: Address,
         amount: U256,
-    ) -> Result<(), CoreContractApiError>;
+    ) -> Result<RecordPaymentTx, CoreContractApiError>;
 }
 
 impl CoreContractProxy {
@@ -94,7 +101,7 @@ impl CoreContractApi for CoreContractProxy {
         tab_id: U256,
         asset: Address,
         amount: U256,
-    ) -> Result<(), CoreContractApiError> {
+    ) -> Result<RecordPaymentTx, CoreContractApiError> {
         let contract = self.build_contract();
         let tx = contract.recordPayment(tab_id, asset, amount);
 
@@ -104,6 +111,10 @@ impl CoreContractApi for CoreContractProxy {
             "recordPayment confirmed in tx {:?}",
             receipt.transaction_hash
         );
-        Ok(())
+        Ok(RecordPaymentTx {
+            tx_hash: receipt.transaction_hash,
+            block_number: receipt.block_number,
+            block_hash: receipt.block_hash,
+        })
     }
 }

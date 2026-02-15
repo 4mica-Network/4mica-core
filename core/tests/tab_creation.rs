@@ -1,4 +1,4 @@
-use alloy::primitives::U256;
+use alloy::primitives::{B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};
 use core_service::{
@@ -7,7 +7,7 @@ use core_service::{
         constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
     },
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
-    ethereum::CoreContractApi,
+    ethereum::{CoreContractApi, RecordPaymentTx},
     persist::{PersistCtx, repo},
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -47,40 +47,6 @@ fn facilitator_auth(facilitator: &str) -> AccessContext {
     }
 }
 
-struct MockContractApi {
-    chain_id: u64,
-    domain: [u8; 32],
-    tab_expiration_time: u64,
-}
-
-#[async_trait::async_trait]
-impl CoreContractApi for MockContractApi {
-    async fn get_chain_id(&self) -> Result<u64, core_service::error::CoreContractApiError> {
-        Ok(self.chain_id)
-    }
-
-    async fn get_guarantee_domain_separator(
-        &self,
-    ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
-        Ok(self.domain)
-    }
-
-    async fn get_tab_expiration_time(
-        &self,
-    ) -> Result<u64, core_service::error::CoreContractApiError> {
-        Ok(self.tab_expiration_time)
-    }
-
-    async fn record_payment(
-        &self,
-        _tab_id: U256,
-        _asset: alloy::primitives::Address,
-        _amount: U256,
-    ) -> Result<(), core_service::error::CoreContractApiError> {
-        Ok(())
-    }
-}
-
 fn build_read_provider() -> anyhow::Result<DynProvider> {
     let provider_res = panic::catch_unwind(|| {
         ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| anvil.port(40106u16))
@@ -111,7 +77,6 @@ async fn build_core_service(
         tab_expiration_time,
     });
 
-    let (_ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     CoreService::new_with_dependencies(
         config,
         CoreServiceDeps {
@@ -121,7 +86,6 @@ async fn build_core_service(
             read_provider,
             guarantee_domain: [0u8; 32],
             tab_expiration_time,
-            listener_ready_rx: ready_rx,
         },
     )
 }
@@ -427,4 +391,41 @@ async fn facilitator_can_create_tab_for_recipient() {
     assert_eq!(tab.user_address, user);
     assert_eq!(tab.recipient_address, recipient);
     assert_eq!(tab.next_req_id, U256::ZERO);
+}
+struct MockContractApi {
+    chain_id: u64,
+    domain: [u8; 32],
+    tab_expiration_time: u64,
+}
+
+#[async_trait::async_trait]
+impl CoreContractApi for MockContractApi {
+    async fn get_chain_id(&self) -> Result<u64, core_service::error::CoreContractApiError> {
+        Ok(self.chain_id)
+    }
+
+    async fn get_guarantee_domain_separator(
+        &self,
+    ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
+        Ok(self.domain)
+    }
+
+    async fn get_tab_expiration_time(
+        &self,
+    ) -> Result<u64, core_service::error::CoreContractApiError> {
+        Ok(self.tab_expiration_time)
+    }
+
+    async fn record_payment(
+        &self,
+        _tab_id: U256,
+        _asset: alloy::primitives::Address,
+        _amount: U256,
+    ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
+        Ok(RecordPaymentTx {
+            tx_hash: B256::ZERO,
+            block_number: None,
+            block_hash: None,
+        })
+    }
 }

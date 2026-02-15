@@ -11,9 +11,13 @@ use alloy_primitives::{Address, FixedBytes};
 use anyhow::{Context, bail};
 use core_service::{
     config::{AppConfig, EthereumConfig},
+    ethereum::EthereumEventScanner,
     persist::PersistCtx,
     scheduler::TaskScheduler,
-    service::{CoreService, payment::ScanPaymentsTask},
+    service::{
+        CoreService,
+        payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask},
+    },
 };
 use log::debug;
 
@@ -143,8 +147,12 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         cron_job_settings: "*/2 * * * * *".to_string(),
+        event_scanner_cron: "*/2 * * * * *".to_string(),
+        confirmation_mode: "finalized".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
-        number_of_pending_blocks: 1,
+        payment_scan_lookback_blocks: 1,
+        initial_event_scan_lookback_blocks: 10,
+        finalized_head_depth: 1,
         ethereum_private_key: operator_key,
     };
 
@@ -153,16 +161,27 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         cfg.ethereum_config.cron_job_settings
     );
 
-    // It's important to clear the tables before the core service starts,
-    //   otherwise the listener may see a populated blockchain_event table.
     let persist_ctx = PersistCtx::new().await?;
     clear_all_tables(&persist_ctx).await?;
     let core_service = CoreService::new(cfg.clone()).await?;
-    core_service.wait_for_listener_ready().await?;
+
+    let ethereum_scanner = Arc::new(EthereumEventScanner::new(
+        cfg.ethereum_config.clone(),
+        core_service.persist_ctx().clone(),
+        core_service.read_provider().clone(),
+        Arc::new(core_service.clone()),
+    ));
 
     let mut scheduler = TaskScheduler::new().await?;
+    scheduler.add_task(ethereum_scanner).await?;
     scheduler
         .add_task(Arc::new(ScanPaymentsTask::new(core_service.clone())))
+        .await?;
+    scheduler
+        .add_task(Arc::new(ConfirmPaymentsTask::new(core_service.clone())))
+        .await?;
+    scheduler
+        .add_task(Arc::new(FinalizePaymentsTask::new(core_service.clone())))
         .await?;
     scheduler.start().await?;
 
@@ -183,8 +202,15 @@ pub async fn spawn_core_service_in_existing_environment(
     env: &mut E2eEnvironment,
 ) -> anyhow::Result<CoreService> {
     let core_service = CoreService::new(env.cfg.clone()).await?;
-    core_service.wait_for_listener_ready().await?;
 
+    let ethereum_scanner = Arc::new(EthereumEventScanner::new(
+        env.cfg.ethereum_config.clone(),
+        core_service.persist_ctx().clone(),
+        core_service.read_provider().clone(),
+        Arc::new(core_service.clone()),
+    ));
+
+    env.scheduler.add_task(ethereum_scanner).await?;
     env.core_service = core_service.clone();
 
     Ok(core_service)

@@ -33,12 +33,81 @@ pub struct EthereumConfig {
     pub contract_address: String,
     #[envconfig(from = "CRON_JOB_SETTINGS", default = "0 */1 * * * *")]
     pub cron_job_settings: String,
+    #[envconfig(from = "ETHEREUM_EVENT_SCANNER_CRON", default = "*/5 * * * * *")]
+    pub event_scanner_cron: String,
+    /// Confirmation policy for on-chain data:
+    /// `depth` = confirm after N blocks (NUMBER_OF_BLOCKS_TO_CONFIRM),
+    /// `safe` = confirm at the chain's "safe" head,
+    /// `finalized` = confirm at the chain's finalized head (safest).
+    #[envconfig(from = "CONFIRMATION_MODE", default = "finalized")]
+    pub confirmation_mode: String,
+    /// Only used when CONFIRMATION_MODE=depth.
     #[envconfig(from = "NUMBER_OF_BLOCKS_TO_CONFIRM", default = "20")]
     pub number_of_blocks_to_confirm: u64,
-    #[envconfig(from = "NUMBER_OF_PENDING_BLOCKS", default = "5")]
-    pub number_of_pending_blocks: u64,
+    #[envconfig(from = "PAYMENT_SCAN_LOOKBACK_BLOCKS", default = "5")]
+    pub payment_scan_lookback_blocks: u64,
+    /// When scanning for events and cursor is not found in the database, scan back this many blocks.
+    #[envconfig(from = "INITIAL_EVENT_SCAN_LOOKBACK_BLOCKS", default = "25")]
+    pub initial_event_scan_lookback_blocks: u64,
+    /// When CONFIRMATION_MODE=finalized and the provider doesn't advance finalized head,
+    /// treat blocks as finalized after this depth (useful for local dev/test only).
+    #[envconfig(from = "FINALIZED_HEAD_DEPTH", default = "0")]
+    pub finalized_head_depth: u64,
     #[envconfig(from = "ETHEREUM_PRIVATE_KEY")]
     pub ethereum_private_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationMode {
+    Depth,
+    Safe,
+    Finalized,
+}
+
+impl ConfirmationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConfirmationMode::Depth => "depth",
+            ConfirmationMode::Safe => "safe",
+            ConfirmationMode::Finalized => "finalized",
+        }
+    }
+}
+
+impl EthereumConfig {
+    pub fn confirmation_mode(&self) -> anyhow::Result<ConfirmationMode> {
+        match self.confirmation_mode.trim().to_lowercase().as_str() {
+            "depth" => Ok(ConfirmationMode::Depth),
+            "safe" => Ok(ConfirmationMode::Safe),
+            "finalized" => Ok(ConfirmationMode::Finalized),
+            other => bail!(
+                "Invalid CONFIRMATION_MODE '{}'. Use one of: depth, safe, finalized",
+                other
+            ),
+        }
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let mode = self.confirmation_mode()?;
+        if mode != ConfirmationMode::Finalized {
+            bail!(
+                "CONFIRMATION_MODE must be finalized when processing on-chain data without rollback"
+            );
+        }
+        if mode == ConfirmationMode::Finalized && self.finalized_head_depth > 0 {
+            warn!(
+                "FINALIZED_HEAD_DEPTH={} is set; finalized mode will treat latest-N blocks as finalized. This is not safe for production.",
+                self.finalized_head_depth
+            );
+        }
+        if mode == ConfirmationMode::Depth && self.number_of_blocks_to_confirm == 0 {
+            bail!("NUMBER_OF_BLOCKS_TO_CONFIRM must be > 0 when CONFIRMATION_MODE=depth");
+        }
+        if self.payment_scan_lookback_blocks == 0 {
+            bail!("PAYMENT_SCAN_LOOKBACK_BLOCKS must be > 0");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Envconfig)]
@@ -126,6 +195,9 @@ impl AppConfig {
             ServerConfig::init_from_env().context("Failed to load server config")?;
         let ethereum_config =
             EthereumConfig::init_from_env().context("Failed to load ethereum config")?;
+        ethereum_config
+            .validate()
+            .context("Invalid ethereum config")?;
         let database_config =
             DatabaseConfig::init_from_env().context("Failed to load database config")?;
         let secrets = Secrets::init_from_env().context("Failed to load secrets")?;

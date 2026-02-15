@@ -8,7 +8,7 @@ use std::time::Duration;
 mod common;
 
 use crate::common::{
-    ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config,
+    ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config, mine_confirmations,
     wait_for_collateral_increase,
 };
 
@@ -58,7 +58,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     .await?;
 
     let user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config).await?;
+    let user_client = Client::new(user_config.clone()).await?;
 
     let recipient_config = build_authed_recipient_config(
         "http://localhost:3000",
@@ -67,7 +67,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     .await?;
 
     let recipient_address = recipient_config.signer.address().to_string();
-    let recipient_client = Client::new(recipient_config).await?;
+    let recipient_client = Client::new(recipient_config.clone()).await?;
 
     // Step 1: User deposits collateral (2 ETH)
     let core_total_before = recipient_client
@@ -83,6 +83,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
 
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
+    mine_confirmations(&user_config, 1).await?;
 
     let user_info_after = user_client.user.get_user().await?;
     let eth_asset = common::extract_asset_info(&user_info_after, ETH_ASSET_ADDRESS)
@@ -237,7 +238,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     )
     .await?;
     let user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config).await?;
+    let user_client = Client::new(user_config.clone()).await?;
 
     let recipient_config = build_authed_recipient_config(
         "http://localhost:3000",
@@ -245,7 +246,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     )
     .await?;
     let recipient_address = recipient_config.signer.address().to_string();
-    let recipient_client = Client::new(recipient_config).await?;
+    let recipient_client = Client::new(recipient_config.clone()).await?;
 
     // Ensure sufficient collateral for two guarantees.
     let core_total_before = recipient_client
@@ -257,6 +258,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
 
     let deposit_amount = U256::from(3_000_000_000_000_000_000u128); // 3 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
+    mine_confirmations(&user_config, 1).await?;
 
     wait_for_collateral_increase(
         &recipient_client.recipient,

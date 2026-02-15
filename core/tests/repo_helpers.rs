@@ -186,6 +186,10 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
         tab_id: Set(Some(tab_id.to_string())),
         req_id: Set(None),
         tx_id: Set(None),
+        event_chain_id: Set(None),
+        event_block_hash: Set(None),
+        event_tx_hash: Set(None),
+        event_log_index: Set(None),
         created_at: Set(now),
     };
     // First insert must succeed
@@ -203,6 +207,10 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
         tab_id: Set(Some(tab_id.to_string())),
         req_id: Set(None),
         tx_id: Set(None),
+        event_chain_id: Set(None),
+        event_block_hash: Set(None),
+        event_tx_hash: Set(None),
+        event_log_index: Set(None),
         created_at: Set(now),
     };
 
@@ -251,18 +259,43 @@ async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> 
         .exec(ctx.db.as_ref())
         .await?;
 
+    let chain_id = 1u64;
     let signature = "Transfer(address,address,uint256)";
     let block_number = 12345u64;
+    let block_hash = "0xdeadbeef";
+    let tx_hash = "0xfeedface";
     let log_index = 0u64;
+    let address = "0x0000000000000000000000000000000000000000";
+    let data = r#"{"type":"unknown","name":"test"}"#;
 
     // First insert should return true
-    let first_insert =
-        repo::store_blockchain_event(&ctx, signature, block_number, log_index).await?;
+    let first_insert = repo::store_blockchain_event(
+        &ctx,
+        chain_id,
+        signature,
+        block_number,
+        block_hash,
+        tx_hash,
+        log_index,
+        address,
+        data,
+    )
+    .await?;
     assert!(first_insert, "First insert should return true");
 
     // Second insert with same block_number and log_index should return false
-    let second_insert =
-        repo::store_blockchain_event(&ctx, signature, block_number, log_index).await?;
+    let second_insert = repo::store_blockchain_event(
+        &ctx,
+        chain_id,
+        signature,
+        block_number,
+        block_hash,
+        tx_hash,
+        log_index,
+        address,
+        data,
+    )
+    .await?;
     assert!(!second_insert, "Duplicate insert should return false");
 
     Ok(())
@@ -277,18 +310,47 @@ async fn get_last_processed_blockchain_event_returns_latest() -> anyhow::Result<
         .exec(ctx.db.as_ref())
         .await?;
 
+    let chain_id = 1u64;
     let signature1 = "Transfer(address,address,uint256)";
     let signature2 = "Approval(address,address,uint256)";
+    let address = "0x0000000000000000000000000000000000000000";
+    let data = r#"{"type":"unknown","name":"test"}"#;
 
     // Insert first event
     let block_number1 = 10000u64;
+    let block_hash1 = "0xaaaabbbb";
+    let tx_hash1 = "0x11112222";
     let log_index1 = 5u64;
-    repo::store_blockchain_event(&ctx, signature1, block_number1, log_index1).await?;
+    repo::store_blockchain_event(
+        &ctx,
+        chain_id,
+        signature1,
+        block_number1,
+        block_hash1,
+        tx_hash1,
+        log_index1,
+        address,
+        data,
+    )
+    .await?;
 
     // Insert second event with higher block_number (this should be the last one)
     let block_number2 = 10001u64;
+    let block_hash2 = "0xbbbbcccc";
+    let tx_hash2 = "0x33334444";
     let log_index2 = 3u64;
-    repo::store_blockchain_event(&ctx, signature2, block_number2, log_index2).await?;
+    repo::store_blockchain_event(
+        &ctx,
+        chain_id,
+        signature2,
+        block_number2,
+        block_hash2,
+        tx_hash2,
+        log_index2,
+        address,
+        data,
+    )
+    .await?;
 
     // Get the last processed event
     let last_event = repo::get_last_processed_blockchain_event(&ctx).await?;

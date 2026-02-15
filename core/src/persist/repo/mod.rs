@@ -3,6 +3,7 @@ use crate::persist::PersistCtx;
 
 pub mod auth;
 pub mod balances;
+pub mod chain_cursor;
 pub mod collateral;
 pub mod common;
 pub mod events;
@@ -15,6 +16,7 @@ pub mod withdrawals;
 
 pub use auth::*;
 pub use balances::*;
+pub use chain_cursor::*;
 pub use collateral::*;
 pub use common::Address;
 pub use events::*;
