@@ -97,6 +97,9 @@ pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
             "AuthRefreshToken",
             "WalletRole",
             "BlockchainEvent",
+            "BlockchainEventCursor",
+            "BlockchainBlock",
+            "ChainCursor",
         ],
     )
     .await?;

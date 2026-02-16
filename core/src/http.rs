@@ -235,15 +235,9 @@ async fn post_auth_logout(
 }
 
 async fn get_health(
-    State(service): State<CoreService>,
+    State(_service): State<CoreService>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    service
-        .wait_for_listener_ready()
-        .await
-        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "listener unavailable"))?;
-    Ok(Json(
-        serde_json::json!({ "status": "ok", "listener_ready": true }),
-    ))
+    Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
 async fn issue_guarantee(

@@ -1,7 +1,7 @@
 //! contract.rs — ABI event + function bindings for the Core4Mica contract
 //!
 //! This module provides:
-//! - Strongly typed event definitions for on-chain log decoding (used by EthereumListener)
+//! - Strongly typed event definitions for on-chain log decoding (used by EthereumEventScanner)
 //! - Strongly typed contract function bindings for RPC calls (used for sending txs)
 //!
 

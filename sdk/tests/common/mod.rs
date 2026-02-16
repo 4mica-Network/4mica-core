@@ -55,6 +55,30 @@ pub async fn get_chain_timestamp<S>(config: &Config<S>) -> anyhow::Result<u64> {
     Ok(ts)
 }
 
+pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::Result<()> {
+    if blocks == 0 {
+        return Ok(());
+    }
+
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    let public_params = rpc_proxy.get_public_params().await?;
+    reqwest::Client::new()
+        .post(public_params.ethereum_http_rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "anvil_mine",
+            "params": [blocks]
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
 pub async fn close_tab(tab_id: U256) -> anyhow::Result<()> {
     load_core_env();
     let ctx = PersistCtx::new()

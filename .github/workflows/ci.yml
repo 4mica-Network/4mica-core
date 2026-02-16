@@ -141,11 +141,13 @@ jobs:
           SERVER_PORT: 3000
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: |
           # Run the API in the background for core API tests.
           stdbuf -oL -eL cargo run -p core-service 2>&1 | tee core/api-core.log &
@@ -178,10 +180,12 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: cargo test --workspace --exclude sdk-4mica
 
       - name: Stop API service (core tests)
@@ -223,11 +227,13 @@ jobs:
           SERVER_PORT: 3000
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: |
           # Stream API logs to the job output while persisting to api.log
           stdbuf -oL -eL cargo run -p core-service 2>&1 | tee api.log &
@@ -260,8 +266,10 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
         run: cargo test -p sdk-4mica -j 1 -- --test-threads=1

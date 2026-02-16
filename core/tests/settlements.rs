@@ -1,13 +1,16 @@
 use alloy::network::TransactionBuilder;
 use alloy::primitives::U256;
-use alloy::providers::Provider;
+use alloy::providers::ext::AnvilApi;
+use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::TransactionRequest;
 use alloy_primitives::{Address, B256};
 use blockchain::txtools::PaymentTx;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::{PersistCtx, repo};
+use core_service::scheduler::Task;
+use core_service::service::payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask};
 use entities::{
-    sea_orm_active_enums::{SettlementStatus, TabStatus},
+    sea_orm_active_enums::{SettlementStatus, TabStatus, UserTransactionStatus},
     tabs, user_transaction,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -16,9 +19,21 @@ use test_log::test;
 
 mod common;
 use crate::common::fixtures::{clear_all_tables, read_collateral, read_locked_collateral};
-use crate::common::setup::{E2eEnvironment, setup_e2e_environment};
+use crate::common::setup::setup_e2e_environment;
 
 static NUMBER_OF_TRIALS: u32 = 60;
+
+async fn mine_finalized(provider: &DynProvider) -> anyhow::Result<()> {
+    let depth = std::env::var("FINALIZED_HEAD_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let total = depth.saturating_add(1);
+    if total > 0 {
+        provider.anvil_mine(Some(total), None).await?;
+    }
+    Ok(())
+}
 //
 // ────────────────────── HELPERS ──────────────────────
 //
@@ -70,13 +85,10 @@ async fn insert_tab(
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -120,6 +132,7 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
         .with_input(input.into_bytes());
 
     provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
 
     // poll DB
     let mut tries = 0;
@@ -146,13 +159,10 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -196,6 +206,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
         .with_input(input.into_bytes());
 
     provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
 
     let mut tries = 0;
     let tx_record = loop {
@@ -240,12 +251,9 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
 
     let expected_user = unique_addr();
@@ -257,6 +265,7 @@ async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
 
     let payment = PaymentTx {
         block_number: 1,
+        block_hash: None,
         tx_hash: B256::ZERO,
         from: signer_addr,
         to: Address::from_str(&server_addr)?,
@@ -294,13 +303,10 @@ async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -345,6 +351,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
         .with_value(amount)
         .with_input(input.into_bytes());
     provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
 
     let mut tries = 0;
     loop {
@@ -365,14 +372,12 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
-async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        core_service,
-        signer_addr,
-        scheduler: _scheduler,
-        ..
-    } = setup_e2e_environment().await?;
+async fn payment_transaction_does_not_unlock_collateral_before_confirmation() -> anyhow::Result<()>
+{
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
     let user_addr = signer_addr.to_string();
 
@@ -409,6 +414,79 @@ async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
     )
     .await?;
 
+    // Pay 60 ETH (should remain pending until confirmed)
+    let req_id = U256::from(1);
+    let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, req_id);
+    let tx = TransactionRequest::default()
+        .with_to(server_addr.parse().unwrap())
+        .with_value(U256::from(60u64))
+        .with_input(input.into_bytes());
+    provider.send_transaction(tx).await?.watch().await?;
+    mine_finalized(&provider).await?;
+
+    let mut tries = 0;
+    loop {
+        let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+
+        // locked should remain 100 ETH until confirmation
+        if locked == U256::from(100u64) {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("Collateral unexpectedly changed after PaymentRecorded");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    Ok(())
+}
+
+/// Unlocking happens only after record tx finalizes.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::serial]
+async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let signer_addr = env.signer_addr;
+
+    let persist_ctx = core_service.persist_ctx();
+    let user_addr = signer_addr.to_string();
+    let server_addr = unique_addr();
+
+    repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_addr).await?;
+
+    let start_collateral = U256::from(500u64);
+    repo::deposit(
+        persist_ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        start_collateral,
+    )
+    .await?;
+
+    // Insert dummy tab
+    let tab_id = U256::from(rand::random::<u64>());
+    let tab_id_str = format!("{tab_id:#x}");
+    insert_tab(persist_ctx, tab_id, &user_addr, &server_addr).await?;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    // Lock 100 ETH
+    let balance =
+        repo::get_user_balance_on(persist_ctx.db.as_ref(), &user_addr, DEFAULT_ASSET_ADDRESS)
+            .await?;
+    repo::update_user_balance_and_version_on(
+        persist_ctx.db.as_ref(),
+        &user_addr,
+        DEFAULT_ASSET_ADDRESS,
+        balance.version,
+        balance.total.parse::<U256>().unwrap(),
+        U256::from(100u64),
+    )
+    .await?;
+
     // Pay 60 ETH
     let req_id = U256::from(1);
     let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, req_id);
@@ -418,16 +496,43 @@ async fn payment_transaction_unlocks_collateral() -> anyhow::Result<()> {
         .with_input(input.into_bytes());
     provider.send_transaction(tx).await?.watch().await?;
 
+    // Advance chain so safe head includes the payment block.
+    mine_finalized(&provider).await?;
+
+    ScanPaymentsTask::new(core_service.clone()).run().await?;
+    ConfirmPaymentsTask::new(core_service.clone()).run().await?;
+
+    let tx_row = user_transaction::Entity::find()
+        .filter(user_transaction::Column::TabId.eq(tab_id_str.clone()))
+        .one(persist_ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+    assert_eq!(tx_row.status, UserTransactionStatus::Recorded);
+
+    let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(locked, U256::from(100u64));
+
+    // Advance chain so record tx is past the safe head.
+    mine_finalized(&provider).await?;
+    FinalizePaymentsTask::new(core_service.clone())
+        .run()
+        .await?;
+
     let mut tries = 0;
     loop {
         let locked = read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+        let tx_row = user_transaction::Entity::find()
+            .filter(user_transaction::Column::TabId.eq(tab_id_str.clone()))
+            .one(persist_ctx.db.as_ref())
+            .await?
+            .expect("transaction should exist");
 
-        // locked should now be 40 ETH (100 - 60)
-        if locked == U256::from(40u64) {
+        if tx_row.status == UserTransactionStatus::Finalized && locked == U256::from(40u64) {
             break;
         }
+
         if tries > NUMBER_OF_TRIALS {
-            panic!("Collateral unexpectedly changed after PaymentRecorded");
+            panic!("Collateral did not unlock after finalization");
         }
         tries += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;

@@ -1,84 +1,22 @@
 use alloy::primitives::{Address, B256, U256};
-use anyhow::anyhow;
-use async_trait::async_trait;
+use alloy::providers::Provider;
 use blockchain::txtools::PaymentTx;
 use core_service::{
-    config::DEFAULT_ASSET_ADDRESS, error::CoreContractApiError, ethereum::CoreContractApi,
-    persist::repo, service::payment::process_discovered_payment,
+    config::DEFAULT_ASSET_ADDRESS, persist::repo, service::payment::process_discovered_payment,
 };
+use entities::sea_orm_active_enums::UserTransactionStatus;
 use entities::{tabs, user_transaction};
 use rand::random;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::str::FromStr;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
-
 #[path = "common/mod.rs"]
 mod common;
 use common::fixtures::{clear_all_tables, ensure_user, init_test_env, random_address};
-
-struct FailingContractApi;
-
-#[async_trait]
-impl CoreContractApi for FailingContractApi {
-    async fn get_chain_id(&self) -> Result<u64, CoreContractApiError> {
-        Ok(1)
-    }
-
-    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
-        Ok([0u8; 32])
-    }
-
-    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
-        Ok(3600)
-    }
-
-    async fn record_payment(
-        &self,
-        _tab_id: U256,
-        _asset: Address,
-        _amount: U256,
-    ) -> Result<(), CoreContractApiError> {
-        Err(CoreContractApiError::Other(anyhow!(
-            "record_payment failed"
-        )))
-    }
-}
-
-struct RecordingContractApi {
-    calls: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl CoreContractApi for RecordingContractApi {
-    async fn get_chain_id(&self) -> Result<u64, CoreContractApiError> {
-        Ok(1)
-    }
-
-    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
-        Ok([0u8; 32])
-    }
-
-    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
-        Ok(3600)
-    }
-
-    async fn record_payment(
-        &self,
-        _tab_id: U256,
-        _asset: Address,
-        _amount: U256,
-    ) -> Result<(), CoreContractApiError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-}
+use common::setup::setup_e2e_environment;
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<()> {
+async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
 
@@ -119,6 +57,7 @@ async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<(
     let tx_hash = B256::from(random::<[u8; 32]>());
     let payment = PaymentTx {
         block_number: 1,
+        block_hash: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
@@ -129,17 +68,21 @@ async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<(
     };
     let tx_hash_str = format!("{:#x}", tx_hash);
 
-    let result = process_discovered_payment(&ctx, &FailingContractApi, payment).await;
-    assert!(result.is_err());
+    process_discovered_payment(&ctx, payment).await?;
 
-    let tx_rows = user_transaction::Entity::find()
+    let tx_row = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.eq(tx_hash_str))
-        .all(ctx.db.as_ref())
-        .await?;
-    assert!(
-        tx_rows.is_empty(),
-        "pending transactions should be removed on failure: {tx_rows:?}"
-    );
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+
+    assert_eq!(tx_row.status, UserTransactionStatus::Pending);
+    assert!(!tx_row.finalized, "transaction should not be finalized");
+    assert!(!tx_row.verified, "transaction should not be verified");
+    assert!(!tx_row.failed, "transaction should not be failed");
+    assert_eq!(tx_row.block_number, Some(1));
+    assert!(tx_row.block_hash.is_none());
+    assert!(tx_row.confirmed_at.is_none());
 
     clear_all_tables(&ctx).await?;
     Ok(())
@@ -147,7 +90,7 @@ async fn failed_record_payment_removes_pending_transaction() -> anyhow::Result<(
 
 #[test_log::test(tokio::test)]
 #[serial_test::serial]
-async fn successful_record_payment_marks_transaction_finalized() -> anyhow::Result<()> {
+async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
 
@@ -188,6 +131,7 @@ async fn successful_record_payment_marks_transaction_finalized() -> anyhow::Resu
     let tx_hash = B256::from(random::<[u8; 32]>());
     let payment = PaymentTx {
         block_number: 1,
+        block_hash: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
@@ -198,27 +142,16 @@ async fn successful_record_payment_marks_transaction_finalized() -> anyhow::Resu
     };
     let tx_hash_str = format!("{:#x}", tx_hash);
 
-    let calls = Arc::new(AtomicUsize::new(0));
-    let api = RecordingContractApi {
-        calls: calls.clone(),
-    };
+    process_discovered_payment(&ctx, payment.clone()).await?;
+    process_discovered_payment(&ctx, payment).await?;
 
-    process_discovered_payment(&ctx, &api, payment).await?;
-
-    let tx_row = user_transaction::Entity::find()
+    let tx_rows = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.eq(tx_hash_str.clone()))
-        .one(ctx.db.as_ref())
-        .await?
-        .expect("transaction should exist");
+        .all(ctx.db.as_ref())
+        .await?;
 
-    assert!(tx_row.finalized, "transaction should be marked finalized");
-    assert!(tx_row.verified, "transaction should be marked verified");
-    assert!(!tx_row.failed, "transaction should not be failed");
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "record_payment should be called once"
-    );
+    assert_eq!(tx_rows.len(), 1, "transaction should be unique");
+    assert_eq!(tx_rows[0].status, UserTransactionStatus::Pending);
 
     clear_all_tables(&ctx).await?;
     Ok(())
@@ -265,6 +198,7 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
     let tx_hash = B256::from(random::<[u8; 32]>());
     let payment = PaymentTx {
         block_number: 1,
+        block_hash: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
@@ -275,24 +209,64 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
     };
     let tx_hash_str = format!("{:#x}", tx_hash);
 
-    let calls = Arc::new(AtomicUsize::new(0));
-    let api = RecordingContractApi {
-        calls: calls.clone(),
-    };
-
-    process_discovered_payment(&ctx, &api, payment).await?;
+    process_discovered_payment(&ctx, payment).await?;
 
     let tx_row = user_transaction::Entity::find()
         .filter(user_transaction::Column::TxId.eq(tx_hash_str.clone()))
         .one(ctx.db.as_ref())
         .await?;
     assert!(tx_row.is_none(), "mismatched asset should be ignored");
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "record_payment should not be called"
-    );
 
     clear_all_tables(&ctx).await?;
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn reorg_does_not_mutate_without_finality() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+
+    let persist_ctx = core_service.persist_ctx();
+    let chain_id = provider.get_chain_id().await?;
+    let latest = provider.get_block_number().await?;
+    let safe_head = latest.saturating_sub(1);
+
+    repo::upsert_chain_cursor(persist_ctx, chain_id, safe_head, "0xdeadbeef".to_string()).await?;
+
+    let user_address = random_address();
+    repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_address).await?;
+
+    let tx_hash = B256::from(random::<[u8; 32]>());
+    let tx_hash_str = format!("{:#x}", tx_hash);
+    let tab_id = U256::from(777u64);
+
+    repo::submit_pending_payment_transaction(
+        persist_ctx,
+        repo::PendingPaymentInput {
+            user_address,
+            recipient_address: random_address(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            transaction_id: tx_hash_str.clone(),
+            amount: U256::from(10u64),
+            tab_id: format!("{:#x}", tab_id),
+            block_number: safe_head,
+            block_hash: None,
+        },
+    )
+    .await?;
+
+    core_service.confirm_pending_payments().await?;
+
+    let tx_row = user_transaction::Entity::find()
+        .filter(user_transaction::Column::TxId.eq(tx_hash_str))
+        .one(persist_ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+
+    assert_eq!(tx_row.status, UserTransactionStatus::Pending);
+
+    clear_all_tables(persist_ctx).await?;
     Ok(())
 }

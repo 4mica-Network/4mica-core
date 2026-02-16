@@ -630,6 +630,75 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
 
 #[test(tokio::test)]
 #[serial_test::serial]
+async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    ensure_user(&ctx, &user_addr).await?;
+
+    let now = Utc::now().naive_utc();
+
+    // insert the first Pending withdrawal – should succeed
+    let w1 = ActiveModel {
+        id: Set(Uuid::new_v4().to_string()),
+        user_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
+        requested_amount: Set(U256::from(5u64).to_string()),
+        executed_amount: Set("0".into()),
+        request_ts: Set(Utc::now().naive_utc()),
+        status: Set(WithdrawalStatus::Pending),
+        request_event_chain_id: Set(None),
+        request_event_block_hash: Set(None),
+        request_event_tx_hash: Set(None),
+        request_event_log_index: Set(None),
+        cancel_event_chain_id: Set(None),
+        cancel_event_block_hash: Set(None),
+        cancel_event_tx_hash: Set(None),
+        cancel_event_log_index: Set(None),
+        execute_event_chain_id: Set(None),
+        execute_event_block_hash: Set(None),
+        execute_event_tx_hash: Set(None),
+        execute_event_log_index: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    Entity::insert(w1).exec(ctx.db.as_ref()).await?;
+
+    // insert a second Pending withdrawal for the same user – should violate the
+    // partial unique index and return a database error.
+    let w2 = ActiveModel {
+        id: Set(Uuid::new_v4().to_string()),
+        user_address: Set(user_addr.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
+        requested_amount: Set(U256::from(5u64).to_string()),
+        executed_amount: Set("0".into()),
+        request_ts: Set(Utc::now().naive_utc()),
+        status: Set(WithdrawalStatus::Pending),
+        request_event_chain_id: Set(None),
+        request_event_block_hash: Set(None),
+        request_event_tx_hash: Set(None),
+        request_event_log_index: Set(None),
+        cancel_event_chain_id: Set(None),
+        cancel_event_block_hash: Set(None),
+        cancel_event_tx_hash: Set(None),
+        cancel_event_log_index: Set(None),
+        execute_event_chain_id: Set(None),
+        execute_event_block_hash: Set(None),
+        execute_event_tx_hash: Set(None),
+        execute_event_log_index: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+
+    let res = Entity::insert(w2).exec(ctx.db.as_ref()).await;
+    assert!(
+        res.is_err(),
+        "Second pending withdrawal for same user should violate unique index"
+    );
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
 async fn multiple_pending_withdrawals_per_user_different_assets_allowed() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -648,6 +717,18 @@ async fn multiple_pending_withdrawals_per_user_different_assets_allowed() -> any
         executed_amount: Set("0".into()),
         request_ts: Set(Utc::now().naive_utc()),
         status: Set(WithdrawalStatus::Pending),
+        request_event_chain_id: Set(None),
+        request_event_block_hash: Set(None),
+        request_event_tx_hash: Set(None),
+        request_event_log_index: Set(None),
+        cancel_event_chain_id: Set(None),
+        cancel_event_block_hash: Set(None),
+        cancel_event_tx_hash: Set(None),
+        cancel_event_log_index: Set(None),
+        execute_event_chain_id: Set(None),
+        execute_event_block_hash: Set(None),
+        execute_event_tx_hash: Set(None),
+        execute_event_log_index: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -662,6 +743,18 @@ async fn multiple_pending_withdrawals_per_user_different_assets_allowed() -> any
         executed_amount: Set("0".into()),
         request_ts: Set(Utc::now().naive_utc()),
         status: Set(WithdrawalStatus::Pending),
+        request_event_chain_id: Set(None),
+        request_event_block_hash: Set(None),
+        request_event_tx_hash: Set(None),
+        request_event_log_index: Set(None),
+        cancel_event_chain_id: Set(None),
+        cancel_event_block_hash: Set(None),
+        cancel_event_tx_hash: Set(None),
+        cancel_event_log_index: Set(None),
+        execute_event_chain_id: Set(None),
+        execute_event_block_hash: Set(None),
+        execute_event_tx_hash: Set(None),
+        execute_event_log_index: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
     };
