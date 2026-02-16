@@ -19,7 +19,10 @@ use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::{guarantee, user};
 use rand::random;
-use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1};
+use rpc::{
+    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
+    PaymentGuaranteeRequestClaimsV1, SigningScheme,
+};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 use test_log::test;
 
@@ -253,6 +256,7 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
         value: U256::from(42u64),
         start_ts: now,
         cert: "cert".into(),
+        request: None,
     };
     repo::store_guarantee_on(ctx.db.as_ref(), data).await?;
 
@@ -325,6 +329,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         value: U256::from(100u64),
         start_ts: now,
         cert: "cert".into(),
+        request: None,
     };
     repo::store_guarantee_on(ctx.db.as_ref(), data1).await?;
 
@@ -338,6 +343,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         value: U256::from(200u64),
         start_ts: now,
         cert: "cert2".into(),
+        request: None,
     };
     repo::store_guarantee_on(ctx.db.as_ref(), data2).await?;
 
@@ -450,6 +456,7 @@ async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()>
         value: U256::from(10u64),
         start_ts: now,
         cert: "cert-A".into(),
+        request: None,
     };
     repo::store_guarantee_on(ctx.db.as_ref(), g1).await?;
 
@@ -462,6 +469,7 @@ async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()>
         value: U256::from(20u64),
         start_ts: now,
         cert: "cert-B".into(),
+        request: None,
     };
     repo::store_guarantee_on(ctx.db.as_ref(), g2).await?;
 
@@ -522,13 +530,18 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     assert_eq!(total_amount, U256::from(40u64));
 
     let promise = PaymentGuaranteeClaims::from_request(
-        &PaymentGuaranteeRequestClaims::V1(claims),
+        &PaymentGuaranteeRequestClaims::V1(claims.clone()),
         domain,
         total_amount,
     );
     let cert = BLSCert::new(&sk_be32, promise.clone())?;
+    let req = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(claims),
+        "0x".to_string() + &"0".repeat(130),
+        SigningScheme::Eip712,
+    );
 
-    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert).await?;
+    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
     txn.commit().await?;
 
     // check locked collateral updated
@@ -652,7 +665,7 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
     assert_eq!(total_amount, U256::from(30u64));
 
     let promise = PaymentGuaranteeClaims::from_request(
-        &PaymentGuaranteeRequestClaims::V1(claims),
+        &PaymentGuaranteeRequestClaims::V1(claims.clone()),
         domain,
         total_amount,
     );
@@ -660,8 +673,13 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
     let mut sk_be32 = [0u8; 32];
     sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
     let cert = BLSCert::new(&sk_be32, promise.clone())?;
+    let req = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(claims),
+        "0x".to_string() + &"0".repeat(130),
+        SigningScheme::Eip712,
+    );
 
-    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert).await?;
+    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
     txn.commit().await?;
 
     assert_eq!(
@@ -883,6 +901,7 @@ async fn rejects_timestamp_outside_tab_window() {
             value: U256::from(1u64),
             start_ts,
             cert: "{}".into(),
+            request: None,
         },
     )
     .await
@@ -988,6 +1007,7 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
                 value: U256::from(1u64),
                 start_ts,
                 cert: "{}".into(),
+                request: None,
             },
         )
         .await
