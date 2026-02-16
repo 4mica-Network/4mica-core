@@ -17,6 +17,30 @@ pub struct Model {
     pub executed_amount: String,
     pub request_ts: DateTime,
     pub status: WithdrawalStatus,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub request_event_chain_id: Option<i64>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub request_event_block_hash: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub request_event_tx_hash: Option<String>,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub request_event_log_index: Option<i64>,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub cancel_event_chain_id: Option<i64>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub cancel_event_block_hash: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub cancel_event_tx_hash: Option<String>,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub cancel_event_log_index: Option<i64>,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub execute_event_chain_id: Option<i64>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub execute_event_block_hash: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub execute_event_tx_hash: Option<String>,
+    #[sea_orm(column_type = "BigInteger", nullable)]
+    pub execute_event_log_index: Option<i64>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }

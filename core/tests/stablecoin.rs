@@ -1,4 +1,5 @@
 use alloy::primitives::U256;
+use alloy::providers::DynProvider;
 use alloy::providers::ext::AnvilApi;
 use alloy_primitives::Address;
 use core_service::persist::{PersistCtx, repo};
@@ -13,12 +14,19 @@ use test_log::test;
 
 mod common;
 use crate::common::fixtures::{read_collateral, read_locked_collateral};
-use crate::common::setup::{E2eEnvironment, setup_e2e_environment};
+use crate::common::setup::setup_e2e_environment;
 
 static NUMBER_OF_TRIALS: u32 = 60;
 
 fn unique_addr() -> String {
     Address::random().to_string()
+}
+
+async fn mine_confirmations(provider: &DynProvider, blocks: u64) -> anyhow::Result<()> {
+    if blocks > 0 {
+        provider.anvil_mine(Some(blocks), None).await?;
+    }
+    Ok(())
 }
 
 /// Insert a dummy tab so the listener can resolve user/server addresses.
@@ -57,17 +65,16 @@ async fn insert_tab(
 // ────────────────────── TESTS ──────────────────────
 //
 
-/// `Transfer` → collateral unlocked.
+/// `Transfer` does not unlock collateral before confirmation.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
-async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        contract,
-        core_service,
-        usdc,
-        signer_addr,
-        ..
-    } = setup_e2e_environment().await?;
+async fn transfer_usdc_does_not_unlock_collateral_before_confirmation() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let contract = env.contract.clone();
+    let core_service = env.core_service.clone();
+    let provider = env.provider.clone();
+    let usdc = env.usdc.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
 
     let recipient_address = unique_addr();
@@ -93,6 +100,22 @@ async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+    mine_confirmations(&provider, 1).await?;
+
+    // poll until deposit is applied
+    let mut tries = 0;
+    loop {
+        let current =
+            read_collateral(persist_ctx, &user_address, &usdc.address().to_string()).await?;
+        if current == U256::from(50u64) {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("Deposit not reflected in DB");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 
     let tab_id = U256::from(rand::random::<u64>());
     insert_tab(
@@ -145,15 +168,15 @@ async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
     // poll DB
     let mut tries = 0;
     loop {
-        // we expect the user to have 10 USDC locked (20 - 10)
+        // locked should remain 20 USDC until confirmation
         let locked =
             read_locked_collateral(persist_ctx, &user_address, &usdc.address().to_string()).await?;
-        if locked == U256::from(10u64) {
+        if locked == U256::from(20u64) {
             break;
         }
 
         if tries > NUMBER_OF_TRIALS {
-            panic!("Transaction not recorded in DB");
+            panic!("Collateral unexpectedly changed before confirmation");
         }
         tries += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -166,13 +189,12 @@ async fn transfer_usdc_unlocks_collateral() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        contract,
-        core_service,
-        usdc,
-        signer_addr,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let contract = env.contract.clone();
+    let core_service = env.core_service.clone();
+    let provider = env.provider.clone();
+    let usdc = env.usdc.clone();
+    let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
 
     let recipient_address = unique_addr();
@@ -202,6 +224,22 @@ async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+    mine_confirmations(&provider, 1).await?;
+
+    // poll until deposit is applied
+    let mut tries = 0;
+    loop {
+        let current =
+            read_collateral(persist_ctx, &user_address, &usdc.address().to_string()).await?;
+        if current == U256::from(50u64) {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("Deposit not reflected in DB");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 
     let tab_id = U256::from(rand::random::<u64>());
     insert_tab(
@@ -246,6 +284,7 @@ async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+    mine_confirmations(&provider, 1).await?;
 
     let mut tries = 0;
     let mut has_tx = false;
@@ -277,14 +316,12 @@ async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::serial]
 async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
-    let E2eEnvironment {
-        provider,
-        contract,
-        core_service,
-        usdc,
-        signer_addr,
-        ..
-    } = setup_e2e_environment().await?;
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let contract = env.contract.clone();
+    let core_service = env.core_service.clone();
+    let usdc = env.usdc.clone();
+    let signer_addr = env.signer_addr;
     let user_addr = signer_addr.to_string();
     let persist_ctx = core_service.persist_ctx();
 
@@ -311,6 +348,7 @@ async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+    mine_confirmations(&provider, 1).await?;
 
     let withdraw_amount = U256::from(1000u64);
     contract
@@ -319,6 +357,7 @@ async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+    mine_confirmations(&provider, 1).await?;
 
     // advance chain time past withdrawal grace period to finalize the withdrawal
     provider
@@ -330,6 +369,7 @@ async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+    mine_confirmations(&provider, 1).await?;
 
     // wait until the user collateral shows the reduced balance
     let mut tries = 0;

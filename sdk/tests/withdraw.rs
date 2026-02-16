@@ -6,7 +6,9 @@ use std::time::Duration;
 
 mod common;
 
-use crate::common::{ETH_ASSET_ADDRESS, build_authed_user_config, wait_for_collateral_increase};
+use crate::common::{
+    ETH_ASSET_ADDRESS, build_authed_user_config, mine_confirmations, wait_for_collateral_increase,
+};
 
 #[tokio::test]
 #[serial_test::serial]
@@ -19,31 +21,17 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     )
     .await?;
 
-    let user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config).await?;
+    let _user_address = user_config.signer.address().to_string();
+    let user_client = Client::new(user_config.clone()).await?;
 
     // Step 1: User deposits collateral (1 ETH)
     let user_info_initial = user_client.user.get_user().await?;
     let eth_asset_before = common::extract_asset_info(&user_info_initial, ETH_ASSET_ADDRESS)
         .expect("ETH asset not found");
 
-    let core_total_before = user_client
-        .recipient
-        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
-        .await?
-        .map(|info| info.total)
-        .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
-
-    wait_for_collateral_increase(
-        &user_client.recipient,
-        &user_address,
-        ETH_ASSET_ADDRESS,
-        core_total_before,
-        deposit_amount,
-    )
-    .await?;
+    mine_confirmations(&user_config, 2).await?;
 
     // Step 2: User requests withdrawal (0.5 ETH)
     let withdrawal_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
@@ -102,7 +90,7 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
     .await?;
 
     let user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config).await?;
+    let user_client = Client::new(user_config.clone()).await?;
 
     // Step 1: User deposits collateral (2 ETH)
     let core_total_before = user_client
@@ -113,6 +101,7 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
         .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
+    mine_confirmations(&user_config, 1).await?;
 
     wait_for_collateral_increase(
         &user_client.recipient,
@@ -156,7 +145,7 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     .await?;
 
     let user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config).await?;
+    let user_client = Client::new(user_config.clone()).await?;
 
     // Step 1: User deposits collateral (0.5 ETH)
     let core_total_before = user_client
@@ -167,6 +156,7 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
         .unwrap_or(U256::ZERO);
     let deposit_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
+    mine_confirmations(&user_config, 1).await?;
 
     wait_for_collateral_increase(
         &user_client.recipient,
