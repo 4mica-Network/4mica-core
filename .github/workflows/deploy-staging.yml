@@ -21,9 +21,62 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
       - name: Deploy to staging
+        env:
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_HOSTS: ${{ secrets.STAGING_HOSTS }}
+          STAGING_SERVER: ${{ secrets.STAGING_SERVER }}
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.STAGING_USER }}@${{ secrets.STAGING_SERVER }} << 'EOF'
-          cd /home/deploy/4mica-core || git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          set -euo pipefail
+
+          python - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+
+          raw = (os.getenv("STAGING_HOSTS") or "").strip()
+          if not raw:
+              raw = (os.getenv("STAGING_SERVER") or "").strip()
+          if not raw:
+              print("Missing STAGING_HOSTS or STAGING_SERVER secret.", file=sys.stderr)
+              sys.exit(1)
+
+          hosts = []
+          # Accept JSON array OR newline/comma separated
+          if raw.lstrip().startswith("["):
+              try:
+                  hosts = json.loads(raw)
+              except Exception as e:
+                  print(f"STAGING_HOSTS is not valid JSON: {e}", file=sys.stderr)
+                  sys.exit(1)
+          else:
+              parts = []
+              for line in raw.splitlines():
+                  parts.extend(line.split(","))
+              hosts = [h.strip() for h in parts if h.strip()]
+
+          if not isinstance(hosts, list) or not all(isinstance(h, str) and h.strip() for h in hosts):
+              print("STAGING_HOSTS must be a list of non-empty host strings.", file=sys.stderr)
+              sys.exit(1)
+
+          hosts = sorted(set(h.strip() for h in hosts))
+          path = Path(os.environ["RUNNER_TEMP"]) / "staging_hosts"
+          path.write_text("\n".join(hosts) + "\n", encoding="utf-8")
+          PY
+
+          cat <<'EOF' > "${RUNNER_TEMP}/deploy.sh"
+          set -euo pipefail
+
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+
+          if [ -f "${HOME}/.cargo/env" ]; then
+            . "${HOME}/.cargo/env"
+          fi
+
+          if [ ! -d /home/deploy/4mica-core/.git ]; then
+            git clone --recurse-submodules git@github.com:4mica-Network/4mica-core.git /home/deploy/4mica-core
+          fi
+
           cd /home/deploy/4mica-core
           git fetch origin develop
           git reset --hard origin/develop
@@ -32,3 +85,8 @@ jobs:
           cargo run -p migration --release -- up
           systemctl --user restart 4mica
           EOF
+
+          while IFS= read -r host; do
+            [ -z "${host}" ] && continue
+            ssh -o StrictHostKeyChecking=no "${STAGING_USER}@${host}" "bash -s" < "${RUNNER_TEMP}/deploy.sh"
+          done < "${RUNNER_TEMP}/staging_hosts"
