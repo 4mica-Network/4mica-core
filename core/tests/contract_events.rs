@@ -4,13 +4,15 @@ use alloy::providers::ext::AnvilApi;
 use alloy::providers::{DynProvider, Provider};
 use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
+use core_service::ethereum::EthereumEventScanner;
 use core_service::persist::PersistCtx;
 use core_service::persist::repo;
+use core_service::scheduler::Task;
 use entities::sea_orm_active_enums::*;
 use entities::*;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use test_log::test;
 
 mod common;
@@ -219,24 +221,24 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
     let provider = env.provider.clone();
     let chain_id = provider.get_chain_id().await?;
 
-    let persist_ctx = env.core_service.persist_ctx();
+    let persist_ctx = env.core_service.persist_ctx().clone();
 
     // Set a cursor with a mismatched hash at a real block height.
     let latest = provider.get_block_number().await?;
     repo::upsert_blockchain_event_cursor(
-        persist_ctx,
+        &persist_ctx,
         chain_id,
         latest,
         Some("0xdeadbeef".to_string()),
     )
     .await?;
-    let initial_cursor = repo::get_blockchain_event_cursor(persist_ctx, chain_id)
+    let initial_cursor = repo::get_blockchain_event_cursor(&persist_ctx, chain_id)
         .await?
         .expect("cursor should exist after upsert");
     let initial_created_at = initial_cursor.created_at;
 
     let user_addr = env.signer_addr.to_string();
-    ensure_user(persist_ctx, &user_addr).await?;
+    ensure_user(&persist_ctx, &user_addr).await?;
 
     let deposit_amount = U256::from(9_000_000_000_000_000_000u128);
     env.contract
@@ -248,28 +250,29 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
         .await?;
     mine_confirmations(&provider, 1).await?;
 
-    let mut saw_deleted = false;
-    let mut cursor_after = None;
-    let mut tries = 0;
-    while tries < 40 {
-        let cursor = repo::get_blockchain_event_cursor(persist_ctx, chain_id).await?;
-        match cursor {
-            None => {
-                saw_deleted = true;
-            }
-            Some(cursor) => {
-                if cursor.last_confirmed_block_hash.as_deref() != Some("0xdeadbeef") {
-                    cursor_after = Some(cursor);
-                    break;
-                }
-            }
+    let scanner = EthereumEventScanner::new(
+        env.cfg.ethereum_config.clone(),
+        persist_ctx.clone(),
+        env.core_service.read_provider().clone(),
+        Arc::new(env.core_service.clone()),
+    );
+
+    if let Err(err) = scanner.run().await {
+        let msg = err.to_string();
+        if !msg.contains("Finalized block hash mismatch") {
+            return Err(err);
         }
-        tries += 1;
-        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    let cursor_after =
-        cursor_after.expect("cursor should be recreated with updated hash after rescan");
+    let saw_deleted = repo::get_blockchain_event_cursor(&persist_ctx, chain_id)
+        .await?
+        .is_none();
+
+    scanner.run().await?;
+
+    let cursor_after = repo::get_blockchain_event_cursor(&persist_ctx, chain_id)
+        .await?
+        .expect("cursor should be recreated with updated hash after rescan");
     assert_ne!(
         cursor_after.last_confirmed_block_hash.as_deref(),
         Some("0xdeadbeef"),
@@ -280,13 +283,13 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
         "cursor should be deleted and recreated after hash mismatch"
     );
 
-    let last_event = repo::get_last_processed_blockchain_event(persist_ctx).await?;
+    let last_event = repo::get_last_processed_blockchain_event(&persist_ctx).await?;
     assert!(
         last_event.is_some(),
         "listener should store events after deleting bad cursor and rescanning"
     );
 
-    let current = read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    let current = read_collateral(&persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
     assert_eq!(
         current, deposit_amount,
         "collateral should be updated after cursor deletion and rescan"

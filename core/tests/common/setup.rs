@@ -31,7 +31,7 @@ use crate::common::{
 };
 
 pub struct E2eEnvironment {
-    cfg: AppConfig,
+    pub cfg: AppConfig,
     pub provider: DynProvider,
     pub access_manager: AccessManagerInstance<DynProvider>,
     pub contract: Core4MicaInstance<DynProvider>,
