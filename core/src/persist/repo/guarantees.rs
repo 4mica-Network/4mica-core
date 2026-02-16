@@ -8,7 +8,7 @@ use chrono::{TimeZone, Utc};
 use crypto::bls::BLSCert;
 use entities::guarantee;
 use entities::sea_orm_active_enums::TabStatus;
-use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequestClaimsV1};
+use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaimsV1};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 
@@ -100,8 +100,12 @@ pub async fn prepare_and_store_guarantee_on<C: ConnectionTrait>(
     conn: &C,
     claims: &PaymentGuaranteeClaims,
     cert: &BLSCert,
+    request: &PaymentGuaranteeRequest,
 ) -> Result<(), PersistDbError> {
     let cert_str = serde_json::to_string(cert)
+        .map_err(|e| PersistDbError::InvariantViolation(e.to_string()))?;
+
+    let request_str = serde_json::to_string(request)
         .map_err(|e| PersistDbError::InvariantViolation(e.to_string()))?;
 
     let start_dt = Utc
@@ -119,6 +123,7 @@ pub async fn prepare_and_store_guarantee_on<C: ConnectionTrait>(
         value: claims.amount,
         start_ts: start_dt,
         cert: cert_str,
+        request: Some(request_str),
     };
     store_guarantee_on(conn, data).await?;
 
@@ -143,6 +148,7 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
         value: Set(data.value.to_string()),
         start_ts: Set(data.start_ts),
         cert: Set(data.cert),
+        request: Set(data.request),
         created_at: Set(now),
         updated_at: Set(now),
     };

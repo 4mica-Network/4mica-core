@@ -15,6 +15,7 @@ mod m20260211_000011_blockchain_event_cursor;
 mod m20260213_000012_blockchain_event_v2;
 mod m20260213_000013_event_metadata;
 mod m20260213_000014_user_transaction_status_enum;
+mod m20260216_000000_guarantee_request;
 
 pub struct Migrator;
 
@@ -37,6 +38,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260213_000012_blockchain_event_v2::Migration),
             Box::new(m20260213_000013_event_metadata::Migration),
             Box::new(m20260213_000014_user_transaction_status_enum::Migration),
+            Box::new(m20260216_000000_guarantee_request::Migration),
         ]
     }
 }

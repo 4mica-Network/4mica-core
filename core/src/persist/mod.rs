@@ -23,6 +23,7 @@ pub struct GuaranteeData {
     pub value: U256,
     pub start_ts: chrono::NaiveDateTime,
     pub cert: String,
+    pub request: Option<String>,
 }
 
 impl PersistCtx {
