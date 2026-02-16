@@ -230,6 +230,10 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
         Some("0xdeadbeef".to_string()),
     )
     .await?;
+    let initial_cursor = repo::get_blockchain_event_cursor(persist_ctx, chain_id)
+        .await?
+        .expect("cursor should exist after upsert");
+    let initial_created_at = initial_cursor.created_at;
 
     let user_addr = env.signer_addr.to_string();
     ensure_user(persist_ctx, &user_addr).await?;
@@ -244,25 +248,36 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
         .await?;
     mine_confirmations(&provider, 1).await?;
 
-    // Sleeping for 2 seconds to let the listener scan
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let mut saw_deleted = false;
+    let mut cursor_after = None;
+    let mut tries = 0;
+    while tries < 40 {
+        let cursor = repo::get_blockchain_event_cursor(persist_ctx, chain_id).await?;
+        match cursor {
+            None => {
+                saw_deleted = true;
+            }
+            Some(cursor) => {
+                if cursor.last_confirmed_block_hash.as_deref() != Some("0xdeadbeef") {
+                    cursor_after = Some(cursor);
+                    break;
+                }
+            }
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 
-    let cursor_after = repo::get_blockchain_event_cursor(persist_ctx, chain_id).await?;
-    assert!(cursor_after.is_none(), "cursor should be deleted");
-
-    // Sleeping for 3 seconds to let the listener rescan
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    let cursor_after = repo::get_blockchain_event_cursor(persist_ctx, chain_id).await?;
-    assert!(cursor_after.is_some(), "cursor should be created again");
+    let cursor_after =
+        cursor_after.expect("cursor should be recreated with updated hash after rescan");
     assert_ne!(
-        cursor_after
-            .as_ref()
-            .unwrap()
-            .last_confirmed_block_hash
-            .as_deref(),
+        cursor_after.last_confirmed_block_hash.as_deref(),
         Some("0xdeadbeef"),
         "cursor hash should be updated to the correct hash"
+    );
+    assert!(
+        saw_deleted || cursor_after.created_at > initial_created_at,
+        "cursor should be deleted and recreated after hash mismatch"
     );
 
     let last_event = repo::get_last_processed_blockchain_event(persist_ctx).await?;
