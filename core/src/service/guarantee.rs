@@ -171,7 +171,7 @@ impl CoreService {
                         total_amount,
                     );
                     let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;
-                    repo::prepare_and_store_guarantee_on(txn, &claims, &cert).await?;
+                    repo::prepare_and_store_guarantee_on(txn, &claims, &cert, &req).await?;
 
                     Ok(cert)
                 })

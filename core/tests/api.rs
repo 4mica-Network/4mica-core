@@ -31,7 +31,7 @@ use common::fixtures::{
 };
 
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
-const DEFAULT_WALLET_ROLE: &str = "admin";
+const ADMIN_WALLET_ROLE: &str = "admin";
 const DEFAULT_WALLET_STATUS: &str = "active";
 
 #[derive(Debug, Deserialize)]
@@ -86,7 +86,7 @@ async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx, Au
         &core_addr,
         &ctx,
         &recipient_signer,
-        DEFAULT_WALLET_ROLE,
+        ADMIN_WALLET_ROLE,
         &[SCOPE_TAB_CREATE, SCOPE_TAB_READ, SCOPE_GUARANTEE_ISSUE],
     )
     .await?;
@@ -450,7 +450,7 @@ async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
         &base_addr,
         &ctx,
         &signer,
-        DEFAULT_WALLET_ROLE,
+        ADMIN_WALLET_ROLE,
         &[SCOPE_TAB_READ],
     )
     .await?;
@@ -617,6 +617,77 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
     assert_eq!(guarantees.len(), 2);
     assert_eq!(guarantees[0].req_id, U256::ZERO);
     assert_eq!(guarantees[1].req_id, U256::from(1u64));
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn issue_guarantee_stores_request_in_db() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = auth.address.clone();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+
+    let tab = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr.clone(),
+            erc20_token: None,
+            ttl: None,
+        })
+        .await
+        .expect("create tab");
+
+    let start_ts = chrono::Utc::now().timestamp() as u64;
+    let req_id = U256::from(0x42u64);
+    let amount = U256::from(2u64);
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        tab.id,
+        req_id,
+        amount,
+        &wallet,
+        Some(start_ts),
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    core_client
+        .issue_guarantee(req.clone())
+        .await
+        .expect("issue ok");
+
+    let row = guarantee_entity::Entity::find()
+        .filter(guarantee_entity::Column::TabId.eq(u256_to_string(tab.id)))
+        .filter(guarantee_entity::Column::ReqId.eq(u256_to_string(req_id)))
+        .one(ctx.db.as_ref())
+        .await?;
+
+    let g = row.expect("guarantee row must exist");
+    let stored = g.request.as_ref().expect("request column must be stored");
+    let parsed: PaymentGuaranteeRequest =
+        serde_json::from_str(stored).expect("request must be valid JSON");
+
+    assert_eq!(parsed.signature, req.signature);
+    assert!(matches!(parsed.scheme, SigningScheme::Eip712));
+    match &parsed.claims {
+        PaymentGuaranteeRequestClaims::V1(c) => {
+            assert_eq!(c.user_address, user_addr);
+            assert_eq!(c.recipient_address, recipient_addr);
+            assert_eq!(c.tab_id, tab.id);
+            assert_eq!(c.req_id, req_id);
+            assert_eq!(c.amount, amount);
+            assert_eq!(c.asset_address, DEFAULT_ASSET_ADDRESS);
+            assert_eq!(c.timestamp, start_ts);
+        }
+    }
 
     Ok(())
 }
