@@ -84,18 +84,15 @@ fn init_config() -> AppConfig {
         String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
     let eth_env_key = "ETHEREUM_PRIVATE_KEY";
 
-    unsafe {
-        std::env::set_var(eth_env_key, operator_key);
-    }
-
     dotenv::dotenv().ok();
     // also try parent folder when running from core/tests
     dotenv::from_filename("../.env").ok();
-    let cfg = AppConfig::fetch().expect("Failed to load test config");
 
     unsafe {
-        std::env::remove_var(eth_env_key);
+        std::env::set_var(eth_env_key, operator_key);
     }
+    let cfg = AppConfig::fetch().expect("Failed to load test config");
+
     cfg
 }
 
