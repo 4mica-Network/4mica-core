@@ -42,7 +42,7 @@ pub fn verify_guarantee_request_signature(
     let recipient_addr = Address::from_str(recipient_addr)
         .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?;
 
-    let sig_bytes = crypto::hex::decode_hex(&req.signature)
+    let sig_bytes = crate::util::normalize_and_decode_hex(&req.signature)
         .map_err(|_| ServiceError::InvalidParams("invalid hex signature".into()))?;
     let sig = Signature::try_from(&sig_bytes[..])
         .map_err(|_| ServiceError::InvalidParams("invalid signature length".into()))?;

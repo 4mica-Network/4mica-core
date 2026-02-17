@@ -521,9 +521,6 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
         timestamp: Utc::now().timestamp() as u64,
     };
 
-    let mut sk_be32 = [0u8; 32];
-    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
-
     let txn = ctx.db.begin().await?;
     let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims).await?;
 
@@ -534,7 +531,7 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
         domain,
         total_amount,
     );
-    let cert = BLSCert::new(&sk_be32, promise.clone())?;
+    let cert = BLSCert::new(&config.secrets.bls_secret_key, promise.clone())?;
     let req = PaymentGuaranteeRequest::new(
         PaymentGuaranteeRequestClaims::V1(claims),
         "0x".to_string() + &"0".repeat(130),
@@ -670,9 +667,7 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
         total_amount,
     );
 
-    let mut sk_be32 = [0u8; 32];
-    sk_be32.copy_from_slice(config.secrets.bls_private_key.as_ref());
-    let cert = BLSCert::new(&sk_be32, promise.clone())?;
+    let cert = BLSCert::new(&config.secrets.bls_secret_key, promise.clone())?;
     let req = PaymentGuaranteeRequest::new(
         PaymentGuaranteeRequestClaims::V1(claims),
         "0x".to_string() + &"0".repeat(130),

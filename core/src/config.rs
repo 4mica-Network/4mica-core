@@ -1,7 +1,12 @@
+use std::{str::FromStr, sync::Arc};
+
+use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, bail};
-use crypto::hex::HexBytes;
+use crypto::bls::BlsSecretKey;
 use envconfig::Envconfig;
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::warn;
+use secrecy::zeroize::Zeroize;
 
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
@@ -53,8 +58,6 @@ pub struct EthereumConfig {
     /// treat blocks as finalized after this depth (useful for local dev/test only).
     #[envconfig(from = "FINALIZED_HEAD_DEPTH", default = "0")]
     pub finalized_head_depth: u64,
-    #[envconfig(from = "ETHEREUM_PRIVATE_KEY")]
-    pub ethereum_private_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,10 +122,59 @@ pub struct Eip712Config {
     pub version: String,
 }
 
-#[derive(Debug, Clone, Envconfig)]
+#[derive(Debug)]
 pub struct Secrets {
-    #[envconfig(from = "BLS_PRIVATE_KEY")]
-    pub bls_private_key: HexBytes,
+    pub bls_secret_key: BlsSecretKey,
+    // PrivateKeySigner handles the zeroization internally
+    pub ethereum_private_key_signer: PrivateKeySigner,
+    pub jwt_enc_key: EncodingKey,
+    pub jwt_dec_key: DecodingKey,
+}
+
+impl Secrets {
+    pub fn init_from_env() -> anyhow::Result<Self> {
+        let mut bls_secret_key_raw = Self::load_env_var("BLS_PRIVATE_KEY")?;
+        let bls_secret_key = BlsSecretKey::from_str(&bls_secret_key_raw)?;
+        bls_secret_key_raw.zeroize();
+
+        let mut ethereum_private_key = Self::load_env_var("ETHEREUM_PRIVATE_KEY")?;
+        let ethereum_private_key_signer: PrivateKeySigner = ethereum_private_key.parse()?;
+        ethereum_private_key.zeroize();
+
+        let mut jwt_hmac_secret = Self::load_env_var("AUTH_JWT_SECRET")?;
+        let secret = jwt_hmac_secret.trim();
+        if secret.is_empty() {
+            bail!("AUTH_JWT_SECRET must be set");
+        }
+        if secret == DEFAULT_AUTH_JWT_SECRET {
+            bail!("AUTH_JWT_SECRET is set to the insecure default; override it");
+        }
+        if secret == PLACEHOLDER_AUTH_JWT_SECRET {
+            warn!("AUTH_JWT_SECRET uses the placeholder value; replace with a 32+ byte secret");
+        } else if secret.len() < 32 {
+            warn!("AUTH_JWT_SECRET is shorter than 32 bytes; use a 32+ byte secret in production");
+        }
+
+        let secret_bytes = secret.as_bytes();
+
+        let jwt_enc_key = EncodingKey::from_secret(secret_bytes);
+        let jwt_dec_key = DecodingKey::from_secret(secret_bytes);
+
+        jwt_hmac_secret.zeroize();
+
+        Ok(Self {
+            bls_secret_key,
+            ethereum_private_key_signer,
+            jwt_enc_key,
+            jwt_dec_key,
+        })
+    }
+
+    fn load_env_var(name: &str) -> anyhow::Result<String> {
+        let value = std::env::var(name)
+            .map_err(|e| anyhow::anyhow!("Failed to load environment variable {name}: {e}"))?;
+        Ok(value)
+    }
 }
 
 #[derive(Debug, Clone, Envconfig)]
@@ -142,9 +194,6 @@ pub struct AuthConfig {
     #[envconfig(from = "AUTH_JWT_AUDIENCE", default = "4mica")]
     pub jwt_audience: String,
 
-    #[envconfig(from = "AUTH_JWT_SECRET", default = "dev-insecure-change-me")]
-    pub jwt_hmac_secret: String,
-
     #[envconfig(from = "AUTH_SIWE_STATEMENT", default = "Sign in to 4mica.")]
     pub siwe_statement: String,
 
@@ -154,25 +203,6 @@ pub struct AuthConfig {
     #[envconfig(from = "AUTH_SIWE_URI")]
     pub siwe_uri: Option<String>,
 }
-
-impl AuthConfig {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        let secret = self.jwt_hmac_secret.trim();
-        if secret.is_empty() {
-            bail!("AUTH_JWT_SECRET must be set");
-        }
-        if secret == DEFAULT_AUTH_JWT_SECRET {
-            bail!("AUTH_JWT_SECRET is set to the insecure default; override it");
-        }
-        if secret == PLACEHOLDER_AUTH_JWT_SECRET {
-            warn!("AUTH_JWT_SECRET uses the placeholder value; replace with a 32+ byte secret");
-        } else if secret.len() < 32 {
-            warn!("AUTH_JWT_SECRET is shorter than 32 bytes; use a 32+ byte secret in production");
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Envconfig)]
 pub struct DatabaseConfig {
     #[envconfig(from = "DATABASE_CONFLICT_RETRIES", default = "5")]
@@ -184,9 +214,10 @@ pub struct AppConfig {
     pub server_config: ServerConfig,
     pub ethereum_config: EthereumConfig,
     pub database_config: DatabaseConfig,
-    pub secrets: Secrets,
     pub eip712: Eip712Config,
     pub auth: AuthConfig,
+    /// Secrets are loaded into an Arc to avoid multiple allocations of the same secret.
+    pub secrets: Arc<Secrets>,
 }
 
 impl AppConfig {
@@ -200,18 +231,17 @@ impl AppConfig {
             .context("Invalid ethereum config")?;
         let database_config =
             DatabaseConfig::init_from_env().context("Failed to load database config")?;
-        let secrets = Secrets::init_from_env().context("Failed to load secrets")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
-        auth.validate().context("Invalid auth config")?;
+        let secrets = Arc::new(Secrets::init_from_env().context("Failed to load secrets")?);
 
         Ok(Self {
             server_config,
             ethereum_config,
             database_config,
-            secrets,
             eip712,
             auth,
+            secrets,
         })
     }
 }
