@@ -1,9 +1,8 @@
-use crate::{config::EthereumConfig, error::CoreContractApiError, ethereum::contract_abi::*};
+use crate::{config::AppConfig, error::CoreContractApiError, ethereum::contract_abi::*};
 use alloy::{
     network::EthereumWallet,
     primitives::{Address, B256, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
-    signers::local::PrivateKeySigner,
 };
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -38,23 +37,27 @@ pub trait CoreContractApi: Send + Sync {
 }
 
 impl CoreContractProxy {
-    pub async fn new(config: EthereumConfig) -> Result<Self, CoreContractApiError> {
-        let signer: PrivateKeySigner = config.ethereum_private_key.parse()?;
-        let wallet = EthereumWallet::new(signer);
+    pub async fn new(config: &AppConfig) -> Result<Self, CoreContractApiError> {
+        let wallet = EthereumWallet::new(config.secrets.ethereum_private_key_signer.clone());
 
         let provider = ProviderBuilder::new()
             .wallet(wallet)
-            .connect(&config.http_rpc_url)
+            .connect(&config.ethereum_config.http_rpc_url)
             .await
             .map_err(CoreContractApiError::TransportFailure)?
             .erased();
 
-        let contract_address: Address = config.contract_address.parse().map_err(|_| {
-            CoreContractApiError::Other(anyhow!(
-                "invalid contract address {}",
-                config.contract_address
-            ))
-        })?;
+        let contract_address: Address =
+            config
+                .ethereum_config
+                .contract_address
+                .parse()
+                .map_err(|_| {
+                    CoreContractApiError::Other(anyhow!(
+                        "invalid contract address {}",
+                        config.ethereum_config.contract_address
+                    ))
+                })?;
 
         Ok(Self {
             provider,

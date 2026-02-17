@@ -150,8 +150,8 @@ impl<S> RecipientClient<S> {
                 }
             })?;
 
-        let sig =
-            crypto::hex::decode_hex(&cert.signature).map_err(RemunerateError::SignatureHex)?;
+        let sig = crate::util::normalize_and_decode_hex(&cert.signature)
+            .map_err(RemunerateError::SignatureHex)?;
 
         let sig_words = crypto::bls::g2_words_from_signature(sig.as_slice())
             .map_err(RemunerateError::SignatureDecode)?;

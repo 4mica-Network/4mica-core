@@ -12,6 +12,7 @@ use crate::{
 };
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use anyhow::anyhow;
+use crypto::bls::BlsSecretKey;
 use log::{error, info};
 use rpc::{CorePublicParameters, UserSuspensionStatus};
 
@@ -24,7 +25,6 @@ mod tab;
 
 pub struct Inner {
     config: AppConfig,
-    bls_private_key: [u8; 32],
     public_params: CorePublicParameters,
     guarantee_domain: [u8; 32],
     tab_expiration_time: AtomicU64,
@@ -52,7 +52,7 @@ impl CoreService {
         let persist_ctx = PersistCtx::new().await?;
         let eth_cfg = config.ethereum_config.clone();
 
-        let contract_api = Arc::new(CoreContractProxy::new(eth_cfg.clone()).await?);
+        let contract_api = Arc::new(CoreContractProxy::new(&config).await?);
 
         let actual_chain_id = contract_api
             .get_chain_id()
@@ -88,14 +88,7 @@ impl CoreService {
     }
 
     pub fn new_with_dependencies(config: AppConfig, deps: CoreServiceDeps) -> anyhow::Result<Self> {
-        let bls_private_key: [u8; 32] = config
-            .secrets
-            .bls_private_key
-            .bytes()
-            .try_into()
-            .map_err(|_| anyhow!("BLS private key must be 32 bytes"))?;
-
-        let public_key = crypto::bls::pub_key_from_scalar(&bls_private_key)?;
+        let public_key = config.secrets.bls_secret_key.public_key();
         info!(
             "Operator started with BLS Public Key: {}",
             crypto::hex::encode_hex(&public_key)
@@ -107,7 +100,6 @@ impl CoreService {
 
         let inner = Inner {
             config,
-            bls_private_key,
             public_params: CorePublicParameters {
                 public_key,
                 contract_address: eth_config.contract_address,
@@ -128,8 +120,8 @@ impl CoreService {
         })
     }
 
-    fn bls_private_key(&self) -> [u8; 32] {
-        self.inner.bls_private_key
+    fn bls_secret_key(&self) -> &BlsSecretKey {
+        &self.inner.config.secrets.bls_secret_key
     }
 
     pub fn persist_ctx(&self) -> &PersistCtx {

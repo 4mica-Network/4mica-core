@@ -2,7 +2,7 @@ use crate::contract::Core4Mica;
 use alloy::contract as alloy_contract;
 use alloy::primitives::{Address, Bytes};
 use anyhow::Error;
-use crypto::hex::FromHexError;
+use crypto::hex::DecodeHexError;
 use reqwest::StatusCode;
 use rpc::ApiClientError;
 use serde_json::Value;
@@ -100,7 +100,7 @@ pub enum RemunerateError {
     #[error("failed to convert guarantee claims into contract type")]
     GuaranteeConversion(#[source] Error),
     #[error("failed to decode signature hex")]
-    SignatureHex(#[source] FromHexError),
+    SignatureHex(#[source] DecodeHexError),
     #[error("failed to decode BLS signature")]
     SignatureDecode(#[source] Error),
     #[error("tab not yet overdue")]

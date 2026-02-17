@@ -80,10 +80,20 @@ fn allocate_anvil_port() -> anyhow::Result<u16> {
 }
 
 fn init_config() -> AppConfig {
+    let operator_key =
+        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
+    let eth_env_key = "ETHEREUM_PRIVATE_KEY";
+
     dotenv::dotenv().ok();
     // also try parent folder when running from core/tests
     dotenv::from_filename("../.env").ok();
-    AppConfig::fetch().expect("Failed to load test config")
+
+    unsafe {
+        std::env::set_var(eth_env_key, operator_key);
+    }
+    let cfg = AppConfig::fetch().expect("Failed to load test config");
+
+    cfg
 }
 
 async fn deploy_contracts(
@@ -138,9 +148,6 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     let (contract, usdc, usdt, access_manager) =
         deploy_contracts(provider.clone(), signer_addr).await?;
 
-    let operator_key =
-        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
-
     cfg.ethereum_config = EthereumConfig {
         chain_id: provider.get_chain_id().await?,
         contract_address: contract.address().to_string(),
@@ -153,7 +160,6 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         payment_scan_lookback_blocks: 1,
         initial_event_scan_lookback_blocks: 10,
         finalized_head_depth: 1,
-        ethereum_private_key: operator_key,
     };
 
     debug!(

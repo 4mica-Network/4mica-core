@@ -181,7 +181,7 @@ pub async fn verify_siwe_message<P: Provider>(
         return Err(invalid_siwe("message address does not match request"));
     }
 
-    let signature_bytes = crypto::hex::decode_hex(signature_hex)
+    let signature_bytes = crate::util::normalize_and_decode_hex(signature_hex)
         .map_err(|_| invalid_siwe("invalid signature hex"))?;
 
     let eoa_verified = match Signature::try_from(signature_bytes.as_slice()) {

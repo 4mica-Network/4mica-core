@@ -1,25 +1,13 @@
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 use blst::{
     self, blst_p2_affine,
     min_pk::{PublicKey as BlstPublicKey, SecretKey, Signature as BlstSignature},
 };
+use secrecy::zeroize::Zeroizing;
+use secrecy::{ExposeSecret, SecretBox};
 
 const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
-
-pub enum KeyMaterial<'a> {
-    Scalar(&'a [u8; 32]), // exact scalar < r, big-endian
-}
-
-impl<'a> KeyMaterial<'a> {
-    pub fn make_sk(&self) -> anyhow::Result<SecretKey> {
-        match self {
-            KeyMaterial::Scalar(sk_be32) => SecretKey::from_bytes(*sk_be32).map_err(|e| {
-                anyhow::anyhow!("invalid secret scalar (<r, 32 bytes big-endian): {:?}", e)
-            }),
-        }
-    }
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BLSCert {
@@ -28,15 +16,14 @@ pub struct BLSCert {
 }
 
 impl BLSCert {
-    pub fn new<C: TryInto<Vec<u8>>>(sk_be32: &[u8; 32], claims: C) -> anyhow::Result<Self>
+    pub fn new<C: TryInto<Vec<u8>>>(sk: &BlsSecretKey, claims: C) -> anyhow::Result<Self>
     where
         C::Error: Display,
     {
         let claims_bytes = claims
             .try_into()
             .map_err(|e| anyhow::anyhow!("failed to convert claims to bytes: {}", e))?;
-        let sk = KeyMaterial::Scalar(sk_be32).make_sk()?;
-        let sig = sk.sign(&claims_bytes, DST, &[]);
+        let sig = sk.sign(&claims_bytes);
         Ok(BLSCert {
             claims: hex::encode(claims_bytes),
             signature: hex::encode(sig.compress()),
@@ -57,11 +44,6 @@ impl BLSCert {
     pub fn claims_bytes(&self) -> anyhow::Result<Vec<u8>> {
         Ok(hex::decode(&self.claims)?)
     }
-}
-
-pub fn pub_key_from_scalar(sk_be32: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
-    let sk = KeyMaterial::Scalar(sk_be32).make_sk()?;
-    Ok(sk.sk_to_pk().compress().to_vec())
 }
 
 fn split_fp_be48_into_hi_lo32(be48: &[u8; 48]) -> ([u8; 32], [u8; 32]) {
@@ -94,4 +76,42 @@ pub fn g2_words_from_signature(sig_bytes: &[u8]) -> anyhow::Result<[[u8; 32]; 8]
     let (y1_hi, y1_lo) = split_fp_be48_into_hi_lo32(&y_c1);
 
     Ok([x0_hi, x0_lo, x1_hi, x1_lo, y0_hi, y0_lo, y1_hi, y1_lo])
+}
+
+/// A secured BLS secret key.
+pub struct BlsSecretKey(SecretBox<SecretKey>);
+
+impl BlsSecretKey {
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        let sk = SecretKey::from_bytes(bytes)
+            .map_err(|e| anyhow::anyhow!("invalid secret key: {:?}", e))?;
+        Ok(Self(SecretBox::new(Box::new(sk))))
+    }
+
+    pub fn public_key(&self) -> Vec<u8> {
+        self.0.expose_secret().sk_to_pk().compress().to_vec()
+    }
+
+    pub fn sign(&self, msg: &[u8]) -> BlstSignature {
+        self.0.expose_secret().sign(msg, DST, &[])
+    }
+}
+
+impl std::fmt::Debug for BlsSecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BlsSecretKey([REDACTED])")
+    }
+}
+
+impl FromStr for BlsSecretKey {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let stripped = s.strip_prefix("0x").unwrap_or(s);
+        let bytes = Zeroizing::new(hex::decode(stripped)?);
+
+        let sk = SecretKey::from_bytes(&bytes)
+            .map_err(|e| anyhow::anyhow!("invalid secret key: {:?}", e))?;
+        Ok(Self(SecretBox::new(Box::new(sk))))
+    }
 }
