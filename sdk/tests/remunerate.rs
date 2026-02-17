@@ -245,7 +245,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 
     println!("[recipient] verified guarantee:\n{:?}", guarantee);
 
-    let claims_bytes = crypto::hex::decode_hex(&bls_cert.claims)?;
+    let claims_bytes = common::normalize_and_decode_hex(&bls_cert.claims)?;
     // println!(
     //     "[recipient] encoded claims bytes=0x{}",
     //     hex::encode(&claims_bytes)
@@ -373,7 +373,7 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .recipient
         .verify_payment_guarantee(&bls_cert)?;
 
-    let claims_bytes = crypto::hex::decode_hex(&bls_cert.claims)?;
+    let claims_bytes = common::normalize_and_decode_hex(&bls_cert.claims)?;
     println!(
         "[double] encoded claims bytes=0x{}",
         hex::encode(&claims_bytes)

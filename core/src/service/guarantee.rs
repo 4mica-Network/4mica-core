@@ -120,7 +120,7 @@ impl CoreService {
     }
 
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        BLSCert::new(&self.bls_private_key(), claims)
+        BLSCert::new(&self.bls_secret_key(), claims)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 

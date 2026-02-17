@@ -22,6 +22,7 @@ pub struct AccessTokenClaims {
 
 pub fn issue_access_token(
     cfg: &AuthConfig,
+    encoding_key: &EncodingKey,
     sub: &str,
     role: &str,
     scopes: Vec<String>,
@@ -46,12 +47,13 @@ pub fn issue_access_token(
     };
 
     let header = Header::new(Algorithm::HS256);
-    jsonwebtoken::encode(&header, &claims, &encoding_key(cfg)?)
+    jsonwebtoken::encode(&header, &claims, encoding_key)
         .map_err(|err| ServiceError::Other(anyhow!("failed to issue jwt: {err}")))
 }
 
 pub fn validate_access_token(
     cfg: &AuthConfig,
+    decoding_key: &DecodingKey,
     expected_chain_id: u64,
     token: &str,
 ) -> ServiceResult<AccessTokenClaims> {
@@ -61,7 +63,7 @@ pub fn validate_access_token(
     validation.validate_exp = true;
     validation.validate_nbf = true;
 
-    let data = jsonwebtoken::decode::<AccessTokenClaims>(token, &decoding_key(cfg)?, &validation)
+    let data = jsonwebtoken::decode::<AccessTokenClaims>(token, decoding_key, &validation)
         .map_err(|_| ServiceError::Unauthorized("invalid access token".into()))?;
 
     if data.claims.chain_id != expected_chain_id {
@@ -79,22 +81,4 @@ fn unix_timestamp() -> ServiceResult<u64> {
 fn to_usize(value: u64, label: &str) -> ServiceResult<usize> {
     usize::try_from(value)
         .map_err(|_| ServiceError::Other(anyhow!("jwt claim {label} does not fit into usize")))
-}
-
-fn encoding_key(cfg: &AuthConfig) -> ServiceResult<EncodingKey> {
-    Ok(EncodingKey::from_secret(&secret_bytes(cfg)?))
-}
-
-fn decoding_key(cfg: &AuthConfig) -> ServiceResult<DecodingKey> {
-    Ok(DecodingKey::from_secret(&secret_bytes(cfg)?))
-}
-
-fn secret_bytes(cfg: &AuthConfig) -> ServiceResult<Vec<u8>> {
-    let secret = cfg.jwt_hmac_secret.trim();
-    if secret.is_empty() {
-        return Err(ServiceError::InvalidParams(
-            "AUTH_JWT_SECRET must be set".into(),
-        ));
-    }
-    Ok(secret.as_bytes().to_vec())
 }

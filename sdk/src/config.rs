@@ -1,5 +1,6 @@
 use alloy::{primitives::Address, signers::local::PrivateKeySigner};
 use url::Url;
+use zeroize::Zeroize;
 
 use crate::{
     error::ConfigError,
@@ -43,11 +44,12 @@ impl ConfigBuilder<PrivateKeySigner> {
         if let Ok(v) = std::env::var("4MICA_RPC_URL") {
             builder = builder.rpc_url(v);
         }
-        if let Ok(v) = std::env::var("4MICA_WALLET_PRIVATE_KEY") {
+        if let Ok(mut v) = std::env::var("4MICA_WALLET_PRIVATE_KEY") {
             builder = builder.signer(
                 validate_wallet_private_key(&v)
                     .map_err(|e| ConfigError::InvalidValue(e.to_string()))?,
             );
+            v.zeroize();
         }
         if let Ok(v) = std::env::var("4MICA_ETHEREUM_HTTP_RPC_URL") {
             builder = builder.ethereum_http_rpc_url(v);

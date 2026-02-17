@@ -45,6 +45,7 @@ impl CoreService {
     pub fn validate_access_token(&self, token: &str) -> ServiceResult<AccessTokenClaims> {
         auth::jwt::validate_access_token(
             &self.inner.config.auth,
+            &self.inner.config.secrets.jwt_dec_key,
             self.inner.config.ethereum_config.chain_id,
             token,
         )
@@ -177,6 +178,7 @@ impl CoreService {
         let (role, scopes) = self.load_wallet_claims(&subject).await?;
         let access_token = auth::jwt::issue_access_token(
             auth_cfg,
+            &self.inner.config.secrets.jwt_enc_key,
             &subject,
             &role,
             scopes,
@@ -227,6 +229,7 @@ impl CoreService {
         let (role, scopes) = self.load_wallet_claims(&address).await?;
         let access_token = auth::jwt::issue_access_token(
             auth_cfg,
+            &self.inner.config.secrets.jwt_enc_key,
             &address,
             &role,
             scopes,

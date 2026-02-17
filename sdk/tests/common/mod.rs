@@ -4,6 +4,7 @@ use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, bail};
 use core_service::persist::{PersistCtx, repo};
+use crypto::hex::DecodeHexError;
 use rpc::RpcProxy;
 use sdk_4mica::{
     Address, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
@@ -21,6 +22,17 @@ const WALLET_STATUS_ACTIVE: &str = "active";
 const SCOPE_TAB_CREATE: &str = "tab:create";
 const SCOPE_TAB_READ: &str = "tab:read";
 const SCOPE_GUARANTEE_ISSUE: &str = "guarantee:issue";
+
+pub fn normalize_and_decode_hex(value: &str) -> Result<Vec<u8>, DecodeHexError> {
+    let normalized = if value.starts_with("0x") {
+        value
+    } else {
+        &format!("0x{}", value)
+    };
+
+    let decoded = crypto::hex::decode_hex(normalized)?;
+    Ok(decoded)
+}
 
 pub fn get_now() -> Duration {
     std::time::SystemTime::now()
