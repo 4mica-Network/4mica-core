@@ -15,24 +15,46 @@ impl MigrationTrait for Migration {
         let schema = Schema::new(db_backend);
 
         // ----- Enums (must be created before tables use them) -----
-        manager
+        if let Err(err) = manager
             .create_type(
                 schema.create_enum_from_active_enum::<sea_orm_active_enums::CollateralEventType>(),
             )
-            .await?;
-        manager
+            .await
+        {
+            if !is_duplicate_type_error(&err) {
+                return Err(err);
+            }
+        }
+        if let Err(err) = manager
             .create_type(
                 schema.create_enum_from_active_enum::<sea_orm_active_enums::SettlementStatus>(),
             )
-            .await?;
-        manager
-            .create_type(schema.create_enum_from_active_enum::<sea_orm_active_enums::TabStatus>())
-            .await?;
-        manager
+            .await
+        {
+            if !is_duplicate_type_error(&err) {
+                return Err(err);
+            }
+        }
+        if let Err(err) = manager
+            .create_type(
+                schema.create_enum_from_active_enum::<sea_orm_active_enums::TabStatus>(),
+            )
+            .await
+        {
+            if !is_duplicate_type_error(&err) {
+                return Err(err);
+            }
+        }
+        if let Err(err) = manager
             .create_type(
                 schema.create_enum_from_active_enum::<sea_orm_active_enums::WithdrawalStatus>(),
             )
-            .await?;
+            .await
+        {
+            if !is_duplicate_type_error(&err) {
+                return Err(err);
+            }
+        }
 
         // ----- User -----
         manager
@@ -376,6 +398,10 @@ impl MigrationTrait for Migration {
             .await?;
         Ok(())
     }
+}
+
+fn is_duplicate_type_error(err: &DbErr) -> bool {
+    err.to_string().contains("already exists")
 }
 
 #[derive(DeriveIden)]

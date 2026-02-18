@@ -1,7 +1,8 @@
 use alloy::signers::Signer;
 use sdk_4mica::client::recipient::RecipientClient;
 use sdk_4mica::{
-    Client, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::VerifyGuaranteeError,
+    BLSCert, Client, PaymentGuaranteeRequestClaims, SigningScheme, U256,
+    error::VerifyGuaranteeError,
 };
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use crate::common::{
     ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config, mine_confirmations,
     wait_for_collateral_increase,
 };
+use crypto::bls::BlsClaims;
 
 async fn resolve_start_timestamp<S>(
     recipient: &RecipientClient<S>,
@@ -149,8 +151,8 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     assert_eq!(verified_claims.asset_address, ETH_ASSET_ADDRESS.to_string());
     let assigned_req_id = verified_claims.req_id;
 
-    let mut tampered = bls_cert.clone();
-    if let Some(last) = tampered.claims.pop() {
+    let mut tampered_hex = bls_cert.claims().to_hex();
+    if let Some(last) = tampered_hex.pop() {
         let replacement = match last {
             '0' => '1',
             '1' => '2',
@@ -169,22 +171,26 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
             'e' => 'f',
             _ => '0',
         };
-        tampered.claims.push(replacement);
+        tampered_hex.push(replacement);
     } else {
         panic!("certificate claims unexpectedly empty");
     }
 
+    let tampered = BLSCert {
+        claims: BlsClaims::from_hex(&tampered_hex)?,
+        signature: bls_cert.signature().clone(),
+    };
     let err = recipient.verify_payment_guarantee(&tampered).unwrap_err();
     assert!(
         matches!(err, VerifyGuaranteeError::CertificateMismatch),
         "tampered certificate should fail verification"
     );
 
-    let mut malformed = bls_cert.clone();
-    malformed.signature.pop();
+    let mut malformed_hex = bls_cert.signature().to_hex();
+    malformed_hex.pop();
     assert!(
-        recipient.verify_payment_guarantee(&malformed).is_err(),
-        "malformed signature should bubble up as error"
+        crypto::bls::BlsSignature::from_hex(&malformed_hex).is_err(),
+        "malformed signature should be rejected"
     );
 
     // Step 5: User pays the tab
