@@ -1,11 +1,3 @@
-use crate::config::{DEFAULT_ASSET_ADDRESS, EthereumConfig};
-use crate::scheduler::Task;
-use crate::service::CoreService;
-use crate::{
-    error::{ServiceError, ServiceResult},
-    persist::{PersistCtx, repo},
-    util::u256_to_string,
-};
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::eth::BlockNumberOrTag;
@@ -14,7 +6,18 @@ use async_trait::async_trait;
 use blockchain::txtools;
 use blockchain::txtools::PaymentTx;
 use log::{error, info, warn};
+use metrics_4mica::measure;
 use std::str::FromStr;
+
+use crate::config::{DEFAULT_ASSET_ADDRESS, EthereumConfig};
+use crate::metrics::record::record_task_time;
+use crate::scheduler::Task;
+use crate::service::CoreService;
+use crate::{
+    error::{ServiceError, ServiceResult},
+    persist::{PersistCtx, repo},
+    util::u256_to_string,
+};
 
 struct SafeHead {
     number: u64,
@@ -655,6 +658,7 @@ impl Task for ScanPaymentsTask {
         self.ethereum_config().cron_job_settings.clone()
     }
 
+    #[measure(record_task_time, name = "scan_payments")]
     async fn run(&self) -> anyhow::Result<()> {
         let lookback = self.ethereum_config().payment_scan_lookback_blocks;
         self.0.scan_blockchain(lookback).await
@@ -667,6 +671,7 @@ impl Task for ConfirmPaymentsTask {
         self.ethereum_config().cron_job_settings.clone()
     }
 
+    #[measure(record_task_time, name = "confirm_payments")]
     async fn run(&self) -> anyhow::Result<()> {
         self.0
             .confirm_pending_payments()
@@ -681,6 +686,7 @@ impl Task for FinalizePaymentsTask {
         self.ethereum_config().cron_job_settings.clone()
     }
 
+    #[measure(record_task_time, name = "finalize_payments")]
     async fn run(&self) -> anyhow::Result<()> {
         self.0
             .finalize_recorded_payments()

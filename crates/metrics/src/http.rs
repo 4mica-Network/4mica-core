@@ -21,36 +21,36 @@ pub struct HttpLabels {
 }
 
 #[derive(Metric)]
-#[counter(labels = HttpLabels, name = "http_requests_total")]
-pub struct HttpRequestsTotalMetric;
+#[counter(labels = HttpLabels, name = "http_request_total")]
+pub struct HttpRequestTotalMetric;
 
 #[derive(Metric)]
-#[histogram(labels = HttpLabels, name = "http_requests_duration_seconds")]
-pub struct HttpRequestsDurationMetric;
+#[histogram(labels = HttpLabels, name = "http_request_duration_seconds")]
+pub struct HttpRequestDurationMetric;
 
-#[derive(Clone)]
-pub struct MeasureHttpMiddleware;
+#[derive(Clone, Default)]
+pub struct HttpMetricsMiddleware;
 
-impl<S> tower::Layer<S> for MeasureHttpMiddleware
+impl<S> tower::Layer<S> for HttpMetricsMiddleware
 where
     S: Service<Request, Response = Response, Error = Infallible> + Clone + Send + Sync + 'static,
     S::Future: Send + 'static,
 {
-    type Service = MeasureHttpService;
+    type Service = HttpMetricsService;
 
     fn layer(&self, inner: S) -> Self::Service {
-        MeasureHttpService {
+        HttpMetricsService {
             inner: BoxCloneSyncService::new(inner),
         }
     }
 }
 
 #[derive(Clone)]
-pub struct MeasureHttpService {
+pub struct HttpMetricsService {
     inner: BoxCloneSyncService<Request, Response, Infallible>,
 }
 
-impl Service<Request> for MeasureHttpService {
+impl Service<Request> for HttpMetricsService {
     type Response = Response;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Response, Infallible>> + Send>>;
@@ -86,8 +86,8 @@ impl Service<Request> for MeasureHttpService {
                 status,
             };
 
-            HttpRequestsTotalMetric::get(&labels).increment(1);
-            HttpRequestsDurationMetric::get(&labels).record(latency);
+            HttpRequestTotalMetric::get(&labels).increment(1);
+            HttpRequestDurationMetric::get(&labels).record(latency);
 
             response
         })

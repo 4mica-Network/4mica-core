@@ -4,6 +4,7 @@ use core_service::{
     config::{AppConfig, ServerConfig},
     ethereum::EthereumEventScanner,
     http,
+    metrics::{MetricsUpkeepTask, setup_metrics_recorder},
     scheduler::TaskScheduler,
     service::{
         CoreService,
@@ -51,7 +52,10 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         Arc::new(service.clone()),
     ));
 
+    let metrics_recorder = setup_metrics_recorder()?;
+
     let mut scheduler = TaskScheduler::new().await?;
+
     scheduler.add_task(ethereum_scanner).await?;
     scheduler
         .add_task(Arc::new(ScanPaymentsTask::new(service.clone())))
@@ -62,14 +66,19 @@ pub async fn bootstrap() -> anyhow::Result<()> {
     scheduler
         .add_task(Arc::new(FinalizePaymentsTask::new(service.clone())))
         .await?;
+    scheduler
+        .add_task(Arc::new(MetricsUpkeepTask::new(metrics_recorder.clone())))
+        .await?;
+
     scheduler.start().await?;
 
-    let app = http::router(service).layer(cors_layer);
+    let app = http::router(service, metrics_recorder).layer(cors_layer);
+
     let addr = format!("{host}:{port}");
     let listener = TcpListener::bind(&addr).await?;
     let local_addr = listener.local_addr()?;
     info!("Running server on {}...", local_addr);
-    axum::serve(listener, app.into_make_service()).await?;
 
+    axum::serve(listener, app).await?;
     Ok(())
 }

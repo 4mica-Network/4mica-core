@@ -2,10 +2,13 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use chrono::Utc;
 use entities::user;
+use metrics_4mica::measure;
 use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait, IntoActiveModel, Set};
 
 use super::common::{now, parse_address};
+use crate::metrics::record::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn get_user<S: AsRef<str> + Send + Sync>(
     ctx: &PersistCtx,
     user_address: S,
@@ -17,6 +20,7 @@ pub async fn get_user<S: AsRef<str> + Send + Sync>(
         .ok_or_else(|| PersistDbError::UserNotFound(addr.into_inner()))
 }
 
+#[measure(record_db_time)]
 pub async fn ensure_user_is_active<S: AsRef<str> + Send + Sync>(
     ctx: &PersistCtx,
     user_address: S,
@@ -30,6 +34,7 @@ pub async fn ensure_user_is_active<S: AsRef<str> + Send + Sync>(
     }
 }
 
+#[measure(record_db_time)]
 pub async fn ensure_user_is_active_if_exists<S: AsRef<str> + Send + Sync>(
     ctx: &PersistCtx,
     user_address: S,
@@ -48,6 +53,7 @@ pub async fn ensure_user_is_active_if_exists<S: AsRef<str> + Send + Sync>(
     }
 }
 
+#[measure(record_db_time)]
 pub async fn update_user_suspension<S: AsRef<str> + Send + Sync>(
     ctx: &PersistCtx,
     user_address: S,
@@ -68,6 +74,7 @@ pub async fn update_user_suspension<S: AsRef<str> + Send + Sync>(
         .map_err(PersistDbError::from)
 }
 
+#[measure(record_db_time)]
 pub async fn ensure_user_exists_on<C: ConnectionTrait>(
     conn: &C,
     addr: &str,

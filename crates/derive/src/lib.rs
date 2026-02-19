@@ -62,6 +62,8 @@ pub fn derive_metric_labels(input: TokenStream) -> TokenStream {
 /// It is called with the function name and elapsed time when the function returns (including
 /// early returns and panics).
 ///
+/// Use `name = "custom_name"` to override the default (the function name).
+///
 /// ```rust,ignore
 /// fn record(name: &'static str, duration: std::time::Duration) {
 ///     println!("{name} took {:?}", duration);
@@ -72,6 +74,9 @@ pub fn derive_metric_labels(input: TokenStream) -> TokenStream {
 ///
 /// #[measure(my_module::record)]
 /// async fn fetch_data() -> Result<(), Error> { /* ... */ }
+///
+/// #[measure(record, name = "custom_metric")]
+/// fn internal_helper() { /* ... */ }
 /// ```
 #[proc_macro_attribute]
 pub fn measure(args: TokenStream, input: TokenStream) -> TokenStream {

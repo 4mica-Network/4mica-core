@@ -3,11 +3,15 @@ use chrono::NaiveDateTime;
 use entities::sea_orm_active_enums::SettlementStatus;
 use entities::tabs;
 use log::info;
+use metrics_4mica::measure;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, Set};
+
+use crate::metrics::record::record_db_time;
 
 /// Centralized settlement transitions for tabs.
 /// Only allow moving from Pending → Settled, or Pending → Remunerated.
 /// Later transitions are idempotent no-ops.
+#[measure(record_db_time)]
 pub async fn transition_settlement<C: ConnectionTrait>(
     conn: &C,
     tab_id: &str,

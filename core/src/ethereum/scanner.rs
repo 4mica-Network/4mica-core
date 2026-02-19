@@ -1,4 +1,5 @@
 use crate::ethereum::event_data::StoredEventData;
+use crate::metrics::record::record_task_time;
 use crate::{
     config::EthereumConfig,
     error::{BlockchainListenerError, PersistDbError},
@@ -16,6 +17,7 @@ use alloy::{
 };
 use futures_util::{StreamExt, stream};
 use log::{error, info, warn};
+use metrics_4mica::measure;
 use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,6 +45,7 @@ impl Task for EthereumEventScanner {
         self.config.event_scanner_cron.clone()
     }
 
+    #[measure(record_task_time, name = "scan_events")]
     async fn run(&self) -> anyhow::Result<()> {
         Self::scan_events(ScanArgs {
             provider: self.provider.clone(),
@@ -331,10 +334,7 @@ impl EthereumEventScanner {
                             .handle_admin_event(log.clone(), "SynchronizationDelayUpdated")
                             .await
                     }
-                    _ => {
-                        info!("Unknown log: {:?}", log);
-                        Ok(())
-                    }
+                    _ => handler.handle_unknown_event(log.clone()).await,
                 };
 
                 match result {

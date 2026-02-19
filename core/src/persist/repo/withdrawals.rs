@@ -4,6 +4,7 @@ use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
 use entities::sea_orm_active_enums::WithdrawalStatus;
 use entities::withdrawal;
+use metrics_4mica::measure;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter,
     QueryOrder, Set, TransactionTrait,
@@ -14,7 +15,9 @@ use std::str::FromStr;
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{map_pending_withdrawal_err, new_uuid, parse_address};
 use crate::ethereum::event_data::EventMeta;
+use crate::metrics::record::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn request_withdrawal(
     ctx: &PersistCtx,
     user_address: String,
@@ -25,6 +28,7 @@ pub async fn request_withdrawal(
     request_withdrawal_with_event(ctx, user_address, asset_address, when, amount, None).await
 }
 
+#[measure(record_db_time)]
 pub async fn request_withdrawal_with_event(
     ctx: &PersistCtx,
     user_address: String,
@@ -113,6 +117,7 @@ pub async fn request_withdrawal_with_event(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn cancel_withdrawal(
     ctx: &PersistCtx,
     user_address: String,
@@ -121,6 +126,7 @@ pub async fn cancel_withdrawal(
     cancel_withdrawal_with_event(ctx, user_address, asset_address, None).await
 }
 
+#[measure(record_db_time)]
 pub async fn cancel_withdrawal_with_event(
     ctx: &PersistCtx,
     user_address: String,
@@ -153,6 +159,7 @@ pub async fn cancel_withdrawal_with_event(
     }
 }
 
+#[measure(record_db_time)]
 pub async fn finalize_withdrawal(
     ctx: &PersistCtx,
     user_address: String,
@@ -162,6 +169,7 @@ pub async fn finalize_withdrawal(
     finalize_withdrawal_with_event(ctx, user_address, asset_address, executed_amount, None).await
 }
 
+#[measure(record_db_time)]
 pub async fn finalize_withdrawal_with_event(
     ctx: &PersistCtx,
     user_address: String,
@@ -247,6 +255,7 @@ pub async fn finalize_withdrawal_with_event(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn revert_withdrawal_request(
     ctx: &PersistCtx,
     event: EventMeta,
@@ -264,6 +273,7 @@ pub async fn revert_withdrawal_request(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn revert_withdrawal_cancel(
     ctx: &PersistCtx,
     event: EventMeta,
@@ -303,6 +313,7 @@ pub async fn revert_withdrawal_cancel(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn revert_withdrawal_execution(
     ctx: &PersistCtx,
     event: EventMeta,
@@ -377,6 +388,7 @@ pub async fn revert_withdrawal_execution(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn get_pending_withdrawal_on<C: ConnectionTrait>(
     conn: &C,
     user_address: &str,
@@ -406,6 +418,7 @@ pub async fn get_pending_withdrawal_on<C: ConnectionTrait>(
     }
 }
 
+#[measure(record_db_time)]
 pub async fn get_pending_withdrawals_for_user(
     ctx: &PersistCtx,
     user_address: &str,

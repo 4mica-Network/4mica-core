@@ -6,12 +6,15 @@ use chrono::NaiveDateTime;
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::tabs;
 use log::info;
+use metrics_4mica::measure;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use std::str::FromStr;
 
 use super::common::{now, parse_address};
 use super::users::ensure_user_is_active;
+use crate::metrics::record::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn create_pending_tab(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
@@ -49,6 +52,7 @@ pub async fn create_pending_tab(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn open_tab(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
@@ -69,6 +73,7 @@ pub async fn open_tab(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn open_tab_on<C: ConnectionTrait>(
     conn: &C,
     tab_id: alloy::primitives::U256,
@@ -89,6 +94,7 @@ pub async fn open_tab_on<C: ConnectionTrait>(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn find_active_tab_by_triplet(
     ctx: &PersistCtx,
     user_address: &str,
@@ -117,6 +123,7 @@ pub async fn find_active_tab_by_triplet(
     Ok(tab)
 }
 
+#[measure(record_db_time)]
 pub async fn close_tab(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
@@ -135,6 +142,7 @@ pub async fn close_tab(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn get_tab_by_id(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
@@ -145,6 +153,7 @@ pub async fn get_tab_by_id(
     Ok(res)
 }
 
+#[measure(record_db_time)]
 pub async fn get_tabs_for_recipient(
     ctx: &PersistCtx,
     recipient_address: &str,
@@ -171,6 +180,7 @@ pub async fn get_tabs_for_recipient(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn get_tab_by_id_on<C: ConnectionTrait>(
     conn: &C,
     tab_id: alloy::primitives::U256,
@@ -182,6 +192,7 @@ pub async fn get_tab_by_id_on<C: ConnectionTrait>(
         .ok_or_else(|| PersistDbError::TabNotFound(tab_id))
 }
 
+#[measure(record_db_time)]
 pub async fn get_tab_ttl_seconds(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
@@ -195,6 +206,7 @@ pub async fn get_tab_ttl_seconds(
     Ok(tab.ttl as u64)
 }
 
+#[measure(record_db_time)]
 pub async fn increment_and_get_last_req_id(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
@@ -243,6 +255,7 @@ pub async fn increment_and_get_last_req_id(
     unreachable!()
 }
 
+#[measure(record_db_time)]
 pub async fn lock_and_update_tab_on<C: ConnectionTrait>(
     conn: &C,
     tab_id: U256,

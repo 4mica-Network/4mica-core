@@ -1,5 +1,7 @@
 use crate::error::PersistDbError;
+use crate::metrics::record::record_db_time;
 use crate::persist::PersistCtx;
+use metrics_4mica::measure;
 
 pub mod auth;
 pub mod balances;
@@ -27,6 +29,7 @@ pub use users::*;
 pub use withdrawals::*;
 
 /// Shared query helpers that cross module boundaries.
+#[measure(record_db_time)]
 pub async fn get_collateral_events_for_tab(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,

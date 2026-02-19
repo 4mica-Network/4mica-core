@@ -3,7 +3,9 @@ use alloy_primitives::{Address, U256};
 use async_trait::async_trait;
 use blockchain::txtools::PaymentTx;
 use log::{info, warn};
+use metrics_4mica::measure;
 
+use crate::metrics::record::record_event_handler_time;
 use crate::{
     error::BlockchainListenerError,
     ethereum::{contract::*, event_data::EventMeta, event_handler::EthereumEventHandler},
@@ -13,6 +15,7 @@ use crate::{
 
 #[async_trait]
 impl EthereumEventHandler for CoreService {
+    #[measure(record_event_handler_time, name = "collateral_deposited")]
     async fn handle_collateral_deposited(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CollateralDeposited {
             user,
@@ -34,6 +37,7 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "recipient_remunerated")]
     async fn handle_recipient_remunerated(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let RecipientRemunerated {
             tab_id,
@@ -55,6 +59,7 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "collateral_withdrawn")]
     async fn handle_collateral_withdrawn(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CollateralWithdrawn {
             user,
@@ -76,6 +81,7 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "withdrawal_requested")]
     async fn handle_withdrawal_requested(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let WithdrawalRequested {
             user,
@@ -99,6 +105,7 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "withdrawal_canceled")]
     async fn handle_withdrawal_canceled(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let WithdrawalCanceled { user, asset, .. } = *log.log_decode()?.data();
         info!("Withdrawal canceled by {user:?}, asset={asset}");
@@ -114,6 +121,7 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "payment_recorded")]
     async fn handle_payment_recorded(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let PaymentRecorded {
             tab_id,
@@ -132,6 +140,7 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "tab_paid")]
     async fn handle_tab_paid(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let TabPaid {
             tab_id,
@@ -215,6 +224,7 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "admin_event")]
     async fn handle_admin_event(
         &self,
         log: Log,
@@ -246,6 +256,12 @@ impl EthereumEventHandler for CoreService {
                 info!("Unknown simple event: {}", event_name);
             }
         }
+        Ok(())
+    }
+
+    #[measure(record_event_handler_time, name = "unknown")]
+    async fn handle_unknown_event(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        info!("Unknown event: {:?}", log);
         Ok(())
     }
 }

@@ -41,6 +41,10 @@ pub trait Metric<M> {
     type Labels: MetricLabels;
 
     const NAME: &'static str;
+
+    fn name() -> &'static str {
+        Self::NAME
+    }
 }
 
 impl<T> MetricAccess<Counter, T::Labels> for T

@@ -1,6 +1,7 @@
 use crate::auth::access::{self, AccessContext};
 use crate::{error::ServiceError, persist::mapper, service::CoreService};
 use alloy_primitives::U256;
+use axum::extract::FromRef;
 use axum::{
     Json, Router,
     extract::{Extension, Path, Query, Request, State},
@@ -12,6 +13,8 @@ use axum::{
 use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
 use http::{StatusCode, header::AUTHORIZATION};
+use metrics_4mica::http::HttpMetricsMiddleware;
+use metrics_exporter_prometheus::PrometheusHandle;
 use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
@@ -21,8 +24,32 @@ use rpc::{
 };
 use std::str::FromStr;
 
-pub fn router(service: CoreService) -> Router {
+#[derive(Clone)]
+pub struct AppState {
+    pub service: CoreService,
+    pub metrics: PrometheusHandle,
+}
+
+impl FromRef<AppState> for CoreService {
+    fn from_ref(state: &AppState) -> Self {
+        state.service.clone()
+    }
+}
+
+impl FromRef<AppState> for PrometheusHandle {
+    fn from_ref(state: &AppState) -> Self {
+        state.metrics.clone()
+    }
+}
+
+pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Router {
+    let state = AppState {
+        service,
+        metrics: metrics_recorder,
+    };
+
     Router::new()
+        .route("/metrics", get(get_metrics))
         .route("/auth/nonce", post(post_auth_nonce))
         .route("/auth/verify", post(post_auth_verify))
         .route("/auth/refresh", post(post_auth_refresh))
@@ -70,10 +97,11 @@ pub fn router(service: CoreService) -> Router {
             post(update_user_suspension),
         )
         .layer(middleware::from_fn_with_state(
-            service.clone(),
+            state.clone(),
             auth_middleware,
         ))
-        .with_state(service)
+        .layer(HttpMetricsMiddleware::default())
+        .with_state(state)
 }
 
 #[derive(Debug)]
@@ -194,6 +222,10 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
     }
 
     Ok(token)
+}
+
+async fn get_metrics(State(metrics): State<PrometheusHandle>) -> Result<String, ApiError> {
+    Ok(metrics.render())
 }
 
 async fn get_public_params(
