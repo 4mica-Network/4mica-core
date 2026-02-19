@@ -266,10 +266,14 @@ async fn post_auth_logout(
     Ok(Json(res))
 }
 
-async fn get_health(
-    State(_service): State<CoreService>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    Ok(Json(serde_json::json!({ "status": "ok" })))
+async fn get_health(State(service): State<CoreService>) -> Result<impl IntoResponse, ApiError> {
+    let report = service.run_health_checks().await;
+    let status = if report.is_healthy() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    Ok((status, Json(report)))
 }
 
 async fn issue_guarantee(

@@ -209,6 +209,14 @@ pub struct DatabaseConfig {
     pub conflict_retries: usize,
 }
 
+#[derive(Debug, Clone, Envconfig)]
+pub struct MonitoringConfig {
+    #[envconfig(from = "METRICS_UPKEEP_CRON", default = "*/5 * * * * *")]
+    pub metrics_upkeep_cron: String,
+    #[envconfig(from = "HEALTH_CHECK_CRON", default = "*/30 * * * * *")]
+    pub health_check_cron: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub server_config: ServerConfig,
@@ -216,6 +224,7 @@ pub struct AppConfig {
     pub database_config: DatabaseConfig,
     pub eip712: Eip712Config,
     pub auth: AuthConfig,
+    pub monitoring: MonitoringConfig,
     /// Secrets are loaded into an Arc to avoid multiple allocations of the same secret.
     pub secrets: Arc<Secrets>,
 }
@@ -233,6 +242,8 @@ impl AppConfig {
             DatabaseConfig::init_from_env().context("Failed to load database config")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
+        let monitoring =
+            MonitoringConfig::init_from_env().context("Failed to load monitoring config")?;
         let secrets = Arc::new(Secrets::init_from_env().context("Failed to load secrets")?);
 
         Ok(Self {
@@ -241,6 +252,7 @@ impl AppConfig {
             database_config,
             eip712,
             auth,
+            monitoring,
             secrets,
         })
     }

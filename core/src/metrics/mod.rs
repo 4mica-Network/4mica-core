@@ -4,7 +4,11 @@ use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 
 use crate::{metrics::record::record_task_time, scheduler::Task};
 
+pub mod health;
+pub mod metrics;
 pub mod record;
+
+pub use health::HealthCheckTask;
 
 pub fn setup_metrics_recorder() -> anyhow::Result<PrometheusHandle> {
     const EXPONENTIAL_SECONDS: &[f64] = &[
@@ -32,19 +36,22 @@ pub fn setup_metrics_recorder() -> anyhow::Result<PrometheusHandle> {
 
 pub struct MetricsUpkeepTask {
     recorder_handle: PrometheusHandle,
+    cron_pattern: String,
 }
 
 impl MetricsUpkeepTask {
-    pub fn new(recorder_handle: PrometheusHandle) -> Self {
-        Self { recorder_handle }
+    pub fn new(recorder_handle: PrometheusHandle, cron_pattern: String) -> Self {
+        Self {
+            recorder_handle,
+            cron_pattern,
+        }
     }
 }
 
 #[async_trait]
 impl Task for MetricsUpkeepTask {
     fn cron_pattern(&self) -> String {
-        // Run every 5 seconds
-        "*/5 * * * * *".to_string()
+        self.cron_pattern.clone()
     }
 
     #[measure(record_task_time, name = "metrics_upkeep")]
