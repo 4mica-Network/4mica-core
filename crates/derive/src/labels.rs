@@ -40,7 +40,7 @@ pub fn expand_metric_labels(input: DeriveInput) -> syn::Result<proc_macro2::Toke
             #(#where_predicates,)*
             #where_clause
         {
-            fn labels(&self) -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+            fn labels(&self) -> impl AsRef<[(&'static str, ::std::string::String)]> {
                 vec![
                     #( (#field_name_strs, self.#field_names.to_string()), )*
                 ]

@@ -1,6 +1,6 @@
 use proc_macro2::Span;
 use quote::quote;
-use syn::{DeriveInput, Meta, Path, punctuated::Punctuated, token::Comma};
+use syn::{DeriveInput, Ident, LitStr, Token, Type, parse::ParseStream};
 
 enum MetricKind {
     Counter,
@@ -18,9 +18,48 @@ impl MetricKind {
     }
 }
 
+struct KindArgs {
+    labels: Type,
+    name: String,
+}
+
+impl syn::parse::Parse for KindArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut labels: Option<Type> = None;
+        let mut name: Option<String> = None;
+
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            let _: Token![=] = input.parse()?;
+
+            if key == "labels" {
+                labels = Some(input.parse()?);
+            } else if key == "name" {
+                name = Some(input.parse::<LitStr>()?.value());
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "unknown argument; expected `labels = Type` or `name = \"...\"`",
+                ));
+            }
+
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+
+        Ok(KindArgs {
+            labels: labels
+                .ok_or_else(|| syn::Error::new(Span::call_site(), "missing `labels = Type`"))?,
+            name: name
+                .ok_or_else(|| syn::Error::new(Span::call_site(), "missing `name = \"...\"`"))?,
+        })
+    }
+}
+
 struct MetricArgs {
     kind: MetricKind,
-    labels: Path,
+    labels: Type,
     name: String,
 }
 
@@ -35,8 +74,7 @@ pub fn expand_metric(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream
     let name = args.name;
 
     Ok(quote! {
-        impl #impl_generics Metric for #struct_name #ty_generics #where_clause {
-            type MetricType = #metric_type;
+        impl #impl_generics Metric<#metric_type> for #struct_name #ty_generics #where_clause {
             type Labels = #labels_type;
             const NAME: &'static str = #name;
         }
@@ -65,32 +103,7 @@ fn parse_metric_attr(input: &DeriveInput) -> syn::Result<MetricArgs> {
             )
         })?;
 
-    let nested = attr.parse_args_with(Punctuated::<Meta, Comma>::parse_terminated)?;
+    let KindArgs { labels, name } = attr.parse_args::<KindArgs>()?;
 
-    let mut labels: Option<Path> = None;
-    let mut name: Option<String> = None;
-
-    for meta in &nested {
-        match meta {
-            Meta::NameValue(nv) if nv.path.is_ident("labels") => {
-                labels = Some(crate::util::expr_to_path(&nv.value, "labels")?);
-            }
-            Meta::NameValue(nv) if nv.path.is_ident("name") => {
-                name = Some(crate::util::expr_to_str(&nv.value, "name")?);
-            }
-            other => {
-                return Err(syn::Error::new_spanned(
-                    other,
-                    "unknown argument; expected `labels = Type`, or `name = \"...\"`",
-                ));
-            }
-        }
-    }
-
-    Ok(MetricArgs {
-        kind,
-        labels: labels
-            .ok_or_else(|| syn::Error::new(Span::call_site(), "missing `labels = Type`"))?,
-        name: name.ok_or_else(|| syn::Error::new(Span::call_site(), "missing `name = \"...\"`"))?,
-    })
+    Ok(MetricArgs { kind, labels, name })
 }

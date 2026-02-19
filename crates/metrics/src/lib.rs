@@ -1,40 +1,71 @@
-use metrics::Counter;
+use metrics::{Counter, Gauge, Histogram};
 
-pub use derive_4mica::{Metric, MetricLabels};
+pub use derive_4mica::{Metric, MetricLabels, measure};
 
 pub mod http;
 
 pub trait MetricLabels {
     /// Returns a vector of (name, value) pairs.
-    fn labels(&self) -> Vec<(&'static str, String)>;
+    fn labels(&self) -> impl AsRef<[(&'static str, String)]>;
 }
 
 impl MetricLabels for () {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> impl AsRef<[(&'static str, String)]> {
         vec![]
     }
 }
 
-pub trait MetricName {
-    fn name() -> &'static str;
+impl MetricLabels for (&'static str, String) {
+    fn labels(&self) -> impl AsRef<[(&'static str, String)]> {
+        vec![self.clone()]
+    }
+}
+
+impl MetricLabels for &[(&'static str, String)] {
+    fn labels(&self) -> impl AsRef<[(&'static str, String)]> {
+        self
+    }
+}
+
+impl MetricLabels for Vec<(&'static str, String)> {
+    fn labels(&self) -> impl AsRef<[(&'static str, String)]> {
+        self
+    }
 }
 
 pub trait MetricAccess<M, L: MetricLabels> {
-    fn access(labels: &L) -> M;
+    fn get(labels: &L) -> M;
 }
 
-pub trait Metric {
-    type MetricType;
+pub trait Metric<M> {
     type Labels: MetricLabels;
 
     const NAME: &'static str;
 }
 
-impl<T> MetricAccess<T::MetricType, T::Labels> for T
+impl<T> MetricAccess<Counter, T::Labels> for T
 where
-    T: Metric<MetricType = Counter> + MetricName,
+    T: Metric<Counter>,
 {
-    fn access(labels: &T::Labels) -> T::MetricType {
-        metrics::counter!(T::name(), &labels.labels())
+    fn get(labels: &T::Labels) -> Counter {
+        metrics::counter!(T::NAME, labels.labels().as_ref())
+    }
+}
+
+impl<T> MetricAccess<Gauge, T::Labels> for T
+where
+    T: Metric<Gauge>,
+{
+    fn get(labels: &T::Labels) -> Gauge {
+        metrics::gauge!(T::NAME, labels.labels().as_ref())
+    }
+}
+
+impl<T> MetricAccess<Histogram, T::Labels> for T
+where
+    T: Metric<Histogram>,
+{
+    fn get(labels: &T::Labels) -> Histogram {
+        metrics::histogram!(T::NAME, labels.labels().as_ref())
     }
 }

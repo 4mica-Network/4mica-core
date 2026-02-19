@@ -11,7 +11,10 @@ keywords = ["4mica", "metrics", "prometheus", "tracing"]
 categories = ["metrics"]
 
 [dependencies]
+derive-4mica = { workspace = true }
+
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 metrics = { workspace = true }
-derive-4mica = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
