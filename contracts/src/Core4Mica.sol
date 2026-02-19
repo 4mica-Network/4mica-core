@@ -502,7 +502,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     function remunerate(
         bytes calldata guaranteeData,
         BLS.G2Point calldata signature
-    ) external nonReentrant whenNotPaused {
+    ) external nonReentrant {
         // Verify and decode the guarantee
         Guarantee memory g = verifyAndDecodeGuarantee(guaranteeData, signature);
 
