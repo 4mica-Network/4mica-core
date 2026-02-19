@@ -4,7 +4,7 @@
 //! validating public keys and signatures on construction and keeping
 //! cryptographic material in dedicated types.
 
-use std::{fmt::Display, str::FromStr};
+use std::str::FromStr;
 
 use blst::{
     self, blst_p1_affine, blst_p2_affine,
@@ -274,19 +274,6 @@ impl BLSCert {
         })
     }
 
-    /// Legacy constructor that accepts any claims payload convertible to bytes.
-    #[deprecated(note = "use BLSCert::sign")]
-    pub fn new<C: TryInto<Vec<u8>>>(sk: &KeyMaterial, claims: C) -> anyhow::Result<Self>
-    where
-        C::Error: Display,
-    {
-        let claims_bytes = claims
-            .try_into()
-            .map_err(|e| anyhow::anyhow!("failed to convert claims to bytes: {}", e))?;
-        let claims = BlsClaims::from_bytes(claims_bytes);
-        Ok(BLSCert::sign(sk, claims)?)
-    }
-
     /// Verify the certificate signature against a public key.
     ///
     /// Uses `blst::Signature::verify` with group checks enabled for both the
@@ -325,13 +312,6 @@ fn split_fp_be48_into_hi_lo32(be48: &[u8; 48]) -> ([u8; 32], [u8; 32]) {
     hi[16..].copy_from_slice(&be48[..16]);
     lo.copy_from_slice(&be48[16..]);
     (hi, lo)
-}
-
-#[deprecated(note = "use BlsSignature::to_solidity_words")]
-/// Legacy conversion helper for Solidity word encoding.
-pub fn g2_words_from_signature(sig_bytes: &[u8]) -> anyhow::Result<[[u8; 32]; 8]> {
-    let sig = BlsSignature::from_bytes(sig_bytes)?;
-    Ok(sig.to_solidity_words()?)
 }
 
 /// BLS key material that owns the secret key.
