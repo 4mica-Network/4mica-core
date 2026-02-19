@@ -13,7 +13,7 @@ use crate::{
 use alloy::primitives::Address;
 use anyhow::anyhow;
 use chrono::TimeZone;
-use crypto::bls::BLSCert;
+use crypto::bls::{BLSCert, BlsClaims};
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::info;
 use rpc::{
@@ -120,7 +120,10 @@ impl CoreService {
     }
 
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
-        BLSCert::new(&self.bls_secret_key(), claims)
+        let claims_bytes = <PaymentGuaranteeClaims as TryInto<Vec<u8>>>::try_into(claims)
+            .map_err(ServiceError::Other)?;
+        let claims = BlsClaims::from_bytes(claims_bytes);
+        BLSCert::sign(self.bls_secret_key(), claims)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 

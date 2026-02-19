@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use self::{recipient::RecipientClient, user::UserClient};
+use crypto::bls::BlsPublicKey;
 
 pub mod model;
 pub mod recipient;
@@ -33,7 +34,7 @@ struct Inner<S> {
     provider: DynProvider,
     wallet_provider: Mutex<Option<DynProvider>>,
     contract_address: Address,
-    operator_public_key: [u8; 48],
+    operator_public_key: BlsPublicKey,
     guarantee_domain: [u8; 32],
     auth_session: Option<AuthSession<S>>,
 }
@@ -119,17 +120,9 @@ impl<S> ClientCtx<S> {
         Ok(provider)
     }
 
-    fn parse_operator_public_key(bytes: &[u8]) -> Result<[u8; 48], ClientError> {
-        if bytes.len() != 48 {
-            return Err(ClientError::Initialization(format!(
-                "invalid operator public key length: expected 48 bytes, got {}",
-                bytes.len()
-            )));
-        }
-
-        let mut pk = [0u8; 48];
-        pk.copy_from_slice(bytes);
-        Ok(pk)
+    fn parse_operator_public_key(bytes: &[u8]) -> Result<BlsPublicKey, ClientError> {
+        BlsPublicKey::from_bytes(bytes)
+            .map_err(|e| ClientError::Initialization(format!("invalid operator public key: {e}")))
     }
 
     fn resolve_contract_address(
@@ -162,7 +155,7 @@ impl<S> ClientCtx<S> {
         Core4Mica::new(self.0.contract_address, self.0.provider.clone())
     }
 
-    fn operator_public_key(&self) -> &[u8; 48] {
+    fn operator_public_key(&self) -> &BlsPublicKey {
         &self.0.operator_public_key
     }
 

@@ -1,5 +1,5 @@
 use sdk_4mica::{
-    Client, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::RemunerateError,
+    BLSCert, Client, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::RemunerateError,
 };
 
 mod common;
@@ -9,6 +9,7 @@ use crate::common::{
     wait_for_collateral_increase,
 };
 use alloy::signers::Signer;
+use crypto::bls::BlsClaims;
 
 async fn resolve_next_req_id<S>(
     recipient_client: &sdk_4mica::client::recipient::RecipientClient<S>,
@@ -108,12 +109,12 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     println!(
         "Issued BLS certificate: claims_len={}, signature_len={}",
-        bls_cert.claims.len(),
-        bls_cert.signature.len()
+        bls_cert.claims().as_bytes().len(),
+        bls_cert.signature().as_bytes().len()
     );
 
-    let mut mismatched = bls_cert.clone();
-    if let Some(last) = mismatched.claims.pop() {
+    let mut tampered_hex = bls_cert.claims().to_hex();
+    if let Some(last) = tampered_hex.pop() {
         let replacement = match last {
             '0' => '1',
             '1' => '2',
@@ -132,29 +133,31 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
             'e' => 'f',
             _ => '0',
         };
-        mismatched.claims.push(replacement);
+        tampered_hex.push(replacement);
     } else {
         panic!("certificate claims unexpectedly empty");
     }
 
+    let mismatched = BLSCert {
+        claims: BlsClaims::from_hex(&tampered_hex)?,
+        signature: bls_cert.signature().clone(),
+    };
     let result = recipient_client.recipient.remunerate(mismatched).await;
     println!("Remunerate with mismatched cert -> {result:?}");
     assert!(matches!(result, Err(RemunerateError::CertificateMismatch)));
 
-    let mut malformed = bls_cert.clone();
-    malformed.signature.pop();
-    let result = recipient_client.recipient.remunerate(malformed).await;
-    println!("Remunerate with malformed cert -> {result:?}");
-    assert!(matches!(
-        result,
-        Err(RemunerateError::CertificateInvalid(_))
-    ));
+    let mut malformed_hex = bls_cert.signature().to_hex();
+    malformed_hex.pop();
+    assert!(
+        crypto::bls::BlsSignature::from_hex(&malformed_hex).is_err(),
+        "malformed signature should be rejected"
+    );
 
     // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
     println!(
         "Remunerating with correct cert (claims_len={}, signature_len={})",
-        bls_cert.claims.len(),
-        bls_cert.signature.len()
+        bls_cert.claims().as_bytes().len(),
+        bls_cert.signature().as_bytes().len()
     );
     let result = recipient_client.recipient.remunerate(bls_cert).await;
     dbg!(&result);

@@ -10,6 +10,7 @@ use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCO
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::persist::{PersistCtx, repo};
 use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
+use crypto::bls::BlsPublicKey;
 use entities::sea_orm_active_enums::CollateralEventType;
 use entities::{collateral_event, guarantee as guarantee_entity};
 use rand::random;
@@ -1048,7 +1049,8 @@ async fn issue_two_sequential_guarantees_ok() -> anyhow::Result<()> {
     .await;
     let cert2 = core_client.issue_guarantee(req1).await.expect("second ok");
 
-    assert!(cert2.verify(&public_params.public_key).unwrap());
+    let pk = BlsPublicKey::from_bytes(&public_params.public_key)?;
+    assert!(cert2.verify(&pk).is_ok());
     let rows = guarantee_entity::Entity::find()
         .filter(guarantee_entity::Column::TabId.eq(u256_to_string(tab_id)))
         .all(&*ctx.db)
@@ -1103,8 +1105,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         .expect("first guarantee ok");
 
     // Decode first certificate and verify total_amount equals amount1
-    let claims1_bytes = cert1.claims_bytes()?;
-    let claims1 = rpc::PaymentGuaranteeClaims::try_from(claims1_bytes.as_slice())?;
+    let claims1 = rpc::PaymentGuaranteeClaims::try_from(cert1.claims().as_bytes())?;
     assert_eq!(claims1.amount, amount1);
     assert_eq!(
         claims1.total_amount, amount1,
@@ -1131,8 +1132,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         .expect("second guarantee ok");
 
     // Decode second certificate and verify total_amount equals amount1 + amount2
-    let claims2_bytes = cert2.claims_bytes()?;
-    let claims2 = rpc::PaymentGuaranteeClaims::try_from(claims2_bytes.as_slice())?;
+    let claims2 = rpc::PaymentGuaranteeClaims::try_from(cert2.claims().as_bytes())?;
     assert_eq!(claims2.amount, amount2);
     let expected_total = amount1.checked_add(amount2).unwrap();
     assert_eq!(
@@ -1141,7 +1141,8 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
     );
 
     // Verify certificate is valid
-    assert!(cert2.verify(&public_params.public_key).unwrap());
+    let pk = BlsPublicKey::from_bytes(&public_params.public_key)?;
+    assert!(cert2.verify(&pk).is_ok());
 
     Ok(())
 }
@@ -1324,7 +1325,8 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
         .issue_guarantee(req)
         .await
         .expect("issue guarantee");
-    assert!(cert.verify(&public_params.public_key).unwrap());
+    let pk = BlsPublicKey::from_bytes(&public_params.public_key)?;
+    assert!(cert.verify(&pk).is_ok());
 
     let stored = guarantee_entity::Entity::find()
         .filter(guarantee_entity::Column::TabId.eq(u256_to_string(tab.id)))

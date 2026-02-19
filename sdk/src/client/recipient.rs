@@ -4,7 +4,7 @@ use alloy::{
     rpc::types::TransactionReceipt,
     signers::{Signature, Signer},
 };
-use crypto::bls::BLSCert;
+use crypto::bls::{BLSCert, BlsError};
 use rpc::{
     CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
     PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1, SigningScheme,
@@ -113,17 +113,19 @@ impl<S> RecipientClient<S> {
         &self,
         cert: &BLSCert,
     ) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError> {
-        let is_valid = cert
-            .verify(self.ctx.operator_public_key())
-            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
-        if !is_valid {
-            return Err(VerifyGuaranteeError::CertificateMismatch);
+        match cert.verify(self.ctx.operator_public_key()) {
+            Ok(()) => {}
+            Err(BlsError::VerificationFailed) => {
+                return Err(VerifyGuaranteeError::CertificateMismatch);
+            }
+            Err(err) => {
+                return Err(VerifyGuaranteeError::InvalidCertificate(
+                    anyhow::Error::new(err),
+                ));
+            }
         }
 
-        let claims_bytes = cert
-            .claims_bytes()
-            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
-        let claims = PaymentGuaranteeClaims::try_from(claims_bytes.as_slice())
+        let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())
             .map_err(VerifyGuaranteeError::InvalidCertificate)?;
 
         if claims.domain != *self.guarantee_domain() {
@@ -150,13 +152,12 @@ impl<S> RecipientClient<S> {
                 }
             })?;
 
-        let sig = crate::util::normalize_and_decode_hex(&cert.signature)
-            .map_err(RemunerateError::SignatureHex)?;
+        let sig_words = cert
+            .signature()
+            .to_solidity_words()
+            .map_err(|e| RemunerateError::SignatureDecode(anyhow::Error::new(e)))?;
 
-        let sig_words = crypto::bls::g2_words_from_signature(sig.as_slice())
-            .map_err(RemunerateError::SignatureDecode)?;
-
-        let claims_bytes = cert.claims_bytes().map_err(RemunerateError::ClaimsHex)?;
+        let claims_bytes = cert.claims().to_vec();
 
         // Static call first to surface a revert without submitting a transaction
         self.ctx

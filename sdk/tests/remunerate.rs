@@ -236,7 +236,8 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
         .await?;
     println!(
         "[recipient] issued cert:\nclaims=0x{}\nsignature=0x{}",
-        bls_cert.claims, bls_cert.signature
+        bls_cert.claims().to_hex(),
+        bls_cert.signature().to_hex()
     );
 
     let guarantee = recipient_client
@@ -245,7 +246,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 
     println!("[recipient] verified guarantee:\n{:?}", guarantee);
 
-    let claims_bytes = common::normalize_and_decode_hex(&bls_cert.claims)?;
+    let claims_bytes = bls_cert.claims().to_vec();
     // println!(
     //     "[recipient] encoded claims bytes=0x{}",
     //     hex::encode(&claims_bytes)
@@ -366,14 +367,15 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
         .await?;
     println!(
         "[double] issued cert: claims=0x{} signature=0x{}",
-        bls_cert.claims, bls_cert.signature
+        bls_cert.claims().to_hex(),
+        bls_cert.signature().to_hex()
     );
 
     let guarantee = recipient_client
         .recipient
         .verify_payment_guarantee(&bls_cert)?;
 
-    let claims_bytes = common::normalize_and_decode_hex(&bls_cert.claims)?;
+    let claims_bytes = bls_cert.claims().to_vec();
     println!(
         "[double] encoded claims bytes=0x{}",
         hex::encode(&claims_bytes)

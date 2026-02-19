@@ -7,11 +7,27 @@ use core_service::{
     persist::{PersistCtx, repo},
 };
 use entities::{user, user_asset_balance};
+use migration::{Migrator, MigratorTrait};
 use rand::random;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, Statement, sea_query::OnConflict,
 };
 use std::str::FromStr;
+use tokio::sync::OnceCell;
+
+static MIGRATIONS: OnceCell<()> = OnceCell::const_new();
+
+pub async fn ensure_migrations(ctx: &PersistCtx) -> Result<()> {
+    MIGRATIONS
+        .get_or_try_init(|| async {
+            Migrator::up(ctx.db.as_ref(), None)
+                .await
+                .map_err(|err| anyhow!("failed to run migrations: {err}"))?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?;
+    Ok(())
+}
 
 pub fn init_config() -> Result<AppConfig> {
     dotenv::dotenv().ok();
@@ -22,6 +38,7 @@ pub fn init_config() -> Result<AppConfig> {
 pub async fn init_test_env() -> Result<(AppConfig, PersistCtx)> {
     let cfg = init_config()?;
     let ctx = PersistCtx::new().await?;
+    ensure_migrations(&ctx).await?;
     Ok((cfg, ctx))
 }
 
