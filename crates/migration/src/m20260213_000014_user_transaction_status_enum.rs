@@ -17,10 +17,9 @@ impl MigrationTrait for Migration {
                     .create_enum_from_active_enum::<sea_orm_active_enums::UserTransactionStatus>(),
             )
             .await
+            && !is_duplicate_type_error(&err)
         {
-            if !is_duplicate_type_error(&err) {
-                return Err(err);
-            }
+            return Err(err);
         }
 
         manager

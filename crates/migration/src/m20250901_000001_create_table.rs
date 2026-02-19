@@ -20,40 +20,34 @@ impl MigrationTrait for Migration {
                 schema.create_enum_from_active_enum::<sea_orm_active_enums::CollateralEventType>(),
             )
             .await
+            && !is_duplicate_type_error(&err)
         {
-            if !is_duplicate_type_error(&err) {
-                return Err(err);
-            }
+            return Err(err);
         }
         if let Err(err) = manager
             .create_type(
                 schema.create_enum_from_active_enum::<sea_orm_active_enums::SettlementStatus>(),
             )
             .await
+            && !is_duplicate_type_error(&err)
         {
-            if !is_duplicate_type_error(&err) {
-                return Err(err);
-            }
+            return Err(err);
         }
         if let Err(err) = manager
-            .create_type(
-                schema.create_enum_from_active_enum::<sea_orm_active_enums::TabStatus>(),
-            )
+            .create_type(schema.create_enum_from_active_enum::<sea_orm_active_enums::TabStatus>())
             .await
+            && !is_duplicate_type_error(&err)
         {
-            if !is_duplicate_type_error(&err) {
-                return Err(err);
-            }
+            return Err(err);
         }
         if let Err(err) = manager
             .create_type(
                 schema.create_enum_from_active_enum::<sea_orm_active_enums::WithdrawalStatus>(),
             )
             .await
+            && !is_duplicate_type_error(&err)
         {
-            if !is_duplicate_type_error(&err) {
-                return Err(err);
-            }
+            return Err(err);
         }
 
         // ----- User -----

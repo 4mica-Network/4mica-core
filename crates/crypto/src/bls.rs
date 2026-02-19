@@ -7,7 +7,7 @@
 use std::{fmt::Display, str::FromStr};
 
 use blst::{
-    self, blst_p2_affine,
+    self, blst_p1_affine, blst_p2_affine,
     min_pk::{PublicKey as BlstPublicKey, SecretKey, Signature as BlstSignature},
 };
 use secrecy::zeroize::Zeroizing;
@@ -79,6 +79,25 @@ impl BlsPublicKey {
 
     fn from_compressed_unchecked(bytes: Vec<u8>) -> Self {
         Self(HexBytes::from(bytes))
+    }
+
+    /// Convert the public key into the 4 x 32-byte word representation expected by Solidity.
+    pub fn to_solidity_words(&self) -> Result<[[u8; 32]; 4], BlsError> {
+        let pk = self.as_blst()?;
+        let aff: blst_p1_affine = pk.into();
+
+        let mut x = [0u8; 48];
+        let mut y = [0u8; 48];
+        // SAFETY: `aff` is produced by `blst` from a validated public key, and
+        // the output buffers are correctly sized for 48-byte field elements.
+        unsafe {
+            blst::blst_bendian_from_fp(x.as_mut_ptr(), &aff.x);
+            blst::blst_bendian_from_fp(y.as_mut_ptr(), &aff.y);
+        }
+
+        let (x_hi, x_lo) = split_fp_be48_into_hi_lo32(&x);
+        let (y_hi, y_lo) = split_fp_be48_into_hi_lo32(&y);
+        Ok([x_hi, x_lo, y_hi, y_lo])
     }
 }
 
@@ -160,6 +179,7 @@ impl BlsSignature {
         let (y0_hi, y0_lo) = split_fp_be48_into_hi_lo32(&y_c0);
         let (y1_hi, y1_lo) = split_fp_be48_into_hi_lo32(&y_c1);
 
+        // Solidity BLS expects Fp2 as c0 || c1 (EIP-2537, struct order in BLS.sol).
         Ok([x0_hi, x0_lo, x1_hi, x1_lo, y0_hi, y0_lo, y1_hi, y1_lo])
     }
 
