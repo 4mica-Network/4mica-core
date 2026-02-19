@@ -11,12 +11,16 @@ impl MigrationTrait for Migration {
         let db_backend = manager.get_database_backend();
         let schema = Schema::new(db_backend);
 
-        manager
+        if let Err(err) = manager
             .create_type(
                 schema
                     .create_enum_from_active_enum::<sea_orm_active_enums::UserTransactionStatus>(),
             )
-            .await?;
+            .await
+            && !is_duplicate_type_error(&err)
+        {
+            return Err(err);
+        }
 
         manager
             .get_connection()
@@ -62,4 +66,8 @@ USING status::text;
 
         Ok(())
     }
+}
+
+fn is_duplicate_type_error(err: &DbErr) -> bool {
+    err.to_string().contains("already exists")
 }

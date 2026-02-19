@@ -295,6 +295,8 @@ Notes:
 - `get_collateral_events_for_tab(tab_id: U256) -> Result<Vec<CollateralEventInfo>, RecipientQueryError>`: Get collateral events for a specific tab
 - `get_user_asset_balance(user_address: String, asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get user's asset balance
 
+> **Note:** `BLSCert` now exposes typed claims and signatures. Use `cert.claims().to_hex()` or `cert.signature().to_hex()` when you need hex strings.
+
 > **Note:** Each method returns a specific error type that provides detailed information about what went wrong. See the [Error Handling](#error-handling) section for comprehensive documentation and examples.
 
 ### User Client (Payer)

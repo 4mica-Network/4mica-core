@@ -2,7 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, bail};
-use crypto::bls::BlsSecretKey;
+use crypto::bls::KeyMaterial;
 use envconfig::Envconfig;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::warn;
@@ -124,7 +124,7 @@ pub struct Eip712Config {
 
 #[derive(Debug)]
 pub struct Secrets {
-    pub bls_secret_key: BlsSecretKey,
+    pub bls_secret_key: KeyMaterial,
     // PrivateKeySigner handles the zeroization internally
     pub ethereum_private_key_signer: PrivateKeySigner,
     pub jwt_enc_key: EncodingKey,
@@ -134,7 +134,7 @@ pub struct Secrets {
 impl Secrets {
     pub fn init_from_env() -> anyhow::Result<Self> {
         let mut bls_secret_key_raw = Self::load_env_var("BLS_PRIVATE_KEY")?;
-        let bls_secret_key = BlsSecretKey::from_str(&bls_secret_key_raw)?;
+        let bls_secret_key = KeyMaterial::from_str(&bls_secret_key_raw)?;
         bls_secret_key_raw.zeroize();
 
         let mut ethereum_private_key = Self::load_env_var("ETHEREUM_PRIVATE_KEY")?;
