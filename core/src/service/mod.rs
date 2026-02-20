@@ -12,7 +12,7 @@ use crate::{
 };
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use anyhow::anyhow;
-use crypto::bls::BlsSecretKey;
+use crypto::bls::KeyMaterial;
 use log::{error, info};
 use rpc::{CorePublicParameters, UserSuspensionStatus};
 
@@ -90,9 +90,10 @@ impl CoreService {
 
     pub fn new_with_dependencies(config: AppConfig, deps: CoreServiceDeps) -> anyhow::Result<Self> {
         let public_key = config.secrets.bls_secret_key.public_key();
+        let public_key_bytes = public_key.to_vec();
         info!(
             "Operator started with BLS Public Key: {}",
-            crypto::hex::encode_hex(&public_key)
+            crypto::hex::encode_hex(&public_key_bytes)
         );
 
         let eip712_name = config.eip712.name.clone();
@@ -102,7 +103,7 @@ impl CoreService {
         let inner = Inner {
             config,
             public_params: CorePublicParameters {
-                public_key,
+                public_key: public_key_bytes,
                 contract_address: eth_config.contract_address,
                 ethereum_http_rpc_url: eth_config.http_rpc_url,
                 eip712_name,
@@ -121,7 +122,7 @@ impl CoreService {
         })
     }
 
-    fn bls_secret_key(&self) -> &BlsSecretKey {
+    fn bls_secret_key(&self) -> &KeyMaterial {
         &self.inner.config.secrets.bls_secret_key
     }
 

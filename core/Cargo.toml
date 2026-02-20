@@ -50,3 +50,4 @@ test-log = { workspace = true }
 alloy = { workspace = true, features = ["provider-anvil-node"] }
 alloy-primitives = { workspace = true, features = ["getrandom"] }
 reqwest = { workspace = true }
+migration = { workspace = true }

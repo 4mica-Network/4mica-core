@@ -15,7 +15,7 @@ use core_service::{
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
 };
-use crypto::bls::BLSCert;
+use crypto::bls::{BLSCert, BlsClaims};
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::{guarantee, user};
 use rand::random;
@@ -531,7 +531,11 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
         domain,
         total_amount,
     );
-    let cert = BLSCert::new(&config.secrets.bls_secret_key, promise.clone())?;
+    let claims_bytes: Vec<u8> = promise.clone().try_into()?;
+    let cert = BLSCert::sign(
+        &config.secrets.bls_secret_key,
+        BlsClaims::from_bytes(claims_bytes),
+    )?;
     let req = PaymentGuaranteeRequest::new(
         PaymentGuaranteeRequestClaims::V1(claims),
         "0x".to_string() + &"0".repeat(130),
@@ -667,7 +671,11 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
         total_amount,
     );
 
-    let cert = BLSCert::new(&config.secrets.bls_secret_key, promise.clone())?;
+    let claims_bytes: Vec<u8> = promise.clone().try_into()?;
+    let cert = BLSCert::sign(
+        &config.secrets.bls_secret_key,
+        BlsClaims::from_bytes(claims_bytes),
+    )?;
     let req = PaymentGuaranteeRequest::new(
         PaymentGuaranteeRequestClaims::V1(claims),
         "0x".to_string() + &"0".repeat(130),

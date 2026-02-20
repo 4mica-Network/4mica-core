@@ -27,7 +27,7 @@ use crate::common::{
         Core4Mica::{self, Core4MicaInstance},
         MockERC20::{self, MockERC20Instance},
     },
-    fixtures::clear_all_tables,
+    fixtures::{clear_all_tables, ensure_migrations},
 };
 
 pub struct E2eEnvironment {
@@ -91,9 +91,7 @@ fn init_config() -> AppConfig {
     unsafe {
         std::env::set_var(eth_env_key, operator_key);
     }
-    let cfg = AppConfig::fetch().expect("Failed to load test config");
-
-    cfg
+    AppConfig::fetch().expect("Failed to load test config")
 }
 
 async fn deploy_contracts(
@@ -168,6 +166,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     );
 
     let persist_ctx = PersistCtx::new().await?;
+    ensure_migrations(&persist_ctx).await?;
     clear_all_tables(&persist_ctx).await?;
     let core_service = CoreService::new(cfg.clone()).await?;
 

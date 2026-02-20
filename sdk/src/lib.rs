@@ -5,7 +5,6 @@ mod contract;
 mod digest;
 pub mod error;
 mod sig;
-mod util;
 mod validators;
 pub mod x402;
 
