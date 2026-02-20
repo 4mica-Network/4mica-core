@@ -1,6 +1,7 @@
 use super::constants::{ROLE_ADMIN, ROLE_FACILITATOR};
 use crate::error::{ServiceError, ServiceResult};
 use entities::tabs;
+use subtle::{Choice, ConstantTimeEq};
 
 #[derive(Clone, Debug)]
 pub struct AccessContext {
@@ -10,9 +11,17 @@ pub struct AccessContext {
 }
 
 pub fn scope_contains(scopes: &[String], required: &str) -> bool {
-    scopes
-        .iter()
-        .any(|scope| scope.trim().eq_ignore_ascii_case(required))
+    let required_normalized = required.to_ascii_lowercase();
+    let mut found = Choice::from(0u8);
+
+    for scope in scopes {
+        let scope_normalized = scope.trim().to_ascii_lowercase();
+        found |= scope_normalized
+            .as_bytes()
+            .ct_eq(required_normalized.as_bytes());
+    }
+
+    bool::from(found)
 }
 
 pub fn addresses_match(left: &str, right: &str) -> bool {
@@ -87,4 +96,28 @@ pub fn require_facilitator_role(auth: &AccessContext) -> ServiceResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scope_contains;
+
+    #[test]
+    fn scope_contains_matches_case_insensitively() {
+        let scopes = vec!["tab:read".to_string(), "Guarantee:Issue".to_string()];
+        assert!(scope_contains(&scopes, "guarantee:issue"));
+        assert!(scope_contains(&scopes, "TAB:READ"));
+    }
+
+    #[test]
+    fn scope_contains_trims_scope_values() {
+        let scopes = vec!["  tab:create  ".to_string()];
+        assert!(scope_contains(&scopes, "tab:create"));
+    }
+
+    #[test]
+    fn scope_contains_returns_false_for_missing_scope() {
+        let scopes = vec!["tab:read".to_string()];
+        assert!(!scope_contains(&scopes, "tab:create"));
+    }
 }

@@ -252,6 +252,27 @@ async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> 
 
 #[test(tokio::test)]
 #[serial_test::serial]
+async fn update_user_suspension_increments_version() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    ensure_user(&ctx, &user_addr).await?;
+
+    let before = repo::get_user(&ctx, &user_addr).await?;
+    assert!(!before.is_suspended);
+
+    let suspended = repo::update_user_suspension(&ctx, &user_addr, true).await?;
+    assert!(suspended.is_suspended);
+    assert_eq!(suspended.version, before.version + 1);
+
+    let unsuspended = repo::update_user_suspension(&ctx, &user_addr, false).await?;
+    assert!(!unsuspended.is_suspended);
+    assert_eq!(unsuspended.version, suspended.version + 1);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
 async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 

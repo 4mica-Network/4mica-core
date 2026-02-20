@@ -20,20 +20,17 @@ impl CoreService {
         &self,
         auth: &AccessContext,
         recipient_address: String,
-        settlement_statuses: Vec<SettlementStatus>,
+        settlement_statuses: &[SettlementStatus],
     ) -> ServiceResult<Vec<TabInfo>> {
         access::require_scope(auth, SCOPE_TAB_READ)?;
         access::require_recipient_match_or_facilitator(auth, &recipient_address)?;
 
-        let status_refs = if settlement_statuses.is_empty() {
-            None
-        } else {
-            Some(settlement_statuses.as_slice())
-        };
-
-        let tabs =
-            repo::get_tabs_for_recipient(&self.inner.persist_ctx, &recipient_address, status_refs)
-                .await?;
+        let tabs = repo::get_tabs_for_recipient(
+            &self.inner.persist_ctx,
+            &recipient_address,
+            settlement_statuses,
+        )
+        .await?;
 
         tabs.into_iter()
             .map(mapper::tab_model_to_info)
@@ -51,7 +48,7 @@ impl CoreService {
         let tabs = repo::get_tabs_for_recipient(
             &self.inner.persist_ctx,
             &recipient_address,
-            Some(&[SettlementStatus::Pending]),
+            &[SettlementStatus::Pending],
         )
         .await?;
 
