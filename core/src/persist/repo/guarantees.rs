@@ -18,7 +18,7 @@ use super::common::parse_address;
 use super::tabs::{get_tab_by_id_on, lock_and_update_tab_on, open_tab_on};
 use super::users::ensure_user_exists_on;
 use super::withdrawals::get_pending_withdrawal_on;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 use entities::tabs;
 
 /// Returns the new total amount of the tab.

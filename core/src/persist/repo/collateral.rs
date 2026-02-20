@@ -16,7 +16,7 @@ use super::settlement::transition_settlement;
 use super::tabs::{get_tab_by_id_on, lock_and_update_tab_on};
 use super::users::ensure_user_exists_on;
 use crate::ethereum::event_data::EventMeta;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 /// Deposit: increment collateral and record a CollateralEvent::Deposit for auditability.
 #[measure(record_db_time)]

@@ -5,7 +5,7 @@ use blockchain::txtools::PaymentTx;
 use log::{info, warn};
 use metrics_4mica::measure;
 
-use crate::metrics::record::record_event_handler_time;
+use crate::metrics::misc::record_event_handler_time;
 use crate::{
     error::BlockchainListenerError,
     ethereum::{contract::*, event_data::EventMeta, event_handler::EthereumEventHandler},
@@ -205,6 +205,7 @@ impl EthereumEventHandler for CoreService {
         let payment = PaymentTx {
             block_number: log.block_number.unwrap_or_default(),
             block_hash: log.block_hash,
+            block_timestamp: log.block_timestamp,
             tx_hash: log.transaction_hash.unwrap_or_default(),
             from: user,
             to: recipient,

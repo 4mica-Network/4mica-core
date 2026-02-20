@@ -7,7 +7,7 @@ use sea_orm::sea_query::OnConflict;
 use sea_orm::{EntityTrait, QueryFilter, QueryOrder, Set};
 
 use super::common::now;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn get_last_processed_blockchain_event(

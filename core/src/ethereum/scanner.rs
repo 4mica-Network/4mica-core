@@ -1,5 +1,6 @@
 use crate::ethereum::event_data::StoredEventData;
-use crate::metrics::record::record_task_time;
+use crate::metrics::EventTxStatus;
+use crate::metrics::misc::record_task_time;
 use crate::{
     config::EthereumConfig,
     error::{BlockchainListenerError, PersistDbError},
@@ -183,15 +184,13 @@ impl EthereumEventScanner {
         provider: &impl alloy::providers::Provider,
         config: &EthereumConfig,
     ) -> Result<Option<u64>, BlockchainListenerError> {
-        match config.confirmation_mode()? {
+        let head = match config.confirmation_mode()? {
             crate::config::ConfirmationMode::Depth => {
                 let latest = provider
                     .get_block_number()
                     .await
                     .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-                Ok(Some(
-                    latest.saturating_sub(config.number_of_blocks_to_confirm),
-                ))
+                Some(latest.saturating_sub(config.number_of_blocks_to_confirm))
             }
             crate::config::ConfirmationMode::Safe => {
                 let block = provider
@@ -199,7 +198,7 @@ impl EthereumEventScanner {
                     .full()
                     .await
                     .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-                Ok(block.map(|b| b.header.number))
+                block.map(|b| b.header.number)
             }
             crate::config::ConfirmationMode::Finalized => {
                 if config.finalized_head_depth > 0 {
@@ -207,17 +206,22 @@ impl EthereumEventScanner {
                         .get_block_number()
                         .await
                         .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-                    Ok(Some(latest.saturating_sub(config.finalized_head_depth)))
+                    Some(latest.saturating_sub(config.finalized_head_depth))
                 } else {
                     let block = provider
                         .get_block_by_number(BlockNumberOrTag::Finalized)
                         .full()
                         .await
                         .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-                    Ok(block.map(|b| b.header.number))
+                    block.map(|b| b.header.number)
                 }
             }
+        };
+
+        if let Some(head) = head {
+            crate::metrics::record_blockchain_safe_head(head);
         }
+        Ok(head)
     }
 
     async fn process_events(
@@ -291,6 +295,12 @@ impl EthereumEventScanner {
                     return Err(e.into());
                 }
             };
+
+            crate::metrics::record_event_status_change(
+                EventTxStatus::Confirmed,
+                &signature,
+                crate::metrics::secs_since_unix(log.block_timestamp),
+            );
 
             let mut attempts = 0;
             loop {

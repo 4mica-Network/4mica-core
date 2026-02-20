@@ -15,7 +15,7 @@ use std::str::FromStr;
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{map_pending_withdrawal_err, new_uuid, parse_address};
 use crate::ethereum::event_data::EventMeta;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn request_withdrawal(

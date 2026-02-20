@@ -52,7 +52,7 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         Arc::new(service.clone()),
     ));
 
-    let metrics_recorder = setup_metrics_recorder()?;
+    let metrics_recorder = setup_metrics_recorder(&app_config)?;
 
     let mut scheduler = TaskScheduler::new().await?;
 

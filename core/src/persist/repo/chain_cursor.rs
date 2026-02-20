@@ -6,7 +6,7 @@ use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 
 use super::common::now;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn get_chain_cursor(

@@ -14,7 +14,7 @@ use std::str::FromStr;
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{now, parse_address};
 use super::users::ensure_user_exists_on;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn submit_payment_transaction(

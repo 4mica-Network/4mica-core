@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use super::common::{now, parse_address};
 use super::users::ensure_user_is_active;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn create_pending_tab(

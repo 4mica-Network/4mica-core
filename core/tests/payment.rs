@@ -58,6 +58,7 @@ async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Res
     let payment = PaymentTx {
         block_number: 1,
         block_hash: None,
+        block_timestamp: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
@@ -132,6 +133,7 @@ async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
     let payment = PaymentTx {
         block_number: 1,
         block_hash: None,
+        block_timestamp: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,
@@ -199,6 +201,7 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
     let payment = PaymentTx {
         block_number: 1,
         block_hash: None,
+        block_timestamp: None,
         tx_hash,
         from: Address::from_str(&user_addr)?,
         to: server_addr,

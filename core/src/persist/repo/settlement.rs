@@ -6,7 +6,7 @@ use log::info;
 use metrics_4mica::measure;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, Set};
 
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 /// Centralized settlement transitions for tabs.
 /// Only allow moving from Pending → Settled, or Pending → Remunerated.

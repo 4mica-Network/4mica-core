@@ -1,5 +1,5 @@
 use crate::error::PersistDbError;
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 use crate::persist::PersistCtx;
 use metrics_4mica::measure;
 

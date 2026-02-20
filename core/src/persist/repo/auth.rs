@@ -7,7 +7,7 @@ use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 
 use super::common::{now, parse_address};
-use crate::metrics::record::record_db_time;
+use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn insert_auth_nonce(

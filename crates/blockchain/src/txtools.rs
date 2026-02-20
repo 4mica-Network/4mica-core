@@ -16,6 +16,7 @@ use crate::error::{Result, TxProcessingError};
 pub struct PaymentTx {
     pub block_number: u64,
     pub block_hash: Option<B256>,
+    pub block_timestamp: Option<u64>,
     pub tx_hash: B256,
     pub from: Address,
     pub to: Address,
@@ -88,6 +89,7 @@ pub async fn scan_tab_payments<P: Provider>(
             continue;
         };
         let block_hash = Some(block.hash());
+        let block_timestamp = Some(block.header.timestamp);
 
         // iterate over tx hashes
         for tx in block.transactions.into_transactions() {
@@ -97,7 +99,9 @@ pub async fn scan_tab_payments<P: Provider>(
             };
 
             // convert to our PaymentTx type
-            let Some(rec) = parse_eth_transfer(&tx, num, block_hash, tab_id, req_id)? else {
+            let Some(rec) =
+                parse_eth_transfer(&tx, num, block_hash, block_timestamp, tab_id, req_id)?
+            else {
                 continue; // not an EIP-7702 tx
             };
 
@@ -166,6 +170,7 @@ fn parse_eth_transfer(
     tx: &Transaction,
     block_number: u64,
     block_hash: Option<B256>,
+    block_timestamp: Option<u64>,
     tab_id: U256,
     req_id: U256,
 ) -> Result<Option<PaymentTx>> {
@@ -179,6 +184,7 @@ fn parse_eth_transfer(
     Ok(Some(PaymentTx {
         block_number,
         block_hash,
+        block_timestamp,
         tx_hash: *tx.inner.hash(),
         from,
         to,
