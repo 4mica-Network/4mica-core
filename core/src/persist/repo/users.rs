@@ -65,7 +65,9 @@ pub async fn update_user_suspension<S: AsRef<str> + Send + Sync>(
     ensure_user_exists_on(ctx.db.as_ref(), addr.as_str()).await?;
 
     let mut model = get_user(ctx, addr.as_str()).await?.into_active_model();
+    let current_version = model.version.clone().unwrap();
     model.is_suspended = Set(suspended);
+    model.version = Set(current_version + 1);
     model.updated_at = Set(now());
 
     model

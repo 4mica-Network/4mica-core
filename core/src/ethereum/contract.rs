@@ -18,9 +18,6 @@ pub mod abi {
     use alloy::sol;
     sol! {
         #[derive(Debug)]
-        event UserRegistered(address indexed user, uint256 initial_collateral);
-
-        #[derive(Debug)]
         event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
@@ -48,6 +45,9 @@ pub mod abi {
         event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
 
         #[derive(Debug)]
+        event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
+
+        #[derive(Debug)]
         event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
@@ -58,19 +58,28 @@ pub mod abi {
             address recipient,
             uint256 amount
         );
+
+        #[derive(Debug)]
+        event GuaranteeVersionUpdated(
+            uint64 indexed version,
+            (bytes32,bytes32,bytes32,bytes32) verificationKey,
+            bytes32 domainSeparator,
+            address decoder,
+            bool enabled
+        );
     }
 }
 
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
-    CollateralDeposited, CollateralWithdrawn, PaymentRecorded, RecipientRemunerated,
-    RemunerationGracePeriodUpdated, SynchronizationDelayUpdated, TabExpirationTimeUpdated, TabPaid,
-    UserRegistered, WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested,
+    CollateralDeposited, CollateralWithdrawn, GuaranteeVersionUpdated, PaymentRecorded,
+    RecipientRemunerated, RemunerationGracePeriodUpdated, SynchronizationDelayUpdated,
+    TabExpirationTimeUpdated, TabPaid, VerificationKeyUpdated, WithdrawalCanceled,
+    WithdrawalGracePeriodUpdated, WithdrawalRequested,
 };
 
-/// Human-readable ABI signatures for all known events.
-pub const EVENT_SIGNATURES: [&str; 12] = [
-    UserRegistered::SIGNATURE,
+/// Human-readable ABI signatures for all contract events.
+pub const EVENT_SIGNATURES: [&str; 13] = [
     CollateralDeposited::SIGNATURE,
     RecipientRemunerated::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
@@ -80,13 +89,14 @@ pub const EVENT_SIGNATURES: [&str; 12] = [
     RemunerationGracePeriodUpdated::SIGNATURE,
     TabExpirationTimeUpdated::SIGNATURE,
     SynchronizationDelayUpdated::SIGNATURE,
+    VerificationKeyUpdated::SIGNATURE,
     PaymentRecorded::SIGNATURE,
     TabPaid::SIGNATURE,
+    GuaranteeVersionUpdated::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 12] = [
-    UserRegistered::SIGNATURE_HASH,
+pub const EVENT_SIGNATURE_HASHES: [B256; 13] = [
     CollateralDeposited::SIGNATURE_HASH,
     RecipientRemunerated::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
@@ -96,8 +106,10 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 12] = [
     RemunerationGracePeriodUpdated::SIGNATURE_HASH,
     TabExpirationTimeUpdated::SIGNATURE_HASH,
     SynchronizationDelayUpdated::SIGNATURE_HASH,
+    VerificationKeyUpdated::SIGNATURE_HASH,
     PaymentRecorded::SIGNATURE_HASH,
     TabPaid::SIGNATURE_HASH,
+    GuaranteeVersionUpdated::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -172,9 +184,20 @@ mod tests {
     #[test]
     fn signatures_and_hashes_align() {
         assert_eq!(EVENT_SIGNATURES.len(), EVENT_SIGNATURE_HASHES.len());
-        assert_eq!(EVENT_SIGNATURES.len(), 12);
+        assert_eq!(EVENT_SIGNATURES.len(), 13);
         // spot check a couple of associated consts line up
-        assert_eq!(EVENT_SIGNATURES[0], UserRegistered::SIGNATURE);
-        assert_eq!(EVENT_SIGNATURE_HASHES[0], UserRegistered::SIGNATURE_HASH);
+        assert_eq!(EVENT_SIGNATURES[0], CollateralDeposited::SIGNATURE);
+        assert_eq!(
+            EVENT_SIGNATURE_HASHES[0],
+            CollateralDeposited::SIGNATURE_HASH
+        );
+        assert_eq!(
+            EVENT_SIGNATURES[EVENT_SIGNATURES.len() - 1],
+            GuaranteeVersionUpdated::SIGNATURE
+        );
+        assert_eq!(
+            EVENT_SIGNATURE_HASHES[EVENT_SIGNATURE_HASHES.len() - 1],
+            GuaranteeVersionUpdated::SIGNATURE_HASH
+        );
     }
 }

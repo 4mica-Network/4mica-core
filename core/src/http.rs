@@ -310,7 +310,7 @@ async fn list_settled_tabs(
         .list_tabs_for_recipient(
             &auth,
             recipient,
-            vec![SettlementStatus::Settled, SettlementStatus::Remunerated],
+            &[SettlementStatus::Settled, SettlementStatus::Remunerated],
         )
         .await
         .map_err(ApiError::from)?;
@@ -359,13 +359,9 @@ async fn list_recipient_tabs(
         })
         .collect();
 
-    let parsed = if statuses.is_empty() {
-        Vec::new()
-    } else {
-        mapper::parse_settlement_statuses(Some(statuses)).map_err(ApiError::from)?
-    };
+    let parsed = mapper::parse_settlement_statuses(&statuses).map_err(ApiError::from)?;
     let tabs = service
-        .list_tabs_for_recipient(&auth, recipient, parsed)
+        .list_tabs_for_recipient(&auth, recipient, &parsed)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(tabs))

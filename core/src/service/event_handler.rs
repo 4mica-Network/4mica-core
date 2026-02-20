@@ -253,6 +253,14 @@ impl EthereumEventHandler for CoreService {
                 let ev = log.log_decode::<SynchronizationDelayUpdated>()?;
                 info!("{:?}", ev);
             }
+            "VerificationKeyUpdated" => {
+                let ev = log.log_decode::<VerificationKeyUpdated>()?;
+                info!("{:?}", ev);
+            }
+            "GuaranteeVersionUpdated" => {
+                let ev = log.log_decode::<GuaranteeVersionUpdated>()?;
+                info!("{:?}", ev);
+            }
             _ => {
                 info!("Unknown simple event: {}", event_name);
             }

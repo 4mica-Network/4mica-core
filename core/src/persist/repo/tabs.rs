@@ -157,18 +157,16 @@ pub async fn get_tab_by_id(
 pub async fn get_tabs_for_recipient(
     ctx: &PersistCtx,
     recipient_address: &str,
-    settlement_statuses: Option<&[SettlementStatus]>,
+    settlement_statuses: &[SettlementStatus],
 ) -> Result<Vec<tabs::Model>, PersistDbError> {
     let recipient_address = parse_address(recipient_address)?;
 
     let mut condition =
         Condition::all().add(tabs::Column::ServerAddress.eq(recipient_address.as_str()));
 
-    if let Some(statuses) = settlement_statuses
-        && !statuses.is_empty()
-    {
-        let status_list: Vec<SettlementStatus> = statuses.to_vec();
-        condition = condition.add(tabs::Column::SettlementStatus.is_in(status_list));
+    if !settlement_statuses.is_empty() {
+        condition = condition
+            .add(tabs::Column::SettlementStatus.is_in(settlement_statuses.iter().cloned()));
     }
 
     let rows = tabs::Entity::find()
