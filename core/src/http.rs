@@ -196,10 +196,10 @@ async fn auth_middleware(
 }
 
 fn is_public_path(path: &str) -> bool {
-    if matches!(path, "/core/health" | "/core/public-params") {
-        return true;
-    }
-    path == "/auth" || path.starts_with("/auth/")
+    matches!(
+        path,
+        "/auth" | "/core/health" | "/core/public-params" | "/metrics"
+    ) || path.starts_with("/auth/")
 }
 
 fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
