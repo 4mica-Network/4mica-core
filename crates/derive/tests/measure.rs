@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::time::Duration;
 
 thread_local! {
-    static LAST_REPORT: Cell<Option<(&'static str, Duration)>> = Cell::new(None);
+    static LAST_REPORT: Cell<Option<(&'static str, Duration)>> = const { Cell::new(None) };
 }
 
 fn capture(name: &'static str, duration: Duration) {

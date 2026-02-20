@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use metrics_4mica::{Metric, MetricAccess, MetricLabels, measure};
+use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use crate::{
     metrics::misc::record_task_time,
@@ -45,12 +46,12 @@ pub enum HealthScope {
     Overall,
 }
 
-impl ToString for HealthScope {
-    fn to_string(&self) -> String {
+impl Display for HealthScope {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            HealthScope::Db => "db".to_string(),
-            HealthScope::ChainRpc => "chain_rpc".to_string(),
-            HealthScope::Overall => "overall".to_string(),
+            HealthScope::Db => f.write_str("db"),
+            HealthScope::ChainRpc => f.write_str("chain_rpc"),
+            HealthScope::Overall => f.write_str("overall"),
         }
     }
 }

@@ -100,7 +100,7 @@ pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Route
             state.clone(),
             auth_middleware,
         ))
-        .layer(HttpMetricsMiddleware::default())
+        .layer(HttpMetricsMiddleware)
         .with_state(state)
 }
 

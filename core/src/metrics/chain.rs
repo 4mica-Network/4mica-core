@@ -1,4 +1,5 @@
 use metrics_4mica::{Metric, MetricAccess, MetricLabels};
+use std::fmt::{Display, Formatter, Result as FmtResult};
 
 #[derive(Debug, Clone)]
 pub enum PaymentTxStatus {
@@ -9,14 +10,14 @@ pub enum PaymentTxStatus {
     Reverted,
 }
 
-impl ToString for PaymentTxStatus {
-    fn to_string(&self) -> String {
+impl Display for PaymentTxStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            PaymentTxStatus::Pending => "pending".to_string(),
-            PaymentTxStatus::Confirmed => "confirmed".to_string(),
-            PaymentTxStatus::Recorded => "recorded".to_string(),
-            PaymentTxStatus::Finalized => "finalized".to_string(),
-            PaymentTxStatus::Reverted => "reverted".to_string(),
+            PaymentTxStatus::Pending => f.write_str("pending"),
+            PaymentTxStatus::Confirmed => f.write_str("confirmed"),
+            PaymentTxStatus::Recorded => f.write_str("recorded"),
+            PaymentTxStatus::Finalized => f.write_str("finalized"),
+            PaymentTxStatus::Reverted => f.write_str("reverted"),
         }
     }
 }
@@ -42,12 +43,12 @@ pub enum EventTxStatus {
     Reverted,
 }
 
-impl ToString for EventTxStatus {
-    fn to_string(&self) -> String {
+impl Display for EventTxStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            EventTxStatus::Pending => "pending".to_string(),
-            EventTxStatus::Confirmed => "confirmed".to_string(),
-            EventTxStatus::Reverted => "reverted".to_string(),
+            EventTxStatus::Pending => f.write_str("pending"),
+            EventTxStatus::Confirmed => f.write_str("confirmed"),
+            EventTxStatus::Reverted => f.write_str("reverted"),
         }
     }
 }
