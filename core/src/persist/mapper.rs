@@ -154,9 +154,7 @@ pub fn user_model_to_suspension_status(model: user::Model) -> UserSuspensionStat
     }
 }
 
-pub fn parse_settlement_statuses(
-    statuses: Option<Vec<String>>,
-) -> ServiceResult<Vec<SettlementStatus>> {
+pub fn parse_settlement_statuses(statuses: &[String]) -> ServiceResult<Vec<SettlementStatus>> {
     fn parse_one(value: &str) -> Option<SettlementStatus> {
         match value.to_ascii_uppercase().as_str() {
             "PENDING" => Some(SettlementStatus::Pending),
@@ -167,22 +165,17 @@ pub fn parse_settlement_statuses(
         }
     }
 
-    match statuses {
-        Some(values) => {
-            let mut parsed = Vec::with_capacity(values.len());
-            for value in values {
-                match parse_one(&value) {
-                    Some(status) => parsed.push(status),
-                    None => {
-                        return Err(ServiceError::InvalidParams(format!(
-                            "invalid settlement status: {}",
-                            value
-                        )));
-                    }
-                }
+    let mut parsed = Vec::with_capacity(statuses.len());
+    for value in statuses {
+        match parse_one(value) {
+            Some(status) => parsed.push(status),
+            None => {
+                return Err(ServiceError::InvalidParams(format!(
+                    "invalid settlement status: {}",
+                    value
+                )));
             }
-            Ok(parsed)
         }
-        None => Ok(Vec::new()),
     }
+    Ok(parsed)
 }

@@ -331,6 +331,16 @@ impl EthereumEventScanner {
                             .handle_admin_event(log.clone(), "SynchronizationDelayUpdated")
                             .await
                     }
+                    Some(&VerificationKeyUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "VerificationKeyUpdated")
+                            .await
+                    }
+                    Some(&GuaranteeVersionUpdated::SIGNATURE_HASH) => {
+                        handler
+                            .handle_admin_event(log.clone(), "GuaranteeVersionUpdated")
+                            .await
+                    }
                     _ => {
                         info!("Unknown log: {:?}", log);
                         Ok(())
