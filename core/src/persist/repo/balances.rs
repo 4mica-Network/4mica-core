@@ -2,11 +2,14 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use entities::user_asset_balance;
+use metrics_4mica::measure;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 
 use super::common::{now, parse_address};
+use crate::metrics::misc::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn get_user_balance_on<C: ConnectionTrait>(
     conn: &C,
     user_address: &str,
@@ -69,6 +72,7 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
         })
 }
 
+#[measure(record_db_time)]
 pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
     conn: &C,
     user_address: &str,
@@ -115,6 +119,7 @@ pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
     }
 }
 
+#[measure(record_db_time)]
 pub async fn get_user_asset_balance(
     ctx: &PersistCtx,
     user_address: &str,

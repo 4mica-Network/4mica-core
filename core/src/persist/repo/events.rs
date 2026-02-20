@@ -1,12 +1,15 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use entities::{blockchain_block, blockchain_event, blockchain_event_cursor};
+use metrics_4mica::measure;
 use sea_orm::ColumnTrait;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{EntityTrait, QueryFilter, QueryOrder, Set};
 
 use super::common::now;
+use crate::metrics::misc::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn get_last_processed_blockchain_event(
     ctx: &PersistCtx,
 ) -> Result<Option<blockchain_event::Model>, PersistDbError> {
@@ -19,6 +22,7 @@ pub async fn get_last_processed_blockchain_event(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[measure(record_db_time)]
 pub async fn store_blockchain_event(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -58,6 +62,7 @@ pub async fn store_blockchain_event(
     Ok(affected == 1)
 }
 
+#[measure(record_db_time)]
 pub async fn delete_blockchain_event(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -75,6 +80,7 @@ pub async fn delete_blockchain_event(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn get_blockchain_events_after(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -90,6 +96,7 @@ pub async fn get_blockchain_events_after(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn delete_blockchain_events_after(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -103,6 +110,7 @@ pub async fn delete_blockchain_events_after(
     Ok(result.rows_affected)
 }
 
+#[measure(record_db_time)]
 pub async fn get_blockchain_event_cursor(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -114,6 +122,7 @@ pub async fn get_blockchain_event_cursor(
         .map_err(Into::into)
 }
 
+#[measure(record_db_time)]
 pub async fn upsert_blockchain_event_cursor(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -145,6 +154,7 @@ pub async fn upsert_blockchain_event_cursor(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn delete_blockchain_event_cursor(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -156,6 +166,7 @@ pub async fn delete_blockchain_event_cursor(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn upsert_blockchain_block(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -185,6 +196,7 @@ pub async fn upsert_blockchain_block(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn get_blockchain_block_hash(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -198,6 +210,7 @@ pub async fn get_blockchain_block_hash(
     Ok(row.map(|r| r.block_hash))
 }
 
+#[measure(record_db_time)]
 pub async fn delete_blockchain_blocks_after(
     ctx: &PersistCtx,
     chain_id: u64,

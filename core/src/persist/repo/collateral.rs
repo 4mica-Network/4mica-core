@@ -5,6 +5,7 @@ use alloy::primitives::{Address as AlloyAddress, U256};
 use entities::sea_orm_active_enums::{CollateralEventType, SettlementStatus};
 use entities::{collateral_event, tabs};
 use log::info;
+use metrics_4mica::measure;
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::str::FromStr;
@@ -15,8 +16,10 @@ use super::settlement::transition_settlement;
 use super::tabs::{get_tab_by_id_on, lock_and_update_tab_on};
 use super::users::ensure_user_exists_on;
 use crate::ethereum::event_data::EventMeta;
+use crate::metrics::misc::record_db_time;
 
 /// Deposit: increment collateral and record a CollateralEvent::Deposit for auditability.
+#[measure(record_db_time)]
 pub async fn deposit(
     ctx: &PersistCtx,
     user_address: String,
@@ -26,6 +29,7 @@ pub async fn deposit(
     deposit_with_event(ctx, user_address, asset_address, amount, None).await
 }
 
+#[measure(record_db_time)]
 pub async fn deposit_with_event(
     ctx: &PersistCtx,
     user_address: String,
@@ -97,6 +101,7 @@ pub async fn deposit_with_event(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn unlock_user_collateral(
     ctx: &PersistCtx,
     tab_id: U256,
@@ -208,6 +213,7 @@ pub async fn unlock_user_collateral(
 }
 
 /// Combined settlement + transfer for remunerating a recipient.
+#[measure(record_db_time)]
 pub async fn remunerate_recipient(
     ctx: &PersistCtx,
     tab_id: U256,
@@ -218,6 +224,7 @@ pub async fn remunerate_recipient(
 }
 
 /// Combined settlement + transfer for remunerating a recipient.
+#[measure(record_db_time)]
 pub async fn remunerate_recipient_with_event(
     ctx: &PersistCtx,
     tab_id: U256,
@@ -302,6 +309,7 @@ pub async fn remunerate_recipient_with_event(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn revert_deposit(
     ctx: &PersistCtx,
     user_address: String,
@@ -352,6 +360,7 @@ pub async fn revert_deposit(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn revert_remuneration(
     ctx: &PersistCtx,
     tab_id: U256,

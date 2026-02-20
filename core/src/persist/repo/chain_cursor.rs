@@ -1,11 +1,14 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use entities::chain_cursor;
+use metrics_4mica::measure;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
 
 use super::common::now;
+use crate::metrics::misc::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn get_chain_cursor(
     ctx: &PersistCtx,
     chain_id: u64,
@@ -17,6 +20,7 @@ pub async fn get_chain_cursor(
     Ok(row)
 }
 
+#[measure(record_db_time)]
 pub async fn upsert_chain_cursor(
     ctx: &PersistCtx,
     chain_id: u64,
