@@ -19,6 +19,7 @@ use rpc::{CorePublicParameters, UserSuspensionStatus};
 pub mod auth;
 pub mod event_handler;
 mod guarantee;
+pub mod health;
 pub mod payment;
 mod query;
 mod tab;

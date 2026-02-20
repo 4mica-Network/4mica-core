@@ -174,7 +174,7 @@ jobs:
           tail -n 200 core/api-core.log || true
           exit 1
 
-      - name: Run workspace tests (exclude sdk)
+      - name: Run core API tests
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
@@ -186,13 +186,49 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
-        run: cargo test --workspace --exclude sdk-4mica
+        run: cargo test -p core-service --test api
 
       - name: Stop API service (core tests)
         if: always()
         run: |
           pkill -f core-service || true
           sleep 2
+
+      - name: Run workspace tests (exclude sdk and core-service)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
+          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
+          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
+          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
+          CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+        run: cargo test --workspace --exclude sdk-4mica --exclude core-service
+
+      - name: Run core tests (exclude api target)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
+          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
+          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          FINALIZED_HEAD_DEPTH: "1"
+          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
+          CRON_JOB_SETTINGS: "*/3 * * * * *"
+          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+        run: |
+          cargo test -p core-service --lib
+          for test_file in core/tests/*.rs; do
+            test_name="$(basename "$test_file" .rs)"
+            if [ "$test_name" = "api" ]; then
+              continue
+            fi
+            cargo test -p core-service --test "$test_name"
+          done
 
       - name: Prepare SDK test database
         env:

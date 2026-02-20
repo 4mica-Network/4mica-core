@@ -1,11 +1,3 @@
-use crate::config::{DEFAULT_ASSET_ADDRESS, EthereumConfig};
-use crate::scheduler::Task;
-use crate::service::CoreService;
-use crate::{
-    error::{ServiceError, ServiceResult},
-    persist::{PersistCtx, repo},
-    util::u256_to_string,
-};
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::eth::BlockNumberOrTag;
@@ -13,8 +5,25 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use blockchain::txtools;
 use blockchain::txtools::PaymentTx;
+use chrono::{NaiveDateTime, Utc};
 use log::{error, info, warn};
+use metrics_4mica::measure;
 use std::str::FromStr;
+
+use crate::config::{DEFAULT_ASSET_ADDRESS, EthereumConfig};
+use crate::metrics::PaymentTxStatus;
+use crate::metrics::misc::record_task_time;
+use crate::scheduler::Task;
+use crate::service::CoreService;
+use crate::{
+    error::{ServiceError, ServiceResult},
+    persist::{PersistCtx, repo},
+    util::u256_to_string,
+};
+
+fn secs_since(dt: NaiveDateTime) -> f64 {
+    (Utc::now().naive_utc() - dt).num_seconds().max(0) as f64
+}
 
 struct SafeHead {
     number: u64,
@@ -115,12 +124,33 @@ pub async fn process_discovered_payment(ctx: &PersistCtx, payment: PaymentTx) ->
 
     if rows_affected == 0 {
         info!("Payment transaction already exists for tab {}.", tab_id_str);
+    } else {
+        crate::metrics::record_payment_status_change(
+            PaymentTxStatus::Pending,
+            &asset_address.to_string(),
+            crate::metrics::secs_since_unix(payment.block_timestamp),
+        );
     }
 
     Ok(())
 }
 
 impl CoreService {
+    async fn revert_payment(
+        &self,
+        tx_id: &str,
+        asset_address: &str,
+        duration_secs: f64,
+    ) -> ServiceResult<()> {
+        repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, tx_id).await?;
+        crate::metrics::record_payment_status_change(
+            PaymentTxStatus::Reverted,
+            asset_address,
+            duration_secs,
+        );
+        Ok(())
+    }
+
     /// Submit user transactions and record payments on-chain for each discovered on-chain payment.
     pub async fn handle_discovered_payments(&self, events: Vec<PaymentTx>) -> ServiceResult<()> {
         for payment in events {
@@ -175,6 +205,8 @@ impl CoreService {
 
         let pending_total = pending.len() as u64;
         for tx in pending {
+            let duration_pending = secs_since(tx.created_at);
+
             let tx_hash = match B256::from_str(&tx.tx_id) {
                 Ok(hash) => hash,
                 Err(err) => {
@@ -182,7 +214,7 @@ impl CoreService {
                         "Invalid tx hash {} (err: {err}); marking reverted",
                         tx.tx_id
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -196,7 +228,7 @@ impl CoreService {
                         "Pending tx {} missing block_number; marking reverted",
                         tx.tx_id
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -216,7 +248,8 @@ impl CoreService {
                     "Block {} not found for tx {}; marking reverted",
                     block_number, tx.tx_id
                 );
-                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
+                    .await?;
                 reverted_count += 1;
                 continue;
             };
@@ -228,7 +261,7 @@ impl CoreService {
                         "Block hash mismatch for tx {} (expected {}, got {}); marking reverted",
                         tx.tx_id, expected_hash, actual_hash
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -244,7 +277,8 @@ impl CoreService {
 
             let Some(receipt) = receipt else {
                 warn!("Receipt missing for tx {}; marking reverted", tx.tx_id);
-                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
+                    .await?;
                 reverted_count += 1;
                 continue;
             };
@@ -254,7 +288,8 @@ impl CoreService {
                     "Receipt block mismatch for tx {} (expected {}, got {:?}); marking reverted",
                     tx.tx_id, block_number, receipt.block_number
                 );
-                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
+                    .await?;
                 reverted_count += 1;
                 continue;
             }
@@ -268,7 +303,7 @@ impl CoreService {
                         "Receipt hash mismatch for tx {} (expected {}, got {}); marking reverted",
                         tx.tx_id, expected_hash, actual_hash
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -277,7 +312,8 @@ impl CoreService {
 
             let Some(tab_id) = tx.tab_id.as_deref() else {
                 warn!("Pending tx {} missing tab_id; marking reverted", tx.tx_id);
-                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
+                    .await?;
                 reverted_count += 1;
                 continue;
             };
@@ -322,6 +358,11 @@ impl CoreService {
                 record_block_hash,
             )
             .await?;
+            crate::metrics::record_payment_status_change(
+                PaymentTxStatus::Recorded,
+                &tx.asset_address,
+                duration_pending,
+            );
             recorded_count += 1;
         }
 
@@ -363,6 +404,11 @@ impl CoreService {
         let mut unlock_failed = 0u64;
 
         for tx in recorded {
+            let duration_recorded = tx
+                .recorded_at
+                .map(secs_since)
+                .unwrap_or_else(|| secs_since(tx.created_at));
+
             let record_tx_hash = match tx.record_tx_hash.as_deref() {
                 Some(hash) => hash,
                 None => {
@@ -370,7 +416,7 @@ impl CoreService {
                         "Recorded tx {} missing record_tx_hash; marking reverted",
                         tx.tx_id
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -384,7 +430,7 @@ impl CoreService {
                         "Invalid record_tx_hash {} (err: {err}); marking reverted",
                         record_tx_hash
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -398,7 +444,7 @@ impl CoreService {
                         "Recorded tx {} missing record_tx_block_number; marking reverted",
                         tx.tx_id
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -417,7 +463,8 @@ impl CoreService {
                     "Receipt missing for record tx {}; marking reverted",
                     record_tx_hash
                 );
-                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
+                    .await?;
                 reverted_count += 1;
                 continue;
             };
@@ -427,7 +474,8 @@ impl CoreService {
                     "Record receipt block mismatch for tx {} (expected {}, got {:?}); marking reverted",
                     record_tx_hash, record_block_number, receipt.block_number
                 );
-                repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id).await?;
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
+                    .await?;
                 reverted_count += 1;
                 continue;
             }
@@ -441,7 +489,7 @@ impl CoreService {
                         "Record receipt hash mismatch for tx {} (expected {}, got {}); marking reverted",
                         record_tx_hash, expected_hash, actual_hash
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -456,7 +504,7 @@ impl CoreService {
                             "Invalid tab_id {} for tx {} (err: {err}); marking reverted",
                             id, tx.tx_id
                         );
-                        repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                        self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
                             .await?;
                         reverted_count += 1;
                         continue;
@@ -464,7 +512,7 @@ impl CoreService {
                 },
                 None => {
                     warn!("Recorded tx {} missing tab_id; marking reverted", tx.tx_id);
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -478,7 +526,7 @@ impl CoreService {
                         "Invalid amount {} for tx {} (err: {err}); marking reverted",
                         tx.amount, tx.tx_id
                     );
-                    repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, &tx.tx_id)
+                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
                         .await?;
                     reverted_count += 1;
                     continue;
@@ -502,6 +550,11 @@ impl CoreService {
             }
 
             repo::mark_payment_transaction_finalized(&self.inner.persist_ctx, &tx.tx_id).await?;
+            crate::metrics::record_payment_status_change(
+                PaymentTxStatus::Finalized,
+                &tx.asset_address,
+                duration_recorded,
+            );
             finalized_count += 1;
         }
 
@@ -543,7 +596,7 @@ impl CoreService {
 
     async fn safe_head(&self) -> ServiceResult<Option<SafeHead>> {
         let cfg = &self.inner.config.ethereum_config;
-        match cfg.confirmation_mode()? {
+        let head = match cfg.confirmation_mode()? {
             crate::config::ConfirmationMode::Depth => {
                 let latest = self
                     .inner
@@ -559,10 +612,10 @@ impl CoreService {
                     .full()
                     .await
                     .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                Ok(block.map(|b| SafeHead {
+                block.map(|b| SafeHead {
                     number: b.header.number,
                     hash: b.hash(),
-                }))
+                })
             }
             crate::config::ConfirmationMode::Safe => {
                 let block = self
@@ -572,10 +625,10 @@ impl CoreService {
                     .full()
                     .await
                     .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                Ok(block.map(|b| SafeHead {
+                block.map(|b| SafeHead {
                     number: b.header.number,
                     hash: b.hash(),
-                }))
+                })
             }
             crate::config::ConfirmationMode::Finalized => {
                 if cfg.finalized_head_depth > 0 {
@@ -593,10 +646,10 @@ impl CoreService {
                         .full()
                         .await
                         .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                    Ok(block.map(|b| SafeHead {
+                    block.map(|b| SafeHead {
                         number: b.header.number,
                         hash: b.hash(),
-                    }))
+                    })
                 } else {
                     let block = self
                         .inner
@@ -605,13 +658,18 @@ impl CoreService {
                         .full()
                         .await
                         .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-                    Ok(block.map(|b| SafeHead {
+                    block.map(|b| SafeHead {
                         number: b.header.number,
                         hash: b.hash(),
-                    }))
+                    })
                 }
             }
+        };
+
+        if let Some(head) = head.as_ref() {
+            crate::metrics::record_blockchain_safe_head(head.number);
         }
+        Ok(head)
     }
 }
 
@@ -655,6 +713,7 @@ impl Task for ScanPaymentsTask {
         self.ethereum_config().cron_job_settings.clone()
     }
 
+    #[measure(record_task_time, name = "scan_payments")]
     async fn run(&self) -> anyhow::Result<()> {
         let lookback = self.ethereum_config().payment_scan_lookback_blocks;
         self.0.scan_blockchain(lookback).await
@@ -667,6 +726,7 @@ impl Task for ConfirmPaymentsTask {
         self.ethereum_config().cron_job_settings.clone()
     }
 
+    #[measure(record_task_time, name = "confirm_payments")]
     async fn run(&self) -> anyhow::Result<()> {
         self.0
             .confirm_pending_payments()
@@ -681,6 +741,7 @@ impl Task for FinalizePaymentsTask {
         self.ethereum_config().cron_job_settings.clone()
     }
 
+    #[measure(record_task_time, name = "finalize_payments")]
     async fn run(&self) -> anyhow::Result<()> {
         self.0
             .finalize_recorded_payments()

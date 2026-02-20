@@ -2,11 +2,14 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use chrono::NaiveDateTime;
 use entities::{auth_nonce, auth_refresh_token, wallet_role};
+use metrics_4mica::measure;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 
 use super::common::{now, parse_address};
+use crate::metrics::misc::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn insert_auth_nonce(
     ctx: &PersistCtx,
     address: &str,
@@ -27,6 +30,7 @@ pub async fn insert_auth_nonce(
         .map_err(PersistDbError::from)
 }
 
+#[measure(record_db_time)]
 pub async fn get_auth_nonce(
     ctx: &PersistCtx,
     address: &str,
@@ -42,6 +46,7 @@ pub async fn get_auth_nonce(
     Ok(row)
 }
 
+#[measure(record_db_time)]
 pub async fn mark_auth_nonce_used(
     ctx: &PersistCtx,
     address: &str,
@@ -59,6 +64,7 @@ pub async fn mark_auth_nonce_used(
     Ok(res.rows_affected > 0)
 }
 
+#[measure(record_db_time)]
 pub async fn insert_refresh_token(
     ctx: &PersistCtx,
     token_hash: &str,
@@ -82,6 +88,7 @@ pub async fn insert_refresh_token(
         .map_err(PersistDbError::from)
 }
 
+#[measure(record_db_time)]
 pub async fn get_refresh_token(
     ctx: &PersistCtx,
     token_hash: &str,
@@ -92,6 +99,7 @@ pub async fn get_refresh_token(
     Ok(row)
 }
 
+#[measure(record_db_time)]
 pub async fn revoke_refresh_token(
     ctx: &PersistCtx,
     token_hash: &str,
@@ -111,6 +119,7 @@ pub async fn revoke_refresh_token(
     Ok(res.rows_affected > 0)
 }
 
+#[measure(record_db_time)]
 pub async fn rotate_refresh_token(
     ctx: &PersistCtx,
     token_hash: &str,
@@ -177,6 +186,7 @@ pub async fn rotate_refresh_token(
         .map_err(PersistDbError::from)
 }
 
+#[measure(record_db_time)]
 pub async fn upsert_wallet_role(
     ctx: &PersistCtx,
     address: &str,
@@ -211,6 +221,7 @@ pub async fn upsert_wallet_role(
         .map_err(PersistDbError::from)
 }
 
+#[measure(record_db_time)]
 pub async fn get_wallet_role(
     ctx: &PersistCtx,
     address: &str,

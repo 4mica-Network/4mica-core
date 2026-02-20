@@ -3,6 +3,7 @@ use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use entities::sea_orm_active_enums::UserTransactionStatus;
 use entities::user_transaction;
+use metrics_4mica::measure;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, EntityTrait, IntoActiveModel, QueryFilter,
@@ -13,7 +14,9 @@ use std::str::FromStr;
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{now, parse_address};
 use super::users::ensure_user_exists_on;
+use crate::metrics::misc::record_db_time;
 
+#[measure(record_db_time)]
 pub async fn submit_payment_transaction(
     ctx: &PersistCtx,
     user_address: String,
@@ -73,6 +76,7 @@ pub struct PendingPaymentInput {
     pub block_hash: Option<String>,
 }
 
+#[measure(record_db_time)]
 pub async fn submit_pending_payment_transaction(
     ctx: &PersistCtx,
     pending: PendingPaymentInput,
@@ -116,6 +120,7 @@ pub async fn submit_pending_payment_transaction(
     Ok(rows_affected)
 }
 
+#[measure(record_db_time)]
 pub async fn get_pending_transactions_upto(
     ctx: &PersistCtx,
     max_block_number: u64,
@@ -132,6 +137,7 @@ pub async fn get_pending_transactions_upto(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn get_recorded_transactions_upto(
     ctx: &PersistCtx,
     max_block_number: u64,
@@ -145,6 +151,7 @@ pub async fn get_recorded_transactions_upto(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn mark_payment_transaction_confirmed(
     ctx: &PersistCtx,
     transaction_id: &str,
@@ -174,6 +181,7 @@ pub async fn mark_payment_transaction_confirmed(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn mark_payment_transaction_recorded(
     ctx: &PersistCtx,
     transaction_id: &str,
@@ -219,6 +227,7 @@ pub async fn mark_payment_transaction_recorded(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn mark_payment_transaction_reverted(
     ctx: &PersistCtx,
     transaction_id: &str,
@@ -240,6 +249,7 @@ pub async fn mark_payment_transaction_reverted(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn mark_payment_transactions_reverted_in_block_range(
     ctx: &PersistCtx,
     start_block: u64,
@@ -285,6 +295,7 @@ pub async fn mark_payment_transactions_reverted_in_block_range(
     Ok(result.rows_affected)
 }
 
+#[measure(record_db_time)]
 pub async fn delete_unfinalized_payment_transaction(
     ctx: &PersistCtx,
     transaction_id: &str,
@@ -298,6 +309,7 @@ pub async fn delete_unfinalized_payment_transaction(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn mark_payment_transaction_finalized(
     ctx: &PersistCtx,
     transaction_id: &str,
@@ -328,6 +340,7 @@ pub async fn mark_payment_transaction_finalized(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn fail_transaction(
     ctx: &PersistCtx,
     user_address: String,
@@ -392,6 +405,7 @@ pub async fn fail_transaction(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn get_transactions_by_hash(
     ctx: &PersistCtx,
     hashes: Vec<String>,
@@ -403,6 +417,7 @@ pub async fn get_transactions_by_hash(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn get_unfinalized_transactions(
     ctx: &PersistCtx,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
@@ -413,6 +428,7 @@ pub async fn get_unfinalized_transactions(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn get_user_transactions(
     ctx: &PersistCtx,
     user_address: &str,
@@ -426,6 +442,7 @@ pub async fn get_user_transactions(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn get_recipient_transactions(
     ctx: &PersistCtx,
     recipient_address: &str,

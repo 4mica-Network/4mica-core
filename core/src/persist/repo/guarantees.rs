@@ -8,6 +8,7 @@ use chrono::{TimeZone, Utc};
 use crypto::bls::BLSCert;
 use entities::guarantee;
 use entities::sea_orm_active_enums::TabStatus;
+use metrics_4mica::measure;
 use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaimsV1};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
@@ -17,9 +18,11 @@ use super::common::parse_address;
 use super::tabs::{get_tab_by_id_on, lock_and_update_tab_on, open_tab_on};
 use super::users::ensure_user_exists_on;
 use super::withdrawals::get_pending_withdrawal_on;
+use crate::metrics::misc::record_db_time;
 use entities::tabs;
 
 /// Returns the new total amount of the tab.
+#[measure(record_db_time)]
 pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
     conn: &C,
     claims: &PaymentGuaranteeRequestClaimsV1,
@@ -96,6 +99,7 @@ pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
     Ok(new_total)
 }
 
+#[measure(record_db_time)]
 pub async fn prepare_and_store_guarantee_on<C: ConnectionTrait>(
     conn: &C,
     claims: &PaymentGuaranteeClaims,
@@ -130,6 +134,7 @@ pub async fn prepare_and_store_guarantee_on<C: ConnectionTrait>(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn store_guarantee_on<C: ConnectionTrait>(
     conn: &C,
     data: GuaranteeData,
@@ -165,6 +170,7 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
     Ok(())
 }
 
+#[measure(record_db_time)]
 pub async fn get_guarantee(
     ctx: &PersistCtx,
     tab_id: U256,
@@ -178,6 +184,7 @@ pub async fn get_guarantee(
     Ok(res)
 }
 
+#[measure(record_db_time)]
 pub async fn get_guarantees_for_tab(
     ctx: &PersistCtx,
     tab_id: U256,
@@ -190,6 +197,7 @@ pub async fn get_guarantees_for_tab(
     Ok(rows)
 }
 
+#[measure(record_db_time)]
 pub async fn get_last_guarantee_for_tab(
     ctx: &PersistCtx,
     tab_id: U256,

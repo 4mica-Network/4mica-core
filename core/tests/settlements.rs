@@ -266,6 +266,7 @@ async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
     let payment = PaymentTx {
         block_number: 1,
         block_hash: None,
+        block_timestamp: None,
         tx_hash: B256::ZERO,
         from: signer_addr,
         to: Address::from_str(&server_addr)?,

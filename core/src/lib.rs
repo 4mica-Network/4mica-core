@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod ethereum;
 pub mod http;
+pub mod metrics;
 pub mod persist;
 pub mod scheduler;
 pub mod service;

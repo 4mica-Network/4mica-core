@@ -87,9 +87,92 @@ To run the project locally, execute:
 ```bash
 deployment/deploy_local.sh
 ```
+
 This script prepares and launches all required development services. It is designed to:
 
 For more details, refer to the documentation.
+
+---
+
+## 📊 Exported Metrics
+
+All metrics carry two global labels: `app="core"` and `chain=<chain_id>`.
+
+**`http_request_total`** · Counter  
+Total HTTP requests received.
+
+- `method`: HTTP verb (e.g. `GET`, `POST`)
+- `path`: matched route path
+- `status`: HTTP status code as string (e.g. `200`, `404`)
+
+**`http_request_duration_seconds`** · Histogram  
+Latency of HTTP requests.
+
+- same labels as `http_request_total`
+
+**`db_query_total`** · Counter  
+Number of database queries executed.
+
+- `name`: function name
+
+**`db_query_duration_seconds`** · Histogram  
+Execution time of database queries.
+
+- same labels as `db_query_total`
+
+**`ethereum_event_total`** · Counter  
+Number of Ethereum event handler invocations.
+
+- `name`: event handler function name
+
+**`ethereum_event_duration_seconds`** · Histogram  
+Execution time of Ethereum event handlers.
+
+- same labels as `ethereum_event_total`
+
+**`task_execution_total`** · Counter  
+Number of scheduled task executions.
+
+- `name`: task name
+
+**`task_execution_duration_seconds`** · Histogram  
+Execution time of scheduled tasks.
+
+- same labels as `task_execution_total`
+
+**`payment_tx_status_change_total`** · Counter  
+Number of payment transactions that reached each status.
+
+- `status`: `pending` | `confirmed` | `recorded` | `finalized` | `reverted`
+- `asset`: asset address
+
+**`payment_tx_status_change_duration_seconds`** · Histogram  
+Time elapsed between a payment transaction's previous and current status.
+
+- same labels as `payment_tx_status_change_total`
+
+**`event_tx_status_change_total`** · Counter  
+Number of blockchain event transactions that reached each status.
+
+- `status`: `pending` | `confirmed` | `reverted`
+- `signature`: event signature string
+
+**`event_tx_status_change_duration_seconds`** · Histogram  
+Time elapsed between a blockchain event transaction's previous and current status.
+
+- same labels as `event_tx_status_change_total`
+
+**`blockchain_safe_head`** · Gauge  
+Latest known safe block number on the tracked chain.
+
+- no labels
+
+**`health_status`** · Gauge  
+Health of a subsystem: `1` = healthy, `0` = unhealthy.
+
+- `scope`: `db` | `chain_rpc` | `overall`
+
+---
 
 ### 🤝 Contributing
 
@@ -99,4 +182,4 @@ We welcome contributions! Please check the contribution guide before submitting 
 
 This project is temporarily licensed under the Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) Legal Code.
 
-<p align="center">Made with ❤️ by the 4Mica Network</p> 
+<p align="center">Made with ❤️ by the 4Mica Network</p>

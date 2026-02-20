@@ -8,6 +8,7 @@ publish = false
 rpc = { workspace = true }
 crypto = { workspace = true }
 blockchain = { workspace = true }
+metrics-4mica = { workspace = true }
 
 rand = { workspace = true }
 anyhow = { workspace = true }
@@ -40,6 +41,8 @@ hex = { workspace = true }
 subtle = { workspace = true }
 parking_lot = { workspace = true }
 secrecy = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
 
 [dev-dependencies]
 serial_test = { workspace = true }

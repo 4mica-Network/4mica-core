@@ -24,4 +24,6 @@ pub trait EthereumEventHandler: Send + Sync {
         log: Log,
         event_name: &str,
     ) -> Result<(), BlockchainListenerError>;
+
+    async fn handle_unknown_event(&self, log: Log) -> Result<(), BlockchainListenerError>;
 }

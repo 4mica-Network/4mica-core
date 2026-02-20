@@ -1,0 +1,20 @@
+[package]
+name = "metrics-4mica"
+version = "0.5.0"
+edition.workspace = true
+authors = ["4Mica Network <team@4mica.xyz>"]
+description = "Metrics library for the 4Mica payment network."
+license = "CC-BY-NC-4.0"
+repository = "https://github.com/4mica-Network/4mica-core"
+homepage = "https://4mica.xyz"
+keywords = ["4mica", "metrics", "prometheus", "tracing"]
+categories = ["metrics"]
+
+[dependencies]
+derive-4mica = { workspace = true }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+metrics = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
