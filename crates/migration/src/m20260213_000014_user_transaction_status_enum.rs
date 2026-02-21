@@ -31,7 +31,7 @@ ALTER COLUMN status DROP DEFAULT;
 ALTER TABLE "UserTransaction"
 ALTER COLUMN status
 TYPE user_transaction_status
-USING status::user_transaction_status;
+USING UPPER(status)::user_transaction_status;
 ALTER TABLE "UserTransaction"
 ALTER COLUMN status
 SET DEFAULT 'CONFIRMED'::user_transaction_status;

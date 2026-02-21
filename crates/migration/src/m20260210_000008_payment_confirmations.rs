@@ -21,7 +21,7 @@ impl MigrationTrait for Migration {
                         ColumnDef::new(UserTransaction::Status)
                             .string()
                             .not_null()
-                            .default("confirmed"),
+                            .default("CONFIRMED"),
                     )
                     .add_column(
                         ColumnDef::new(UserTransaction::ConfirmedAt)
