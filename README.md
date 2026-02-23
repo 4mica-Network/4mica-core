@@ -140,27 +140,37 @@ Execution time of scheduled tasks.
 
 - same labels as `task_execution_total`
 
-**`payment_tx_status_change_total`** · Counter  
-Number of payment transactions that reached each status.
+**`processed_payment_tx_total`** · Counter  
+Number of processed payment transactions per status.
 
 - `status`: `pending` | `confirmed` | `recorded` | `finalized` | `reverted`
 - `asset`: asset address
 
-**`payment_tx_status_change_duration_seconds`** · Histogram  
+**`processed_payment_tx_duration_seconds`** · Histogram  
 Time elapsed between a payment transaction's previous and current status.
 
-- same labels as `payment_tx_status_change_total`
+- same labels as `processed_payment_tx_total`
 
-**`event_tx_status_change_total`** · Counter  
-Number of blockchain event transactions that reached each status.
+**`processed_event_tx_total`** · Counter  
+Number of processed blockchain event transactions per status.
 
 - `status`: `pending` | `confirmed` | `reverted`
 - `signature`: event signature string
 
-**`event_tx_status_change_duration_seconds`** · Histogram  
+**`processed_event_tx_duration_seconds`** · Histogram  
 Time elapsed between a blockchain event transaction's previous and current status.
 
-- same labels as `event_tx_status_change_total`
+- same labels as `processed_event_tx_total`
+
+**`scanned_payment_tx_block`** · Gauge  
+Latest block number scanned for payment transactions.
+
+- no labels
+
+**`scanned_event_tx_block`** · Gauge  
+Latest block number scanned for blockchain event transactions.
+
+- no labels
 
 **`blockchain_safe_head`** · Gauge  
 Latest known safe block number on the tracked chain.

@@ -177,6 +177,8 @@ impl EthereumEventScanner {
         )
         .await?;
 
+        crate::metrics::record_scanned_event_tx_block(confirmed_head);
+
         Ok(())
     }
 
@@ -296,7 +298,7 @@ impl EthereumEventScanner {
                 }
             };
 
-            crate::metrics::record_event_status_change(
+            crate::metrics::record_processed_event_tx(
                 EventTxStatus::Confirmed,
                 &signature,
                 crate::metrics::secs_since_unix(log.block_timestamp),
