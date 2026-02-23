@@ -73,4 +73,4 @@ base64 = "0.22"
 zeroize = "1.8.2"
 secrecy = "0.10.3"
 metrics = "0.24.3"
-metrics-exporter-prometheus = "0.18.1"
+metrics-exporter-prometheus = { version = "0.18.1", default-features = false }

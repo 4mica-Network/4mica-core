@@ -23,6 +23,8 @@ use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
 
+const MAX_LOG_BLOCK_RANGE: u64 = 10_000;
+
 pub struct EthereumEventScanner {
     config: EthereumConfig,
     persist_ctx: PersistCtx,
@@ -129,19 +131,18 @@ impl EthereumEventScanner {
             return Ok(());
         }
 
-        let filter = base_filter
-            .clone()
-            .from_block(start_block)
-            .to_block(BlockNumberOrTag::Number(confirmed_head));
-
         info!(
             "Fetching confirmed logs from block {start_block} to {confirmed_head} for address {address:?}"
         );
 
-        let logs = provider.get_logs(&filter).await.map_err(|e| {
-            error!("Failed to fetch confirmed logs: {e}");
-            BlockchainListenerError::Other(anyhow::anyhow!(e))
-        })?;
+        let logs = Self::fetch_logs_chunked(
+            &provider,
+            &base_filter,
+            start_block,
+            confirmed_head,
+            &address,
+        )
+        .await?;
 
         if !logs.is_empty() {
             info!("Fetched {} confirmed log(s)", logs.len());
@@ -178,6 +179,52 @@ impl EthereumEventScanner {
         .await?;
 
         Ok(())
+    }
+
+    async fn fetch_logs_chunked(
+        provider: &impl alloy::providers::Provider,
+        base_filter: &Filter,
+        start_block: u64,
+        end_block: u64,
+        address: &Address,
+    ) -> Result<Vec<Log>, BlockchainListenerError> {
+        let mut all_logs = Vec::new();
+        let mut chunk_start = start_block;
+
+        while chunk_start <= end_block {
+            let chunk_end =
+                end_block.min(chunk_start.saturating_add(MAX_LOG_BLOCK_RANGE.saturating_sub(1)));
+            let filter = base_filter
+                .clone()
+                .from_block(chunk_start)
+                .to_block(BlockNumberOrTag::Number(chunk_end));
+
+            info!(
+                "Fetching confirmed logs chunk from block {chunk_start} to {chunk_end} for address {address:?}"
+            );
+
+            let chunk_logs = provider.get_logs(&filter).await.map_err(|e| {
+                error!(
+                    "Failed to fetch confirmed logs chunk from block {chunk_start} to {chunk_end}: {e}"
+                );
+                BlockchainListenerError::Other(anyhow::anyhow!(e))
+            })?;
+
+            if !chunk_logs.is_empty() {
+                info!(
+                    "Fetched {} confirmed log(s) in chunk {chunk_start}-{chunk_end}",
+                    chunk_logs.len()
+                );
+            }
+
+            all_logs.extend(chunk_logs);
+            if chunk_end == end_block {
+                break;
+            }
+            chunk_start = chunk_end.saturating_add(1);
+        }
+
+        Ok(all_logs)
     }
 
     async fn confirmed_head(
