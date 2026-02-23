@@ -23,8 +23,6 @@ use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
 
-const MAX_LOG_BLOCK_RANGE: u64 = 10_000;
-
 pub struct EthereumEventScanner {
     config: EthereumConfig,
     persist_ctx: PersistCtx,
@@ -86,6 +84,7 @@ impl EthereumEventScanner {
             persist_ctx,
             handler,
         } = args;
+        let max_log_block_range = config.max_log_block_range;
 
         let address: Address = config
             .contract_address
@@ -141,6 +140,7 @@ impl EthereumEventScanner {
             start_block,
             confirmed_head,
             &address,
+            max_log_block_range,
         )
         .await?;
 
@@ -187,13 +187,14 @@ impl EthereumEventScanner {
         start_block: u64,
         end_block: u64,
         address: &Address,
+        max_log_block_range: u64,
     ) -> Result<Vec<Log>, BlockchainListenerError> {
         let mut all_logs = Vec::new();
         let mut chunk_start = start_block;
 
         while chunk_start <= end_block {
             let chunk_end =
-                end_block.min(chunk_start.saturating_add(MAX_LOG_BLOCK_RANGE.saturating_sub(1)));
+                end_block.min(chunk_start.saturating_add(max_log_block_range.saturating_sub(1)));
             let filter = base_filter
                 .clone()
                 .from_block(chunk_start)
