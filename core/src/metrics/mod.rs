@@ -10,8 +10,8 @@ pub mod health;
 pub mod misc;
 
 pub use chain::{
-    EventTxStatus, PaymentTxStatus, record_blockchain_safe_head, record_event_status_change,
-    record_payment_status_change,
+    EventTxStatus, PaymentTxStatus, record_blockchain_safe_head, record_processed_event_tx,
+    record_processed_payment_tx, record_scanned_event_tx_block, record_scanned_payment_tx_block,
 };
 pub use health::HealthCheckTask;
 

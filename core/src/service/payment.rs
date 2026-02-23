@@ -125,7 +125,7 @@ pub async fn process_discovered_payment(ctx: &PersistCtx, payment: PaymentTx) ->
     if rows_affected == 0 {
         info!("Payment transaction already exists for tab {}.", tab_id_str);
     } else {
-        crate::metrics::record_payment_status_change(
+        crate::metrics::record_processed_payment_tx(
             PaymentTxStatus::Pending,
             &asset_address.to_string(),
             crate::metrics::secs_since_unix(payment.block_timestamp),
@@ -143,7 +143,7 @@ impl CoreService {
         duration_secs: f64,
     ) -> ServiceResult<()> {
         repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, tx_id).await?;
-        crate::metrics::record_payment_status_change(
+        crate::metrics::record_processed_payment_tx(
             PaymentTxStatus::Reverted,
             asset_address,
             duration_secs,
@@ -358,7 +358,7 @@ impl CoreService {
                 record_block_hash,
             )
             .await?;
-            crate::metrics::record_payment_status_change(
+            crate::metrics::record_processed_payment_tx(
                 PaymentTxStatus::Recorded,
                 &tx.asset_address,
                 duration_pending,
@@ -550,7 +550,7 @@ impl CoreService {
             }
 
             repo::mark_payment_transaction_finalized(&self.inner.persist_ctx, &tx.tx_id).await?;
-            crate::metrics::record_payment_status_change(
+            crate::metrics::record_processed_payment_tx(
                 PaymentTxStatus::Finalized,
                 &tx.asset_address,
                 duration_recorded,
@@ -590,6 +590,8 @@ impl CoreService {
             .inspect_err(|e| {
                 error!("failed to handle discovered payments: {e}");
             })?;
+
+        crate::metrics::record_scanned_payment_tx_block(safe_head.number);
 
         Ok(())
     }
