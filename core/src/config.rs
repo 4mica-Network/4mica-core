@@ -54,6 +54,9 @@ pub struct EthereumConfig {
     /// When scanning for events and cursor is not found in the database, scan back this many blocks.
     #[envconfig(from = "INITIAL_EVENT_SCAN_LOOKBACK_BLOCKS", default = "25")]
     pub initial_event_scan_lookback_blocks: u64,
+    /// Maximum block span for a single eth_getLogs request.
+    #[envconfig(from = "ETHEREUM_MAX_LOG_BLOCK_RANGE", default = "10000")]
+    pub max_log_block_range: u64,
     /// When CONFIRMATION_MODE=finalized and the provider doesn't advance finalized head,
     /// treat blocks as finalized after this depth (useful for local dev/test only).
     #[envconfig(from = "FINALIZED_HEAD_DEPTH", default = "0")]
@@ -108,6 +111,9 @@ impl EthereumConfig {
         }
         if self.payment_scan_lookback_blocks == 0 {
             bail!("PAYMENT_SCAN_LOOKBACK_BLOCKS must be > 0");
+        }
+        if self.max_log_block_range == 0 {
+            bail!("ETHEREUM_MAX_LOG_BLOCK_RANGE must be > 0");
         }
         Ok(())
     }
