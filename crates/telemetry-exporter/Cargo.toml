@@ -1,5 +1,5 @@
 [package]
-name = "metrics-exporter"
+name = "telemetry-exporter"
 version = "0.1.0"
 edition.workspace = true
 publish = false

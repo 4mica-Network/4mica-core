@@ -4,13 +4,13 @@ use url::Url;
 
 #[derive(Debug, Clone, Envconfig)]
 pub struct ExporterConfig {
-    #[envconfig(from = "METRICS_EXPORTER_HOST", default = "0.0.0.0")]
+    #[envconfig(from = "TELEMETRY_EXPORTER_HOST", default = "0.0.0.0")]
     pub host: String,
-    #[envconfig(from = "METRICS_EXPORTER_PORT", default = "9464")]
+    #[envconfig(from = "TELEMETRY_EXPORTER_PORT", default = "9464")]
     pub port: u16,
     #[envconfig(from = "LOG_LEVEL", default = "info")]
     pub log_level: log::Level,
-    #[envconfig(from = "METRICS_EXPORTER_READONLY_REPLICA_DSN")]
+    #[envconfig(from = "TELEMETRY_EXPORTER_READONLY_REPLICA_DSN")]
     pub readonly_replica_dsn: String,
 }
 
@@ -29,22 +29,22 @@ impl ExporterConfig {
 fn validate_readonly_replica_dsn(dsn: &str) -> anyhow::Result<()> {
     let trimmed = dsn.trim();
     if trimmed.is_empty() {
-        bail!("METRICS_EXPORTER_READONLY_REPLICA_DSN must be set");
+        bail!("TELEMETRY_EXPORTER_READONLY_REPLICA_DSN must be set");
     }
 
     let parsed = Url::parse(trimmed)
-        .context("METRICS_EXPORTER_READONLY_REPLICA_DSN is not a valid URL")?;
+        .context("TELEMETRY_EXPORTER_READONLY_REPLICA_DSN is not a valid URL")?;
     match parsed.scheme() {
         "postgres" | "postgresql" => {}
         other => {
             bail!(
-                "METRICS_EXPORTER_READONLY_REPLICA_DSN must use postgres/postgresql scheme, got {other}"
+                "TELEMETRY_EXPORTER_READONLY_REPLICA_DSN must use postgres/postgresql scheme, got {other}"
             )
         }
     }
 
     if parsed.host_str().is_none() {
-        bail!("METRICS_EXPORTER_READONLY_REPLICA_DSN must include a host");
+        bail!("TELEMETRY_EXPORTER_READONLY_REPLICA_DSN must include a host");
     }
 
     Ok(())
