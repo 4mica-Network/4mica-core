@@ -26,7 +26,6 @@ pub struct SnapshotEnvelope {
 #[derive(Debug, Default)]
 struct SnapshotState {
     latest: Option<SnapshotEnvelope>,
-    last_success_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -43,14 +42,10 @@ impl SnapshotStore {
         self.inner.read().await.latest.clone()
     }
 
-    pub async fn last_success_at(&self) -> Option<Instant> {
-        self.inner.read().await.last_success_at
-    }
-
+    #[cfg(test)]
     pub async fn update(&self, snapshot: Snapshot, meta: SnapshotMeta) {
         let mut state = self.inner.write().await;
         state.latest = Some(SnapshotEnvelope { snapshot, meta });
-        state.last_success_at = Some(meta.captured_at);
     }
 }
 
@@ -63,7 +58,6 @@ mod tests {
     async fn starts_empty() {
         let store = SnapshotStore::new();
         assert!(store.latest().await.is_none());
-        assert!(store.last_success_at().await.is_none());
     }
 
     #[tokio::test]
@@ -86,6 +80,6 @@ mod tests {
         let latest = store.latest().await.expect("snapshot should be present");
         assert_eq!(latest.snapshot, snapshot);
         assert_eq!(latest.meta.query_duration_ms, 42);
-        assert_eq!(store.last_success_at().await, Some(captured_at));
+        assert_eq!(latest.meta.captured_at, captured_at);
     }
 }

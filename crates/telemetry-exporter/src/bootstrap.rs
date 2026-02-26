@@ -20,7 +20,7 @@ pub async fn run() -> anyhow::Result<()> {
     let metrics = telemetry::install_metrics_recorder()?;
     telemetry::emit_startup_metrics();
 
-    let state = AppState::new(metrics);
+    let state = AppState::new(metrics, cfg.stale_after_sec);
     let app = app::router(state);
 
     let result = server::serve(&cfg.bind_addr(), app).await;
