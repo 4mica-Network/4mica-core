@@ -24,6 +24,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let readonly_db =
         db::connect_readonly_pool(&cfg.readonly_replica_dsn, cfg.max_db_connections).await?;
+    db::ensure_readonly_session(&readonly_db).await?;
     info!(
         "connected readonly replica pool with max_db_connections={}",
         cfg.max_db_connections
