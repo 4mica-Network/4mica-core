@@ -1,6 +1,7 @@
 mod app;
 mod bootstrap;
 mod config;
+mod db;
 mod handlers;
 mod scheduler;
 mod server;

@@ -26,6 +26,7 @@ impl ExporterConfig {
     pub fn fetch() -> anyhow::Result<Self> {
         let cfg = Self::init_from_env().context("Failed to load exporter config")?;
         validate_readonly_replica_dsn(&cfg.readonly_replica_dsn)?;
+        validate_max_db_connections(cfg.max_db_connections)?;
         Ok(cfg)
     }
 
@@ -58,9 +59,16 @@ fn validate_readonly_replica_dsn(dsn: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_max_db_connections(max_db_connections: u32) -> anyhow::Result<()> {
+    if max_db_connections == 0 {
+        bail!("TELEMETRY_EXPORTER_MAX_DB_CONNECTIONS must be greater than 0");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_readonly_replica_dsn;
+    use super::{validate_max_db_connections, validate_readonly_replica_dsn};
 
     #[test]
     fn rejects_blank_dsn() {
@@ -78,5 +86,16 @@ mod tests {
     fn accepts_postgres_dsn() {
         validate_readonly_replica_dsn("postgres://monitor_ro:secret@replica.local:5432/core")
             .expect("postgres DSN should pass validation");
+    }
+
+    #[test]
+    fn rejects_zero_max_db_connections() {
+        let err = validate_max_db_connections(0).unwrap_err();
+        assert!(err.to_string().contains("greater than 0"));
+    }
+
+    #[test]
+    fn accepts_positive_max_db_connections() {
+        validate_max_db_connections(5).expect("positive pool size should pass validation");
     }
 }
