@@ -3,6 +3,7 @@ mod bootstrap;
 mod config;
 mod handlers;
 mod server;
+mod snapshot;
 mod state;
 mod telemetry;
 
