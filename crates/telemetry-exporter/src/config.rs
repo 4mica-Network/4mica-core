@@ -12,6 +12,14 @@ pub struct ExporterConfig {
     pub log_level: log::Level,
     #[envconfig(from = "TELEMETRY_EXPORTER_READONLY_REPLICA_DSN")]
     pub readonly_replica_dsn: String,
+    #[envconfig(from = "TELEMETRY_EXPORTER_SNAPSHOT_INTERVAL_SEC", default = "60")]
+    pub snapshot_interval_sec: u64,
+    #[envconfig(from = "TELEMETRY_EXPORTER_QUERY_TIMEOUT_MS", default = "5000")]
+    pub query_timeout_ms: u64,
+    #[envconfig(from = "TELEMETRY_EXPORTER_MAX_DB_CONNECTIONS", default = "5")]
+    pub max_db_connections: u32,
+    #[envconfig(from = "TELEMETRY_EXPORTER_STALE_AFTER_SEC", default = "180")]
+    pub stale_after_sec: u64,
 }
 
 impl ExporterConfig {
