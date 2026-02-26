@@ -16,17 +16,23 @@ pub struct ExporterConfig {
     pub snapshot_interval_sec: u64,
     #[envconfig(from = "TELEMETRY_EXPORTER_QUERY_TIMEOUT_MS", default = "5000")]
     pub query_timeout_ms: u64,
+    #[envconfig(from = "TELEMETRY_EXPORTER_PROBE_QUERY_SQL", default = "SELECT 1")]
+    pub probe_query_sql: String,
     #[envconfig(from = "TELEMETRY_EXPORTER_MAX_DB_CONNECTIONS", default = "5")]
     pub max_db_connections: u32,
     #[envconfig(from = "TELEMETRY_EXPORTER_STALE_AFTER_SEC", default = "180")]
     pub stale_after_sec: u64,
+    #[envconfig(from = "ETHEREUM_CHAIN_ID")]
+    pub chain_id: String,
 }
 
 impl ExporterConfig {
     pub fn fetch() -> anyhow::Result<Self> {
         let cfg = Self::init_from_env().context("Failed to load exporter config")?;
         validate_readonly_replica_dsn(&cfg.readonly_replica_dsn)?;
+        validate_probe_query_sql(&cfg.probe_query_sql)?;
         validate_max_db_connections(cfg.max_db_connections)?;
+        validate_chain_id(&cfg.chain_id)?;
         Ok(cfg)
     }
 
@@ -66,9 +72,26 @@ fn validate_max_db_connections(max_db_connections: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_probe_query_sql(probe_query_sql: &str) -> anyhow::Result<()> {
+    if probe_query_sql.trim().is_empty() {
+        bail!("TELEMETRY_EXPORTER_PROBE_QUERY_SQL must be non-empty");
+    }
+    Ok(())
+}
+
+fn validate_chain_id(chain_id: &str) -> anyhow::Result<()> {
+    if chain_id.trim().is_empty() {
+        bail!("ETHEREUM_CHAIN_ID must be non-empty");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{validate_max_db_connections, validate_readonly_replica_dsn};
+    use super::{
+        validate_chain_id, validate_max_db_connections, validate_probe_query_sql,
+        validate_readonly_replica_dsn,
+    };
 
     #[test]
     fn rejects_blank_dsn() {
@@ -97,5 +120,30 @@ mod tests {
     #[test]
     fn accepts_positive_max_db_connections() {
         validate_max_db_connections(5).expect("positive pool size should pass validation");
+    }
+
+    #[test]
+    fn rejects_blank_probe_query_sql() {
+        let err = validate_probe_query_sql("   ").unwrap_err();
+        assert!(err.to_string().contains("must be non-empty"));
+    }
+
+    #[test]
+    fn accepts_probe_query_sql() {
+        validate_probe_query_sql("SELECT 1").expect("probe query should pass validation");
+    }
+
+    #[test]
+    fn rejects_blank_chain_id() {
+        let err = validate_chain_id("  ").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ETHEREUM_CHAIN_ID must be non-empty")
+        );
+    }
+
+    #[test]
+    fn accepts_chain_id() {
+        validate_chain_id("11155111").expect("chain id should pass validation");
     }
 }
