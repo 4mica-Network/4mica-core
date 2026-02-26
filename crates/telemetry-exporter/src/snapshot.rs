@@ -42,7 +42,6 @@ impl SnapshotStore {
         self.inner.read().await.latest.clone()
     }
 
-    #[cfg(test)]
     pub async fn update(&self, snapshot: Snapshot, meta: SnapshotMeta) {
         let mut state = self.inner.write().await;
         state.latest = Some(SnapshotEnvelope { snapshot, meta });

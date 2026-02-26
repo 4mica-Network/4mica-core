@@ -1,5 +1,6 @@
 use crate::app;
 use crate::config::ExporterConfig;
+use crate::scheduler;
 use crate::server;
 use crate::state::AppState;
 use crate::telemetry;
@@ -21,6 +22,8 @@ pub async fn run() -> anyhow::Result<()> {
     telemetry::emit_startup_metrics();
 
     let state = AppState::new(metrics, cfg.stale_after_sec);
+    let _snapshot_scheduler =
+        scheduler::spawn_snapshot_scheduler(state.snapshots.clone(), cfg.snapshot_interval_sec);
     let app = app::router(state);
 
     let result = server::serve(&cfg.bind_addr(), app).await;
