@@ -12,6 +12,13 @@ pub enum QueryExecutionError {
     Query(anyhow::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveUsersWindowCounts {
+    pub active_users_1h: u64,
+    pub active_users_24h: u64,
+    pub active_users_7d: u64,
+}
+
 impl QueryExecutionError {
     pub fn is_timeout(&self) -> bool {
         matches!(self, Self::Timeout { .. })
@@ -103,6 +110,60 @@ pub async fn fetch_users_total(
         .map_err(QueryExecutionError::Query)?;
 
     parse_non_negative_count(users_total).map_err(QueryExecutionError::Query)
+}
+
+pub async fn fetch_active_users_window_counts(
+    db: &DatabaseConnection,
+    timeout_ms: u64,
+) -> Result<ActiveUsersWindowCounts, QueryExecutionError> {
+    let row = query_one_with_timeout(
+        db,
+        r#"
+        SELECT
+            COUNT(DISTINCT user_address) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '1 hour'
+            )::bigint AS active_users_1h,
+            COUNT(DISTINCT user_address) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+            )::bigint AS active_users_24h,
+            COUNT(DISTINCT user_address) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '7 days'
+            )::bigint AS active_users_7d
+        FROM "UserTransaction"
+        "#,
+        timeout_ms,
+    )
+    .await?
+    .ok_or_else(|| {
+        QueryExecutionError::Query(anyhow!(
+            r#"active users query returned no row from "UserTransaction""#
+        ))
+    })?;
+
+    let active_users_1h = parse_non_negative_count(
+        row.try_get("", "active_users_1h")
+            .context("Failed to decode active_users_1h")
+            .map_err(QueryExecutionError::Query)?,
+    )
+    .map_err(QueryExecutionError::Query)?;
+    let active_users_24h = parse_non_negative_count(
+        row.try_get("", "active_users_24h")
+            .context("Failed to decode active_users_24h")
+            .map_err(QueryExecutionError::Query)?,
+    )
+    .map_err(QueryExecutionError::Query)?;
+    let active_users_7d = parse_non_negative_count(
+        row.try_get("", "active_users_7d")
+            .context("Failed to decode active_users_7d")
+            .map_err(QueryExecutionError::Query)?,
+    )
+    .map_err(QueryExecutionError::Query)?;
+
+    Ok(ActiveUsersWindowCounts {
+        active_users_1h,
+        active_users_24h,
+        active_users_7d,
+    })
 }
 
 async fn with_timeout<T, F>(timeout_ms: u64, fut: F) -> Result<T, QueryExecutionError>

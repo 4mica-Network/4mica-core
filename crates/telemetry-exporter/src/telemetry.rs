@@ -8,6 +8,9 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 #[derive(Debug, Clone)]
 struct MetricNames {
     users_total: String,
+    active_users_1h: String,
+    active_users_24h: String,
+    active_users_7d: String,
     snapshot_age_seconds: String,
     query_duration_seconds: String,
     query_failures_total: String,
@@ -18,6 +21,9 @@ impl MetricNames {
         let namespace = sanitize_metric_namespace(chain_id)?;
         Ok(Self {
             users_total: format!("{namespace}_users_total"),
+            active_users_1h: format!("{namespace}_active_users_1h"),
+            active_users_24h: format!("{namespace}_active_users_24h"),
+            active_users_7d: format!("{namespace}_active_users_7d"),
             snapshot_age_seconds: format!("{namespace}_snapshot_age_seconds"),
             query_duration_seconds: format!("{namespace}_query_duration_seconds"),
             query_failures_total: format!("{namespace}_query_failures_total"),
@@ -63,6 +69,9 @@ pub fn emit_startup_metrics() {
     let names = metric_names();
     metrics::counter!(names.query_failures_total.as_str()).absolute(0);
     metrics::gauge!(names.users_total.as_str()).set(0.0);
+    metrics::gauge!(names.active_users_1h.as_str()).set(0.0);
+    metrics::gauge!(names.active_users_24h.as_str()).set(0.0);
+    metrics::gauge!(names.active_users_7d.as_str()).set(0.0);
 }
 
 pub fn set_snapshot_age_seconds(age_seconds: f64) {
@@ -80,6 +89,18 @@ pub fn increment_query_failures() {
 
 pub fn set_users_total(users_total: u64) {
     metrics::gauge!(metric_names().users_total.as_str()).set(users_total as f64);
+}
+
+pub fn set_active_users_1h(active_users_1h: u64) {
+    metrics::gauge!(metric_names().active_users_1h.as_str()).set(active_users_1h as f64);
+}
+
+pub fn set_active_users_24h(active_users_24h: u64) {
+    metrics::gauge!(metric_names().active_users_24h.as_str()).set(active_users_24h as f64);
+}
+
+pub fn set_active_users_7d(active_users_7d: u64) {
+    metrics::gauge!(metric_names().active_users_7d.as_str()).set(active_users_7d as f64);
 }
 
 fn metric_names() -> &'static MetricNames {

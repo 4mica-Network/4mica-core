@@ -4,7 +4,7 @@ use log::{error, info};
 use sea_orm::DatabaseConnection;
 use tokio::time::MissedTickBehavior;
 
-use crate::db::{self, QueryExecutionError};
+use crate::db::{self, ActiveUsersWindowCounts, QueryExecutionError};
 use crate::snapshot::{Snapshot, SnapshotMeta, SnapshotStore};
 use crate::telemetry;
 
@@ -65,6 +65,9 @@ async fn run_and_publish_snapshot_tick(
         Ok((snapshot, meta)) => {
             telemetry::record_query_duration(Duration::from_millis(meta.query_duration_ms));
             telemetry::set_users_total(snapshot.users_total);
+            telemetry::set_active_users_1h(snapshot.active_users_1h);
+            telemetry::set_active_users_24h(snapshot.active_users_24h);
+            telemetry::set_active_users_7d(snapshot.active_users_7d);
             telemetry::set_snapshot_age_seconds(0.0);
         }
         Err(err) => {
@@ -93,9 +96,16 @@ pub async fn run_snapshot_tick(
     let started = Instant::now();
     db::query_one_with_timeout(readonly_db, probe_query_sql, query_timeout_ms).await?;
     let users_total = db::fetch_users_total(readonly_db, query_timeout_ms).await?;
+    let ActiveUsersWindowCounts {
+        active_users_1h,
+        active_users_24h,
+        active_users_7d,
+    } = db::fetch_active_users_window_counts(readonly_db, query_timeout_ms).await?;
     let snapshot = Snapshot {
         users_total,
-        ..Snapshot::default()
+        active_users_1h,
+        active_users_24h,
+        active_users_7d,
     };
     let query_duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let meta = SnapshotMeta {
