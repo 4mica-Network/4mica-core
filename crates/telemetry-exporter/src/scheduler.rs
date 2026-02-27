@@ -6,9 +6,12 @@ use tokio::time::MissedTickBehavior;
 
 use crate::db::{
     self, ActiveUsersWindowCounts, QueryExecutionError, StatusAmountAggregate, TabStatusAggregate,
+    UserTxWindowStats,
 };
 use crate::snapshot::{Snapshot, SnapshotMeta, SnapshotStore};
 use crate::telemetry;
+
+const SETTLED_USER_TX_STATUSES: [&str; 1] = ["FINALIZED"];
 
 struct SnapshotTickResult {
     snapshot: Snapshot,
@@ -16,6 +19,8 @@ struct SnapshotTickResult {
     tabs_status_aggregates: Vec<TabStatusAggregate>,
     guarantee_status_aggregates: Vec<StatusAmountAggregate>,
     settlement_status_aggregates: Vec<StatusAmountAggregate>,
+    user_tx_window_stats: UserTxWindowStats,
+    tx_concentration_share_24h: f64,
 }
 
 pub fn spawn_snapshot_scheduler(
@@ -100,6 +105,36 @@ async fn run_and_publish_snapshot_tick(
                     aggregate.amount_sum,
                 );
             }
+
+            let guaranteed_amount_total = sum_status_amount(&result.guarantee_status_aggregates);
+            let settled_amount_total = sum_status_amount_for(
+                &result.settlement_status_aggregates,
+                &SETTLED_USER_TX_STATUSES,
+            );
+            telemetry::set_reconciliation_totals(
+                guaranteed_amount_total,
+                settled_amount_total,
+                guaranteed_amount_total - settled_amount_total,
+            );
+
+            let velocity_spike_score = compute_spike_score(
+                result.user_tx_window_stats.tx_count_1h as f64,
+                result.user_tx_window_stats.tx_count_24h as f64,
+            );
+            let amount_spike_score = compute_spike_score(
+                result.user_tx_window_stats.tx_amount_1h,
+                result.user_tx_window_stats.tx_amount_24h,
+            );
+            let status_churn_score = compute_fraction(
+                result.user_tx_window_stats.reverted_count_24h as f64,
+                result.user_tx_window_stats.tx_count_24h as f64,
+            );
+            telemetry::set_fraud_signal_scores(
+                velocity_spike_score,
+                amount_spike_score,
+                status_churn_score,
+                result.tx_concentration_share_24h,
+            );
             telemetry::set_snapshot_age_seconds(0.0);
         }
         Err(err) => {
@@ -139,6 +174,10 @@ async fn run_snapshot_tick(
         db::fetch_guarantee_status_aggregates(readonly_db, query_timeout_ms).await?;
     let settlement_status_aggregates =
         db::fetch_settlement_status_aggregates(readonly_db, query_timeout_ms).await?;
+    let user_tx_window_stats =
+        db::fetch_user_tx_window_stats(readonly_db, query_timeout_ms).await?;
+    let tx_concentration_share_24h =
+        db::fetch_tx_concentration_share_24h(readonly_db, query_timeout_ms).await?;
     let snapshot = Snapshot {
         users_total,
         active_users_1h,
@@ -157,5 +196,98 @@ async fn run_snapshot_tick(
         tabs_status_aggregates,
         guarantee_status_aggregates,
         settlement_status_aggregates,
+        user_tx_window_stats,
+        tx_concentration_share_24h,
     })
+}
+
+fn sum_status_amount(aggregates: &[StatusAmountAggregate]) -> f64 {
+    aggregates
+        .iter()
+        .map(|aggregate| aggregate.amount_sum)
+        .sum()
+}
+
+fn sum_status_amount_for(aggregates: &[StatusAmountAggregate], statuses: &[&str]) -> f64 {
+    aggregates
+        .iter()
+        .filter(|aggregate| statuses.contains(&aggregate.status.as_str()))
+        .map(|aggregate| aggregate.amount_sum)
+        .sum()
+}
+
+fn compute_spike_score(last_1h: f64, last_24h: f64) -> f64 {
+    let stable_1h = last_1h.max(0.0);
+    let stable_24h = last_24h.max(0.0);
+    let previous_23h = (stable_24h - stable_1h).max(0.0);
+    let baseline_per_hour = (previous_23h / 23.0).max(1.0);
+    stable_1h / baseline_per_hour
+}
+
+fn compute_fraction(numerator: f64, denominator: f64) -> f64 {
+    let denominator = denominator.max(0.0);
+    if denominator == 0.0 {
+        return 0.0;
+    }
+    (numerator.max(0.0) / denominator).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compute_fraction, compute_spike_score, sum_status_amount, sum_status_amount_for};
+    use crate::db::StatusAmountAggregate;
+
+    #[test]
+    fn sums_all_status_amounts() {
+        let aggregates = vec![
+            StatusAmountAggregate {
+                status: "A".to_owned(),
+                count: 1,
+                amount_sum: 10.0,
+            },
+            StatusAmountAggregate {
+                status: "B".to_owned(),
+                count: 1,
+                amount_sum: 5.5,
+            },
+        ];
+        assert_eq!(sum_status_amount(&aggregates), 15.5);
+    }
+
+    #[test]
+    fn sums_selected_status_amounts() {
+        let aggregates = vec![
+            StatusAmountAggregate {
+                status: "FINALIZED".to_owned(),
+                count: 1,
+                amount_sum: 7.0,
+            },
+            StatusAmountAggregate {
+                status: "PENDING".to_owned(),
+                count: 1,
+                amount_sum: 9.0,
+            },
+        ];
+        assert_eq!(
+            sum_status_amount_for(&aggregates, &["FINALIZED", "RECORDED"]),
+            7.0
+        );
+    }
+
+    #[test]
+    fn computes_spike_score_against_previous_baseline() {
+        let score = compute_spike_score(12.0, 60.0);
+        assert!(score > 5.7 && score < 5.8);
+    }
+
+    #[test]
+    fn computes_fraction_with_zero_denominator() {
+        assert_eq!(compute_fraction(5.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn clamps_fraction_to_unit_interval() {
+        assert_eq!(compute_fraction(15.0, 10.0), 1.0);
+        assert_eq!(compute_fraction(-2.0, 10.0), 0.0);
+    }
 }

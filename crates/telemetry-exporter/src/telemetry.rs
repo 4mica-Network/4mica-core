@@ -18,6 +18,13 @@ struct MetricNames {
     guarantees_amount: String,
     settlements_count: String,
     settlements_amount: String,
+    reconciliation_guaranteed_amount_total: String,
+    reconciliation_settled_amount_total: String,
+    reconciliation_amount_gap: String,
+    fraud_velocity_spike_score: String,
+    fraud_amount_spike_score: String,
+    fraud_status_churn_score: String,
+    fraud_concentration_score: String,
     snapshot_age_seconds: String,
     query_duration_seconds: String,
     query_failures_total: String,
@@ -38,6 +45,17 @@ impl MetricNames {
             guarantees_amount: format!("{namespace}_guarantees_amount"),
             settlements_count: format!("{namespace}_settlements_count"),
             settlements_amount: format!("{namespace}_settlements_amount"),
+            reconciliation_guaranteed_amount_total: format!(
+                "{namespace}_reconciliation_guaranteed_amount_total"
+            ),
+            reconciliation_settled_amount_total: format!(
+                "{namespace}_reconciliation_settled_amount_total"
+            ),
+            reconciliation_amount_gap: format!("{namespace}_reconciliation_amount_gap"),
+            fraud_velocity_spike_score: format!("{namespace}_fraud_velocity_spike_score"),
+            fraud_amount_spike_score: format!("{namespace}_fraud_amount_spike_score"),
+            fraud_status_churn_score: format!("{namespace}_fraud_status_churn_score"),
+            fraud_concentration_score: format!("{namespace}_fraud_concentration_score"),
             snapshot_age_seconds: format!("{namespace}_snapshot_age_seconds"),
             query_duration_seconds: format!("{namespace}_query_duration_seconds"),
             query_failures_total: format!("{namespace}_query_failures_total"),
@@ -86,6 +104,13 @@ pub fn emit_startup_metrics() {
     metrics::gauge!(names.active_users_1h.as_str()).set(0.0);
     metrics::gauge!(names.active_users_24h.as_str()).set(0.0);
     metrics::gauge!(names.active_users_7d.as_str()).set(0.0);
+    metrics::gauge!(names.reconciliation_guaranteed_amount_total.as_str()).set(0.0);
+    metrics::gauge!(names.reconciliation_settled_amount_total.as_str()).set(0.0);
+    metrics::gauge!(names.reconciliation_amount_gap.as_str()).set(0.0);
+    metrics::gauge!(names.fraud_velocity_spike_score.as_str()).set(0.0);
+    metrics::gauge!(names.fraud_amount_spike_score.as_str()).set(0.0);
+    metrics::gauge!(names.fraud_status_churn_score.as_str()).set(0.0);
+    metrics::gauge!(names.fraud_concentration_score.as_str()).set(0.0);
 }
 
 pub fn set_snapshot_age_seconds(age_seconds: f64) {
@@ -143,6 +168,34 @@ pub fn set_settlements_status_aggregate(status: &str, count: u64, amount: f64) {
         .set(count as f64);
     metrics::gauge!(metric_names().settlements_amount.as_str(), "status" => status.to_owned())
         .set(amount);
+}
+
+pub fn set_reconciliation_totals(
+    guaranteed_amount_total: f64,
+    settled_amount_total: f64,
+    amount_gap: f64,
+) {
+    metrics::gauge!(
+        metric_names()
+            .reconciliation_guaranteed_amount_total
+            .as_str()
+    )
+    .set(guaranteed_amount_total);
+    metrics::gauge!(metric_names().reconciliation_settled_amount_total.as_str())
+        .set(settled_amount_total);
+    metrics::gauge!(metric_names().reconciliation_amount_gap.as_str()).set(amount_gap);
+}
+
+pub fn set_fraud_signal_scores(
+    velocity_spike_score: f64,
+    amount_spike_score: f64,
+    status_churn_score: f64,
+    concentration_score: f64,
+) {
+    metrics::gauge!(metric_names().fraud_velocity_spike_score.as_str()).set(velocity_spike_score);
+    metrics::gauge!(metric_names().fraud_amount_spike_score.as_str()).set(amount_spike_score);
+    metrics::gauge!(metric_names().fraud_status_churn_score.as_str()).set(status_churn_score);
+    metrics::gauge!(metric_names().fraud_concentration_score.as_str()).set(concentration_score);
 }
 
 fn metric_names() -> &'static MetricNames {

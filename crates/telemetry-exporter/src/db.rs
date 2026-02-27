@@ -34,6 +34,15 @@ pub struct StatusAmountAggregate {
     pub amount_sum: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UserTxWindowStats {
+    pub tx_count_1h: u64,
+    pub tx_count_24h: u64,
+    pub tx_amount_1h: f64,
+    pub tx_amount_24h: f64,
+    pub reverted_count_24h: u64,
+}
+
 impl QueryExecutionError {
     pub fn is_timeout(&self) -> bool {
         matches!(self, Self::Timeout { .. })
@@ -351,6 +360,128 @@ pub async fn fetch_settlement_status_aggregates(
     }
 
     Ok(aggregates)
+}
+
+pub async fn fetch_user_tx_window_stats(
+    db: &DatabaseConnection,
+    timeout_ms: u64,
+) -> Result<UserTxWindowStats, QueryExecutionError> {
+    let row = query_one_with_timeout(
+        db,
+        r#"
+        SELECT
+            COUNT(*) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '1 hour'
+            )::bigint AS tx_count_1h,
+            COUNT(*) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+            )::bigint AS tx_count_24h,
+            COALESCE(SUM(NULLIF(amount, '')::numeric) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '1 hour'
+            ), 0)::double precision AS tx_amount_1h,
+            COALESCE(SUM(NULLIF(amount, '')::numeric) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+            ), 0)::double precision AS tx_amount_24h,
+            COUNT(*) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+                  AND status = 'REVERTED'
+            )::bigint AS reverted_count_24h
+        FROM "UserTransaction"
+        "#,
+        timeout_ms,
+    )
+    .await?
+    .ok_or_else(|| {
+        QueryExecutionError::Query(anyhow!(
+            r#"user tx window stats query returned no row from "UserTransaction""#
+        ))
+    })?;
+
+    let tx_count_1h = parse_non_negative_count(
+        row.try_get("", "tx_count_1h")
+            .context("Failed to decode tx_count_1h")
+            .map_err(QueryExecutionError::Query)?,
+    )
+    .map_err(QueryExecutionError::Query)?;
+    let tx_count_24h = parse_non_negative_count(
+        row.try_get("", "tx_count_24h")
+            .context("Failed to decode tx_count_24h")
+            .map_err(QueryExecutionError::Query)?,
+    )
+    .map_err(QueryExecutionError::Query)?;
+    let tx_amount_1h = parse_non_negative_amount(
+        row.try_get("", "tx_amount_1h")
+            .context("Failed to decode tx_amount_1h")
+            .map_err(QueryExecutionError::Query)?,
+        "tx_amount_1h",
+    )
+    .map_err(QueryExecutionError::Query)?;
+    let tx_amount_24h = parse_non_negative_amount(
+        row.try_get("", "tx_amount_24h")
+            .context("Failed to decode tx_amount_24h")
+            .map_err(QueryExecutionError::Query)?,
+        "tx_amount_24h",
+    )
+    .map_err(QueryExecutionError::Query)?;
+    let reverted_count_24h = parse_non_negative_count(
+        row.try_get("", "reverted_count_24h")
+            .context("Failed to decode reverted_count_24h")
+            .map_err(QueryExecutionError::Query)?,
+    )
+    .map_err(QueryExecutionError::Query)?;
+
+    Ok(UserTxWindowStats {
+        tx_count_1h,
+        tx_count_24h,
+        tx_amount_1h,
+        tx_amount_24h,
+        reverted_count_24h,
+    })
+}
+
+pub async fn fetch_tx_concentration_share_24h(
+    db: &DatabaseConnection,
+    timeout_ms: u64,
+) -> Result<f64, QueryExecutionError> {
+    let row = query_one_with_timeout(
+        db,
+        r#"
+        WITH per_user AS (
+            SELECT
+                user_address,
+                COALESCE(SUM(NULLIF(amount, '')::numeric), 0) AS user_amount
+            FROM "UserTransaction"
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY user_address
+        )
+        SELECT
+            COALESCE(
+                LEAST(
+                    GREATEST(MAX(user_amount) / NULLIF(SUM(user_amount), 0), 0),
+                    1
+                ),
+                0
+            )::double precision AS concentration_share_24h
+        FROM per_user
+        "#,
+        timeout_ms,
+    )
+    .await?
+    .ok_or_else(|| {
+        QueryExecutionError::Query(anyhow!(
+            r#"tx concentration query returned no row from "UserTransaction""#
+        ))
+    })?;
+
+    let concentration_share_24h = parse_non_negative_amount(
+        row.try_get("", "concentration_share_24h")
+            .context("Failed to decode concentration_share_24h")
+            .map_err(QueryExecutionError::Query)?,
+        "concentration_share_24h",
+    )
+    .map_err(QueryExecutionError::Query)?;
+
+    Ok(concentration_share_24h.min(1.0))
 }
 
 async fn with_timeout<T, F>(timeout_ms: u64, fut: F) -> Result<T, QueryExecutionError>
