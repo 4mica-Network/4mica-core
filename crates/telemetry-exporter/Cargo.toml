@@ -17,3 +17,7 @@ serde = { workspace = true, features = ["derive"] }
 sea-orm = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 url = { workspace = true }
+
+[dev-dependencies]
+migration = { workspace = true }
+serial_test = { workspace = true }

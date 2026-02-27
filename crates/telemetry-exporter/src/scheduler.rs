@@ -236,6 +236,10 @@ fn compute_fraction(numerator: f64, denominator: f64) -> f64 {
 mod tests {
     use super::{compute_fraction, compute_spike_score, sum_status_amount, sum_status_amount_for};
     use crate::db::StatusAmountAggregate;
+    use crate::snapshot::SnapshotStore;
+    use migration::{Migrator, MigratorTrait};
+    use sea_orm::{ConnectionTrait, Database};
+    use serial_test::serial;
 
     #[test]
     fn sums_all_status_amounts() {
@@ -289,5 +293,218 @@ mod tests {
     fn clamps_fraction_to_unit_interval() {
         assert_eq!(compute_fraction(15.0, 10.0), 1.0);
         assert_eq!(compute_fraction(-2.0, 10.0), 0.0);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn snapshot_tick_integration_with_postgres_fixture() {
+        let Ok(test_database_url) = std::env::var("TELEMETRY_EXPORTER_TEST_DATABASE_URL") else {
+            eprintln!("skipping integration test: TELEMETRY_EXPORTER_TEST_DATABASE_URL is not set");
+            return;
+        };
+
+        let db = Database::connect(&test_database_url)
+            .await
+            .expect("test database should be reachable");
+
+        Migrator::refresh(&db)
+            .await
+            .expect("migrations should apply for test fixture");
+
+        db.execute_unprepared(
+            r#"
+            INSERT INTO "User" (address, version, is_suspended, created_at, updated_at)
+            VALUES
+                ('0xU1', 1, FALSE, NOW(), NOW()),
+                ('0xU2', 1, FALSE, NOW(), NOW()),
+                ('0xU3', 1, FALSE, NOW(), NOW());
+            "#,
+        )
+        .await
+        .expect("users should seed");
+
+        db.execute_unprepared(
+            r#"
+            INSERT INTO "Tabs" (
+                id,
+                user_address,
+                server_address,
+                asset_address,
+                start_ts,
+                status,
+                settlement_status,
+                total_amount,
+                paid_amount,
+                last_req_id,
+                version,
+                created_at,
+                updated_at,
+                ttl
+            )
+            VALUES
+                ('tab-open', '0xU1', '0xS1', '0xA1', NOW(), 'OPEN', 'SETTLED', '100', '100', '0x1', 1, NOW(), NOW(), 1000),
+                ('tab-pending', '0xU2', '0xS1', '0xA1', NOW(), 'PENDING', 'PENDING', '50', '10', '0x1', 1, NOW(), NOW(), 1000),
+                ('tab-closed', '0xU3', '0xS1', '0xA1', NOW(), 'CLOSED', 'FAILED', '70', '0', '0x1', 1, NOW(), NOW(), 1000);
+            "#,
+        )
+        .await
+        .expect("tabs should seed");
+
+        db.execute_unprepared(
+            r#"
+            INSERT INTO "Guarantee" (
+                tab_id,
+                req_id,
+                from_address,
+                to_address,
+                asset_address,
+                value,
+                start_ts,
+                cert,
+                request,
+                created_at,
+                updated_at
+            )
+            VALUES
+                ('tab-open', '0x01', '0xU1', '0xU2', '0xA1', '100', NOW(), NULL, NULL, NOW(), NOW()),
+                ('tab-pending', '0x02', '0xU2', '0xU1', '0xA1', '50', NOW(), NULL, NULL, NOW(), NOW()),
+                ('tab-closed', '0x03', '0xU3', '0xU1', '0xA1', '70', NOW(), NULL, NULL, NOW(), NOW());
+            "#,
+        )
+        .await
+        .expect("guarantees should seed");
+
+        db.execute_unprepared(
+            r#"
+            INSERT INTO "UserTransaction" (
+                tx_id,
+                user_address,
+                recipient_address,
+                asset_address,
+                amount,
+                tab_id,
+                block_number,
+                block_hash,
+                record_tx_hash,
+                record_tx_block_number,
+                record_tx_block_hash,
+                recorded_at,
+                status,
+                confirmed_at,
+                verified,
+                finalized,
+                failed,
+                created_at,
+                updated_at
+            )
+            VALUES
+                (
+                    'tx-finalized-recent',
+                    '0xU1',
+                    '0xU2',
+                    '0xA1',
+                    '100',
+                    'tab-open',
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NOW() - INTERVAL '30 minutes',
+                    'FINALIZED',
+                    NOW() - INTERVAL '30 minutes',
+                    TRUE,
+                    TRUE,
+                    FALSE,
+                    NOW() - INTERVAL '30 minutes',
+                    NOW() - INTERVAL '30 minutes'
+                ),
+                (
+                    'tx-recorded-2h',
+                    '0xU2',
+                    '0xU1',
+                    '0xA1',
+                    '50',
+                    'tab-pending',
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NOW() - INTERVAL '2 hours',
+                    'RECORDED',
+                    NOW() - INTERVAL '2 hours',
+                    TRUE,
+                    FALSE,
+                    FALSE,
+                    NOW() - INTERVAL '2 hours',
+                    NOW() - INTERVAL '2 hours'
+                ),
+                (
+                    'tx-reverted-old',
+                    '0xU2',
+                    '0xU3',
+                    '0xA1',
+                    '40',
+                    'tab-closed',
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NOW() - INTERVAL '25 hours',
+                    'REVERTED',
+                    NOW() - INTERVAL '25 hours',
+                    TRUE,
+                    FALSE,
+                    TRUE,
+                    NOW() - INTERVAL '25 hours',
+                    NOW() - INTERVAL '25 hours'
+                );
+            "#,
+        )
+        .await
+        .expect("user transactions should seed");
+
+        let store = SnapshotStore::new();
+        let result = super::run_snapshot_tick(&store, &db, 5_000, "SELECT 1")
+            .await
+            .expect("snapshot tick should succeed");
+
+        assert_eq!(result.snapshot.users_total, 3);
+        assert_eq!(result.snapshot.active_users_1h, 1);
+        assert_eq!(result.snapshot.active_users_24h, 2);
+        assert_eq!(result.snapshot.active_users_7d, 2);
+
+        let tabs_open = result
+            .tabs_status_aggregates
+            .iter()
+            .find(|aggregate| aggregate.status == "OPEN")
+            .expect("OPEN status should exist");
+        assert_eq!(tabs_open.tabs_count, 1);
+        assert_eq!(tabs_open.total_amount_sum, 100.0);
+        assert_eq!(tabs_open.paid_amount_sum, 100.0);
+
+        let settled_guarantees = result
+            .guarantee_status_aggregates
+            .iter()
+            .find(|aggregate| aggregate.status == "SETTLED")
+            .expect("SETTLED guarantee status should exist");
+        assert_eq!(settled_guarantees.count, 1);
+        assert_eq!(settled_guarantees.amount_sum, 100.0);
+
+        let finalized_settlements = result
+            .settlement_status_aggregates
+            .iter()
+            .find(|aggregate| aggregate.status == "FINALIZED")
+            .expect("FINALIZED settlement status should exist");
+        assert_eq!(finalized_settlements.count, 1);
+        assert_eq!(finalized_settlements.amount_sum, 100.0);
+
+        assert!(
+            (result.tx_concentration_share_24h - (2.0 / 3.0)).abs() < 1e-9,
+            "expected concentration share close to 2/3, got {}",
+            result.tx_concentration_share_24h
+        );
     }
 }
