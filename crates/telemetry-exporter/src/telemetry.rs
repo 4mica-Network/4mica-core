@@ -11,6 +11,13 @@ struct MetricNames {
     active_users_1h: String,
     active_users_24h: String,
     active_users_7d: String,
+    tabs_count: String,
+    tabs_total_amount: String,
+    tabs_paid_amount: String,
+    guarantees_count: String,
+    guarantees_amount: String,
+    settlements_count: String,
+    settlements_amount: String,
     snapshot_age_seconds: String,
     query_duration_seconds: String,
     query_failures_total: String,
@@ -24,6 +31,13 @@ impl MetricNames {
             active_users_1h: format!("{namespace}_active_users_1h"),
             active_users_24h: format!("{namespace}_active_users_24h"),
             active_users_7d: format!("{namespace}_active_users_7d"),
+            tabs_count: format!("{namespace}_tabs_count"),
+            tabs_total_amount: format!("{namespace}_tabs_total_amount"),
+            tabs_paid_amount: format!("{namespace}_tabs_paid_amount"),
+            guarantees_count: format!("{namespace}_guarantees_count"),
+            guarantees_amount: format!("{namespace}_guarantees_amount"),
+            settlements_count: format!("{namespace}_settlements_count"),
+            settlements_amount: format!("{namespace}_settlements_amount"),
             snapshot_age_seconds: format!("{namespace}_snapshot_age_seconds"),
             query_duration_seconds: format!("{namespace}_query_duration_seconds"),
             query_failures_total: format!("{namespace}_query_failures_total"),
@@ -101,6 +115,34 @@ pub fn set_active_users_24h(active_users_24h: u64) {
 
 pub fn set_active_users_7d(active_users_7d: u64) {
     metrics::gauge!(metric_names().active_users_7d.as_str()).set(active_users_7d as f64);
+}
+
+pub fn set_tabs_status_aggregate(
+    status: &str,
+    tabs_count: u64,
+    total_amount: f64,
+    paid_amount: f64,
+) {
+    metrics::gauge!(metric_names().tabs_count.as_str(), "status" => status.to_owned())
+        .set(tabs_count as f64);
+    metrics::gauge!(metric_names().tabs_total_amount.as_str(), "status" => status.to_owned())
+        .set(total_amount);
+    metrics::gauge!(metric_names().tabs_paid_amount.as_str(), "status" => status.to_owned())
+        .set(paid_amount);
+}
+
+pub fn set_guarantees_status_aggregate(status: &str, count: u64, amount: f64) {
+    metrics::gauge!(metric_names().guarantees_count.as_str(), "status" => status.to_owned())
+        .set(count as f64);
+    metrics::gauge!(metric_names().guarantees_amount.as_str(), "status" => status.to_owned())
+        .set(amount);
+}
+
+pub fn set_settlements_status_aggregate(status: &str, count: u64, amount: f64) {
+    metrics::gauge!(metric_names().settlements_count.as_str(), "status" => status.to_owned())
+        .set(count as f64);
+    metrics::gauge!(metric_names().settlements_amount.as_str(), "status" => status.to_owned())
+        .set(amount);
 }
 
 fn metric_names() -> &'static MetricNames {

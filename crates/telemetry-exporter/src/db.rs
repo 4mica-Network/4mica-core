@@ -19,6 +19,21 @@ pub struct ActiveUsersWindowCounts {
     pub active_users_7d: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabStatusAggregate {
+    pub status: String,
+    pub tabs_count: u64,
+    pub total_amount_sum: f64,
+    pub paid_amount_sum: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusAmountAggregate {
+    pub status: String,
+    pub count: u64,
+    pub amount_sum: f64,
+}
+
 impl QueryExecutionError {
     pub fn is_timeout(&self) -> bool {
         matches!(self, Self::Timeout { .. })
@@ -86,6 +101,18 @@ pub async fn query_one_with_timeout(
     let stmt = Statement::from_string(db.get_database_backend(), sql.to_owned());
     with_timeout(timeout_ms, async move {
         db.query_one(stmt).await.map_err(anyhow::Error::from)
+    })
+    .await
+}
+
+pub async fn query_all_with_timeout(
+    db: &DatabaseConnection,
+    sql: &str,
+    timeout_ms: u64,
+) -> Result<Vec<QueryResult>, QueryExecutionError> {
+    let stmt = Statement::from_string(db.get_database_backend(), sql.to_owned());
+    with_timeout(timeout_ms, async move {
+        db.query_all(stmt).await.map_err(anyhow::Error::from)
     })
     .await
 }
@@ -166,6 +193,166 @@ pub async fn fetch_active_users_window_counts(
     })
 }
 
+pub async fn fetch_tabs_status_aggregates(
+    db: &DatabaseConnection,
+    timeout_ms: u64,
+) -> Result<Vec<TabStatusAggregate>, QueryExecutionError> {
+    let rows = query_all_with_timeout(
+        db,
+        r#"
+        SELECT
+            s::text AS status,
+            COUNT(t.id)::bigint AS tabs_count,
+            COALESCE(SUM(NULLIF(t.total_amount, '')::numeric), 0)::double precision AS total_amount_sum,
+            COALESCE(SUM(NULLIF(t.paid_amount, '')::numeric), 0)::double precision AS paid_amount_sum
+        FROM unnest(enum_range(NULL::tab_status)) AS s
+        LEFT JOIN "Tabs" t ON t.status = s
+        GROUP BY s
+        ORDER BY s::text
+        "#,
+        timeout_ms,
+    )
+    .await?;
+
+    let mut aggregates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let status: String = row
+            .try_get("", "status")
+            .context("Failed to decode tabs status")
+            .map_err(QueryExecutionError::Query)?;
+        let tabs_count = parse_non_negative_count(
+            row.try_get("", "tabs_count")
+                .context("Failed to decode tabs_count")
+                .map_err(QueryExecutionError::Query)?,
+        )
+        .map_err(QueryExecutionError::Query)?;
+        let total_amount_sum = parse_non_negative_amount(
+            row.try_get("", "total_amount_sum")
+                .context("Failed to decode total_amount_sum")
+                .map_err(QueryExecutionError::Query)?,
+            "total_amount_sum",
+        )
+        .map_err(QueryExecutionError::Query)?;
+        let paid_amount_sum = parse_non_negative_amount(
+            row.try_get("", "paid_amount_sum")
+                .context("Failed to decode paid_amount_sum")
+                .map_err(QueryExecutionError::Query)?,
+            "paid_amount_sum",
+        )
+        .map_err(QueryExecutionError::Query)?;
+
+        aggregates.push(TabStatusAggregate {
+            status,
+            tabs_count,
+            total_amount_sum,
+            paid_amount_sum,
+        });
+    }
+
+    Ok(aggregates)
+}
+
+pub async fn fetch_guarantee_status_aggregates(
+    db: &DatabaseConnection,
+    timeout_ms: u64,
+) -> Result<Vec<StatusAmountAggregate>, QueryExecutionError> {
+    let rows = query_all_with_timeout(
+        db,
+        r#"
+        SELECT
+            s::text AS status,
+            COUNT(g.tab_id)::bigint AS guarantees_count,
+            COALESCE(SUM(NULLIF(g.value, '')::numeric), 0)::double precision AS guarantees_amount_sum
+        FROM unnest(enum_range(NULL::settlement_status)) AS s
+        LEFT JOIN "Tabs" t ON t.settlement_status = s
+        LEFT JOIN "Guarantee" g ON g.tab_id = t.id
+        GROUP BY s
+        ORDER BY s::text
+        "#,
+        timeout_ms,
+    )
+    .await?;
+
+    let mut aggregates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let status: String = row
+            .try_get("", "status")
+            .context("Failed to decode guarantee status")
+            .map_err(QueryExecutionError::Query)?;
+        let count = parse_non_negative_count(
+            row.try_get("", "guarantees_count")
+                .context("Failed to decode guarantees_count")
+                .map_err(QueryExecutionError::Query)?,
+        )
+        .map_err(QueryExecutionError::Query)?;
+        let amount_sum = parse_non_negative_amount(
+            row.try_get("", "guarantees_amount_sum")
+                .context("Failed to decode guarantees_amount_sum")
+                .map_err(QueryExecutionError::Query)?,
+            "guarantees_amount_sum",
+        )
+        .map_err(QueryExecutionError::Query)?;
+
+        aggregates.push(StatusAmountAggregate {
+            status,
+            count,
+            amount_sum,
+        });
+    }
+
+    Ok(aggregates)
+}
+
+pub async fn fetch_settlement_status_aggregates(
+    db: &DatabaseConnection,
+    timeout_ms: u64,
+) -> Result<Vec<StatusAmountAggregate>, QueryExecutionError> {
+    let rows = query_all_with_timeout(
+        db,
+        r#"
+        SELECT
+            s::text AS status,
+            COUNT(ut.tx_id)::bigint AS settlements_count,
+            COALESCE(SUM(NULLIF(ut.amount, '')::numeric), 0)::double precision AS settlements_amount_sum
+        FROM unnest(enum_range(NULL::user_transaction_status)) AS s
+        LEFT JOIN "UserTransaction" ut ON ut.status = s
+        GROUP BY s
+        ORDER BY s::text
+        "#,
+        timeout_ms,
+    )
+    .await?;
+
+    let mut aggregates = Vec::with_capacity(rows.len());
+    for row in rows {
+        let status: String = row
+            .try_get("", "status")
+            .context("Failed to decode settlement status")
+            .map_err(QueryExecutionError::Query)?;
+        let count = parse_non_negative_count(
+            row.try_get("", "settlements_count")
+                .context("Failed to decode settlements_count")
+                .map_err(QueryExecutionError::Query)?,
+        )
+        .map_err(QueryExecutionError::Query)?;
+        let amount_sum = parse_non_negative_amount(
+            row.try_get("", "settlements_amount_sum")
+                .context("Failed to decode settlements_amount_sum")
+                .map_err(QueryExecutionError::Query)?,
+            "settlements_amount_sum",
+        )
+        .map_err(QueryExecutionError::Query)?;
+
+        aggregates.push(StatusAmountAggregate {
+            status,
+            count,
+            amount_sum,
+        });
+    }
+
+    Ok(aggregates)
+}
+
 async fn with_timeout<T, F>(timeout_ms: u64, fut: F) -> Result<T, QueryExecutionError>
 where
     F: Future<Output = anyhow::Result<T>>,
@@ -192,9 +379,21 @@ fn parse_non_negative_count(value: i64) -> anyhow::Result<u64> {
     Ok(value as u64)
 }
 
+fn parse_non_negative_amount(value: f64, field_name: &str) -> anyhow::Result<f64> {
+    if !value.is_finite() {
+        bail!("{field_name} must be finite, got {value}");
+    }
+    if value < 0.0 {
+        bail!("{field_name} must be non-negative, got {value}");
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_non_negative_count, parse_readonly_setting, with_timeout};
+    use super::{
+        parse_non_negative_amount, parse_non_negative_count, parse_readonly_setting, with_timeout,
+    };
     use std::time::Duration;
 
     #[test]
@@ -244,5 +443,29 @@ mod tests {
     fn rejects_negative_count() {
         let err = parse_non_negative_count(-1).unwrap_err();
         assert!(err.to_string().contains("non-negative"));
+    }
+
+    #[test]
+    fn parses_non_negative_amount() {
+        assert_eq!(
+            parse_non_negative_amount(12.5, "amount").expect("positive should pass"),
+            12.5
+        );
+        assert_eq!(
+            parse_non_negative_amount(0.0, "amount").expect("zero should pass"),
+            0.0
+        );
+    }
+
+    #[test]
+    fn rejects_negative_amount() {
+        let err = parse_non_negative_amount(-0.01, "amount").unwrap_err();
+        assert!(err.to_string().contains("non-negative"));
+    }
+
+    #[test]
+    fn rejects_non_finite_amount() {
+        let err = parse_non_negative_amount(f64::NAN, "amount").unwrap_err();
+        assert!(err.to_string().contains("finite"));
     }
 }
