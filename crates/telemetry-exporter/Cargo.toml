@@ -1,0 +1,23 @@
+[package]
+name = "telemetry-exporter"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+dotenv = { workspace = true }
+env_logger = { workspace = true }
+envconfig = { workspace = true }
+log = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sea-orm = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+url = { workspace = true }
+
+[dev-dependencies]
+migration = { workspace = true }
+serial_test = { workspace = true }

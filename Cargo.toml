@@ -9,6 +9,7 @@ members = [
     "crates/migration",
     "crates/entities",
     "crates/metrics",
+    "crates/telemetry-exporter",
     "crates/derive",
 ]
 
