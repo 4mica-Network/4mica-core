@@ -7,7 +7,7 @@ use entities::{collateral_event, tabs};
 use log::info;
 use metrics_4mica::measure;
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
@@ -108,106 +108,143 @@ pub async fn unlock_user_collateral(
     asset_address: String,
     amount: U256,
 ) -> Result<(), PersistDbError> {
-    let now = now();
-    parse_address(&asset_address)?;
-
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
-                let tab = get_tab_by_id_on(txn, tab_id).await?;
-                let tab_id_str = u256_to_string(tab_id);
-
-                let tab_asset = AlloyAddress::from_str(&tab.asset_address).map_err(|e| {
-                    PersistDbError::InvariantViolation(format!(
-                        "invalid tab asset address {} for tab {}: {e}",
-                        &tab.asset_address, tab_id_str
-                    ))
-                })?;
-                let unlock_asset = AlloyAddress::from_str(&asset_address).map_err(|e| {
-                    PersistDbError::InvariantViolation(format!(
-                        "invalid unlock asset address {} for tab {}: {e}",
-                        &asset_address, tab_id_str
-                    ))
-                })?;
-                if tab_asset != unlock_asset {
-                    return Err(PersistDbError::InvariantViolation(format!(
-                        "tab asset does not match unlock asset for tab {}",
-                        tab_id_str
-                    )));
-                }
-
-                if tab.settlement_status != SettlementStatus::Pending {
-                    return Ok::<_, PersistDbError>(());
-                }
-
-                let total_amount = U256::from_str(&tab.total_amount)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let paid_amount = U256::from_str(&tab.paid_amount)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let new_paid = paid_amount.checked_add(amount).ok_or_else(|| {
-                    PersistDbError::DatabaseFailure(sea_orm::DbErr::Custom(
-                        "paid_amount overflow".to_string(),
-                    ))
-                })?;
-
-                let asset_balance =
-                    get_user_balance_on(txn, &tab.user_address, &asset_address).await?;
-                let total = U256::from_str(&asset_balance.total)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let locked = U256::from_str(&asset_balance.locked)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-
-                if amount > locked {
-                    return Err(PersistDbError::InvariantViolation(
-                        "unlock amount exceeds locked collateral".into(),
-                    ));
-                }
-
-                let new_locked = locked
-                    .checked_sub(amount)
-                    .ok_or_else(|| PersistDbError::InvariantViolation("locked underflow".into()))?;
-
-                update_user_balance_and_version_on(
-                    txn,
-                    &tab.user_address,
-                    &asset_address,
-                    asset_balance.version,
-                    total,
-                    new_locked,
-                )
-                .await?;
-
-                let mut tab_update = tabs::ActiveModel {
-                    paid_amount: Set(new_paid.to_string()),
-                    ..Default::default()
-                };
-                if tab.settlement_status == SettlementStatus::Pending && new_paid >= total_amount {
-                    tab_update.settlement_status = Set(SettlementStatus::Settled);
-                }
-
-                lock_and_update_tab_on(txn, tab_id, tab.version, tab_update).await?;
-
-                let ev = collateral_event::ActiveModel {
-                    id: Set(new_uuid()),
-                    user_address: Set(tab.user_address.clone()),
-                    asset_address: Set(asset_address),
-                    amount: Set(amount.to_string()),
-                    event_type: Set(CollateralEventType::Unlock),
-                    tab_id: Set(Some(tab_id_str)),
-                    req_id: Set(None),
-                    tx_id: Set(None),
-                    event_chain_id: Set(None),
-                    event_block_hash: Set(None),
-                    event_tx_hash: Set(None),
-                    event_log_index: Set(None),
-                    created_at: Set(now),
-                };
-                collateral_event::Entity::insert(ev).exec(txn).await?;
-
+                unlock_user_collateral_on(txn, tab_id, asset_address.clone(), amount, None).await?;
                 Ok::<_, PersistDbError>(())
             })
         })
         .await?;
+
+    Ok(())
+}
+
+pub(crate) async fn unlock_user_collateral_on<C: ConnectionTrait>(
+    conn: &C,
+    tab_id: U256,
+    asset_address: String,
+    amount: U256,
+    tx_id: Option<String>,
+) -> Result<(), PersistDbError> {
+    let now = now();
+    parse_address(&asset_address)?;
+
+    let tab = get_tab_by_id_on(conn, tab_id).await?;
+    let tab_id_str = u256_to_string(tab_id);
+
+    let tab_asset = AlloyAddress::from_str(&tab.asset_address).map_err(|e| {
+        PersistDbError::InvariantViolation(format!(
+            "invalid tab asset address {} for tab {}: {e}",
+            &tab.asset_address, tab_id_str
+        ))
+    })?;
+    let unlock_asset = AlloyAddress::from_str(&asset_address).map_err(|e| {
+        PersistDbError::InvariantViolation(format!(
+            "invalid unlock asset address {} for tab {}: {e}",
+            &asset_address, tab_id_str
+        ))
+    })?;
+    if tab_asset != unlock_asset {
+        return Err(PersistDbError::InvariantViolation(format!(
+            "tab asset does not match unlock asset for tab {}",
+            tab_id_str
+        )));
+    }
+
+    if tab.settlement_status != SettlementStatus::Pending {
+        return Ok(());
+    }
+
+    if let Some(ref tx_id) = tx_id {
+        let duplicate = collateral_event::Entity::find()
+            .filter(collateral_event::Column::EventType.eq(CollateralEventType::Unlock))
+            .filter(collateral_event::Column::TxId.eq(tx_id))
+            .one(conn)
+            .await?
+            .is_some();
+        if duplicate {
+            return Ok(());
+        }
+    }
+
+    let asset_balance = get_user_balance_on(conn, &tab.user_address, &asset_address).await?;
+    let total = U256::from_str(&asset_balance.total)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let locked = U256::from_str(&asset_balance.locked)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+    // Keep existing invariant semantics for direct unlock requests.
+    if amount > locked {
+        return Err(PersistDbError::InvariantViolation(
+            "unlock amount exceeds locked collateral".into(),
+        ));
+    }
+
+    let total_amount = U256::from_str(&tab.total_amount)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let paid_amount = U256::from_str(&tab.paid_amount)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+    // Keep paid_amount bounded by total_amount while still allowing release of locked collateral
+    // when a tab is already fully paid (e.g. total_amount=0).
+    let remaining = total_amount.saturating_sub(paid_amount);
+    let paid_increment = amount.min(remaining);
+    let unlock_amount = if remaining == U256::ZERO {
+        amount
+    } else {
+        paid_increment
+    };
+
+    let new_paid = paid_amount.checked_add(paid_increment).ok_or_else(|| {
+        PersistDbError::DatabaseFailure(sea_orm::DbErr::Custom("paid_amount overflow".to_string()))
+    })?;
+
+    let new_locked = locked
+        .checked_sub(unlock_amount)
+        .ok_or_else(|| PersistDbError::InvariantViolation("locked underflow".into()))?;
+    if unlock_amount > U256::ZERO {
+        update_user_balance_and_version_on(
+            conn,
+            &tab.user_address,
+            &asset_address,
+            asset_balance.version,
+            total,
+            new_locked,
+        )
+        .await?;
+    }
+
+    let mut tab_update = tabs::ActiveModel {
+        paid_amount: Set(new_paid.to_string()),
+        ..Default::default()
+    };
+    if new_paid >= total_amount {
+        tab_update.settlement_status = Set(SettlementStatus::Settled);
+    }
+
+    lock_and_update_tab_on(conn, tab_id, tab.version, tab_update).await?;
+
+    if unlock_amount > U256::ZERO {
+        let tx_id_for_event = tx_id.clone();
+        let ev = collateral_event::ActiveModel {
+            id: Set(new_uuid()),
+            user_address: Set(tab.user_address),
+            asset_address: Set(asset_address),
+            amount: Set(unlock_amount.to_string()),
+            event_type: Set(CollateralEventType::Unlock),
+            tab_id: Set(Some(tab_id_str)),
+            req_id: Set(None),
+            tx_id: Set(tx_id_for_event.clone()),
+            event_chain_id: Set(None),
+            event_block_hash: Set(None),
+            event_tx_hash: Set(None),
+            event_log_index: Set(None),
+            created_at: Set(now),
+        };
+
+        collateral_event::Entity::insert(ev).exec(conn).await?;
+    }
 
     Ok(())
 }
