@@ -100,26 +100,31 @@ pub async fn clear_tables(ctx: &PersistCtx, tables: &[&str]) -> Result<()> {
 }
 
 pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
-    clear_tables(
-        ctx,
-        &[
-            "UserTransaction",
-            "Withdrawal",
-            "Guarantee",
-            "Tabs",
-            "CollateralEvent",
-            "UserAssetBalance",
-            "User",
-            "AuthNonce",
-            "AuthRefreshToken",
-            "WalletRole",
-            "BlockchainEvent",
-            "BlockchainEventCursor",
-            "BlockchainBlock",
-            "ChainCursor",
-        ],
-    )
-    .await?;
+    // Use a single TRUNCATE so FK relationships are handled atomically.
+    ctx.db
+        .as_ref()
+        .execute(Statement::from_string(
+            ctx.db.get_database_backend(),
+            r#"
+TRUNCATE TABLE
+    "UserTransaction",
+    "Withdrawal",
+    "Guarantee",
+    "Tabs",
+    "CollateralEvent",
+    "UserAssetBalance",
+    "User",
+    "AuthNonce",
+    "AuthRefreshToken",
+    "WalletRole",
+    "BlockchainEvent",
+    "BlockchainEventCursor",
+    "BlockchainBlock",
+    "ChainCursor"
+RESTART IDENTITY CASCADE;
+"#,
+        ))
+        .await?;
 
     Ok(())
 }
