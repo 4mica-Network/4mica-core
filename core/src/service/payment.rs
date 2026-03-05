@@ -496,66 +496,56 @@ impl CoreService {
                 }
             }
 
-            let tab_id = match tx.tab_id.as_deref() {
-                Some(id) => match U256::from_str(id) {
-                    Ok(parsed) => parsed,
-                    Err(err) => {
-                        warn!(
-                            "Invalid tab_id {} for tx {} (err: {err}); marking reverted",
-                            id, tx.tx_id
-                        );
-                        self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
-                            .await?;
-                        reverted_count += 1;
-                        continue;
-                    }
-                },
-                None => {
-                    warn!("Recorded tx {} missing tab_id; marking reverted", tx.tx_id);
-                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
-                        .await?;
-                    reverted_count += 1;
-                    continue;
-                }
+            let Some(tab_id) = tx.tab_id.as_deref() else {
+                warn!("Recorded tx {} missing tab_id; marking reverted", tx.tx_id);
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
+                    .await?;
+                reverted_count += 1;
+                continue;
             };
-
-            let amount = match U256::from_str(&tx.amount) {
-                Ok(value) => value,
-                Err(err) => {
-                    warn!(
-                        "Invalid amount {} for tx {} (err: {err}); marking reverted",
-                        tx.amount, tx.tx_id
-                    );
-                    self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
-                        .await?;
-                    reverted_count += 1;
-                    continue;
-                }
-            };
-
-            if let Err(err) = repo::unlock_user_collateral(
-                &self.inner.persist_ctx,
-                tab_id,
-                tx.asset_address.clone(),
-                amount,
-            )
-            .await
-            {
-                error!(
-                    "Failed to unlock collateral for tx {} (tab {}): {err}",
-                    tx.tx_id, tab_id
+            if let Err(err) = U256::from_str(tab_id) {
+                warn!(
+                    "Invalid tab_id {} for tx {} (err: {err}); marking reverted",
+                    tab_id, tx.tx_id
                 );
-                unlock_failed += 1;
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
+                    .await?;
+                reverted_count += 1;
                 continue;
             }
 
-            repo::mark_payment_transaction_finalized(&self.inner.persist_ctx, &tx.tx_id).await?;
-            crate::metrics::record_processed_payment_tx(
-                PaymentTxStatus::Finalized,
-                &tx.asset_address,
-                duration_recorded,
-            );
-            finalized_count += 1;
+            if let Err(err) = U256::from_str(&tx.amount) {
+                warn!(
+                    "Invalid amount {} for tx {} (err: {err}); marking reverted",
+                    tx.amount, tx.tx_id
+                );
+                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_recorded)
+                    .await?;
+                reverted_count += 1;
+                continue;
+            }
+
+            match repo::finalize_recorded_payment_transaction(&self.inner.persist_ctx, &tx.tx_id)
+                .await
+            {
+                Ok(true) => {
+                    crate::metrics::record_processed_payment_tx(
+                        PaymentTxStatus::Finalized,
+                        &tx.asset_address,
+                        duration_recorded,
+                    );
+                    finalized_count += 1;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    error!(
+                        "Failed to atomically finalize recorded tx {}: {err}",
+                        tx.tx_id
+                    );
+                    unlock_failed += 1;
+                    continue;
+                }
+            }
         }
 
         if recorded_total > 0 || finalized_count > 0 || reverted_count > 0 || unlock_failed > 0 {
