@@ -243,10 +243,22 @@ pub async fn finalize_recorded_payment_transaction(
             let tx_id = tx_id.clone();
             Box::pin(async move {
                 // Claim the row so only one worker can finalize+unlock this transaction.
+                // We must change predicate fields here; updating only UpdatedAt is not enough
+                // because a concurrent worker can still satisfy the same WHERE clause.
                 let claim = user_transaction::Entity::update_many()
                     .filter(user_transaction::Column::TxId.eq(&tx_id))
                     .filter(user_transaction::Column::Finalized.eq(false))
                     .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Recorded))
+                    .col_expr(
+                        user_transaction::Column::Finalized,
+                        sea_orm::sea_query::Expr::value(true),
+                    )
+                    .col_expr(
+                        user_transaction::Column::Status,
+                        user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                            UserTransactionStatus::Finalized,
+                        )),
+                    )
                     .col_expr(
                         user_transaction::Column::UpdatedAt,
                         sea_orm::sea_query::Expr::value(now()),
@@ -288,11 +300,8 @@ pub async fn finalize_recorded_payment_transaction(
 
                 let updated = user_transaction::Entity::update_many()
                     .filter(user_transaction::Column::TxId.eq(&tx_id))
-                    .filter(user_transaction::Column::Finalized.eq(false))
-                    .col_expr(
-                        user_transaction::Column::Finalized,
-                        sea_orm::sea_query::Expr::value(true),
-                    )
+                    .filter(user_transaction::Column::Finalized.eq(true))
+                    .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Finalized))
                     .col_expr(
                         user_transaction::Column::Verified,
                         sea_orm::sea_query::Expr::value(true),

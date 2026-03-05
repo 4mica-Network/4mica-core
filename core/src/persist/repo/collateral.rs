@@ -156,18 +156,6 @@ pub(crate) async fn unlock_user_collateral_on<C: ConnectionTrait>(
         return Ok(());
     }
 
-    if let Some(ref tx_id) = tx_id {
-        let duplicate = collateral_event::Entity::find()
-            .filter(collateral_event::Column::EventType.eq(CollateralEventType::Unlock))
-            .filter(collateral_event::Column::TxId.eq(tx_id))
-            .one(conn)
-            .await?
-            .is_some();
-        if duplicate {
-            return Ok(());
-        }
-    }
-
     let asset_balance = get_user_balance_on(conn, &tab.user_address, &asset_address).await?;
     let total = U256::from_str(&asset_balance.total)
         .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
@@ -243,6 +231,8 @@ pub(crate) async fn unlock_user_collateral_on<C: ConnectionTrait>(
             created_at: Set(now),
         };
 
+        // Deduplicate unlocks by tx_id via the DB unique index
+        // (uniq_collateral_unlock_tx_id). This is race-safe under concurrency.
         collateral_event::Entity::insert(ev).exec(conn).await?;
     }
 
