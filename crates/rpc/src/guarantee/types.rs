@@ -73,6 +73,39 @@ impl PaymentGuaranteeClaims {
             },
         }
     }
+
+    pub fn validate_v2_policy_binding(&self) -> anyhow::Result<()> {
+        if self.version != GUARANTEE_CLAIMS_VERSION_V2 {
+            return Ok(());
+        }
+
+        let policy = self
+            .validation_policy
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("v2 guarantee claims require validation_policy"))?;
+
+        let expected_subject_hash = compute_validation_subject_hash(
+            &self.user_address,
+            &self.recipient_address,
+            self.tab_id,
+            self.req_id,
+            self.amount,
+            &self.asset_address,
+            self.timestamp,
+        )?;
+        if policy.validation_subject_hash != B256::from(expected_subject_hash) {
+            anyhow::bail!("validation_subject_hash is not canonical for the payment intent fields");
+        }
+
+        let expected_request_hash = compute_validation_request_hash(policy)?;
+        if policy.validation_request_hash != B256::from(expected_request_hash) {
+            anyhow::bail!(
+                "validation_request_hash is not canonical for the validation policy fields"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 impl TryInto<Vec<u8>> for PaymentGuaranteeClaims {
