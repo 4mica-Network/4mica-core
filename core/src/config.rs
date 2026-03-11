@@ -1,5 +1,6 @@
 use std::{str::FromStr, sync::Arc};
 
+use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, bail};
 use crypto::bls::KeyMaterial;
@@ -128,6 +129,51 @@ pub struct Eip712Config {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Envconfig)]
+pub struct GuaranteeConfig {
+    #[envconfig(from = "GUARANTEE_REQUEST_VERSION", default = "1")]
+    pub request_version: u64,
+    #[envconfig(from = "TRUSTED_VALIDATION_REGISTRIES", default = "")]
+    pub trusted_validation_registries: String,
+    #[envconfig(
+        from = "VALIDATION_HASH_CANONICALIZATION_VERSION",
+        default = "4MICA_VALIDATION_REQUEST_V1"
+    )]
+    pub validation_hash_canonicalization_version: String,
+}
+
+impl GuaranteeConfig {
+    pub fn trusted_validation_registry_allowlist(&self) -> anyhow::Result<Vec<String>> {
+        self.trusted_validation_registries
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                Address::from_str(value)
+                    .map(|addr| addr.to_string())
+                    .map_err(|_| anyhow::anyhow!("invalid validation registry address: {value}"))
+            })
+            .collect()
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.request_version == 0 {
+            bail!("GUARANTEE_REQUEST_VERSION must be greater than 0");
+        }
+        if self
+            .validation_hash_canonicalization_version
+            .trim()
+            .is_empty()
+        {
+            bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");
+        }
+
+        // Ensures all configured addresses are valid and normalized.
+        let _ = self.trusted_validation_registry_allowlist()?;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct Secrets {
     pub bls_secret_key: KeyMaterial,
@@ -229,6 +275,7 @@ pub struct AppConfig {
     pub ethereum_config: EthereumConfig,
     pub database_config: DatabaseConfig,
     pub eip712: Eip712Config,
+    pub guarantee: GuaranteeConfig,
     pub auth: AuthConfig,
     pub monitoring: MonitoringConfig,
     /// Secrets are loaded into an Arc to avoid multiple allocations of the same secret.
@@ -247,6 +294,9 @@ impl AppConfig {
         let database_config =
             DatabaseConfig::init_from_env().context("Failed to load database config")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
+        let guarantee =
+            GuaranteeConfig::init_from_env().context("Failed to load guarantee config")?;
+        guarantee.validate().context("Invalid guarantee config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
         let monitoring =
             MonitoringConfig::init_from_env().context("Failed to load monitoring config")?;
@@ -257,9 +307,71 @@ impl AppConfig {
             ethereum_config,
             database_config,
             eip712,
+            guarantee,
             auth,
             monitoring,
             secrets,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GuaranteeConfig;
+
+    #[test]
+    fn guarantee_config_accepts_valid_v1_and_v2() {
+        let v1 = GuaranteeConfig {
+            request_version: 1,
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        v1.validate().expect("v1 config must be valid");
+
+        let v2 = GuaranteeConfig {
+            request_version: 2,
+            trusted_validation_registries:
+                "0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222"
+                    .to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        v2.validate().expect("v2 config must be valid");
+        let allowlist = v2
+            .trusted_validation_registry_allowlist()
+            .expect("allowlist should parse");
+        assert_eq!(allowlist.len(), 2);
+    }
+
+    #[test]
+    fn guarantee_config_rejects_invalid_registry_allowlist() {
+        let cfg = GuaranteeConfig {
+            request_version: 2,
+            trusted_validation_registries:
+                "0x1111111111111111111111111111111111111111,not-an-address".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("invalid allowlist should be rejected");
+        assert!(
+            err.to_string()
+                .contains("invalid validation registry address")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_invalid_hash_canonicalization_version() {
+        let cfg = GuaranteeConfig {
+            request_version: 2,
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "   ".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("empty canonicalization version should fail");
+        assert!(
+            err.to_string()
+                .contains("VALIDATION_HASH_CANONICALIZATION_VERSION")
+        );
     }
 }

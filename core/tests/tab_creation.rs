@@ -7,7 +7,7 @@ use core_service::{
         constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
     },
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
-    ethereum::{CoreContractApi, RecordPaymentTx},
+    ethereum::{CoreContractApi, GuaranteeVersionConfig, RecordPaymentTx},
     persist::{PersistCtx, repo},
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -404,10 +404,16 @@ impl CoreContractApi for MockContractApi {
         Ok(self.chain_id)
     }
 
-    async fn get_guarantee_domain_separator(
+    async fn get_guarantee_version_config(
         &self,
-    ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
-        Ok(self.domain)
+        version: u64,
+    ) -> Result<GuaranteeVersionConfig, core_service::error::CoreContractApiError> {
+        Ok(GuaranteeVersionConfig {
+            version,
+            domain_separator: self.domain,
+            decoder: alloy::primitives::Address::ZERO,
+            enabled: true,
+        })
     }
 
     async fn get_tab_expiration_time(

@@ -27,6 +27,7 @@ mod tab;
 pub struct Inner {
     config: AppConfig,
     public_params: CorePublicParameters,
+    active_guarantee_version: u64,
     guarantee_domain: [u8; 32],
     tab_expiration_time: AtomicU64,
     persist_ctx: PersistCtx,
@@ -52,6 +53,7 @@ impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
         let persist_ctx = PersistCtx::new().await?;
         let eth_cfg = config.ethereum_config.clone();
+        let active_guarantee_version = config.guarantee.request_version;
 
         let contract_api = Arc::new(CoreContractProxy::new(&config).await?);
 
@@ -67,11 +69,22 @@ impl CoreService {
         }
 
         let read_provider = Self::build_ws_provider(eth_cfg.clone()).await?;
-        let on_chain_domain = contract_api.get_guarantee_domain_separator().await?;
+        let version_config = contract_api
+            .get_guarantee_version_config(active_guarantee_version)
+            .await?;
+        if !version_config.enabled {
+            anyhow::bail!(
+                "active guarantee version {} is disabled on-chain",
+                active_guarantee_version
+            );
+        }
+        let on_chain_domain = version_config.domain_separator;
         let tab_expiration_time = contract_api.get_tab_expiration_time().await?;
         info!(
-            "on-chain guarantee domain separator: 0x{}",
-            crypto::hex::encode_hex(&on_chain_domain)
+            "on-chain guarantee v{} domain separator: {} (decoder: {})",
+            version_config.version,
+            crypto::hex::encode_hex(&on_chain_domain),
+            version_config.decoder
         );
         info!("on-chain tab expiration time: {}s", tab_expiration_time);
 
@@ -99,6 +112,14 @@ impl CoreService {
         let eip712_name = config.eip712.name.clone();
         let eip712_version = config.eip712.version.clone();
         let eth_config = config.ethereum_config.clone();
+        let guarantee_config = config.guarantee.clone();
+        let trusted_validation_registries =
+            guarantee_config.trusted_validation_registry_allowlist()?;
+        let active_guarantee_version = guarantee_config.request_version;
+        let validation_hash_canonicalization_version = guarantee_config
+            .validation_hash_canonicalization_version
+            .clone();
+        let active_guarantee_domain_separator = crypto::hex::encode_hex(&deps.guarantee_domain);
 
         let inner = Inner {
             config,
@@ -109,7 +130,12 @@ impl CoreService {
                 eip712_name,
                 eip712_version,
                 chain_id: deps.chain_id,
+                active_guarantee_version,
+                active_guarantee_domain_separator,
+                trusted_validation_registries,
+                validation_hash_canonicalization_version,
             },
+            active_guarantee_version,
             guarantee_domain: deps.guarantee_domain,
             tab_expiration_time: AtomicU64::new(deps.tab_expiration_time),
             persist_ctx: deps.persist_ctx,

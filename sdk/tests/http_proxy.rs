@@ -26,6 +26,11 @@ async fn rpc_proxy_get_public_params_round_trip() {
         eip712_name: "4mica".into(),
         eip712_version: "1".into(),
         chain_id: 1337,
+        active_guarantee_version: 1,
+        active_guarantee_domain_separator:
+            "0x0000000000000000000000000000000000000000000000000000000000000000".into(),
+        trusted_validation_registries: vec![],
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".into(),
     };
 
     let router = Router::new().route(

@@ -1,9 +1,9 @@
 use crate::error::{ServiceError, ServiceResult};
-use alloy_primitives::{Address, B256, Signature, keccak256};
+use alloy_primitives::{Address, B256, Signature, U256, keccak256};
 use alloy_sol_types::{SolStruct, SolValue, eip712_domain, sol};
 use rpc::{
     CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, SigningScheme,
+    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2, SigningScheme,
 };
 use std::str::FromStr;
 
@@ -22,6 +22,24 @@ sol! {
         uint256 amount;
         address asset;
         uint64  timestamp;
+    }
+
+    struct SolGuaranteeRequestClaimsV2 {
+        address user;
+        address recipient;
+        uint256 tabId;
+        uint256 reqId;
+        uint256 amount;
+        address asset;
+        uint64 timestamp;
+        address validationRegistryAddress;
+        bytes32 validationRequestHash;
+        uint256 validationChainId;
+        address validatorAddress;
+        uint256 validatorAgentId;
+        uint8 minValidationScore;
+        bytes32 validationSubjectHash;
+        string requiredValidationTag;
     }
 }
 
@@ -67,9 +85,10 @@ fn claims_participants(claims: &PaymentGuaranteeRequestClaims) -> ServiceResult<
             claims.user_address.as_str(),
             claims.recipient_address.as_str(),
         )),
-        PaymentGuaranteeRequestClaims::V2(_) => {
-            Err(ServiceError::unsupported_guarantee_request_version("v2"))
-        }
+        PaymentGuaranteeRequestClaims::V2(claims) => Ok((
+            claims.user_address.as_str(),
+            claims.recipient_address.as_str(),
+        )),
     }
 }
 
@@ -87,8 +106,11 @@ fn digest_for_guarantee_request(
         (SigningScheme::Eip191, PaymentGuaranteeRequestClaims::V1(claims)) => {
             eip191_digest_v1(claims, user_addr, recipient_addr)
         }
-        (_, PaymentGuaranteeRequestClaims::V2(_)) => {
-            Err(ServiceError::unsupported_guarantee_request_version("v2"))
+        (SigningScheme::Eip712, PaymentGuaranteeRequestClaims::V2(claims)) => {
+            eip712_digest_v2(params, claims)
+        }
+        (SigningScheme::Eip191, PaymentGuaranteeRequestClaims::V2(claims)) => {
+            eip191_digest_v2(claims, user_addr, recipient_addr)
         }
     }
 }
@@ -145,6 +167,70 @@ fn eip191_digest_v1(
         asset: Address::from_str(&claims.asset_address)
             .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
         timestamp: claims.timestamp,
+    }
+    .abi_encode();
+
+    let mut prefixed = format!("\x19Ethereum Signed Message:\n{}", data.len()).into_bytes();
+    prefixed.extend_from_slice(&data);
+    Ok(keccak256(prefixed))
+}
+
+fn eip712_digest_v2(
+    params: &CorePublicParameters,
+    claims: &PaymentGuaranteeRequestClaimsV2,
+) -> ServiceResult<B256> {
+    let domain = eip712_domain!(
+        name:     params.eip712_name.clone(),
+        version:  params.eip712_version.clone(),
+        chain_id: params.chain_id,
+    );
+
+    let message = SolGuaranteeRequestClaimsV2 {
+        user: Address::from_str(&claims.user_address)
+            .map_err(|_| ServiceError::InvalidParams("invalid user address".into()))?,
+        recipient: Address::from_str(&claims.recipient_address)
+            .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?,
+        tabId: claims.tab_id,
+        reqId: claims.req_id,
+        amount: claims.amount,
+        asset: Address::from_str(&claims.asset_address)
+            .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
+        timestamp: claims.timestamp,
+        validationRegistryAddress: claims.validation_policy.validation_registry_address,
+        validationRequestHash: claims.validation_policy.validation_request_hash,
+        validationChainId: U256::from(claims.validation_policy.validation_chain_id),
+        validatorAddress: claims.validation_policy.validator_address,
+        validatorAgentId: claims.validation_policy.validator_agent_id,
+        minValidationScore: claims.validation_policy.min_validation_score,
+        validationSubjectHash: claims.validation_policy.validation_subject_hash,
+        requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
+    };
+
+    Ok(message.eip712_signing_hash(&domain))
+}
+
+fn eip191_digest_v2(
+    claims: &PaymentGuaranteeRequestClaimsV2,
+    user: Address,
+    recipient: Address,
+) -> ServiceResult<B256> {
+    let data = SolGuaranteeRequestClaimsV2 {
+        user,
+        recipient,
+        tabId: claims.tab_id,
+        reqId: claims.req_id,
+        amount: claims.amount,
+        asset: Address::from_str(&claims.asset_address)
+            .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
+        timestamp: claims.timestamp,
+        validationRegistryAddress: claims.validation_policy.validation_registry_address,
+        validationRequestHash: claims.validation_policy.validation_request_hash,
+        validationChainId: U256::from(claims.validation_policy.validation_chain_id),
+        validatorAddress: claims.validation_policy.validator_address,
+        validatorAgentId: claims.validation_policy.validator_agent_id,
+        minValidationScore: claims.validation_policy.min_validation_score,
+        validationSubjectHash: claims.validation_policy.validation_subject_hash,
+        requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
     }
     .abi_encode();
 

@@ -19,6 +19,11 @@ fn create_test_params() -> CorePublicParameters {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
+        active_guarantee_version: 1,
+        active_guarantee_domain_separator:
+            "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        trusted_validation_registries: Vec::new(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
     }
 }
 

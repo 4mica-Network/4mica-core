@@ -13,6 +13,14 @@ pub struct CoreContractProxy {
     contract_address: Address,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct GuaranteeVersionConfig {
+    pub version: u64,
+    pub domain_separator: [u8; 32],
+    pub decoder: Address,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RecordPaymentTx {
     pub tx_hash: B256,
@@ -24,7 +32,24 @@ pub struct RecordPaymentTx {
 pub trait CoreContractApi: Send + Sync {
     async fn get_chain_id(&self) -> Result<u64, CoreContractApiError>;
 
-    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError>;
+    async fn get_guarantee_version_config(
+        &self,
+        version: u64,
+    ) -> Result<GuaranteeVersionConfig, CoreContractApiError>;
+
+    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
+        let cfg = self
+            .get_guarantee_version_config(rpc::GUARANTEE_CLAIMS_VERSION)
+            .await?;
+
+        if !cfg.enabled {
+            return Err(CoreContractApiError::GuaranteeVersionDisabled(
+                rpc::GUARANTEE_CLAIMS_VERSION,
+            ));
+        }
+
+        Ok(cfg.domain_separator)
+    }
 
     async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError>;
 
@@ -77,20 +102,19 @@ impl CoreContractApi for CoreContractProxy {
         Ok(chain_id)
     }
 
-    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
+    async fn get_guarantee_version_config(
+        &self,
+        version: u64,
+    ) -> Result<GuaranteeVersionConfig, CoreContractApiError> {
         let contract = self.build_contract();
-        let version_config = contract
-            .getGuaranteeVersionConfig(rpc::GUARANTEE_CLAIMS_VERSION)
-            .call()
-            .await?;
+        let version_config = contract.getGuaranteeVersionConfig(version).call().await?;
 
-        if !version_config.enabled {
-            return Err(CoreContractApiError::GuaranteeVersionDisabled(
-                rpc::GUARANTEE_CLAIMS_VERSION,
-            ));
-        }
-
-        Ok(version_config.domainSeparator.into())
+        Ok(GuaranteeVersionConfig {
+            version,
+            domain_separator: version_config.domainSeparator.into(),
+            decoder: version_config.decoder,
+            enabled: version_config.enabled,
+        })
     }
 
     async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {

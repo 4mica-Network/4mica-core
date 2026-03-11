@@ -6,11 +6,16 @@ use std::{
 
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::signers::Signer;
+use alloy::signers::local::PrivateKeySigner;
+use alloy::sol_types::{SolStruct, eip712_domain, sol};
 use chrono::{Duration, Utc};
 use core_service::{
+    auth::{access::AccessContext, constants::SCOPE_GUARANTEE_ISSUE},
     config::{AppConfig, DEFAULT_ASSET_ADDRESS},
     error::PersistDbError,
-    ethereum::{CoreContractApi, RecordPaymentTx},
+    error::ServiceError,
+    ethereum::{CoreContractApi, GuaranteeVersionConfig, RecordPaymentTx},
     persist::*,
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -21,7 +26,9 @@ use entities::{guarantee, user};
 use rand::random;
 use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, SigningScheme,
+    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
+    PaymentGuaranteeValidationPolicyV2, SigningScheme, compute_validation_request_hash,
+    compute_validation_subject_hash,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 use test_log::test;
@@ -101,6 +108,15 @@ fn build_read_provider() -> anyhow::Result<DynProvider> {
 
 async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreService> {
     let config = AppConfig::fetch()?;
+    build_core_service_with_active_version(persist_ctx, config.guarantee.request_version).await
+}
+
+async fn build_core_service_with_active_version(
+    persist_ctx: PersistCtx,
+    active_guarantee_version: u64,
+) -> anyhow::Result<CoreService> {
+    let mut config = AppConfig::fetch()?;
+    config.guarantee.request_version = active_guarantee_version;
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
 
@@ -206,6 +222,113 @@ fn build_claims(
         amount: U256::from(1u64),
         timestamp,
     }
+}
+
+sol! {
+    struct SolGuaranteeRequestClaimsV2 {
+        address user;
+        address recipient;
+        uint256 tabId;
+        uint256 reqId;
+        uint256 amount;
+        address asset;
+        uint64 timestamp;
+        address validationRegistryAddress;
+        bytes32 validationRequestHash;
+        uint256 validationChainId;
+        address validatorAddress;
+        uint256 validatorAgentId;
+        uint8 minValidationScore;
+        bytes32 validationSubjectHash;
+        string requiredValidationTag;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_v2_claims(
+    chain_id: u64,
+    user_address: String,
+    recipient_address: String,
+    tab_id: U256,
+    req_id: U256,
+    amount: U256,
+    asset_address: String,
+    timestamp: u64,
+) -> anyhow::Result<PaymentGuaranteeRequestClaimsV2> {
+    let validation_subject_hash = compute_validation_subject_hash(
+        &user_address,
+        &recipient_address,
+        tab_id,
+        req_id,
+        amount,
+        &asset_address,
+        timestamp,
+    )?;
+
+    let mut validation_policy = PaymentGuaranteeValidationPolicyV2 {
+        validation_registry_address: Address::from_str(
+            "0x1111111111111111111111111111111111111111",
+        )
+        .expect("valid validation registry"),
+        validation_request_hash: B256::ZERO,
+        validation_chain_id: chain_id,
+        validator_address: Address::from_str("0x2222222222222222222222222222222222222222")
+            .expect("valid validator"),
+        validator_agent_id: U256::from(77u64),
+        min_validation_score: 80,
+        validation_subject_hash: B256::from(validation_subject_hash),
+        required_validation_tag: "hard-finality".to_string(),
+    };
+    validation_policy.validation_request_hash =
+        B256::from(compute_validation_request_hash(&validation_policy)?);
+
+    Ok(PaymentGuaranteeRequestClaimsV2 {
+        user_address,
+        recipient_address,
+        tab_id,
+        req_id,
+        amount,
+        asset_address,
+        timestamp,
+        validation_policy,
+    })
+}
+
+async fn sign_v2_request(
+    params: &rpc::CorePublicParameters,
+    wallet: &PrivateKeySigner,
+    claims: PaymentGuaranteeRequestClaimsV2,
+) -> anyhow::Result<PaymentGuaranteeRequest> {
+    let domain = eip712_domain!(
+        name: params.eip712_name.clone(),
+        version: params.eip712_version.clone(),
+        chain_id: params.chain_id,
+    );
+    let msg = SolGuaranteeRequestClaimsV2 {
+        user: Address::from_str(&claims.user_address)?,
+        recipient: Address::from_str(&claims.recipient_address)?,
+        tabId: claims.tab_id,
+        reqId: claims.req_id,
+        amount: claims.amount,
+        asset: Address::from_str(&claims.asset_address)?,
+        timestamp: claims.timestamp,
+        validationRegistryAddress: claims.validation_policy.validation_registry_address,
+        validationRequestHash: claims.validation_policy.validation_request_hash,
+        validationChainId: U256::from(claims.validation_policy.validation_chain_id),
+        validatorAddress: claims.validation_policy.validator_address,
+        validatorAgentId: claims.validation_policy.validator_agent_id,
+        minValidationScore: claims.validation_policy.min_validation_score,
+        validationSubjectHash: claims.validation_policy.validation_subject_hash,
+        requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
+    };
+    let digest = msg.eip712_signing_hash(&domain);
+    let sig = wallet.sign_hash(&digest).await?;
+
+    Ok(PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V2(claims),
+        crypto::hex::encode_hex(&sig.as_bytes()),
+        SigningScheme::Eip712,
+    ))
 }
 
 #[test]
@@ -1191,6 +1314,378 @@ async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
             if msg.contains("tab expiration time")
     ));
 }
+
+fn recipient_issue_auth(recipient_address: &str) -> AccessContext {
+    AccessContext {
+        wallet_address: recipient_address.to_string(),
+        role: "admin".to_string(),
+        scopes: vec![SCOPE_GUARANTEE_ISSUE.to_string()],
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    let cert = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+    assert!(!serde_json::to_string(&cert)?.is_empty());
+
+    let stored = repo::get_guarantee(&ctx, tab_id, U256::ZERO).await?;
+    assert!(stored.is_some(), "v2 guarantee should be persisted");
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v2_guarantee_rejects_when_active_version_is_v1() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 1).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    let err = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await
+        .expect_err("v2 should be rejected when active version is v1");
+    assert!(matches!(
+        err,
+        ServiceError::InvalidParams(msg)
+            if msg.contains("not active") && msg.contains("active version is 1")
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v2_guarantee_rejects_subject_hash_mismatch() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let mut claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    claims.validation_policy.validation_subject_hash = B256::repeat_byte(0xAA);
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    let err = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await
+        .expect_err("subject hash mismatch must fail");
+    assert!(matches!(
+        err,
+        ServiceError::InvalidParams(msg) if msg.contains("validation_subject_hash")
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v2_guarantee_rejects_request_hash_mismatch() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let mut claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    claims.validation_policy.validation_request_hash = B256::repeat_byte(0xBB);
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    let err = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await
+        .expect_err("request hash mismatch must fail");
+    assert!(matches!(
+        err,
+        ServiceError::InvalidParams(msg) if msg.contains("validation_request_hash")
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v2_guarantee_rejects_min_validation_score_zero() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let mut claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    claims.validation_policy.min_validation_score = 0;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    let err = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await
+        .expect_err("min_validation_score=0 must fail");
+    assert!(matches!(
+        err,
+        ServiceError::InvalidParams(msg) if msg.contains("min_validation_score")
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx, 2).await?;
+    let params = core_service.public_params();
+
+    assert_eq!(params.active_guarantee_version, 2);
+    assert!(
+        params.active_guarantee_domain_separator.starts_with("0x")
+            && params.active_guarantee_domain_separator.len() == 66
+    );
+    assert_eq!(
+        params.validation_hash_canonicalization_version,
+        "4MICA_VALIDATION_REQUEST_V1"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn core_service_public_params_support_active_guarantee_version_v1() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx, 1).await?;
+    let params = core_service.public_params();
+    assert_eq!(params.active_guarantee_version, 1);
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn contract_api_rejects_disabled_guarantee_version() {
+    struct DisabledGuaranteeVersionApi;
+
+    #[async_trait::async_trait]
+    impl CoreContractApi for DisabledGuaranteeVersionApi {
+        async fn get_chain_id(&self) -> Result<u64, core_service::error::CoreContractApiError> {
+            Ok(1)
+        }
+
+        async fn get_guarantee_version_config(
+            &self,
+            version: u64,
+        ) -> Result<GuaranteeVersionConfig, core_service::error::CoreContractApiError> {
+            Ok(GuaranteeVersionConfig {
+                version,
+                domain_separator: [0u8; 32],
+                decoder: Address::ZERO,
+                enabled: false,
+            })
+        }
+
+        async fn get_tab_expiration_time(
+            &self,
+        ) -> Result<u64, core_service::error::CoreContractApiError> {
+            Ok(3600)
+        }
+
+        async fn record_payment(
+            &self,
+            _tab_id: U256,
+            _asset: Address,
+            _amount: U256,
+        ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
+            Ok(RecordPaymentTx {
+                tx_hash: B256::ZERO,
+                block_number: None,
+                block_hash: None,
+            })
+        }
+    }
+
+    let api = DisabledGuaranteeVersionApi;
+    let err = api
+        .get_guarantee_domain_separator()
+        .await
+        .expect_err("disabled version should fail");
+    assert!(matches!(
+        err,
+        core_service::error::CoreContractApiError::GuaranteeVersionDisabled(1)
+    ));
+}
+
 struct MockContractApi {
     chain_id: u64,
     domain: [u8; 32],
@@ -1203,10 +1698,16 @@ impl CoreContractApi for MockContractApi {
         Ok(self.chain_id)
     }
 
-    async fn get_guarantee_domain_separator(
+    async fn get_guarantee_version_config(
         &self,
-    ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
-        Ok(self.domain)
+        version: u64,
+    ) -> Result<GuaranteeVersionConfig, core_service::error::CoreContractApiError> {
+        Ok(GuaranteeVersionConfig {
+            version,
+            domain_separator: self.domain,
+            decoder: alloy::primitives::Address::ZERO,
+            enabled: true,
+        })
     }
 
     async fn get_tab_expiration_time(

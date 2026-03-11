@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+fn default_active_guarantee_version() -> u64 {
+    crate::guarantee::GUARANTEE_CLAIMS_VERSION
+}
+
+fn default_validation_hash_canonicalization_version() -> String {
+    "4MICA_VALIDATION_REQUEST_V1".to_string()
+}
+
 /// Static parameters exposed by the core service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorePublicParameters {
@@ -15,4 +23,16 @@ pub struct CorePublicParameters {
     pub eip712_version: String,
     /// Chain identifier used for the signing domain.
     pub chain_id: u64,
+    /// Active guarantee request/claims version expected by core.
+    #[serde(default = "default_active_guarantee_version")]
+    pub active_guarantee_version: u64,
+    /// Domain separator used by core for BLS guarantee signing at `active_guarantee_version`.
+    #[serde(default)]
+    pub active_guarantee_domain_separator: String,
+    /// Trusted validation registries configured in core (address allowlist).
+    #[serde(default)]
+    pub trusted_validation_registries: Vec<String>,
+    /// Canonicalization identifier used for `validation_request_hash` derivation.
+    #[serde(default = "default_validation_hash_canonicalization_version")]
+    pub validation_hash_canonicalization_version: String,
 }

@@ -17,13 +17,21 @@ use crypto::bls::{BLSCert, BlsClaims};
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::info;
 use rpc::{
-    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestEssentials,
+    GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
+    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeRequestEssentials,
 };
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use std::str::FromStr;
 
 impl CoreService {
+    fn guarantee_request_version(claims: &PaymentGuaranteeRequestClaims) -> u64 {
+        match claims {
+            PaymentGuaranteeRequestClaims::V1(_) => GUARANTEE_CLAIMS_VERSION,
+            PaymentGuaranteeRequestClaims::V2(_) => GUARANTEE_CLAIMS_VERSION_V2,
+        }
+    }
+
     pub async fn verify_guarantee_request_claims_v1(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV1,
@@ -119,6 +127,42 @@ impl CoreService {
         Ok(())
     }
 
+    pub async fn verify_guarantee_request_claims_v2(
+        &self,
+        claims: &PaymentGuaranteeRequestClaimsV2,
+    ) -> ServiceResult<()> {
+        let base_claims = Self::v2_to_v1_claims(claims);
+        self.verify_guarantee_request_claims_v1(&base_claims)
+            .await?;
+
+        claims
+            .validate()
+            .map_err(|err| ServiceError::InvalidParams(err.to_string()))?;
+
+        if claims.validation_policy.validation_chain_id != self.inner.public_params.chain_id {
+            return Err(ServiceError::InvalidParams(format!(
+                "validation_chain_id {} must match core chain_id {}",
+                claims.validation_policy.validation_chain_id, self.inner.public_params.chain_id
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn v2_to_v1_claims(
+        claims: &PaymentGuaranteeRequestClaimsV2,
+    ) -> PaymentGuaranteeRequestClaimsV1 {
+        PaymentGuaranteeRequestClaimsV1 {
+            user_address: claims.user_address.clone(),
+            recipient_address: claims.recipient_address.clone(),
+            tab_id: claims.tab_id,
+            req_id: claims.req_id,
+            amount: claims.amount,
+            asset_address: claims.asset_address.clone(),
+            timestamp: claims.timestamp,
+        }
+    }
+
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         let claims_bytes = <PaymentGuaranteeClaims as TryInto<Vec<u8>>>::try_into(claims)
             .map_err(ServiceError::Other)?;
@@ -139,8 +183,12 @@ impl CoreService {
                     .await
                     .map_err(Into::into)
             }
-            PaymentGuaranteeRequestClaims::V2(_) => {
-                Err(ServiceError::unsupported_guarantee_request_version("v2"))
+            PaymentGuaranteeRequestClaims::V2(claims) => {
+                self.verify_guarantee_request_claims_v2(claims).await?;
+                let base_claims = Self::v2_to_v1_claims(claims);
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims)
+                    .await
+                    .map_err(Into::into)
             }
         }
     }
@@ -155,10 +203,17 @@ impl CoreService {
 
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
+        let request_version = Self::guarantee_request_version(&req.claims);
+        if request_version != self.inner.active_guarantee_version {
+            return Err(ServiceError::InvalidParams(format!(
+                "guarantee request version {} is not active; active version is {}",
+                request_version, self.inner.active_guarantee_version
+            )));
+        }
 
         info!(
-            "Received guarantee request v1; tab_id={}, amount={}",
-            tab_id, amount
+            "Received guarantee request {}; tab_id={}, amount={}",
+            request_version, tab_id, amount
         );
 
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
