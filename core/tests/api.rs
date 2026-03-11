@@ -688,6 +688,9 @@ async fn issue_guarantee_stores_request_in_db() -> anyhow::Result<()> {
             assert_eq!(c.asset_address, DEFAULT_ASSET_ADDRESS);
             assert_eq!(c.timestamp, start_ts);
         }
+        PaymentGuaranteeRequestClaims::V2(_) => {
+            panic!("test fixture stores only v1 guarantee requests");
+        }
     }
 
     Ok(())
@@ -2187,6 +2190,9 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
     match &mut req.claims {
         PaymentGuaranteeRequestClaims::V1(claims) => {
             claims.amount = U256::from(999u64);
+        }
+        PaymentGuaranteeRequestClaims::V2(_) => {
+            panic!("test fixture builds only v1 guarantee requests");
         }
     }
 

@@ -20,7 +20,7 @@ use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
     PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestEssentials,
 };
-use sea_orm::TransactionTrait;
+use sea_orm::{ConnectionTrait, TransactionTrait};
 use std::str::FromStr;
 
 impl CoreService {
@@ -127,6 +127,24 @@ impl CoreService {
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 
+    async fn process_guarantee_request_claims_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        claims: &PaymentGuaranteeRequestClaims,
+    ) -> ServiceResult<alloy::primitives::U256> {
+        match claims {
+            PaymentGuaranteeRequestClaims::V1(claims) => {
+                self.verify_guarantee_request_claims_v1(claims).await?;
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, claims)
+                    .await
+                    .map_err(Into::into)
+            }
+            PaymentGuaranteeRequestClaims::V2(_) => {
+                Err(ServiceError::unsupported_guarantee_request_version("v2"))
+            }
+        }
+    }
+
     pub async fn issue_payment_guarantee(
         &self,
         auth: &AccessContext,
@@ -159,14 +177,9 @@ impl CoreService {
             .transaction::<_, _, ServiceError>(|txn| {
                 let self_clone = self.clone();
                 Box::pin(async move {
-                    let total_amount = match &req.claims {
-                        PaymentGuaranteeRequestClaims::V1(claims) => {
-                            self_clone
-                                .verify_guarantee_request_claims_v1(claims)
-                                .await?;
-                            repo::update_user_balance_and_tab_for_guarantee_on(txn, claims).await?
-                        }
-                    };
+                    let total_amount = self_clone
+                        .process_guarantee_request_claims_on(txn, &req.claims)
+                        .await?;
 
                     let claims = PaymentGuaranteeClaims::from_request(
                         &req.claims,

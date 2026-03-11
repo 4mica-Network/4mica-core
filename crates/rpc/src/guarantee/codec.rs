@@ -63,6 +63,7 @@ pub fn decode_guarantee_claims(data: &[u8]) -> anyhow::Result<PaymentGuaranteeCl
                 asset_address: claims_sol.asset.to_string(),
                 timestamp: claims_sol.timestamp,
                 version,
+                validation_policy: None,
             })
         }
         _ => Err(anyhow::anyhow!(
@@ -99,6 +100,7 @@ mod tests {
             asset_address: asset_addr.to_string(),
             timestamp: 1234567890,
             version: 1,
+            validation_policy: None,
         }
     }
 

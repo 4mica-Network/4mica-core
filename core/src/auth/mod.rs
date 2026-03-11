@@ -30,12 +30,7 @@ pub fn verify_guarantee_request_signature(
     params: &CorePublicParameters,
     req: &PaymentGuaranteeRequest,
 ) -> ServiceResult<()> {
-    let (user_addr, recipient_addr) = match &req.claims {
-        PaymentGuaranteeRequestClaims::V1(claims) => (
-            claims.user_address.as_str(),
-            claims.recipient_address.as_str(),
-        ),
-    };
+    let (user_addr, recipient_addr) = claims_participants(&req.claims)?;
 
     let user_addr = Address::from_str(user_addr)
         .map_err(|_| ServiceError::InvalidParams("invalid user address".into()))?;
@@ -53,14 +48,8 @@ pub fn verify_guarantee_request_signature(
     //     return Err(ServiceError::InvalidParams("Invalid signature".into()));
     // }
 
-    let digest: B256 = match (&req.scheme, &req.claims) {
-        (SigningScheme::Eip712, PaymentGuaranteeRequestClaims::V1(claims)) => {
-            eip712_digest_v1(params, claims)?
-        }
-        (SigningScheme::Eip191, PaymentGuaranteeRequestClaims::V1(claims)) => {
-            eip191_digest_v1(claims, user_addr, recipient_addr)?
-        }
-    };
+    let digest: B256 =
+        digest_for_guarantee_request(params, &req.scheme, &req.claims, user_addr, recipient_addr)?;
 
     let recovered = sig
         .recover_address_from_prehash(&digest)
@@ -70,6 +59,38 @@ pub fn verify_guarantee_request_signature(
         return Err(ServiceError::InvalidParams("Invalid signature".into()));
     }
     Ok(())
+}
+
+fn claims_participants(claims: &PaymentGuaranteeRequestClaims) -> ServiceResult<(&str, &str)> {
+    match claims {
+        PaymentGuaranteeRequestClaims::V1(claims) => Ok((
+            claims.user_address.as_str(),
+            claims.recipient_address.as_str(),
+        )),
+        PaymentGuaranteeRequestClaims::V2(_) => {
+            Err(ServiceError::unsupported_guarantee_request_version("v2"))
+        }
+    }
+}
+
+fn digest_for_guarantee_request(
+    params: &CorePublicParameters,
+    scheme: &SigningScheme,
+    claims: &PaymentGuaranteeRequestClaims,
+    user_addr: Address,
+    recipient_addr: Address,
+) -> ServiceResult<B256> {
+    match (scheme, claims) {
+        (SigningScheme::Eip712, PaymentGuaranteeRequestClaims::V1(claims)) => {
+            eip712_digest_v1(params, claims)
+        }
+        (SigningScheme::Eip191, PaymentGuaranteeRequestClaims::V1(claims)) => {
+            eip191_digest_v1(claims, user_addr, recipient_addr)
+        }
+        (_, PaymentGuaranteeRequestClaims::V2(_)) => {
+            Err(ServiceError::unsupported_guarantee_request_version("v2"))
+        }
+    }
 }
 
 // /// Reject high-S signatures (secp256k1 malleability)
