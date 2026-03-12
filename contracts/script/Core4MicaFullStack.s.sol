@@ -83,7 +83,8 @@ contract Core4MicaFullStackScript is Script {
             _deriveSalt(baseSalt, "VALIDATION_REGISTRY_GUARANTEE_DECODER"),
             abi.encodePacked(type(ValidationRegistryGuaranteeDecoder).creationCode, abi.encode(trustedRegistries))
         );
-        ValidationRegistryGuaranteeDecoder validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
+        ValidationRegistryGuaranteeDecoder validationDecoder =
+            ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
 
         _configureCoreRoles(manager, core4Mica, deployer);
         _configureRouterRoles(manager, router);

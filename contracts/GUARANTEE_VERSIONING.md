@@ -98,6 +98,26 @@ Ensure issuer/SDK/facilitator components:
 
 ## Operational command examples
 
+### Deploy validation-gated decoder (v2)
+
+```bash
+cd contracts
+forge script script/DeployValidationRegistryGuaranteeDecoder.s.sol:DeployValidationRegistryGuaranteeDecoderScript \
+  --rpc-url $RPC_URL \
+  --broadcast \
+  --via-ir \
+  -vvvv
+```
+
+Required env:
+- `DEPLOYER_PRIVATE_KEY`
+- `TRUSTED_VALIDATION_REGISTRY` (single)
+  or
+- `TRUSTED_VALIDATION_REGISTRIES_COUNT` + `TRUSTED_VALIDATION_REGISTRY_0..n-1`
+
+Optional env:
+- `CREATE2_SALT`
+
 ### Configure router module
 
 ```bash

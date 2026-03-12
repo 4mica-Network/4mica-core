@@ -5,8 +5,7 @@ import "./Core4MicaTestBase.sol";
 
 contract Core4MicaPaymentsTest is Core4MicaTestBase {
     function test_RecordPayment() public {
-        (uint256 paid, bool remunerated, address asset) = core4Mica
-            .getPaymentStatus(0x1234);
+        (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 0);
         assertFalse(remunerated);
         assertEq(asset, ETH_ASSET);
@@ -36,8 +35,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
 
     function test_RecordPayment_Stablecoin() public {
         uint256 tabId = 0x5678;
-        (uint256 paid, bool remunerated, address asset) = core4Mica
-            .getPaymentStatus(tabId);
+        (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(tabId);
         assertEq(paid, 0);
         assertFalse(remunerated);
         assertEq(asset, ETH_ASSET);
@@ -55,8 +53,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
 
     function test_RecordPayment_Stablecoin_USDT() public {
         uint256 tabId = 0x6789;
-        (uint256 paid, bool remunerated, address asset) = core4Mica
-            .getPaymentStatus(tabId);
+        (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(tabId);
         assertEq(paid, 0);
         assertFalse(remunerated);
         assertEq(asset, ETH_ASSET);
@@ -79,19 +76,13 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
         vm.prank(OPERATOR);
         core4Mica.recordPayment(tabId, ETH_ASSET, 1 ether);
 
-        (uint256 paid, bool remunerated, address asset) = core4Mica
-            .getPaymentStatus(tabId);
+        (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(tabId);
         assertEq(paid, 1 ether);
         assertFalse(remunerated);
         assertEq(asset, ETH_ASSET);
 
         // Try to record second payment with USDC - should revert
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Core4Mica.InvalidAsset.selector,
-                address(usdc)
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.InvalidAsset.selector, address(usdc)));
         vm.prank(OPERATOR);
         core4Mica.recordPayment(tabId, address(usdc), 100 ether);
 
@@ -115,12 +106,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
     }
 
     function test_RecordPayment_Stablecoin_RevertUnsupportedAsset() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Core4Mica.UnsupportedAsset.selector,
-                address(0x777)
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedAsset.selector, address(0x777)));
         vm.prank(OPERATOR);
         core4Mica.recordPayment(0x1234, address(0x777), 1 ether);
     }
@@ -174,12 +160,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
     }
 
     function test_PayTabInERC20Token_RevertUnsupportedAsset() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Core4Mica.UnsupportedAsset.selector,
-                address(0x123)
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedAsset.selector, address(0x123)));
         vm.prank(OPERATOR);
         core4Mica.payTabInERC20Token(0xBEEF, address(0x123), 1 ether, USER1);
     }

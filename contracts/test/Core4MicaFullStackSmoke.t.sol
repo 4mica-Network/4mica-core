@@ -30,16 +30,13 @@ contract Core4MicaFullStackSmokeTest is Test {
 
         address[] memory trustedRegistries = new address[](1);
         trustedRegistries[0] = address(0x8004AA63c570c570eBF15376c0dB199918BFe9Fb);
-        ValidationRegistryGuaranteeDecoder validationDecoder =
-            new ValidationRegistryGuaranteeDecoder(trustedRegistries);
+        ValidationRegistryGuaranteeDecoder validationDecoder = new ValidationRegistryGuaranteeDecoder(trustedRegistries);
 
         _configureCoreRoles(manager, core4Mica, deployer);
         _configureRouterRoles(manager, router);
 
         bytes32 v2Domain = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(core4Mica)));
-        core4Mica.configureGuaranteeVersion(
-            GUARANTEE_V2, verificationKey, v2Domain, address(validationDecoder), true
-        );
+        core4Mica.configureGuaranteeVersion(GUARANTEE_V2, verificationKey, v2Domain, address(validationDecoder), true);
 
         (BLS.G1Point memory v1Key, bytes32 v1Domain, address v1Decoder, bool v1Enabled) =
             core4Mica.getGuaranteeVersionConfig(core4Mica.INITIAL_GUARANTEE_VERSION());
@@ -83,8 +80,12 @@ contract Core4MicaFullStackSmokeTest is Test {
     }
 
     function _configureRouterRoles(AccessManager manager, GuaranteeDecoderRouter router) internal {
-        manager.setTargetFunctionRole(address(router), _asSingletonArray(router.setVersionModule.selector), USER_ADMIN_ROLE);
-        manager.setTargetFunctionRole(address(router), _asSingletonArray(router.freezeVersion.selector), USER_ADMIN_ROLE);
+        manager.setTargetFunctionRole(
+            address(router), _asSingletonArray(router.setVersionModule.selector), USER_ADMIN_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(router), _asSingletonArray(router.freezeVersion.selector), USER_ADMIN_ROLE
+        );
     }
 
     function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {

@@ -148,6 +148,16 @@ forge script script/ConfigureGuaranteeVersion.s.sol:ConfigureGuaranteeVersionScr
     -vvvv
 ```
 
+Decoder-only deployment (with trusted-registry readback checks):
+
+```bash
+forge script script/DeployValidationRegistryGuaranteeDecoder.s.sol:DeployValidationRegistryGuaranteeDecoderScript \
+    --rpc-url $DEPLOY_RPC_URL \
+    --broadcast \
+    --via-ir \
+    -vvvv
+```
+
 `ConfigureGuaranteeVersion` supports reusing an existing key from another version:
 - `GUARANTEE_REUSE_EXISTING_KEY=true`
 - optional `GUARANTEE_KEY_SOURCE_VERSION` (defaults to `1`)
@@ -172,6 +182,7 @@ If constructor inputs differ per chain (for example `ACCESS_MANAGER_ADMIN`, veri
 
 Runbook:
 - `GUARANTEE_VERSIONING.md`
+- `GUARANTEE_V2_ACTIVATION.md`
 ---
 
 ### 📜 Getting the ABI

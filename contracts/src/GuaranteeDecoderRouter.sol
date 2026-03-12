@@ -14,11 +14,7 @@ contract GuaranteeDecoderRouter is IGuaranteeDecoder, AccessManaged {
     error FrozenVersion(uint64 version);
     error ModuleVersionMismatch(uint64 expected, uint64 actual);
 
-    event VersionModuleSet(
-        uint64 indexed version,
-        address indexed module,
-        address indexed updatedBy
-    );
+    event VersionModuleSet(uint64 indexed version, address indexed module, address indexed updatedBy);
     event VersionFrozen(uint64 indexed version, address indexed frozenBy);
 
     mapping(uint64 => address) public moduleByVersion;

@@ -5,8 +5,5 @@ import {Guarantee} from "../Core4Mica.sol";
 
 /// @notice Per-version guarantee module used by GuaranteeDecoderRouter.
 interface IGuaranteeVersionModule {
-    function decodeModule(bytes calldata payload)
-        external
-        view
-        returns (Guarantee memory);
+    function decodeModule(bytes calldata payload) external view returns (Guarantee memory);
 }
