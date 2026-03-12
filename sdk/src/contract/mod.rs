@@ -24,6 +24,7 @@ sol! {
         error InvalidAsset(address asset);
         error UnsupportedGuaranteeVersion(uint64 version);
         error InvalidGuaranteeDomain();
+        error MissingGuaranteeDecoder(uint64 version);
 
         // ========= Storage =========
         function remunerationGracePeriod() external view returns (uint256);
@@ -50,6 +51,20 @@ sol! {
         event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
         event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
+        event TabPaid(
+            uint256 indexed tab_id,
+            address indexed asset,
+            address indexed user,
+            address recipient,
+            uint256 amount
+        );
+        event GuaranteeVersionUpdated(
+            uint64 indexed version,
+            (bytes32,bytes32,bytes32,bytes32) verificationKey,
+            bytes32 domainSeparator,
+            address decoder,
+            bool enabled
+        );
 
         // ========= Structs =========
         struct WithdrawalRequest {
@@ -139,6 +154,15 @@ sol! {
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
         function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
+        function getGuaranteeVersionConfig(uint64 version)
+            external
+            view
+            returns (
+                G1Point memory verificationKey,
+                bytes32 domainSeparator,
+                address decoder,
+                bool enabled
+            );
         function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
 
         // ========= Views =========

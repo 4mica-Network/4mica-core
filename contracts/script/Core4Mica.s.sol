@@ -8,12 +8,9 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract Core4MicaScript is Script {
     AccessManager manager;
-    bytes4 private constant RECORD_PAYMENT_SELECTOR =
-        bytes4(keccak256("recordPayment(uint256,address,uint256)"));
+    bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
-        bytes4(
-            keccak256("setTimingParameters(uint256,uint256,uint256,uint256)")
-        );
+        bytes4(keccak256("setTimingParameters(uint256,uint256,uint256,uint256)"));
 
     // Roles
     uint64 public constant CALLER_ROLE = 1;
@@ -48,10 +45,7 @@ contract Core4MicaScript is Script {
         address deployer = vm.addr(deployerPrivateKey);
         address usdc = vm.envAddress("USDC_TOKEN");
         address usdt = vm.envAddress("USDT_TOKEN");
-        require(
-            usdc != address(0) && usdt != address(0),
-            "Stablecoin addresses required"
-        );
+        require(usdc != address(0) && usdt != address(0), "Stablecoin addresses required");
 
         BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),
@@ -64,20 +58,11 @@ contract Core4MicaScript is Script {
 
         // 1. Deploy AccessManager and Core4Mica
         manager = new AccessManager(deployer);
-        Core4Mica core4Mica = new Core4Mica(
-            address(manager),
-            guaranteeVerificationKey,
-            usdc,
-            usdt
-        );
+        Core4Mica core4Mica = new Core4Mica(address(manager), guaranteeVerificationKey, usdc, usdt);
 
         // 2. Map Core4Mica functions to roles
         // Operator functions → OPERATOR_ROLE
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(RECORD_PAYMENT_SELECTOR),
-            OPERATOR_ROLE
-        );
+        manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
         // Admin-only config functions → USER_ADMIN_ROLE
         bytes4[] memory adminSelectors = new bytes4[](9);
@@ -91,11 +76,7 @@ contract Core4MicaScript is Script {
         adminSelectors[7] = Core4Mica.pause.selector;
         adminSelectors[8] = Core4Mica.unpause.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
-            manager.setTargetFunctionRole(
-                address(core4Mica),
-                _asSingletonArray(adminSelectors[i]),
-                USER_ADMIN_ROLE
-            );
+            manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
 
         // 3. Grant roles (immediate in local/test: 0 delay)
@@ -108,9 +89,7 @@ contract Core4MicaScript is Script {
     }
 
     // helper to wrap selector into array
-    function _asSingletonArray(
-        bytes4 selector
-    ) internal pure returns (bytes4[] memory arr) {
+    function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
     }

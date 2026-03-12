@@ -60,6 +60,14 @@ forge test -vvvv
 - `-vvvv` = max verbosity (shows logs, gas, traces)
 - Tests are located in the `test/` directory
 
+Targeted guarantee versioning suites:
+
+```bash
+forge test --match-path test/Core4MicaGuaranteeVersions.t.sol
+forge test --match-path test/ValidationRegistryGuaranteeDecoder.t.sol
+forge test --match-path test/GuaranteeDecoderRouter.t.sol
+```
+
 ---
 
 ## 🚀 Deploying Locally
@@ -90,6 +98,31 @@ forge script script/Core4Mica.s.sol:Core4MicaScript \
 ```yaml
 Core4Mica deployed at: 0x1234abcd...
 ```
+
+### 4. Configure guarantee versions post-deploy
+
+Router/module wiring:
+
+```bash
+forge script script/ConfigureGuaranteeRouter.s.sol:ConfigureGuaranteeRouterScript \
+    --rpc-url $RPC_URL \
+    --broadcast \
+    --via-ir \
+    -vvvv
+```
+
+Core version config:
+
+```bash
+forge script script/ConfigureGuaranteeVersion.s.sol:ConfigureGuaranteeVersionScript \
+    --rpc-url $RPC_URL \
+    --broadcast \
+    --via-ir \
+    -vvvv
+```
+
+Runbook:
+- `GUARANTEE_VERSIONING.md`
 ---
 
 ### 📜 Getting the ABI
@@ -146,8 +179,11 @@ This ensures the deployer account can interact with restricted functions.
 ```
 ├── src/                # Contracts
 │   └── Core4Mica.sol
+├── GUARANTEE_VERSIONING.md
 ├── script/             # Deployment scripts
-│   └── Core4Mica.s.sol
+│   ├── Core4Mica.s.sol
+│   ├── ConfigureGuaranteeVersion.s.sol
+│   └── ConfigureGuaranteeRouter.s.sol
 ├── test/               # Foundry tests
 ├── .env                # Environment variables (ignored by git)
 ├── foundry.toml        # Foundry config
@@ -160,4 +196,3 @@ This ensures the deployer account can interact with restricted functions.
 - Reset your `.env` if switching networks.
 - **Never push your private key.**
 - Use `forge clean` to wipe build artifacts.
-
