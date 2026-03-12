@@ -5,6 +5,7 @@ import "forge-std/Script.sol";
 import "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
+import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 
 contract Core4MicaScript is Script {
     AccessManager manager;
@@ -43,7 +44,10 @@ contract Core4MicaScript is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
+        address managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
         address[] memory stablecoins = _loadStablecoinAssets();
+        string memory saltSeed = vm.envOr("CREATE2_SALT", string("4mica-core-v1"));
+        bytes32 baseSalt = keccak256(bytes(saltSeed));
 
         BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),
@@ -54,9 +58,17 @@ contract Core4MicaScript is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Deploy AccessManager and Core4Mica
-        manager = new AccessManager(deployer);
-        Core4Mica core4Mica = new Core4Mica(address(manager), guaranteeVerificationKey);
+        // 1. Deploy AccessManager and Core4Mica via deterministic CREATE2.
+        address managerAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "ACCESS_MANAGER"),
+            abi.encodePacked(type(AccessManager).creationCode, abi.encode(managerAdmin))
+        );
+        manager = AccessManager(managerAddress);
+        address core4MicaAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "CORE4MICA"),
+            abi.encodePacked(type(Core4Mica).creationCode, abi.encode(managerAddress, guaranteeVerificationKey))
+        );
+        Core4Mica core4Mica = Core4Mica(payable(core4MicaAddress));
 
         // 2. Map Core4Mica functions to roles
         // Operator functions → OPERATOR_ROLE
@@ -89,12 +101,19 @@ contract Core4MicaScript is Script {
 
         console.log("AccessManager deployed at:", address(manager));
         console.log("Core4Mica deployed at:", address(core4Mica));
+        console.log("AccessManager admin:", managerAdmin);
+        console.log("CREATE2 base salt:");
+        console.logBytes32(baseSalt);
     }
 
     // helper to wrap selector into array
     function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
+    }
+
+    function _deriveSalt(bytes32 baseSalt, string memory label) internal pure returns (bytes32) {
+        return keccak256(abi.encode(baseSalt, label));
     }
 
     function _loadStablecoinAssets() internal view returns (address[] memory assets) {

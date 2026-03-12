@@ -6,7 +6,8 @@ mod common;
 
 use crate::common::{
     ETH_ASSET_ADDRESS, assert_core_contract_deployed, build_authed_recipient_config,
-    build_authed_user_config, mine_confirmations, wait_for_collateral_increase,
+    build_authed_user_config, extract_asset_info, get_chain_timestamp, mine_confirmations,
+    wait_for_collateral_increase,
 };
 use alloy::signers::Signer;
 use crypto::bls::BlsClaims;
@@ -47,6 +48,10 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     let recipient_address = recipient_config.signer.address().to_string();
     let recipient_client = Client::new(recipient_config.clone()).await?;
+    println!(
+        "Test setup: core_rpc={}, user={}, recipient={}",
+        user_config.rpc_url, user_address, recipient_address
+    );
 
     // Step 1: User deposits collateral (2 ETH)
     let core_total_before = recipient_client
@@ -55,18 +60,39 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         .await?
         .map(|info| info.total)
         .unwrap_or(U256::ZERO);
+    println!("Core indexed balance before deposit: {core_total_before}");
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
+    let receipt = user_client.user.deposit(deposit_amount, None).await?;
+    println!("Deposit receipt: {receipt:#?}");
     mine_confirmations(&user_config, 1).await?;
+    let on_chain_assets_after_deposit = user_client.user.get_user().await?;
+    let on_chain_eth_after_deposit =
+        extract_asset_info(&on_chain_assets_after_deposit, ETH_ASSET_ADDRESS)
+            .map(|info| info.collateral)
+            .unwrap_or(U256::ZERO);
+    println!("On-chain ETH collateral after deposit: {on_chain_eth_after_deposit}");
 
-    wait_for_collateral_increase(
+    if let Err(err) = wait_for_collateral_increase(
         &recipient_client.recipient,
         &user_address,
         ETH_ASSET_ADDRESS,
         core_total_before,
         deposit_amount,
     )
-    .await?;
+    .await
+    {
+        let indexed_balance = recipient_client
+            .recipient
+            .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+            .await;
+        let on_chain_assets = user_client.user.get_user().await;
+        let chain_timestamp = get_chain_timestamp(&user_config).await;
+        eprintln!("wait_for_collateral_increase failed: {err}");
+        eprintln!("Indexed ETH balance after timeout: {indexed_balance:?}");
+        eprintln!("On-chain user assets after timeout: {on_chain_assets:?}");
+        eprintln!("Latest chain timestamp: {chain_timestamp:?}");
+        return Err(err);
+    }
 
     // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client

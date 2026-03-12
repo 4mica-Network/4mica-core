@@ -85,7 +85,8 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
     // Setup user client
     let user_config = build_authed_user_config(
         "http://localhost:3000",
-        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+        // Default anvil account with prefunded ETH for gas on local fork/dev networks.
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
     )
     .await?;
 

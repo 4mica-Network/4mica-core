@@ -121,6 +121,8 @@ Important env additions for full stack:
 - `TRUSTED_VALIDATION_REGISTRY` (single)
   or
 - `TRUSTED_VALIDATION_REGISTRIES_COUNT` + `TRUSTED_VALIDATION_REGISTRY_0..n-1`
+- `CREATE2_SALT` (optional; defaults to `4mica-core-v1`)
+- `ACCESS_MANAGER_ADMIN` (optional; defaults to broadcaster)
 - V2 is configured and enabled by default during full-stack deployment.
 - V2 reuses the V1 guarantee key and derives its domain separator in-script.
 
@@ -161,10 +163,12 @@ forge script script/ConfigureGuaranteeVersion.s.sol:ConfigureGuaranteeVersionScr
 
 Deployment scripts call `setStablecoinAssets(...)` automatically when `STABLECOINS_COUNT` and `STABLECOIN_<i>` env vars are provided.
 
-For same-address deployment across chains, use deterministic deployment (`CREATE2`) with:
-- same deployer address
-- same salt
+For same-address deployment across chains, scripts now use deterministic deployment (`CREATE2`)
+through the canonical deterministic deployer (`0x4e59...`) with:
+- same `CREATE2_SALT`
 - same init code (constructor args + bytecode)
+
+If constructor inputs differ per chain (for example `ACCESS_MANAGER_ADMIN`, verification key, or trusted registry list), the resulting address will differ.
 
 Runbook:
 - `GUARANTEE_VERSIONING.md`

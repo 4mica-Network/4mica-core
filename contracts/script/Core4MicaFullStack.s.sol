@@ -8,6 +8,7 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
+import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 
 /// @notice Deploys full guarantee stack:
 /// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder.
@@ -28,6 +29,10 @@ import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuara
 /// - TRUSTED_VALIDATION_REGISTRY=<address>
 ///   OR
 /// - TRUSTED_VALIDATION_REGISTRIES_COUNT=<n> and TRUSTED_VALIDATION_REGISTRY_0..n-1
+///
+/// Deterministic deployment:
+/// - CREATE2_SALT (optional, default "4mica-core-v1")
+/// - ACCESS_MANAGER_ADMIN (optional, default broadcaster address)
 contract Core4MicaFullStackScript is Script {
     bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
@@ -40,6 +45,7 @@ contract Core4MicaFullStackScript is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
+        address managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
         address[] memory stablecoins = _loadStablecoinAssets();
 
         BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
@@ -50,13 +56,34 @@ contract Core4MicaFullStackScript is Script {
         });
 
         address[] memory trustedRegistries = _loadTrustedValidationRegistries();
+        string memory saltSeed = vm.envOr("CREATE2_SALT", string("4mica-core-v1"));
+        bytes32 baseSalt = keccak256(bytes(saltSeed));
 
         vm.startBroadcast(deployerPrivateKey);
 
-        AccessManager manager = new AccessManager(deployer);
-        Core4Mica core4Mica = new Core4Mica(address(manager), guaranteeVerificationKey);
-        GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
-        ValidationRegistryGuaranteeDecoder validationDecoder = new ValidationRegistryGuaranteeDecoder(trustedRegistries);
+        address managerAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "ACCESS_MANAGER"),
+            abi.encodePacked(type(AccessManager).creationCode, abi.encode(managerAdmin))
+        );
+        AccessManager manager = AccessManager(managerAddress);
+
+        address core4MicaAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "CORE4MICA"),
+            abi.encodePacked(type(Core4Mica).creationCode, abi.encode(managerAddress, guaranteeVerificationKey))
+        );
+        Core4Mica core4Mica = Core4Mica(payable(core4MicaAddress));
+
+        address routerAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "GUARANTEE_DECODER_ROUTER"),
+            abi.encodePacked(type(GuaranteeDecoderRouter).creationCode, abi.encode(managerAddress))
+        );
+        GuaranteeDecoderRouter router = GuaranteeDecoderRouter(routerAddress);
+
+        address validationDecoderAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "VALIDATION_REGISTRY_GUARANTEE_DECODER"),
+            abi.encodePacked(type(ValidationRegistryGuaranteeDecoder).creationCode, abi.encode(trustedRegistries))
+        );
+        ValidationRegistryGuaranteeDecoder validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
 
         _configureCoreRoles(manager, core4Mica, deployer);
         _configureRouterRoles(manager, router);
@@ -75,6 +102,9 @@ contract Core4MicaFullStackScript is Script {
         console.log("GuaranteeDecoderRouter:", address(router));
         console.log("ValidationRegistryGuaranteeDecoder:", address(validationDecoder));
         console.log("Trusted registries count:", trustedRegistries.length);
+        console.log("AccessManager admin:", managerAdmin);
+        console.log("CREATE2 base salt:");
+        console.logBytes32(baseSalt);
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
@@ -131,6 +161,10 @@ contract Core4MicaFullStackScript is Script {
     function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
+    }
+
+    function _deriveSalt(bytes32 baseSalt, string memory label) internal pure returns (bytes32) {
+        return keccak256(abi.encode(baseSalt, label));
     }
 
     function _loadStablecoinAssets() internal view returns (address[] memory assets) {
