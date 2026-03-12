@@ -5,8 +5,8 @@ use sdk_4mica::{
 mod common;
 
 use crate::common::{
-    ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config, mine_confirmations,
-    wait_for_collateral_increase,
+    ETH_ASSET_ADDRESS, assert_core_contract_deployed, build_authed_recipient_config,
+    build_authed_user_config, mine_confirmations, wait_for_collateral_increase,
 };
 use alloy::signers::Signer;
 use crypto::bls::BlsClaims;
@@ -37,6 +37,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     let user_address = user_config.signer.address().to_string();
     let user_client = Client::new(user_config.clone()).await?;
+    assert_core_contract_deployed(&user_config).await?;
 
     let recipient_config = build_authed_recipient_config(
         "http://localhost:3000",

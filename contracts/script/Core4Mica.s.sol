@@ -43,9 +43,7 @@ contract Core4MicaScript is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
-        address usdc = vm.envAddress("USDC_TOKEN");
-        address usdt = vm.envAddress("USDT_TOKEN");
-        require(usdc != address(0) && usdt != address(0), "Stablecoin addresses required");
+        address[] memory stablecoins = _loadStablecoinAssets();
 
         BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),
@@ -58,14 +56,14 @@ contract Core4MicaScript is Script {
 
         // 1. Deploy AccessManager and Core4Mica
         manager = new AccessManager(deployer);
-        Core4Mica core4Mica = new Core4Mica(address(manager), guaranteeVerificationKey, usdc, usdt);
+        Core4Mica core4Mica = new Core4Mica(address(manager), guaranteeVerificationKey);
 
         // 2. Map Core4Mica functions to roles
         // Operator functions → OPERATOR_ROLE
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
         // Admin-only config functions → USER_ADMIN_ROLE
-        bytes4[] memory adminSelectors = new bytes4[](9);
+        bytes4[] memory adminSelectors = new bytes4[](11);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
@@ -75,6 +73,8 @@ contract Core4MicaScript is Script {
         adminSelectors[6] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[7] = Core4Mica.pause.selector;
         adminSelectors[8] = Core4Mica.unpause.selector;
+        adminSelectors[9] = Core4Mica.setStablecoinAsset.selector;
+        adminSelectors[10] = Core4Mica.setStablecoinAssets.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
@@ -82,6 +82,9 @@ contract Core4MicaScript is Script {
         // 3. Grant roles (immediate in local/test: 0 delay)
         manager.grantRole(OPERATOR_ROLE, deployer, 0); // deployer can act as OPERATOR
         manager.grantRole(USER_ADMIN_ROLE, deployer, 0); // deployer can manage OPERATORs
+        if (stablecoins.length > 0) {
+            core4Mica.setStablecoinAssets(stablecoins, true);
+        }
         vm.stopBroadcast();
 
         console.log("AccessManager deployed at:", address(manager));
@@ -92,5 +95,33 @@ contract Core4MicaScript is Script {
     function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
+    }
+
+    function _loadStablecoinAssets() internal view returns (address[] memory assets) {
+        uint256 count = vm.envOr("STABLECOINS_COUNT", uint256(0));
+        if (count > 0) {
+            assets = new address[](count);
+            for (uint256 i = 0; i < count; i++) {
+                string memory key = string.concat("STABLECOIN_", vm.toString(i));
+                assets[i] = vm.envAddress(key);
+                require(assets[i] != address(0), "stablecoin address is zero");
+            }
+            return assets;
+        }
+
+        address usdc = vm.envOr("USDC_TOKEN", address(0));
+        address usdt = vm.envOr("USDT_TOKEN", address(0));
+        if (usdc != address(0) && usdt != address(0)) {
+            assets = new address[](2);
+            assets[0] = usdc;
+            assets[1] = usdt;
+            return assets;
+        }
+
+        if (usdc != address(0) || usdt != address(0)) {
+            revert("set both USDC_TOKEN and USDT_TOKEN or use STABLECOIN_*");
+        }
+
+        return new address[](0);
     }
 }

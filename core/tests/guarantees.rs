@@ -1,7 +1,11 @@
 use std::{
+    net::TcpListener,
     panic,
     str::FromStr,
-    sync::{Arc, Once},
+    sync::{
+        Arc, Once,
+        atomic::{AtomicU16, Ordering},
+    },
 };
 
 use alloy::primitives::{Address, B256, U256};
@@ -92,9 +96,27 @@ fn load_env() {
     });
 }
 
+fn allocate_anvil_port() -> anyhow::Result<u16> {
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(40105);
+
+    for _ in 0..200 {
+        let candidate = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
+        let listener = match TcpListener::bind(("127.0.0.1", candidate)) {
+            Ok(listener) => listener,
+            Err(_) => continue,
+        };
+        let port = listener.local_addr()?.port();
+        drop(listener);
+        return Ok(port);
+    }
+
+    anyhow::bail!("could not allocate anvil port")
+}
+
 fn build_read_provider() -> anyhow::Result<DynProvider> {
+    let anvil_port = allocate_anvil_port()?;
     let provider_res = panic::catch_unwind(|| {
-        ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| anvil.port(40105u16))
+        ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))
     });
 
     let provider = match provider_res {
@@ -108,15 +130,30 @@ fn build_read_provider() -> anyhow::Result<DynProvider> {
 
 async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreService> {
     let config = AppConfig::fetch()?;
-    build_core_service_with_active_version(persist_ctx, config.guarantee.request_version).await
+    build_core_service_with_guarantee_config(
+        persist_ctx,
+        config.guarantee.request_version,
+        String::new(),
+    )
+    .await
 }
 
 async fn build_core_service_with_active_version(
     persist_ctx: PersistCtx,
     active_guarantee_version: u64,
 ) -> anyhow::Result<CoreService> {
+    build_core_service_with_guarantee_config(persist_ctx, active_guarantee_version, String::new())
+        .await
+}
+
+async fn build_core_service_with_guarantee_config(
+    persist_ctx: PersistCtx,
+    active_guarantee_version: u64,
+    trusted_validation_registries: String,
+) -> anyhow::Result<CoreService> {
     let mut config = AppConfig::fetch()?;
     config.guarantee.request_version = active_guarantee_version;
+    config.guarantee.trusted_validation_registries = trusted_validation_registries;
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
 
@@ -1598,6 +1635,123 @@ async fn issue_v2_guarantee_rejects_min_validation_score_zero() -> anyhow::Resul
         err,
         ServiceError::InvalidParams(msg) if msg.contains("min_validation_score")
     ));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v2_guarantee_rejects_untrusted_validation_registry() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_guarantee_config(
+        ctx.clone(),
+        2,
+        "0x3333333333333333333333333333333333333333".to_string(),
+    )
+    .await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    let err = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await
+        .expect_err("untrusted validation registry must fail");
+    assert!(matches!(
+        err,
+        ServiceError::InvalidParams(msg)
+            if msg.contains("validation registry") && msg.contains("not trusted")
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v2_guarantee_accepts_trusted_validation_registry() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_guarantee_config(
+        ctx.clone(),
+        2,
+        "0x1111111111111111111111111111111111111111".to_string(),
+    )
+    .await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await
+        .expect("trusted validation registry should pass");
     Ok(())
 }
 

@@ -13,6 +13,7 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 /// - GUARANTEE_ENABLED
 /// Optional env vars:
 /// - GUARANTEE_REUSE_EXISTING_KEY (bool, default false)
+/// - GUARANTEE_KEY_SOURCE_VERSION (uint64, default 1; used when GUARANTEE_REUSE_EXISTING_KEY=true)
 /// - VK_X0, VK_X1, VK_Y0, VK_Y1 (required when GUARANTEE_REUSE_EXISTING_KEY=false)
 /// - GUARANTEE_DOMAIN_SEPARATOR (bytes32, optional when disabling)
 /// - GUARANTEE_DECODER (address, optional when disabling/reusing)
@@ -33,12 +34,13 @@ contract ConfigureGuaranteeVersionScript is Script {
 
         bool enabled = vm.envBool("GUARANTEE_ENABLED");
         bool reuseExistingKey = vm.envOr("GUARANTEE_REUSE_EXISTING_KEY", false);
+        uint64 keySourceVersion = uint64(vm.envOr("GUARANTEE_KEY_SOURCE_VERSION", uint256(1)));
         bytes32 domainSeparator = vm.envOr("GUARANTEE_DOMAIN_SEPARATOR", bytes32(0));
         address decoder = vm.envOr("GUARANTEE_DECODER", address(0));
 
         BLS.G1Point memory verificationKey;
         if (reuseExistingKey) {
-            (verificationKey, , , ) = core.getGuaranteeVersionConfig(version);
+            (verificationKey,,,) = core.getGuaranteeVersionConfig(keySourceVersion);
         } else {
             verificationKey = BLS.G1Point({
                 x_a: vm.envBytes32("VK_X0"),
@@ -68,6 +70,9 @@ contract ConfigureGuaranteeVersionScript is Script {
         console.log("Configured guarantee version:", version);
         console.log("Core4Mica:", coreAddress);
         console.log("Enabled:", enabled);
+        if (reuseExistingKey) {
+            console.log("Reused key source version:", keySourceVersion);
+        }
         console.log("Decoder:", storedDecoder);
         console.log("Domain separator:");
         console.logBytes32(storedDomain);

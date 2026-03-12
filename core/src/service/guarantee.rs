@@ -139,6 +139,20 @@ impl CoreService {
             .validate()
             .map_err(|err| ServiceError::InvalidParams(err.to_string()))?;
 
+        let trusted_registries = &self.inner.public_params.trusted_validation_registries;
+        if !trusted_registries.is_empty() {
+            let claim_registry = claims.validation_policy.validation_registry_address;
+            let is_trusted = trusted_registries
+                .iter()
+                .any(|registry| Address::from_str(registry) == Ok(claim_registry));
+            if !is_trusted {
+                return Err(ServiceError::InvalidParams(format!(
+                    "validation registry {} is not trusted",
+                    claim_registry
+                )));
+            }
+        }
+
         if claims.validation_policy.validation_chain_id != self.inner.public_params.chain_id {
             return Err(ServiceError::InvalidParams(format!(
                 "validation_chain_id {} must match core chain_id {}",

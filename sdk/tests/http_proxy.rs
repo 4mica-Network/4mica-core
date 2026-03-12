@@ -114,3 +114,57 @@ async fn rpc_proxy_returns_decode_error_on_invalid_json() {
 
     handle.abort();
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
+    let params = CorePublicParameters {
+        public_key: vec![7, 8, 9],
+        contract_address: "0x1234567890abcdef1234567890abcdef12345678".into(),
+        ethereum_http_rpc_url: "http://localhost:8545".into(),
+        eip712_name: "4mica".into(),
+        eip712_version: "1".into(),
+        chain_id: 84532,
+        active_guarantee_version: 2,
+        active_guarantee_domain_separator:
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        trusted_validation_registries: vec![
+            "0x1111111111111111111111111111111111111111".into(),
+            "0x2222222222222222222222222222222222222222".into(),
+        ],
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".into(),
+    };
+
+    let router = Router::new().route(
+        "/core/public-params",
+        get({
+            let params = params.clone();
+            move || {
+                let params = params.clone();
+                async move { Json(params) }
+            }
+        }),
+    );
+    let Ok((base, handle)) = spawn_router(router).await else {
+        eprintln!("skipping test: failed to bind local port");
+        return;
+    };
+
+    let proxy = RpcProxy::new(&base).expect("create proxy");
+    let got = proxy.get_public_params().await.expect("get params");
+    assert_eq!(got.active_guarantee_version, 2);
+    assert_eq!(
+        got.active_guarantee_domain_separator,
+        params.active_guarantee_domain_separator
+    );
+    assert_eq!(
+        got.validation_hash_canonicalization_version,
+        "4MICA_VALIDATION_REQUEST_V1"
+    );
+    assert_eq!(
+        got.trusted_validation_registries,
+        params.trusted_validation_registries
+    );
+
+    handle.abort();
+}

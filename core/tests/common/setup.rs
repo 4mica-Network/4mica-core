@@ -118,10 +118,20 @@ async fn deploy_contracts(
         provider.clone(),
         *access_manager.address(),
         dummy_verification_key(),
-        *usdc.address(),
-        *usdt.address(),
     )
     .await?;
+    contract
+        .setStablecoinAsset(*usdc.address(), true)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    contract
+        .setStablecoinAsset(*usdt.address(), true)
+        .send()
+        .await?
+        .watch()
+        .await?;
 
     debug!(
         "Contracts deployed: \n\tcore_4mica={:?}\n\tusdc={:?}\n\tusdt={:?}\n\taccess_manager={:?}",

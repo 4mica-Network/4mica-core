@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, FixedBytes, U256, keccak256};
+use alloy::primitives::{FixedBytes, U256, keccak256};
 
 use alloy::providers::ext::AnvilApi;
 use alloy::providers::{DynProvider, Provider};
@@ -518,14 +518,10 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     let user_addr = env.signer_addr.to_string();
     let persist_ctx = core_service.persist_ctx();
 
-    let usdc_b = Address::with_last_byte(0x33);
-    let usdt_b = Address::with_last_byte(0x44);
     let contract_b = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
-        usdc_b,
-        usdt_b,
     )
     .await?;
 

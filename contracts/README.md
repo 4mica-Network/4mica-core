@@ -37,8 +37,8 @@ Place the `.env` file in the project root (next to `foundry.toml`).
 # Private key of your deployer account (do not commit this!)
 PRIVATE_KEY=0xabc123...deadbeef
 
-# Local RPC (Anvil)
-RPC_URL=http://127.0.0.1:8545
+# Deployment target RPC
+DEPLOY_RPC_URL=http://127.0.0.1:8545
 
 # Optional: Etherscan key for contract verification
 ETHERSCAN_API_KEY=your-key-here
@@ -88,7 +88,7 @@ Copy one private key into `.env` as `PRIVATE_KEY=...`.
 
 ```bash
 forge script script/Core4Mica.s.sol:Core4MicaScript \
-    --rpc-url $RPC_URL \
+    --rpc-url $DEPLOY_RPC_URL \
     --broadcast \
     --via-ir \
     -vvvv
@@ -99,13 +99,38 @@ forge script script/Core4Mica.s.sol:Core4MicaScript \
 Core4Mica deployed at: 0x1234abcd...
 ```
 
+### 3b. Full stack deploy (Core + guarantee decoders)
+
+Deploys:
+- `AccessManager`
+- `Core4Mica`
+- `GuaranteeDecoderRouter`
+- `ValidationRegistryGuaranteeDecoder`
+
+```bash
+forge script script/Core4MicaFullStack.s.sol:Core4MicaFullStackScript \
+    --rpc-url $DEPLOY_RPC_URL \
+    --broadcast \
+    --via-ir \
+    -vvvv
+```
+
+Important env additions for full stack:
+- Stablecoin setup (optional):
+  - `STABLECOINS_COUNT` + `STABLECOIN_0..n-1`
+- `TRUSTED_VALIDATION_REGISTRY` (single)
+  or
+- `TRUSTED_VALIDATION_REGISTRIES_COUNT` + `TRUSTED_VALIDATION_REGISTRY_0..n-1`
+- V2 is configured and enabled by default during full-stack deployment.
+- V2 reuses the V1 guarantee key and derives its domain separator in-script.
+
 ### 4. Configure guarantee versions post-deploy
 
 Router/module wiring:
 
 ```bash
 forge script script/ConfigureGuaranteeRouter.s.sol:ConfigureGuaranteeRouterScript \
-    --rpc-url $RPC_URL \
+    --rpc-url $DEPLOY_RPC_URL \
     --broadcast \
     --via-ir \
     -vvvv
@@ -115,11 +140,31 @@ Core version config:
 
 ```bash
 forge script script/ConfigureGuaranteeVersion.s.sol:ConfigureGuaranteeVersionScript \
-    --rpc-url $RPC_URL \
+    --rpc-url $DEPLOY_RPC_URL \
     --broadcast \
     --via-ir \
     -vvvv
 ```
+
+`ConfigureGuaranteeVersion` supports reusing an existing key from another version:
+- `GUARANTEE_REUSE_EXISTING_KEY=true`
+- optional `GUARANTEE_KEY_SOURCE_VERSION` (defaults to `1`)
+
+### Stablecoin configuration model
+
+`Core4Mica` constructor no longer takes chain-specific token addresses.
+
+- Constructor input is now chain-agnostic (`manager`, `verificationKey`) so bytecode can be deployed deterministically across chains.
+- Stablecoins are configured post-deploy via admin calls:
+  - `setStablecoinAsset(address asset, bool enabled)`
+  - `setStablecoinAssets(address[] assets, bool enabled)`
+
+Deployment scripts call `setStablecoinAssets(...)` automatically when `STABLECOINS_COUNT` and `STABLECOIN_<i>` env vars are provided.
+
+For same-address deployment across chains, use deterministic deployment (`CREATE2`) with:
+- same deployer address
+- same salt
+- same init code (constructor args + bytecode)
 
 Runbook:
 - `GUARANTEE_VERSIONING.md`
@@ -182,6 +227,7 @@ This ensures the deployer account can interact with restricted functions.
 ├── GUARANTEE_VERSIONING.md
 ├── script/             # Deployment scripts
 │   ├── Core4Mica.s.sol
+│   ├── Core4MicaFullStack.s.sol
 │   ├── ConfigureGuaranteeVersion.s.sol
 │   └── ConfigureGuaranteeRouter.s.sol
 ├── test/               # Foundry tests
