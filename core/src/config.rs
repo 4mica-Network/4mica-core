@@ -7,11 +7,14 @@ use crypto::bls::KeyMaterial;
 use envconfig::Envconfig;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::warn;
+use rpc::{GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2};
 use secrecy::zeroize::Zeroize;
 
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
 pub const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+pub const VALIDATION_HASH_CANONICALIZATION_VERSION_V1: &str =
+    rpc::VALIDATION_REQUEST_BINDING_DOMAIN_V1;
 const DEFAULT_AUTH_JWT_SECRET: &str = "dev-insecure-change-me";
 const PLACEHOLDER_AUTH_JWT_SECRET: &str = "replace-with-32+bytes-random";
 
@@ -157,19 +160,35 @@ impl GuaranteeConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.request_version == 0 {
-            bail!("GUARANTEE_REQUEST_VERSION must be greater than 0");
-        }
-        if self
-            .validation_hash_canonicalization_version
-            .trim()
-            .is_empty()
+        if self.request_version != GUARANTEE_CLAIMS_VERSION
+            && self.request_version != GUARANTEE_CLAIMS_VERSION_V2
         {
+            bail!(
+                "unsupported GUARANTEE_REQUEST_VERSION '{}'; supported: {}, {}",
+                self.request_version,
+                GUARANTEE_CLAIMS_VERSION,
+                GUARANTEE_CLAIMS_VERSION_V2
+            );
+        }
+        let canonicalization_version = self.validation_hash_canonicalization_version.trim();
+        if canonicalization_version.is_empty() {
             bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");
+        }
+        if canonicalization_version != VALIDATION_HASH_CANONICALIZATION_VERSION_V1 {
+            bail!(
+                "unsupported VALIDATION_HASH_CANONICALIZATION_VERSION '{}'; supported: {}",
+                canonicalization_version,
+                VALIDATION_HASH_CANONICALIZATION_VERSION_V1
+            );
         }
 
         // Ensures all configured addresses are valid and normalized.
-        let _ = self.trusted_validation_registry_allowlist()?;
+        let allowlist = self.trusted_validation_registry_allowlist()?;
+        if self.request_version == 2 && allowlist.is_empty() {
+            bail!(
+                "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when GUARANTEE_REQUEST_VERSION=2"
+            );
+        }
         Ok(())
     }
 }
@@ -363,7 +382,7 @@ mod tests {
     fn guarantee_config_rejects_invalid_hash_canonicalization_version() {
         let cfg = GuaranteeConfig {
             request_version: 2,
-            trusted_validation_registries: String::new(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "   ".to_string(),
         };
         let err = cfg
@@ -372,6 +391,51 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("VALIDATION_HASH_CANONICALIZATION_VERSION")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_unsupported_hash_canonicalization_version() {
+        let cfg = GuaranteeConfig {
+            request_version: 2,
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("unsupported canonicalization version should fail");
+        assert!(
+            err.to_string()
+                .contains("unsupported VALIDATION_HASH_CANONICALIZATION_VERSION")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_v2_without_trusted_validation_registries() {
+        let cfg = GuaranteeConfig {
+            request_version: 2,
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("v2 config without allowlist should fail");
+        assert!(err.to_string().contains("TRUSTED_VALIDATION_REGISTRIES"));
+    }
+
+    #[test]
+    fn guarantee_config_rejects_unsupported_request_version() {
+        let cfg = GuaranteeConfig {
+            request_version: 3,
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("unsupported guarantee request version should fail");
+        assert!(
+            err.to_string()
+                .contains("unsupported GUARANTEE_REQUEST_VERSION")
         );
     }
 }

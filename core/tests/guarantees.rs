@@ -142,8 +142,17 @@ async fn build_core_service_with_active_version(
     persist_ctx: PersistCtx,
     active_guarantee_version: u64,
 ) -> anyhow::Result<CoreService> {
-    build_core_service_with_guarantee_config(persist_ctx, active_guarantee_version, String::new())
-        .await
+    let trusted_validation_registries = if active_guarantee_version == 2 {
+        "0x1111111111111111111111111111111111111111".to_string()
+    } else {
+        String::new()
+    };
+    build_core_service_with_guarantee_config(
+        persist_ctx,
+        active_guarantee_version,
+        trusted_validation_registries,
+    )
+    .await
 }
 
 async fn build_core_service_with_guarantee_config(

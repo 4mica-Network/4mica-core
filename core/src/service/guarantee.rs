@@ -139,13 +139,10 @@ impl CoreService {
             .validate()
             .map_err(|err| ServiceError::InvalidParams(err.to_string()))?;
 
-        let trusted_registries = &self.inner.public_params.trusted_validation_registries;
+        let trusted_registries = &self.inner.trusted_validation_registry_set;
         if !trusted_registries.is_empty() {
             let claim_registry = claims.validation_policy.validation_registry_address;
-            let is_trusted = trusted_registries
-                .iter()
-                .any(|registry| Address::from_str(registry) == Ok(claim_registry));
-            if !is_trusted {
+            if !trusted_registries.contains(&claim_registry) {
                 return Err(ServiceError::InvalidParams(format!(
                     "validation registry {} is not trusted",
                     claim_registry

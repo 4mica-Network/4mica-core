@@ -3,8 +3,9 @@ pragma solidity ^0.8.29;
 
 import {Guarantee, IGuaranteeDecoder} from "./Core4Mica.sol";
 import {IValidationRegistry} from "./interfaces/IValidationRegistry.sol";
+import {ValidationBindingConstants} from "./ValidationBindingConstants.sol";
 
-contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder {
+contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBindingConstants {
     error UnsupportedGuaranteeVersion(uint64 version);
     error InvalidMinValidationScore(uint8 score);
     error InvalidValidationChainId(uint64 expected, uint64 actual);
@@ -17,10 +18,6 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder {
     error ValidationValidatorMismatch(address expected, address actual);
     error ValidationAgentMismatch(uint256 expected, uint256 actual);
     error ValidationTagMismatch(bytes32 expectedTagHash, bytes32 actualTagHash);
-
-    bytes32 internal constant VALIDATION_SUBJECT_BINDING_DOMAIN_HASH = keccak256("4MICA_VALIDATION_SUBJECT_V1");
-    bytes32 internal constant VALIDATION_REQUEST_BINDING_DOMAIN_HASH = keccak256("4MICA_VALIDATION_REQUEST_V1");
-    uint64 internal constant GUARANTEE_CLAIMS_VERSION_V2 = 2;
 
     struct GuaranteeV2 {
         bytes32 domain;

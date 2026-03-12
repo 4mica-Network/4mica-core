@@ -3,77 +3,11 @@ pragma solidity ^0.8.29;
 
 import "forge-std/Test.sol";
 import {Guarantee} from "../src/Core4Mica.sol";
-import {IValidationRegistry} from "../src/interfaces/IValidationRegistry.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
+import {ValidationBindingConstants} from "../src/ValidationBindingConstants.sol";
+import {MockValidationRegistry} from "./helpers/MockValidationRegistry.sol";
 
-contract MockValidationRegistry is IValidationRegistry {
-    struct Status {
-        address validatorAddress;
-        uint256 agentId;
-        uint8 response;
-        bytes32 responseHash;
-        string tag;
-        uint256 lastUpdate;
-        bool exists;
-    }
-
-    mapping(bytes32 => Status) private statuses;
-    bool public shouldRevert;
-
-    function setShouldRevert(bool value) external {
-        shouldRevert = value;
-    }
-
-    function setStatus(
-        bytes32 requestHash,
-        address validatorAddress,
-        uint256 agentId,
-        uint8 response,
-        bytes32 responseHash,
-        string calldata tag,
-        uint256 lastUpdate
-    ) external {
-        statuses[requestHash] = Status({
-            validatorAddress: validatorAddress,
-            agentId: agentId,
-            response: response,
-            responseHash: responseHash,
-            tag: tag,
-            lastUpdate: lastUpdate,
-            exists: true
-        });
-    }
-
-    function getValidationStatus(bytes32 requestHash)
-        external
-        view
-        override
-        returns (
-            address validatorAddress,
-            uint256 agentId,
-            uint8 response,
-            bytes32 responseHash,
-            string memory tag,
-            uint256 lastUpdate
-        )
-    {
-        if (shouldRevert) {
-            revert("mock-registry-revert");
-        }
-
-        Status storage s = statuses[requestHash];
-        if (!s.exists) {
-            return (address(0), 0, 0, bytes32(0), "", 0);
-        }
-        return (s.validatorAddress, s.agentId, s.response, s.responseHash, s.tag, s.lastUpdate);
-    }
-}
-
-contract ValidationRegistryGuaranteeDecoderTest is Test {
-    bytes32 internal constant VALIDATION_SUBJECT_BINDING_DOMAIN_HASH = keccak256("4MICA_VALIDATION_SUBJECT_V1");
-    bytes32 internal constant VALIDATION_REQUEST_BINDING_DOMAIN_HASH = keccak256("4MICA_VALIDATION_REQUEST_V1");
-    uint64 internal constant GUARANTEE_CLAIMS_VERSION_V2 = 2;
-
+contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConstants {
     MockValidationRegistry internal registry;
     ValidationRegistryGuaranteeDecoder internal decoder;
 

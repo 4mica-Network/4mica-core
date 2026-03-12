@@ -6,12 +6,12 @@ use std::sync::LazyLock;
 
 use super::PaymentGuaranteeValidationPolicyV2;
 
-const VALIDATION_SUBJECT_BINDING_DOMAIN: &str = "4MICA_VALIDATION_SUBJECT_V1";
-const VALIDATION_REQUEST_BINDING_DOMAIN: &str = "4MICA_VALIDATION_REQUEST_V1";
+pub const VALIDATION_SUBJECT_BINDING_DOMAIN_V1: &str = "4MICA_VALIDATION_SUBJECT_V1";
+pub const VALIDATION_REQUEST_BINDING_DOMAIN_V1: &str = "4MICA_VALIDATION_REQUEST_V1";
 static VALIDATION_SUBJECT_BINDING_DOMAIN_HASH: LazyLock<B256> =
-    LazyLock::new(|| keccak256(VALIDATION_SUBJECT_BINDING_DOMAIN.as_bytes()));
+    LazyLock::new(|| keccak256(VALIDATION_SUBJECT_BINDING_DOMAIN_V1.as_bytes()));
 static VALIDATION_REQUEST_BINDING_DOMAIN_HASH: LazyLock<B256> =
-    LazyLock::new(|| keccak256(VALIDATION_REQUEST_BINDING_DOMAIN.as_bytes()));
+    LazyLock::new(|| keccak256(VALIDATION_REQUEST_BINDING_DOMAIN_V1.as_bytes()));
 
 sol! {
     struct ValidationSubjectPayloadV1 {

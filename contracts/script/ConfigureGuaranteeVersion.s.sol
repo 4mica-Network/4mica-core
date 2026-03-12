@@ -37,6 +37,8 @@ contract ConfigureGuaranteeVersionScript is Script {
         uint64 keySourceVersion = uint64(vm.envOr("GUARANTEE_KEY_SOURCE_VERSION", uint256(1)));
         bytes32 domainSeparator = vm.envOr("GUARANTEE_DOMAIN_SEPARATOR", bytes32(0));
         address decoder = vm.envOr("GUARANTEE_DECODER", address(0));
+        uint64 initialVersion = core.INITIAL_GUARANTEE_VERSION();
+        (, bytes32 currentDomain, address currentDecoder,) = core.getGuaranteeVersionConfig(version);
 
         BLS.G1Point memory verificationKey;
         if (reuseExistingKey) {
@@ -57,14 +59,21 @@ contract ConfigureGuaranteeVersionScript is Script {
 
         (BLS.G1Point memory storedKey, bytes32 storedDomain, address storedDecoder, bool storedEnabled) =
             core.getGuaranteeVersionConfig(version);
+        bytes32 expectedDomain = domainSeparator;
+        if (!enabled && expectedDomain == bytes32(0)) {
+            expectedDomain = currentDomain;
+        }
+
+        address expectedDecoder = decoder;
+        if (version == initialVersion) {
+            expectedDecoder = address(0);
+        } else if (!enabled && expectedDecoder == address(0)) {
+            expectedDecoder = currentDecoder;
+        }
 
         if (!_sameKey(storedKey, verificationKey)) revert ReadbackMismatch("verificationKey");
-        if (domainSeparator != bytes32(0) && storedDomain != domainSeparator) {
-            revert ReadbackMismatch("domainSeparator");
-        }
-        if (decoder != address(0) && storedDecoder != decoder) {
-            revert ReadbackMismatch("decoder");
-        }
+        if (storedDomain != expectedDomain) revert ReadbackMismatch("domainSeparator");
+        if (storedDecoder != expectedDecoder) revert ReadbackMismatch("decoder");
         if (storedEnabled != enabled) revert ReadbackMismatch("enabled");
 
         console.log("Configured guarantee version:", version);

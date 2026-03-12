@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -10,6 +11,7 @@ use crate::{
     ethereum::{CoreContractApi, CoreContractProxy},
     persist::{PersistCtx, repo},
 };
+use alloy::primitives::Address;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use anyhow::anyhow;
 use crypto::bls::KeyMaterial;
@@ -27,6 +29,7 @@ mod tab;
 pub struct Inner {
     config: AppConfig,
     public_params: CorePublicParameters,
+    trusted_validation_registry_set: HashSet<Address>,
     active_guarantee_version: u64,
     guarantee_domain: [u8; 32],
     tab_expiration_time: AtomicU64,
@@ -113,8 +116,20 @@ impl CoreService {
         let eip712_version = config.eip712.version.clone();
         let eth_config = config.ethereum_config.clone();
         let guarantee_config = config.guarantee.clone();
+        guarantee_config.validate()?;
         let trusted_validation_registries =
             guarantee_config.trusted_validation_registry_allowlist()?;
+        let trusted_validation_registry_set: HashSet<Address> = trusted_validation_registries
+            .iter()
+            .map(|registry| {
+                registry.parse::<Address>().map_err(|_| {
+                    anyhow!(
+                        "invalid normalized trusted validation registry address: {}",
+                        registry
+                    )
+                })
+            })
+            .collect::<anyhow::Result<HashSet<Address>>>()?;
         let active_guarantee_version = guarantee_config.request_version;
         let validation_hash_canonicalization_version = guarantee_config
             .validation_hash_canonicalization_version
@@ -135,6 +150,7 @@ impl CoreService {
                 trusted_validation_registries,
                 validation_hash_canonicalization_version,
             },
+            trusted_validation_registry_set,
             active_guarantee_version,
             guarantee_domain: deps.guarantee_domain,
             tab_expiration_time: AtomicU64::new(deps.tab_expiration_time),

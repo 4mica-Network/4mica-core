@@ -5,7 +5,7 @@ fn default_active_guarantee_version() -> u64 {
 }
 
 fn default_validation_hash_canonicalization_version() -> String {
-    "4MICA_VALIDATION_REQUEST_V1".to_string()
+    crate::guarantee::VALIDATION_REQUEST_BINDING_DOMAIN_V1.to_string()
 }
 
 /// Static parameters exposed by the core service.

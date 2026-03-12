@@ -10,6 +10,8 @@ async fn rejects_startup_when_active_guarantee_version_is_disabled_on_chain() ->
 {
     let mut env = setup_e2e_environment().await?;
     env.cfg.guarantee.request_version = 2;
+    env.cfg.guarantee.trusted_validation_registries =
+        "0x1111111111111111111111111111111111111111".to_string();
 
     let err = match CoreService::new(env.cfg.clone()).await {
         Ok(_) => panic!("startup should fail when configured active version is disabled on-chain"),

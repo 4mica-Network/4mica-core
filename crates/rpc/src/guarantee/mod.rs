@@ -8,7 +8,10 @@ pub use types::{
     PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeRequestClaimsV2Builder,
     PaymentGuaranteeRequestEssentials, PaymentGuaranteeValidationPolicyV2, SigningScheme,
 };
-pub use validation::{compute_validation_request_hash, compute_validation_subject_hash};
+pub use validation::{
+    VALIDATION_REQUEST_BINDING_DOMAIN_V1, VALIDATION_SUBJECT_BINDING_DOMAIN_V1,
+    compute_validation_request_hash, compute_validation_subject_hash,
+};
 
 #[cfg(test)]
 mod tests;
