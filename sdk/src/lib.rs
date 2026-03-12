@@ -10,8 +10,9 @@ pub mod x402;
 
 pub use alloy::primitives::{Address, U256};
 pub use rpc::{
-    PaymentGuaranteeClaims, PaymentGuaranteeRequestClaimsV1 as PaymentGuaranteeRequestClaims,
-    SigningScheme,
+    PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims as PaymentGuaranteeRequestClaimsEnvelope,
+    PaymentGuaranteeRequestClaimsV1 as PaymentGuaranteeRequestClaims,
+    PaymentGuaranteeRequestClaimsV2, SigningScheme,
 };
 
 pub use crate::error::RecipientQueryError;

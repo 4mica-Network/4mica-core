@@ -5,7 +5,7 @@ use alloy::{
     rpc::types::{TransactionReceipt, TransactionRequest},
     signers::{Signature, Signer},
 };
-use rpc::{PaymentGuaranteeRequestClaimsV1, SigningScheme};
+use rpc::{PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2, SigningScheme};
 
 use crate::{
     PaymentSignature,
@@ -17,7 +17,7 @@ use crate::{
         ApproveErc20Error, CancelWithdrawalError, DepositError, FinalizeWithdrawalError,
         GetUserError, PayTabError, RequestWithdrawalError, SignPaymentError, TabPaymentStatusError,
     },
-    sig::PaymentSigner,
+    sig::{PaymentSigner, PaymentSignerV2},
     validators::validate_address,
 };
 
@@ -168,6 +168,26 @@ impl<S> UserClient<S> {
             .ctx
             .signer()
             .sign_request(&pub_params, claims, scheme)
+            .await?;
+
+        Ok(sig)
+    }
+
+    pub async fn sign_payment_v2(
+        &self,
+        claims: PaymentGuaranteeRequestClaimsV2,
+        scheme: SigningScheme,
+    ) -> Result<PaymentSignature, SignPaymentError>
+    where
+        S: Signer + Send + Sync,
+    {
+        // TODO: Cache public parameters for a while
+        let pub_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
+
+        let sig = self
+            .ctx
+            .signer()
+            .sign_request_v2(&pub_params, claims, scheme)
             .await?;
 
         Ok(sig)

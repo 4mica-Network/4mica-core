@@ -5,7 +5,10 @@ use alloy::primitives::{Address, B256};
 use alloy::signers::Signer;
 
 use async_trait::async_trait;
-use rpc::{CorePublicParameters, PaymentGuaranteeRequestClaimsV1, SigningScheme};
+use rpc::{
+    CorePublicParameters, PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
+    SigningScheme,
+};
 use serde::Deserialize;
 
 #[cfg(test)]
@@ -27,6 +30,17 @@ pub trait PaymentSigner: Send + Sync {
         &self,
         params: &CorePublicParameters,
         claims: PaymentGuaranteeRequestClaimsV1,
+        scheme: SigningScheme,
+    ) -> Result<PaymentSignature, SignPaymentError>;
+}
+
+#[async_trait]
+pub trait PaymentSignerV2: Send + Sync {
+    /// Signs V2 claims with the chosen scheme and returns a ready-to-send request signature.
+    async fn sign_request_v2(
+        &self,
+        params: &CorePublicParameters,
+        claims: PaymentGuaranteeRequestClaimsV2,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError>;
 }
@@ -62,6 +76,52 @@ where
                 let recipient = Address::from_str(&claims.recipient_address)
                     .map_err(|_| SignPaymentError::InvalidRecipientAddress)?;
                 crate::digest::eip191_digest(&claims, user, recipient)
+                    .map_err(|e| SignPaymentError::Failed(e.to_string()))?
+            }
+        };
+
+        let sig = self
+            .sign_hash(&digest)
+            .await
+            .map_err(|e| SignPaymentError::Failed(e.to_string()))?;
+
+        let signature = sig.to_string();
+
+        Ok(PaymentSignature { signature, scheme })
+    }
+}
+
+#[async_trait]
+impl<S> PaymentSignerV2 for S
+where
+    S: Signer + Send + Sync,
+{
+    async fn sign_request_v2(
+        &self,
+        params: &CorePublicParameters,
+        claims: PaymentGuaranteeRequestClaimsV2,
+        scheme: SigningScheme,
+    ) -> Result<PaymentSignature, SignPaymentError> {
+        let signer_addr = self.address();
+        let expected = Address::from_str(&claims.user_address)
+            .map_err(|_| SignPaymentError::InvalidUserAddress)?;
+
+        if signer_addr != expected {
+            return Err(SignPaymentError::AddressMismatch {
+                signer: signer_addr,
+                claims: claims.user_address.clone(),
+            });
+        }
+
+        let digest: B256 = match scheme {
+            SigningScheme::Eip712 => crate::digest::eip712_digest_v2(params, &claims)
+                .map_err(|e| SignPaymentError::Failed(e.to_string()))?,
+            SigningScheme::Eip191 => {
+                let user = Address::from_str(&claims.user_address)
+                    .map_err(|_| SignPaymentError::InvalidUserAddress)?;
+                let recipient = Address::from_str(&claims.recipient_address)
+                    .map_err(|_| SignPaymentError::InvalidRecipientAddress)?;
+                crate::digest::eip191_digest_v2(&claims, user, recipient)
                     .map_err(|e| SignPaymentError::Failed(e.to_string()))?
             }
         };

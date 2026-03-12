@@ -7,7 +7,8 @@ use alloy::{
 use crypto::bls::{BLSCert, BlsError};
 use rpc::{
     CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
-    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1, SigningScheme,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    PaymentGuaranteeRequestClaimsV2, SigningScheme,
 };
 
 use crate::{
@@ -102,6 +103,28 @@ impl<S> RecipientClient<S> {
             .await?
             .issue_guarantee(PaymentGuaranteeRequest::new(
                 PaymentGuaranteeRequestClaims::V1(claims),
+                signature,
+                scheme,
+            ))
+            .await?;
+        Ok(cert)
+    }
+
+    pub async fn issue_payment_guarantee_v2(
+        &self,
+        claims: PaymentGuaranteeRequestClaimsV2,
+        signature: String,
+        scheme: SigningScheme,
+    ) -> Result<BLSCert, IssuePaymentGuaranteeError>
+    where
+        S: Signer + Sync,
+    {
+        let cert = self
+            .ctx
+            .rpc_proxy()
+            .await?
+            .issue_guarantee(PaymentGuaranteeRequest::new(
+                PaymentGuaranteeRequestClaims::V2(claims),
                 signature,
                 scheme,
             ))
