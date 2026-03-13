@@ -1,18 +1,19 @@
 use std::net::SocketAddr;
 
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use axum::{
     Json, Router,
     http::{HeaderMap, HeaderValue, StatusCode},
     routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use rpc::PaymentGuaranteeRequestClaims;
+use rpc::{PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV2};
 use sdk_4mica::{
     PaymentSignature, SigningScheme,
     x402::{
-        FacilitatorSettleParams, FlowSigner, PaymentRequirements, TabRequestParams, TabResponse,
-        X402PaymentEnvelope, X402PaymentRequiredV2, X402ResourceInfo,
+        FacilitatorSettleParams, FlowSigner, PaymentRequirements, PaymentRequirementsV2,
+        TabRequestParams, TabResponse, X402PaymentEnvelope, X402PaymentRequiredV2,
+        X402ResourceInfo,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,17 @@ impl FlowSigner for MockSigner {
     async fn sign_payment(
         &self,
         _claims: sdk_4mica::PaymentGuaranteeRequestClaims,
+        _scheme: SigningScheme,
+    ) -> Result<PaymentSignature, sdk_4mica::error::X402Error> {
+        Ok(PaymentSignature {
+            signature: "0xsig".into(),
+            scheme: SigningScheme::Eip712,
+        })
+    }
+
+    async fn sign_payment_v2(
+        &self,
+        _claims: PaymentGuaranteeRequestClaimsV2,
         _scheme: SigningScheme,
     ) -> Result<PaymentSignature, sdk_4mica::error::X402Error> {
         Ok(PaymentSignature {
@@ -57,6 +69,26 @@ pub fn sample_requirements(tab_endpoint: &str) -> PaymentRequirements {
         asset: "0x000000000000000000000000000000000000c0de".into(),
         extra: Some(serde_json::json!({
             "tabEndpoint": tab_endpoint,
+        })),
+    }
+}
+
+pub fn sample_requirements_v2(tab_endpoint: &str) -> PaymentRequirementsV2 {
+    PaymentRequirementsV2 {
+        scheme: "4mica-credit".into(),
+        network: "polygon-amoy".into(),
+        asset: "0x000000000000000000000000000000000000c0de".into(),
+        amount: "0xde0b6b3a7640000".into(),
+        pay_to: "0x000000000000000000000000000000000000dead".into(),
+        max_timeout_seconds: Some(300),
+        extra: Some(serde_json::json!({
+            "tabEndpoint": tab_endpoint,
+            "validationRegistryAddress": Address::repeat_byte(0x11),
+            "validationChainId": 84532u64,
+            "validatorAddress": Address::repeat_byte(0x22),
+            "validatorAgentId": "77",
+            "minValidationScore": 80u8,
+            "requiredValidationTag": "hard-finality",
         })),
     }
 }
@@ -97,7 +129,14 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
                                 description: "Protected resource".into(),
                                 mime_type: "application/json".into(),
                             },
-                            accepts: vec![requirements.into()],
+                            accepts: vec![sample_requirements_v2(
+                                requirements
+                                    .extra
+                                    .as_ref()
+                                    .and_then(|extra| extra.get("tabEndpoint"))
+                                    .and_then(|value| value.as_str())
+                                    .expect("tab endpoint"),
+                            )],
                             extensions: None,
                         };
 
