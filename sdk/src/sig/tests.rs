@@ -22,6 +22,7 @@ fn create_test_params() -> CorePublicParameters {
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 1,
+        accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: Vec::new(),

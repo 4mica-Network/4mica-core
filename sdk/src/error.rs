@@ -76,6 +76,8 @@ pub enum ClientError {
 
 #[derive(Debug, Error)]
 pub enum SignPaymentError {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
     #[error("address mismatch: signer={signer:?} != claims.user_address={claims}")]
     AddressMismatch { signer: Address, claims: String },
     #[error("invalid user address in claims")]

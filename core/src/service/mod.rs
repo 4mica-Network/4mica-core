@@ -141,6 +141,11 @@ impl CoreService {
         let validation_hash_canonicalization_version = guarantee_config
             .validation_hash_canonicalization_version
             .clone();
+        let mut accepted_guarantee_versions_public = accepted_guarantee_versions
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        accepted_guarantee_versions_public.sort_unstable();
         let active_guarantee_domain = deps
             .guarantee_domains
             .get(&active_guarantee_version)
@@ -162,6 +167,7 @@ impl CoreService {
                 eip712_version,
                 chain_id: deps.chain_id,
                 active_guarantee_version,
+                accepted_guarantee_versions: accepted_guarantee_versions_public,
                 active_guarantee_domain_separator,
                 trusted_validation_registries,
                 validation_hash_canonicalization_version,

@@ -2326,6 +2326,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 1,
+        accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2350,6 +2351,7 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 1,
+        accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2400,6 +2402,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 1,
+        accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2458,6 +2461,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 1,
+        accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2488,6 +2492,7 @@ async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2510,6 +2515,7 @@ async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2532,6 +2538,7 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2561,6 +2568,7 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2590,6 +2598,7 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
@@ -2619,6 +2628,7 @@ async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyh
         eip712_version: "1".to_string(),
         chain_id: 1,
         active_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],

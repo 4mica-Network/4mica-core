@@ -21,6 +21,7 @@ use crate::{
         CreateTabError, IssuePaymentGuaranteeError, RecipientQueryError, RemunerateError,
         TabPaymentStatusError, VerifyGuaranteeError,
     },
+    guarantee::{PreparedPaymentGuaranteeClaims, PreparedPaymentGuaranteeRequest},
 };
 use std::collections::HashMap;
 
@@ -152,6 +153,25 @@ impl<S> RecipientClient<S> {
             ))
             .await?;
         Ok(cert)
+    }
+
+    pub async fn issue_prepared_payment_guarantee(
+        &self,
+        request: PreparedPaymentGuaranteeRequest,
+    ) -> Result<BLSCert, IssuePaymentGuaranteeError>
+    where
+        S: Signer + Sync,
+    {
+        match request.claims {
+            PreparedPaymentGuaranteeClaims::V1(claims) => {
+                self.issue_payment_guarantee(claims, request.signature, request.scheme)
+                    .await
+            }
+            PreparedPaymentGuaranteeClaims::V2(claims) => {
+                self.issue_payment_guarantee_v2(claims, request.signature, request.scheme)
+                    .await
+            }
+        }
     }
 
     pub fn verify_payment_guarantee(

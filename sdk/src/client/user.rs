@@ -17,6 +17,10 @@ use crate::{
         ApproveErc20Error, CancelWithdrawalError, DepositError, FinalizeWithdrawalError,
         GetUserError, PayTabError, RequestWithdrawalError, SignPaymentError, TabPaymentStatusError,
     },
+    guarantee::{
+        PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
+        PreparedPaymentGuaranteeRequest, prepare_payment_guarantee_claims,
+    },
     sig::{PaymentSigner, PaymentSignerV2},
     validators::validate_address,
 };
@@ -191,6 +195,41 @@ impl<S> UserClient<S> {
             .await?;
 
         Ok(sig)
+    }
+
+    pub async fn sign_payment_auto(
+        &self,
+        intent: PaymentGuaranteeIntent,
+        validation: Option<PaymentGuaranteeValidationInput>,
+        scheme: SigningScheme,
+    ) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>
+    where
+        S: Signer + Send + Sync,
+    {
+        let public_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
+        let claims = prepare_payment_guarantee_claims(&public_params, intent, validation)
+            .map_err(|err| SignPaymentError::InvalidParams(err.to_string()))?;
+
+        let signature = match &claims {
+            PreparedPaymentGuaranteeClaims::V1(claims) => {
+                self.ctx
+                    .signer()
+                    .sign_request(&public_params, claims.clone(), scheme)
+                    .await?
+            }
+            PreparedPaymentGuaranteeClaims::V2(claims) => {
+                self.ctx
+                    .signer()
+                    .sign_request_v2(&public_params, claims.clone(), scheme)
+                    .await?
+            }
+        };
+
+        Ok(PreparedPaymentGuaranteeRequest {
+            claims,
+            signature: signature.signature,
+            scheme: signature.scheme,
+        })
     }
 
     async fn pay_tab_in_erc20_token(

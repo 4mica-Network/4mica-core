@@ -34,6 +34,7 @@ async fn rpc_proxy_get_public_params_round_trip() {
         eip712_version: "1".into(),
         chain_id: 1337,
         active_guarantee_version: 1,
+        accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".into(),
         trusted_validation_registries: vec![],
@@ -133,6 +134,7 @@ async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
         eip712_version: "1".into(),
         chain_id: 84532,
         active_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         trusted_validation_registries: vec![
