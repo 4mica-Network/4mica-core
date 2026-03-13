@@ -10,6 +10,7 @@ async fn rejects_startup_when_active_guarantee_version_is_disabled_on_chain() ->
 {
     let mut env = setup_e2e_environment().await?;
     env.cfg.guarantee.request_version = 2;
+    env.cfg.guarantee.accepted_request_versions = "2".to_string();
     env.cfg.guarantee.trusted_validation_registries =
         "0x1111111111111111111111111111111111111111".to_string();
 
@@ -19,7 +20,7 @@ async fn rejects_startup_when_active_guarantee_version_is_disabled_on_chain() ->
     };
     assert!(
         err.to_string()
-            .contains("active guarantee version 2 is disabled on-chain"),
+            .contains("accepted guarantee version 2 is disabled on-chain"),
         "unexpected startup error: {err}"
     );
 

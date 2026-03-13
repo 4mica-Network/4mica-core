@@ -17,7 +17,7 @@ use entities::tabs;
 use rand::random;
 use rpc::CreatePaymentTabRequest;
 use sea_orm::{EntityTrait, Set};
-use std::{panic, sync::Arc, sync::Once};
+use std::{collections::HashMap, panic, sync::Arc, sync::Once};
 
 const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
 const DEFAULT_ROLE: &str = "user";
@@ -67,7 +67,10 @@ async fn build_core_service(
 ) -> anyhow::Result<CoreService> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
-    let config = AppConfig::fetch()?;
+    let mut config = AppConfig::fetch()?;
+    config.guarantee.request_version = 1;
+    config.guarantee.accepted_request_versions = "1".to_string();
+    config.guarantee.trusted_validation_registries.clear();
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
 
@@ -84,7 +87,7 @@ async fn build_core_service(
             contract_api,
             chain_id,
             read_provider,
-            guarantee_domain: [0u8; 32],
+            guarantee_domains: HashMap::from([(1u64, [0u8; 32])]),
             tab_expiration_time,
         },
     )

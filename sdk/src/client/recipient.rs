@@ -22,6 +22,7 @@ use crate::{
         TabPaymentStatusError, VerifyGuaranteeError,
     },
 };
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct RecipientClient<S> {
@@ -43,17 +44,15 @@ impl<S> RecipientClient<S> {
 
     fn verify_guarantee_metadata(
         claims: &PaymentGuaranteeClaims,
-        active_guarantee_version: u64,
-        active_guarantee_domain: &[u8; 32],
+        guarantee_domains: &HashMap<u64, [u8; 32]>,
     ) -> Result<(), VerifyGuaranteeError> {
-        if claims.version != active_guarantee_version {
-            return Err(VerifyGuaranteeError::GuaranteeVersionMismatch {
-                expected: active_guarantee_version,
-                actual: claims.version,
-            });
-        }
+        let Some(expected_domain) = guarantee_domains.get(&claims.version) else {
+            return Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(
+                claims.version,
+            ));
+        };
 
-        if claims.domain != *active_guarantee_domain {
+        if claims.domain != *expected_domain {
             return Err(VerifyGuaranteeError::GuaranteeDomainMismatch);
         }
 
@@ -174,11 +173,13 @@ impl<S> RecipientClient<S> {
         let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())
             .map_err(VerifyGuaranteeError::InvalidCertificate)?;
 
-        Self::verify_guarantee_metadata(
-            &claims,
-            self.active_guarantee_version(),
-            self.active_guarantee_domain(),
-        )?;
+        let Some(expected_domain) = self.ctx.guarantee_domain_for_version(claims.version) else {
+            return Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(
+                claims.version,
+            ));
+        };
+        let guarantee_domains = HashMap::from([(claims.version, *expected_domain)]);
+        Self::verify_guarantee_metadata(&claims, &guarantee_domains)?;
         Ok(claims)
     }
 
@@ -420,6 +421,7 @@ mod tests {
         GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
         PaymentGuaranteeValidationPolicyV2,
     };
+    use std::collections::HashMap;
 
     use crate::error::VerifyGuaranteeError;
 
@@ -453,34 +455,43 @@ mod tests {
     #[test]
     fn verify_guarantee_metadata_accepts_v1_when_active_version_is_v1() {
         let claims = test_claims(GUARANTEE_CLAIMS_VERSION, [0x11; 32]);
-        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 1, &[0x11; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(
+            &claims,
+            &HashMap::from([(GUARANTEE_CLAIMS_VERSION, [0x11; 32])]),
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn verify_guarantee_metadata_accepts_v2_when_active_version_is_v2() {
         let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
-        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 2, &[0x22; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(
+            &claims,
+            &HashMap::from([(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32])]),
+        );
         assert!(result.is_ok());
     }
 
     #[test]
-    fn verify_guarantee_metadata_rejects_version_mismatch() {
+    fn verify_guarantee_metadata_rejects_unsupported_version() {
         let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
-        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 1, &[0x22; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(
+            &claims,
+            &HashMap::from([(GUARANTEE_CLAIMS_VERSION, [0x22; 32])]),
+        );
         assert!(matches!(
             result,
-            Err(VerifyGuaranteeError::GuaranteeVersionMismatch {
-                expected: 1,
-                actual: 2
-            })
+            Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(2))
         ));
     }
 
     #[test]
     fn verify_guarantee_metadata_rejects_domain_mismatch() {
         let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
-        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 2, &[0x33; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(
+            &claims,
+            &HashMap::from([(GUARANTEE_CLAIMS_VERSION_V2, [0x33; 32])]),
+        );
         assert!(matches!(
             result,
             Err(VerifyGuaranteeError::GuaranteeDomainMismatch)

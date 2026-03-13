@@ -29,10 +29,10 @@ use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::{guarantee, user};
 use rand::random;
 use rpc::{
-    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
-    PaymentGuaranteeValidationPolicyV2, SigningScheme, compute_validation_request_hash,
-    compute_validation_subject_hash,
+    GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2, SigningScheme,
+    compute_validation_request_hash, compute_validation_subject_hash,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 use test_log::test;
@@ -55,6 +55,13 @@ fn random_u256() -> U256 {
     U256::from_be_bytes(rand::random::<[u8; 32]>())
 }
 
+fn normalize_address(raw: &str) -> String {
+    format!(
+        "{:#x}",
+        Address::from_str(raw).expect("valid address for test")
+    )
+}
+
 // --- helper to insert a test tab using new repo::create_tab ---
 async fn insert_test_tab(
     ctx: &PersistCtx,
@@ -64,10 +71,12 @@ async fn insert_test_tab(
 ) -> anyhow::Result<()> {
     use sea_orm::ActiveValue::Set;
     let now = Utc::now().naive_utc();
+    let user_address = normalize_address(&user_address);
+    let recipient_address = normalize_address(&recipient_address);
     let new_tab = entities::tabs::ActiveModel {
         id: Set(u256_to_string(id)),
-        user_address: Set(user_address.to_owned()),
-        server_address: Set(recipient_address.to_owned()),
+        user_address: Set(user_address),
+        server_address: Set(recipient_address),
         asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         ttl: Set(300),
@@ -130,10 +139,18 @@ fn build_read_provider() -> anyhow::Result<DynProvider> {
 
 async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreService> {
     let config = AppConfig::fetch()?;
+    let accepted_request_versions = config
+        .guarantee
+        .accepted_request_versions()?
+        .into_iter()
+        .map(|version| version.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     build_core_service_with_guarantee_config(
         persist_ctx,
         config.guarantee.request_version,
-        String::new(),
+        accepted_request_versions,
+        config.guarantee.trusted_validation_registries,
     )
     .await
 }
@@ -150,6 +167,7 @@ async fn build_core_service_with_active_version(
     build_core_service_with_guarantee_config(
         persist_ctx,
         active_guarantee_version,
+        active_guarantee_version.to_string(),
         trusted_validation_registries,
     )
     .await
@@ -158,10 +176,12 @@ async fn build_core_service_with_active_version(
 async fn build_core_service_with_guarantee_config(
     persist_ctx: PersistCtx,
     active_guarantee_version: u64,
+    accepted_request_versions: String,
     trusted_validation_registries: String,
 ) -> anyhow::Result<CoreService> {
     let mut config = AppConfig::fetch()?;
     config.guarantee.request_version = active_guarantee_version;
+    config.guarantee.accepted_request_versions = accepted_request_versions.clone();
     config.guarantee.trusted_validation_registries = trusted_validation_registries;
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
@@ -179,7 +199,17 @@ async fn build_core_service_with_guarantee_config(
             contract_api,
             chain_id,
             read_provider,
-            guarantee_domain: [0u8; 32],
+            guarantee_domains: accepted_request_versions
+                .split(',')
+                .map(str::trim)
+                .filter(|version| !version.is_empty())
+                .map(|version| {
+                    version
+                        .parse::<u64>()
+                        .map(|version| (version, [0u8; 32]))
+                        .expect("accepted guarantee version must parse in test helper")
+                })
+                .collect(),
             tab_expiration_time: 3600,
         },
     )?;
@@ -206,10 +236,12 @@ struct TestTabSpec {
 
 async fn insert_tab_with_status(ctx: &PersistCtx, spec: TestTabSpec) {
     let now = Utc::now().naive_utc();
+    let user_address = normalize_address(&spec.user_address);
+    let recipient_address = normalize_address(&spec.recipient_address);
     let tab = entities::tabs::ActiveModel {
         id: Set(u256_to_string(spec.tab_id)),
-        user_address: Set(spec.user_address),
-        server_address: Set(spec.recipient_address),
+        user_address: Set(user_address),
+        server_address: Set(recipient_address),
         asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(spec.start_ts),
         ttl: Set(spec.ttl),
@@ -271,6 +303,16 @@ fn build_claims(
 }
 
 sol! {
+    struct SolGuaranteeRequestClaimsV1 {
+        address user;
+        address recipient;
+        uint256 tabId;
+        uint256 reqId;
+        uint256 amount;
+        address asset;
+        uint64 timestamp;
+    }
+
     struct SolGuaranteeRequestClaimsV2 {
         address user;
         address recipient;
@@ -372,6 +414,35 @@ async fn sign_v2_request(
 
     Ok(PaymentGuaranteeRequest::new(
         PaymentGuaranteeRequestClaims::V2(claims),
+        crypto::hex::encode_hex(&sig.as_bytes()),
+        SigningScheme::Eip712,
+    ))
+}
+
+async fn sign_v1_request(
+    params: &rpc::CorePublicParameters,
+    wallet: &PrivateKeySigner,
+    claims: PaymentGuaranteeRequestClaimsV1,
+) -> anyhow::Result<PaymentGuaranteeRequest> {
+    let domain = eip712_domain!(
+        name: params.eip712_name.clone(),
+        version: params.eip712_version.clone(),
+        chain_id: params.chain_id,
+    );
+    let msg = SolGuaranteeRequestClaimsV1 {
+        user: Address::from_str(&claims.user_address)?,
+        recipient: Address::from_str(&claims.recipient_address)?,
+        tabId: claims.tab_id,
+        reqId: claims.req_id,
+        amount: claims.amount,
+        asset: Address::from_str(&claims.asset_address)?,
+        timestamp: claims.timestamp,
+    };
+    let digest = msg.eip712_signing_hash(&domain);
+    let sig = wallet.sign_hash(&digest).await?;
+
+    Ok(PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(claims),
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip712,
     ))
@@ -1473,9 +1544,66 @@ async fn issue_v2_guarantee_rejects_when_active_version_is_v1() -> anyhow::Resul
         .expect_err("v2 should be rejected when active version is v1");
     assert!(matches!(
         err,
-        ServiceError::InvalidParams(msg)
-            if msg.contains("not active") && msg.contains("active version is 1")
+        ServiceError::InvalidParams(msg) if msg.contains("not accepted") && msg.contains("[1]")
     ));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepted()
+-> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_guarantee_config(
+        ctx.clone(),
+        2,
+        "1,2".to_string(),
+        "0x1111111111111111111111111111111111111111".to_string(),
+    )
+    .await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let claims = PaymentGuaranteeRequestClaimsV1 {
+        user_address,
+        recipient_address: recipient_address.clone(),
+        tab_id,
+        req_id: U256::ZERO,
+        amount: U256::from(5u64),
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    };
+    let req = sign_v1_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    let cert = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+    let guarantee = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())?;
+    assert_eq!(guarantee.version, GUARANTEE_CLAIMS_VERSION);
     Ok(())
 }
 
@@ -1655,6 +1783,7 @@ async fn issue_v2_guarantee_rejects_untrusted_validation_registry() -> anyhow::R
     let core_service = build_core_service_with_guarantee_config(
         ctx.clone(),
         2,
+        "2".to_string(),
         "0x3333333333333333333333333333333333333333".to_string(),
     )
     .await?;
@@ -1716,6 +1845,7 @@ async fn issue_v2_guarantee_accepts_trusted_validation_registry() -> anyhow::Res
     let core_service = build_core_service_with_guarantee_config(
         ctx.clone(),
         2,
+        "2".to_string(),
         "0x1111111111111111111111111111111111111111".to_string(),
     )
     .await?;

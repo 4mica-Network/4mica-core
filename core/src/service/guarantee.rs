@@ -22,6 +22,7 @@ use rpc::{
     PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeRequestEssentials,
 };
 use sea_orm::{ConnectionTrait, TransactionTrait};
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
 impl CoreService {
@@ -174,6 +175,27 @@ impl CoreService {
         }
     }
 
+    fn accepted_guarantee_versions(&self) -> BTreeSet<u64> {
+        self.inner
+            .accepted_guarantee_versions
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    fn guarantee_domain_for_version(&self, version: u64) -> ServiceResult<[u8; 32]> {
+        self.inner
+            .guarantee_domains
+            .get(&version)
+            .copied()
+            .ok_or_else(|| {
+                ServiceError::Other(anyhow!(
+                    "missing guarantee domain for accepted guarantee version {}",
+                    version
+                ))
+            })
+    }
+
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         let claims_bytes = <PaymentGuaranteeClaims as TryInto<Vec<u8>>>::try_into(claims)
             .map_err(ServiceError::Other)?;
@@ -215,10 +237,20 @@ impl CoreService {
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
         let request_version = Self::guarantee_request_version(&req.claims);
-        if request_version != self.inner.active_guarantee_version {
+        if !self
+            .inner
+            .accepted_guarantee_versions
+            .contains(&request_version)
+        {
+            let accepted_versions = self
+                .accepted_guarantee_versions()
+                .into_iter()
+                .map(|version| version.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             return Err(ServiceError::InvalidParams(format!(
-                "guarantee request version {} is not active; active version is {}",
-                request_version, self.inner.active_guarantee_version
+                "guarantee request version {} is not accepted; accepted versions are [{}]",
+                request_version, accepted_versions
             )));
         }
 
@@ -246,10 +278,12 @@ impl CoreService {
                     let total_amount = self_clone
                         .process_guarantee_request_claims_on(txn, &req.claims)
                         .await?;
+                    let guarantee_domain =
+                        self_clone.guarantee_domain_for_version(request_version)?;
 
                     let claims = PaymentGuaranteeClaims::from_request(
                         &req.claims,
-                        self_clone.inner.guarantee_domain,
+                        guarantee_domain,
                         total_amount,
                     );
                     let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;

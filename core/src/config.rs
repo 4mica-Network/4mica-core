@@ -136,6 +136,8 @@ pub struct Eip712Config {
 pub struct GuaranteeConfig {
     #[envconfig(from = "GUARANTEE_REQUEST_VERSION", default = "1")]
     pub request_version: u64,
+    #[envconfig(from = "GUARANTEE_ACCEPTED_REQUEST_VERSIONS", default = "")]
+    pub accepted_request_versions: String,
     #[envconfig(from = "TRUSTED_VALIDATION_REGISTRIES", default = "")]
     pub trusted_validation_registries: String,
     #[envconfig(
@@ -146,6 +148,37 @@ pub struct GuaranteeConfig {
 }
 
 impl GuaranteeConfig {
+    pub fn accepted_request_versions(&self) -> anyhow::Result<Vec<u64>> {
+        let mut versions = if self.accepted_request_versions.trim().is_empty() {
+            if self.request_version == GUARANTEE_CLAIMS_VERSION_V2 {
+                vec![GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2]
+            } else {
+                vec![self.request_version]
+            }
+        } else {
+            self.accepted_request_versions
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    value.parse::<u64>().map_err(|_| {
+                        anyhow::anyhow!(
+                            "invalid guarantee request version in GUARANTEE_ACCEPTED_REQUEST_VERSIONS: {value}"
+                        )
+                    })
+                })
+                .collect::<anyhow::Result<Vec<u64>>>()?
+        };
+
+        if !versions.contains(&self.request_version) {
+            versions.push(self.request_version);
+        }
+
+        versions.sort_unstable();
+        versions.dedup();
+        Ok(versions)
+    }
+
     pub fn trusted_validation_registry_allowlist(&self) -> anyhow::Result<Vec<String>> {
         self.trusted_validation_registries
             .split(',')
@@ -160,15 +193,10 @@ impl GuaranteeConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.request_version != GUARANTEE_CLAIMS_VERSION
-            && self.request_version != GUARANTEE_CLAIMS_VERSION_V2
-        {
-            bail!(
-                "unsupported GUARANTEE_REQUEST_VERSION '{}'; supported: {}, {}",
-                self.request_version,
-                GUARANTEE_CLAIMS_VERSION,
-                GUARANTEE_CLAIMS_VERSION_V2
-            );
+        validate_guarantee_version(self.request_version, "GUARANTEE_REQUEST_VERSION")?;
+        let accepted_versions = self.accepted_request_versions()?;
+        for version in &accepted_versions {
+            validate_guarantee_version(*version, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")?;
         }
         let canonicalization_version = self.validation_hash_canonicalization_version.trim();
         if canonicalization_version.is_empty() {
@@ -184,13 +212,25 @@ impl GuaranteeConfig {
 
         // Ensures all configured addresses are valid and normalized.
         let allowlist = self.trusted_validation_registry_allowlist()?;
-        if self.request_version == 2 && allowlist.is_empty() {
+        if accepted_versions.contains(&GUARANTEE_CLAIMS_VERSION_V2) && allowlist.is_empty() {
             bail!(
-                "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when GUARANTEE_REQUEST_VERSION=2"
+                "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when V2 guarantees are accepted"
             );
         }
         Ok(())
     }
+}
+
+fn validate_guarantee_version(version: u64, field: &str) -> anyhow::Result<()> {
+    if version != GUARANTEE_CLAIMS_VERSION && version != GUARANTEE_CLAIMS_VERSION_V2 {
+        bail!(
+            "unsupported {field} '{}'; supported: {}, {}",
+            version,
+            GUARANTEE_CLAIMS_VERSION,
+            GUARANTEE_CLAIMS_VERSION_V2
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -342,6 +382,7 @@ mod tests {
     fn guarantee_config_accepts_valid_v1_and_v2() {
         let v1 = GuaranteeConfig {
             request_version: 1,
+            accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
         };
@@ -349,6 +390,7 @@ mod tests {
 
         let v2 = GuaranteeConfig {
             request_version: 2,
+            accepted_request_versions: String::new(),
             trusted_validation_registries:
                 "0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222"
                     .to_string(),
@@ -365,6 +407,7 @@ mod tests {
     fn guarantee_config_rejects_invalid_registry_allowlist() {
         let cfg = GuaranteeConfig {
             request_version: 2,
+            accepted_request_versions: String::new(),
             trusted_validation_registries:
                 "0x1111111111111111111111111111111111111111,not-an-address".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
@@ -382,6 +425,7 @@ mod tests {
     fn guarantee_config_rejects_invalid_hash_canonicalization_version() {
         let cfg = GuaranteeConfig {
             request_version: 2,
+            accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "   ".to_string(),
         };
@@ -398,6 +442,7 @@ mod tests {
     fn guarantee_config_rejects_unsupported_hash_canonicalization_version() {
         let cfg = GuaranteeConfig {
             request_version: 2,
+            accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
@@ -414,6 +459,7 @@ mod tests {
     fn guarantee_config_rejects_v2_without_trusted_validation_registries() {
         let cfg = GuaranteeConfig {
             request_version: 2,
+            accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
         };
@@ -427,6 +473,7 @@ mod tests {
     fn guarantee_config_rejects_unsupported_request_version() {
         let cfg = GuaranteeConfig {
             request_version: 3,
+            accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
         };
@@ -437,5 +484,35 @@ mod tests {
             err.to_string()
                 .contains("unsupported GUARANTEE_REQUEST_VERSION")
         );
+    }
+
+    #[test]
+    fn guarantee_config_defaults_to_accepting_v1_and_v2_when_active_is_v2() {
+        let cfg = GuaranteeConfig {
+            request_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+
+        let versions = cfg
+            .accepted_request_versions()
+            .expect("accepted versions should resolve");
+        assert_eq!(versions, vec![1, 2]);
+    }
+
+    #[test]
+    fn guarantee_config_accepts_explicit_accepted_versions() {
+        let cfg = GuaranteeConfig {
+            request_version: 2,
+            accepted_request_versions: "2".to_string(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+
+        let versions = cfg
+            .accepted_request_versions()
+            .expect("accepted versions should resolve");
+        assert_eq!(versions, vec![2]);
     }
 }

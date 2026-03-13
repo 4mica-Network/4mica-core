@@ -136,11 +136,22 @@ async fn login_with_siwe(
     scopes: &[&str],
 ) -> anyhow::Result<AuthSession> {
     let address = signer.address().to_string();
+    login_with_siwe_as_address(base_addr, ctx, signer, &address, role, scopes).await
+}
+
+async fn login_with_siwe_as_address(
+    base_addr: &str,
+    ctx: &PersistCtx,
+    signer: &PrivateKeySigner,
+    address: &str,
+    role: &str,
+    scopes: &[&str],
+) -> anyhow::Result<AuthSession> {
     let scopes = scopes
         .iter()
         .map(|scope| (*scope).to_string())
         .collect::<Vec<_>>();
-    repo::upsert_wallet_role(ctx, &address, role, &scopes, DEFAULT_WALLET_STATUS).await?;
+    repo::upsert_wallet_role(ctx, address, role, &scopes, DEFAULT_WALLET_STATUS).await?;
 
     let client = reqwest::Client::new();
     let nonce_res = client
@@ -151,7 +162,7 @@ async fn login_with_siwe(
         .error_for_status()?;
     let nonce_res: AuthNonceResponse = nonce_res.json().await?;
 
-    let message = build_siwe_message_from_template(&nonce_res.siwe, &address, &nonce_res.nonce);
+    let message = build_siwe_message_from_template(&nonce_res.siwe, address, &nonce_res.nonce);
     let signature = signer.sign_message(message.as_bytes()).await?;
     let signature_hex = crypto::hex::encode_hex(&Vec::<u8>::from(signature));
 
@@ -168,9 +179,37 @@ async fn login_with_siwe(
     let verify_res: AuthVerifyResponse = verify_res.json().await?;
 
     Ok(AuthSession {
-        address,
+        address: format!("{:#x}", signer.address()),
         access_token: verify_res.access_token,
     })
+}
+
+fn mixed_case_address(raw: &str) -> String {
+    let mut toggled = false;
+    let mut out = String::with_capacity(raw.len());
+
+    for (idx, ch) in raw.chars().enumerate() {
+        if idx < 2 {
+            out.push(ch);
+            continue;
+        }
+
+        if !toggled && ch.is_ascii_hexdigit() && ch.is_ascii_lowercase() {
+            out.push(ch.to_ascii_uppercase());
+            toggled = true;
+        } else {
+            out.push(ch);
+        }
+    }
+
+    out
+}
+
+fn normalize_address(raw: &str) -> String {
+    format!(
+        "{:#x}",
+        Address::from_str(raw).expect("valid address for test")
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -186,6 +225,82 @@ async fn build_signed_req(
     asset_address: &str,
 ) -> PaymentGuaranteeRequest {
     let ts = timestamp.unwrap_or_else(|| Utc::now().timestamp() as u64);
+    if public_params.active_guarantee_version == 2 {
+        let validation_subject_hash = compute_validation_subject_hash(
+            user_addr,
+            recipient_addr,
+            tab_id,
+            req_id,
+            amount,
+            asset_address,
+            ts,
+        )
+        .expect("compute validation subject hash");
+
+        let validation_registry_address = public_params
+            .trusted_validation_registries
+            .first()
+            .and_then(|value| Address::from_str(value).ok())
+            .unwrap_or_else(|| {
+                Address::from_str("0x1111111111111111111111111111111111111111")
+                    .expect("fallback validation registry")
+            });
+
+        let mut policy = PaymentGuaranteeValidationPolicyV2 {
+            validation_registry_address,
+            validation_request_hash: B256::ZERO,
+            validation_chain_id: public_params.chain_id,
+            validator_address: Address::from_str(recipient_addr).expect("valid recipient"),
+            validator_agent_id: U256::from(1u64),
+            min_validation_score: 80,
+            validation_subject_hash: B256::from(validation_subject_hash),
+            required_validation_tag: "hard-finality".to_string(),
+        };
+        policy.validation_request_hash =
+            B256::from(compute_validation_request_hash(&policy).expect("compute request hash"));
+
+        let claims = PaymentGuaranteeRequestClaimsV2 {
+            user_address: user_addr.to_string(),
+            recipient_address: recipient_addr.to_string(),
+            tab_id,
+            req_id,
+            amount,
+            timestamp: ts,
+            asset_address: asset_address.to_string(),
+            validation_policy: policy,
+        };
+
+        let domain = eip712_domain!(
+            name: public_params.eip712_name.clone(),
+            version: public_params.eip712_version.clone(),
+            chain_id: public_params.chain_id,
+        );
+        let msg = SolGuaranteeRequestClaimsV2 {
+            user: Address::from_str(user_addr).unwrap(),
+            recipient: Address::from_str(recipient_addr).unwrap(),
+            tabId: tab_id,
+            reqId: req_id,
+            amount,
+            asset: Address::from_str(asset_address).unwrap(),
+            timestamp: ts,
+            validationRegistryAddress: claims.validation_policy.validation_registry_address,
+            validationRequestHash: claims.validation_policy.validation_request_hash,
+            validationChainId: U256::from(claims.validation_policy.validation_chain_id),
+            validatorAddress: claims.validation_policy.validator_address,
+            validatorAgentId: claims.validation_policy.validator_agent_id,
+            minValidationScore: claims.validation_policy.min_validation_score,
+            validationSubjectHash: claims.validation_policy.validation_subject_hash,
+            requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
+        };
+        let digest = msg.eip712_signing_hash(&domain);
+        let sig: Signature = wallet.sign_hash(&digest).await.unwrap();
+        return PaymentGuaranteeRequest::new(
+            PaymentGuaranteeRequestClaims::V2(claims),
+            crypto::hex::encode_hex(&sig.as_bytes()),
+            SigningScheme::Eip712,
+        );
+    }
+
     let domain = eip712_domain!(
         name: public_params.eip712_name.clone(),
         version: public_params.eip712_version.clone(),
@@ -412,6 +527,33 @@ async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
         }
         other => anyhow::bail!("unexpected error: {other:?}"),
     }
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::serial]
+async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Result<()> {
+    let (_config, _core_client, ctx, _auth) = setup_clean_db().await?;
+    let signer = PrivateKeySigner::random();
+    let stored_address = format!("{:#x}", signer.address());
+    let presented_address = mixed_case_address(&stored_address);
+
+    assert_eq!(stored_address, presented_address.to_ascii_lowercase());
+    let scopes = vec![SCOPE_TAB_CREATE.to_string(), SCOPE_TAB_READ.to_string()];
+    repo::upsert_wallet_role(
+        &ctx,
+        &stored_address,
+        ADMIN_WALLET_ROLE,
+        &scopes,
+        DEFAULT_WALLET_STATUS,
+    )
+    .await?;
+    let row = repo::get_wallet_role(&ctx, &presented_address)
+        .await?
+        .expect("wallet role should be retrievable by mixed-case address");
+    assert_eq!(row.role, ADMIN_WALLET_ROLE);
+    assert_eq!(row.scopes, serde_json::json!(["tab:create", "tab:read"]));
 
     Ok(())
 }
@@ -859,7 +1001,7 @@ async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
     let now = Utc::now().naive_utc();
     let unlock_event = collateral_event::ActiveModel {
         id: sea_orm::ActiveValue::Set(Uuid::new_v4().to_string()),
-        user_address: sea_orm::ActiveValue::Set(user_addr.clone()),
+        user_address: sea_orm::ActiveValue::Set(normalize_address(&user_addr)),
         asset_address: sea_orm::ActiveValue::Set(DEFAULT_ASSET_ADDRESS.to_string()),
         amount: sea_orm::ActiveValue::Set(U256::from(5u64).to_string()),
         event_type: sea_orm::ActiveValue::Set(CollateralEventType::Unlock),
@@ -879,7 +1021,7 @@ async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
 
     let remunerate_event = collateral_event::ActiveModel {
         id: sea_orm::ActiveValue::Set(Uuid::new_v4().to_string()),
-        user_address: sea_orm::ActiveValue::Set(user_addr.clone()),
+        user_address: sea_orm::ActiveValue::Set(normalize_address(&user_addr)),
         asset_address: sea_orm::ActiveValue::Set(DEFAULT_ASSET_ADDRESS.to_string()),
         amount: sea_orm::ActiveValue::Set(U256::from(10u64).to_string()),
         event_type: sea_orm::ActiveValue::Set(CollateralEventType::Remunerate),
@@ -1217,7 +1359,13 @@ async fn insert_user_with_asset_collateral(
     if let Err(err) = common::fixtures::ensure_user(ctx, addr).await {
         return Err(anyhow::anyhow!("failed to ensure user: {err}"));
     }
-    repo::deposit(ctx, addr.to_string(), asset.to_string(), amount).await?;
+    repo::deposit(
+        ctx,
+        normalize_address(addr),
+        normalize_address(asset),
+        amount,
+    )
+    .await?;
     Ok(())
 }
 

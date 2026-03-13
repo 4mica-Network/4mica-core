@@ -22,6 +22,7 @@ use url::Url;
 
 use self::{recipient::RecipientClient, user::UserClient};
 use crypto::bls::BlsPublicKey;
+use std::collections::HashMap;
 
 pub mod model;
 pub mod recipient;
@@ -37,6 +38,7 @@ struct Inner<S> {
     operator_public_key: BlsPublicKey,
     active_guarantee_version: u64,
     active_guarantee_domain: [u8; 32],
+    guarantee_domains: HashMap<u64, [u8; 32]>,
     auth_session: Option<AuthSession<S>>,
 }
 
@@ -72,8 +74,8 @@ impl<S> ClientCtx<S> {
         let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
         let contract = Core4Mica::new(contract_address, provider.clone());
-        let (active_guarantee_version, active_guarantee_domain) =
-            Self::fetch_active_guarantee_metadata(&public_params, &contract).await?;
+        let (active_guarantee_version, active_guarantee_domain, guarantee_domains) =
+            Self::fetch_guarantee_metadata(&public_params, &contract).await?;
 
         Ok(Self(Arc::new(Inner {
             cfg,
@@ -85,6 +87,7 @@ impl<S> ClientCtx<S> {
             operator_public_key,
             active_guarantee_version,
             active_guarantee_domain,
+            guarantee_domains,
             auth_session,
         })))
     }
@@ -139,43 +142,65 @@ impl<S> ClientCtx<S> {
         }
     }
 
-    async fn fetch_active_guarantee_metadata(
+    async fn fetch_guarantee_metadata(
         public_params: &CorePublicParameters,
         contract: &Core4MicaInstance<DynProvider>,
-    ) -> Result<(u64, [u8; 32]), ClientError> {
+    ) -> Result<(u64, [u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
         let active_version = public_params.active_guarantee_version;
-        let version_config = contract
-            .getGuaranteeVersionConfig(active_version)
-            .call()
-            .await
-            .map_err(|e| ClientError::Initialization(e.to_string()))?;
+        let mut guarantee_domains = HashMap::new();
+        for version in [
+            rpc::GUARANTEE_CLAIMS_VERSION,
+            rpc::GUARANTEE_CLAIMS_VERSION_V2,
+        ] {
+            let version_config = contract
+                .getGuaranteeVersionConfig(version)
+                .call()
+                .await
+                .map_err(|e| ClientError::Initialization(e.to_string()))?;
+            if version_config.enabled {
+                guarantee_domains.insert(version, version_config.domainSeparator.into());
+            }
 
-        if !version_config.enabled {
-            return Err(ClientError::Initialization(format!(
-                "active guarantee version {} is disabled on-chain",
-                active_version
-            )));
-        }
+            if version == active_version {
+                if !version_config.enabled {
+                    return Err(ClientError::Initialization(format!(
+                        "active guarantee version {} is disabled on-chain",
+                        active_version
+                    )));
+                }
 
-        if !public_params.active_guarantee_domain_separator.is_empty() {
-            let expected_domain = public_params
-                .active_guarantee_domain_separator
-                .parse::<B256>()
-                .map_err(|e| {
-                    ClientError::Initialization(format!(
-                        "invalid active guarantee domain separator from core: {e}"
-                    ))
-                })?;
+                if !public_params.active_guarantee_domain_separator.is_empty() {
+                    let expected_domain = public_params
+                        .active_guarantee_domain_separator
+                        .parse::<B256>()
+                        .map_err(|e| {
+                            ClientError::Initialization(format!(
+                                "invalid active guarantee domain separator from core: {e}"
+                            ))
+                        })?;
 
-            if expected_domain != version_config.domainSeparator {
-                return Err(ClientError::Initialization(format!(
-                    "active guarantee domain mismatch between core metadata and contract for version {}",
-                    active_version
-                )));
+                    if expected_domain != version_config.domainSeparator {
+                        return Err(ClientError::Initialization(format!(
+                            "active guarantee domain mismatch between core metadata and contract for version {}",
+                            active_version
+                        )));
+                    }
+                }
             }
         }
 
-        Ok((active_version, version_config.domainSeparator.into()))
+        let active_guarantee_domain =
+            guarantee_domains
+                .get(&active_version)
+                .copied()
+                .ok_or_else(|| {
+                    ClientError::Initialization(format!(
+                        "missing guarantee domain metadata for active version {}",
+                        active_version
+                    ))
+                })?;
+
+        Ok((active_version, active_guarantee_domain, guarantee_domains))
     }
 
     fn contract_address(&self) -> Address {
@@ -196,6 +221,10 @@ impl<S> ClientCtx<S> {
 
     fn active_guarantee_domain(&self) -> &[u8; 32] {
         &self.0.active_guarantee_domain
+    }
+
+    fn guarantee_domain_for_version(&self, version: u64) -> Option<&[u8; 32]> {
+        self.0.guarantee_domains.get(&version)
     }
 
     fn signer(&self) -> &S {

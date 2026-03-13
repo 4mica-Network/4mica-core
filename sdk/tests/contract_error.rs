@@ -1,5 +1,7 @@
 use sdk_4mica::{
-    BLSCert, Client, PaymentGuaranteeRequestClaims, SigningScheme, U256, error::RemunerateError,
+    Address, BLSCert, Client, Config,
+    PaymentGuaranteeRequestClaims as PaymentGuaranteeRequestClaimsV1,
+    PaymentGuaranteeRequestClaimsV2, SigningScheme, U256, error::RemunerateError,
 };
 
 mod common;
@@ -9,8 +11,24 @@ use crate::common::{
     build_authed_user_config, extract_asset_info, get_chain_timestamp, mine_confirmations,
     wait_for_collateral_increase,
 };
+use alloy::primitives::B256;
 use alloy::signers::Signer;
 use crypto::bls::BlsClaims;
+use rpc::{
+    CorePublicParameters, PaymentGuaranteeValidationPolicyV2, RpcProxy,
+    compute_validation_request_hash, compute_validation_subject_hash,
+};
+
+async fn fetch_public_params<S>(config: &Config<S>) -> anyhow::Result<CorePublicParameters>
+where
+    S: Signer + Sync,
+{
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    Ok(rpc_proxy.get_public_params().await?)
+}
 
 async fn resolve_next_req_id<S>(
     recipient_client: &sdk_4mica::client::recipient::RecipientClient<S>,
@@ -23,6 +41,24 @@ where
         return Ok(latest.req_id + U256::from(1u64));
     }
     Ok(U256::ZERO)
+}
+
+fn is_expected_v2_remuneration_precondition_error(err: &RemunerateError) -> bool {
+    matches!(
+        err,
+        RemunerateError::TabNotYetOverdue
+            | RemunerateError::InvalidMinValidationScore
+            | RemunerateError::InvalidValidationChainId
+            | RemunerateError::UntrustedValidationRegistry(_)
+            | RemunerateError::ValidationSubjectHashMismatch
+            | RemunerateError::ValidationRequestHashMismatch
+            | RemunerateError::ValidationLookupFailed
+            | RemunerateError::ValidationPending
+            | RemunerateError::ValidationScoreTooLow
+            | RemunerateError::ValidationValidatorMismatch
+            | RemunerateError::ValidationAgentMismatch
+            | RemunerateError::ValidationTagMismatch
+    )
 }
 
 #[tokio::test]
@@ -105,34 +141,108 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         )
         .await?;
     let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
+    let public_params = fetch_public_params(&recipient_config).await?;
 
     // Step 3: User signs a payment (1 ETH)
-    let claims = PaymentGuaranteeRequestClaims {
-        user_address: user_address.clone(),
-        recipient_address: recipient_address.clone(),
-        tab_id,
-        req_id,
-        amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs(),
-        asset_address: ETH_ASSET_ADDRESS.to_string(),
+    let claim_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
+    let claim_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+
+    enum IssuedClaims {
+        V1(PaymentGuaranteeRequestClaimsV1),
+        V2(PaymentGuaranteeRequestClaimsV2),
+    }
+
+    let claims = match public_params.active_guarantee_version {
+        1 => IssuedClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            user_address: user_address.clone(),
+            recipient_address: recipient_address.clone(),
+            tab_id,
+            req_id,
+            amount: claim_amount,
+            timestamp: claim_timestamp,
+            asset_address: ETH_ASSET_ADDRESS.to_string(),
+        }),
+        2 => {
+            let validation_registry = public_params
+                .trusted_validation_registries
+                .first()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("core reported active V2 without trusted validation registries")
+                })?
+                .parse::<Address>()?;
+            let validation_subject_hash = compute_validation_subject_hash(
+                &user_address,
+                &recipient_address,
+                tab_id,
+                req_id,
+                claim_amount,
+                &ETH_ASSET_ADDRESS.to_string(),
+                claim_timestamp,
+            )?;
+            let mut validation_policy = PaymentGuaranteeValidationPolicyV2 {
+                validation_registry_address: validation_registry,
+                validation_request_hash: B256::ZERO,
+                validation_chain_id: public_params.chain_id,
+                validator_address: recipient_config.signer.address(),
+                validator_agent_id: U256::from(1u64),
+                min_validation_score: 80,
+                validation_subject_hash: B256::from(validation_subject_hash),
+                required_validation_tag: "contract-error-test".to_string(),
+            };
+            validation_policy.validation_request_hash =
+                B256::from(compute_validation_request_hash(&validation_policy)?);
+
+            IssuedClaims::V2(
+                PaymentGuaranteeRequestClaimsV2::builder(
+                    user_address.clone(),
+                    recipient_address.clone(),
+                    tab_id,
+                    req_id,
+                    claim_amount,
+                    claim_timestamp,
+                )
+                .asset_address(ETH_ASSET_ADDRESS.to_string())
+                .validation_policy(validation_policy)
+                .build()?,
+            )
+        }
+        other => {
+            return Err(anyhow::anyhow!(
+                "unsupported active guarantee version reported by core: {other}"
+            ));
+        }
     };
-    let payment_sig = user_client
-        .user
-        .sign_payment(claims.clone(), SigningScheme::Eip712)
-        .await?;
 
     println!(
         "Signed payment: tab_id={tab_id}, user={user_address}, recipient={recipient_address}, amount={}, asset={}, ts={}",
-        claims.amount, claims.asset_address, claims.timestamp
+        claim_amount, ETH_ASSET_ADDRESS, claim_timestamp
     );
 
     // Step 4: User issues guarantee
-    let bls_cert = recipient_client
-        .recipient
-        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
-        .await?;
+    let bls_cert = match claims {
+        IssuedClaims::V1(claims) => {
+            let payment_sig = user_client
+                .user
+                .sign_payment(claims.clone(), SigningScheme::Eip712)
+                .await?;
+            recipient_client
+                .recipient
+                .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
+                .await?
+        }
+        IssuedClaims::V2(claims) => {
+            let payment_sig = user_client
+                .user
+                .sign_payment_v2(claims.clone(), SigningScheme::Eip712)
+                .await?;
+            recipient_client
+                .recipient
+                .issue_payment_guarantee_v2(claims, payment_sig.signature, payment_sig.scheme)
+                .await?
+        }
+    };
 
     println!(
         "Issued BLS certificate: claims_len={}, signature_len={}",
@@ -180,7 +290,8 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         "malformed signature should be rejected"
     );
 
-    // Step 5: Recipient tries to remunerate immediately (should fail with TabNotYetOverdue)
+    // Step 5: Recipient tries to remunerate immediately.
+    // V1 reaches the overdue check directly. V2 may fail earlier in decoder-side validation.
     println!(
         "Remunerating with correct cert (claims_len={}, signature_len={})",
         bls_cert.claims().as_bytes().len(),
@@ -189,16 +300,22 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let result = recipient_client.recipient.remunerate(bls_cert).await;
     dbg!(&result);
     match result {
-        Err(RemunerateError::TabNotYetOverdue) => {}
+        Err(RemunerateError::TabNotYetOverdue) if public_params.active_guarantee_version == 1 => {}
+        Err(err)
+            if public_params.active_guarantee_version == 2
+                && is_expected_v2_remuneration_precondition_error(&err) => {}
         Err(RemunerateError::Transport(msg))
             if msg.contains("historical state")
                 || msg.contains("failed to get account")
                 || msg.contains("not available") =>
         {
-            eprintln!("Skipping TabNotYetOverdue assertion due to non-archive forked RPC: {msg}");
+            eprintln!("Skipping remunerate assertion due to non-archive forked RPC: {msg}");
             return Ok(());
         }
-        other => panic!("expected TabNotYetOverdue, got {other:?}"),
+        other => panic!(
+            "expected a decoded precondition error for guarantee version {}, got {other:?}",
+            public_params.active_guarantee_version
+        ),
     }
     Ok(())
 }
