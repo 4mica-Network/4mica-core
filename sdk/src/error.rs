@@ -125,6 +125,8 @@ pub enum RemunerateError {
     CertificateInvalid(#[source] Error),
     #[error("certificate signature mismatch before submission")]
     CertificateMismatch,
+    #[error("guarantee version mismatch: expected {expected}, got {actual}")]
+    GuaranteeVersionMismatch { expected: u64, actual: u64 },
     #[error("guarantee domain mismatch")]
     GuaranteeDomainMismatch,
     #[error("unsupported guarantee version: {0}")]
@@ -285,6 +287,8 @@ pub enum VerifyGuaranteeError {
     InvalidCertificate(#[source] Error),
     #[error("certificate signature mismatch")]
     CertificateMismatch,
+    #[error("guarantee version mismatch: expected {expected}, got {actual}")]
+    GuaranteeVersionMismatch { expected: u64, actual: u64 },
     #[error("guarantee domain mismatch")]
     GuaranteeDomainMismatch,
     #[error("unsupported guarantee version: {0}")]

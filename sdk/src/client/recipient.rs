@@ -33,8 +33,31 @@ impl<S> RecipientClient<S> {
         Self { ctx }
     }
 
-    pub fn guarantee_domain(&self) -> &[u8; 32] {
-        self.ctx.guarantee_domain()
+    pub fn active_guarantee_version(&self) -> u64 {
+        self.ctx.active_guarantee_version()
+    }
+
+    pub fn active_guarantee_domain(&self) -> &[u8; 32] {
+        self.ctx.active_guarantee_domain()
+    }
+
+    fn verify_guarantee_metadata(
+        claims: &PaymentGuaranteeClaims,
+        active_guarantee_version: u64,
+        active_guarantee_domain: &[u8; 32],
+    ) -> Result<(), VerifyGuaranteeError> {
+        if claims.version != active_guarantee_version {
+            return Err(VerifyGuaranteeError::GuaranteeVersionMismatch {
+                expected: active_guarantee_version,
+                actual: claims.version,
+            });
+        }
+
+        if claims.domain != *active_guarantee_domain {
+            return Err(VerifyGuaranteeError::GuaranteeDomainMismatch);
+        }
+
+        Ok(())
     }
 
     /// Creates a new payment tab and returns the tab id
@@ -151,9 +174,11 @@ impl<S> RecipientClient<S> {
         let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())
             .map_err(VerifyGuaranteeError::InvalidCertificate)?;
 
-        if claims.domain != *self.guarantee_domain() {
-            return Err(VerifyGuaranteeError::GuaranteeDomainMismatch);
-        }
+        Self::verify_guarantee_metadata(
+            &claims,
+            self.active_guarantee_version(),
+            self.active_guarantee_domain(),
+        )?;
         Ok(claims)
     }
 
@@ -167,6 +192,9 @@ impl<S> RecipientClient<S> {
                     RemunerateError::CertificateInvalid(source)
                 }
                 VerifyGuaranteeError::CertificateMismatch => RemunerateError::CertificateMismatch,
+                VerifyGuaranteeError::GuaranteeVersionMismatch { expected, actual } => {
+                    RemunerateError::GuaranteeVersionMismatch { expected, actual }
+                }
                 VerifyGuaranteeError::GuaranteeDomainMismatch => {
                     RemunerateError::GuaranteeDomainMismatch
                 }
@@ -381,5 +409,81 @@ impl<S> RecipientClient<S> {
             .await?
             .map(Into::into);
         Ok(balance)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecipientClient;
+    use alloy::primitives::{Address, U256};
+    use rpc::{
+        GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
+        PaymentGuaranteeValidationPolicyV2,
+    };
+
+    use crate::error::VerifyGuaranteeError;
+
+    fn test_claims(version: u64, domain: [u8; 32]) -> PaymentGuaranteeClaims {
+        PaymentGuaranteeClaims {
+            domain,
+            user_address: Address::repeat_byte(0x11).to_string(),
+            recipient_address: Address::repeat_byte(0x22).to_string(),
+            tab_id: U256::from(1u64),
+            req_id: U256::from(2u64),
+            amount: U256::from(3u64),
+            total_amount: U256::from(4u64),
+            asset_address: Address::ZERO.to_string(),
+            timestamp: 1_700_000_000,
+            version,
+            validation_policy: (version == GUARANTEE_CLAIMS_VERSION_V2).then(|| {
+                PaymentGuaranteeValidationPolicyV2 {
+                    validation_registry_address: Address::repeat_byte(0x33),
+                    validation_request_hash: Default::default(),
+                    validation_chain_id: 1,
+                    validator_address: Address::repeat_byte(0x44),
+                    validator_agent_id: U256::from(7u64),
+                    min_validation_score: 80,
+                    validation_subject_hash: Default::default(),
+                    required_validation_tag: String::new(),
+                }
+            }),
+        }
+    }
+
+    #[test]
+    fn verify_guarantee_metadata_accepts_v1_when_active_version_is_v1() {
+        let claims = test_claims(GUARANTEE_CLAIMS_VERSION, [0x11; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 1, &[0x11; 32]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_guarantee_metadata_accepts_v2_when_active_version_is_v2() {
+        let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 2, &[0x22; 32]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_guarantee_metadata_rejects_version_mismatch() {
+        let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 1, &[0x22; 32]);
+        assert!(matches!(
+            result,
+            Err(VerifyGuaranteeError::GuaranteeVersionMismatch {
+                expected: 1,
+                actual: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn verify_guarantee_metadata_rejects_domain_mismatch() {
+        let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
+        let result = RecipientClient::<()>::verify_guarantee_metadata(&claims, 2, &[0x33; 32]);
+        assert!(matches!(
+            result,
+            Err(VerifyGuaranteeError::GuaranteeDomainMismatch)
+        ));
     }
 }

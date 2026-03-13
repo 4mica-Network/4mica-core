@@ -32,7 +32,7 @@ impl<S> UserClient<S> {
     }
 
     pub fn guarantee_domain(&self) -> &[u8; 32] {
-        self.ctx.guarantee_domain()
+        self.ctx.active_guarantee_domain()
     }
 
     /// Allows the 4mica contract to spend ERC20 tokens on behalf of the user
