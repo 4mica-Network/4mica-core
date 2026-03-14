@@ -14,9 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -26,9 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy
       - name: Cache cargo
         uses: actions/cache@v3
@@ -41,7 +39,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   build-and-test:
     name: Build, run services, and test
@@ -70,10 +68,7 @@ jobs:
           submodules: recursive
 
       - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -104,7 +99,7 @@ jobs:
         working-directory: contracts
         run: forge test -vvvv
 
-      - name: Deploy smart contract
+      - name: Deploy smart contracts (full stack)
         env:
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           USDC_TOKEN: ${{ secrets.USDC_TOKEN_HOLESKY }}
@@ -113,10 +108,10 @@ jobs:
           VK_X1: ${{ secrets.VK_X1 }}
           VK_Y0: ${{ secrets.VK_Y0 }}
           VK_Y1: ${{ secrets.VK_Y1 }}
-          GUARANTEE_SIGNING_KEY: "${{ secrets.VK_X0 }} ${{ secrets.VK_X1 }} ${{ secrets.VK_Y0 }} ${{ secrets.VK_Y1 }}"
+          TRUSTED_VALIDATION_REGISTRY: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         working-directory: contracts
         run: |
-          forge script script/Core4Mica.s.sol:Core4MicaScript \
+          forge script script/Core4MicaFullStack.s.sol:Core4MicaFullStackScript \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --via-ir \
@@ -148,6 +143,8 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+          GUARANTEE_REQUEST_VERSION: "2"
+          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         run: |
           # Run the API in the background for core API tests.
           stdbuf -oL -eL cargo run -p core-service 2>&1 | tee core/api-core.log &
@@ -186,6 +183,8 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+          GUARANTEE_REQUEST_VERSION: "2"
+          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         run: cargo test -p core-service --test api
 
       - name: Stop API service (core tests)
@@ -206,6 +205,8 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+          GUARANTEE_REQUEST_VERSION: "2"
+          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         run: cargo test --workspace --exclude sdk-4mica --exclude core-service
 
       - name: Run core tests (exclude api target)
@@ -220,6 +221,8 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+          GUARANTEE_REQUEST_VERSION: "2"
+          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         run: |
           cargo test -p core-service --lib
           for test_file in core/tests/*.rs; do
@@ -270,6 +273,8 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+          GUARANTEE_REQUEST_VERSION: "2"
+          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         run: |
           # Stream API logs to the job output while persisting to api.log
           stdbuf -oL -eL cargo run -p core-service 2>&1 | tee api.log &
@@ -308,4 +313,6 @@ jobs:
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
+          GUARANTEE_REQUEST_VERSION: "2"
+          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         run: cargo test -p sdk-4mica -j 1 -- --test-threads=1
