@@ -111,9 +111,9 @@ impl<S> RecipientClient<S> {
         })
     }
 
-    pub async fn issue_payment_guarantee(
+    async fn issue_inner(
         &self,
-        claims: PaymentGuaranteeRequestClaimsV1,
+        claims: PaymentGuaranteeRequestClaims,
         signature: String,
         scheme: SigningScheme,
     ) -> Result<BLSCert, IssuePaymentGuaranteeError>
@@ -124,13 +124,22 @@ impl<S> RecipientClient<S> {
             .ctx
             .rpc_proxy()
             .await?
-            .issue_guarantee(PaymentGuaranteeRequest::new(
-                PaymentGuaranteeRequestClaims::V1(claims),
-                signature,
-                scheme,
-            ))
+            .issue_guarantee(PaymentGuaranteeRequest::new(claims, signature, scheme))
             .await?;
         Ok(cert)
+    }
+
+    pub async fn issue_payment_guarantee(
+        &self,
+        claims: PaymentGuaranteeRequestClaimsV1,
+        signature: String,
+        scheme: SigningScheme,
+    ) -> Result<BLSCert, IssuePaymentGuaranteeError>
+    where
+        S: Signer + Sync,
+    {
+        self.issue_inner(PaymentGuaranteeRequestClaims::V1(claims), signature, scheme)
+            .await
     }
 
     pub async fn issue_payment_guarantee_v2(
@@ -142,17 +151,8 @@ impl<S> RecipientClient<S> {
     where
         S: Signer + Sync,
     {
-        let cert = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .issue_guarantee(PaymentGuaranteeRequest::new(
-                PaymentGuaranteeRequestClaims::V2(claims),
-                signature,
-                scheme,
-            ))
-            .await?;
-        Ok(cert)
+        self.issue_inner(PaymentGuaranteeRequestClaims::V2(claims), signature, scheme)
+            .await
     }
 
     pub async fn issue_prepared_payment_guarantee(
@@ -162,16 +162,12 @@ impl<S> RecipientClient<S> {
     where
         S: Signer + Sync,
     {
-        match request.claims {
-            PreparedPaymentGuaranteeClaims::V1(claims) => {
-                self.issue_payment_guarantee(claims, request.signature, request.scheme)
-                    .await
-            }
-            PreparedPaymentGuaranteeClaims::V2(claims) => {
-                self.issue_payment_guarantee_v2(claims, request.signature, request.scheme)
-                    .await
-            }
-        }
+        let claims = match request.claims {
+            PreparedPaymentGuaranteeClaims::V1(c) => PaymentGuaranteeRequestClaims::V1(c),
+            PreparedPaymentGuaranteeClaims::V2(c) => PaymentGuaranteeRequestClaims::V2(c),
+        };
+        self.issue_inner(claims, request.signature, request.scheme)
+            .await
     }
 
     pub fn verify_payment_guarantee(
@@ -438,8 +434,7 @@ mod tests {
     use super::RecipientClient;
     use alloy::primitives::{Address, U256};
     use rpc::{
-        GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
-        PaymentGuaranteeValidationPolicyV2,
+        GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeValidationPolicyV2,
     };
     use std::collections::HashMap;
 
@@ -457,17 +452,15 @@ mod tests {
             asset_address: Address::ZERO.to_string(),
             timestamp: 1_700_000_000,
             version,
-            validation_policy: (version == GUARANTEE_CLAIMS_VERSION_V2).then(|| {
-                PaymentGuaranteeValidationPolicyV2 {
-                    validation_registry_address: Address::repeat_byte(0x33),
-                    validation_request_hash: Default::default(),
-                    validation_chain_id: 1,
-                    validator_address: Address::repeat_byte(0x44),
-                    validator_agent_id: U256::from(7u64),
-                    min_validation_score: 80,
-                    validation_subject_hash: Default::default(),
-                    required_validation_tag: String::new(),
-                }
+            validation_policy: (version == 2).then(|| PaymentGuaranteeValidationPolicyV2 {
+                validation_registry_address: Address::repeat_byte(0x33),
+                validation_request_hash: Default::default(),
+                validation_chain_id: 1,
+                validator_address: Address::repeat_byte(0x44),
+                validator_agent_id: U256::from(7u64),
+                min_validation_score: 80,
+                validation_subject_hash: Default::default(),
+                required_validation_tag: String::new(),
             }),
         }
     }
@@ -484,17 +477,17 @@ mod tests {
 
     #[test]
     fn verify_guarantee_metadata_accepts_v2_when_active_version_is_v2() {
-        let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
+        let claims = test_claims(2, [0x22; 32]);
         let result = RecipientClient::<()>::verify_guarantee_metadata(
             &claims,
-            &HashMap::from([(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32])]),
+            &HashMap::from([(2, [0x22; 32])]),
         );
         assert!(result.is_ok());
     }
 
     #[test]
     fn verify_guarantee_metadata_rejects_unsupported_version() {
-        let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
+        let claims = test_claims(2, [0x22; 32]);
         let result = RecipientClient::<()>::verify_guarantee_metadata(
             &claims,
             &HashMap::from([(GUARANTEE_CLAIMS_VERSION, [0x22; 32])]),
@@ -507,10 +500,10 @@ mod tests {
 
     #[test]
     fn verify_guarantee_metadata_rejects_domain_mismatch() {
-        let claims = test_claims(GUARANTEE_CLAIMS_VERSION_V2, [0x22; 32]);
+        let claims = test_claims(2, [0x22; 32]);
         let result = RecipientClient::<()>::verify_guarantee_metadata(
             &claims,
-            &HashMap::from([(GUARANTEE_CLAIMS_VERSION_V2, [0x33; 32])]),
+            &HashMap::from([(2, [0x33; 32])]),
         );
         assert!(matches!(
             result,

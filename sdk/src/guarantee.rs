@@ -1,9 +1,9 @@
 use alloy::primitives::{Address, B256, U256};
 use rpc::{
-    CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
-    PaymentGuaranteeValidationPolicyV2, SigningScheme, compute_validation_request_hash,
-    compute_validation_subject_hash,
+    CorePublicParameters, GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeRequestClaimsV1,
+    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2, SigningScheme,
+    compute_validation_request_hash, compute_validation_subject_hash,
+    version_requires_validation_registry,
 };
 
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ impl PreparedPaymentGuaranteeClaims {
     pub fn version(&self) -> u64 {
         match self {
             Self::V1(_) => GUARANTEE_CLAIMS_VERSION,
-            Self::V2(_) => GUARANTEE_CLAIMS_VERSION_V2,
+            Self::V2(_) => 2,
         }
     }
 }
@@ -55,13 +55,15 @@ pub fn prepare_payment_guarantee_claims(
 ) -> anyhow::Result<PreparedPaymentGuaranteeClaims> {
     let accepted_versions = public_params.accepted_guarantee_versions_or_default();
     let accepts_v1 = accepted_versions.contains(&GUARANTEE_CLAIMS_VERSION);
-    let accepts_v2 = accepted_versions.contains(&GUARANTEE_CLAIMS_VERSION_V2);
+    let accepts_validation_gated = accepted_versions
+        .iter()
+        .any(|&v| version_requires_validation_registry(v));
 
     match validation {
         Some(validation) => {
-            if !accepts_v2 {
+            if !accepts_validation_gated {
                 anyhow::bail!(
-                    "validation input was provided, but V2 guarantees are not accepted by core"
+                    "validation input was provided, but no validation-gated guarantee version is accepted by core"
                 );
             }
             Ok(PreparedPaymentGuaranteeClaims::V2(build_v2_claims(
@@ -73,8 +75,10 @@ pub fn prepare_payment_guarantee_claims(
         None => {
             if accepts_v1 {
                 Ok(PreparedPaymentGuaranteeClaims::V1(build_v1_claims(intent)))
-            } else if accepts_v2 {
-                anyhow::bail!("core requires V2 guarantees, but validation input is missing")
+            } else if accepts_validation_gated {
+                anyhow::bail!(
+                    "core requires validation-gated guarantees, but validation input is missing"
+                )
             } else {
                 anyhow::bail!("core does not advertise any accepted guarantee versions")
             }
@@ -155,7 +159,7 @@ mod tests {
     use alloy::primitives::{Address, U256};
     use rpc::CorePublicParameters;
 
-    fn params(active: u64, accepted: Vec<u64>) -> CorePublicParameters {
+    fn params(max: u64, accepted: Vec<u64>) -> CorePublicParameters {
         CorePublicParameters {
             public_key: vec![],
             contract_address: "0x0000000000000000000000000000000000000000".to_string(),
@@ -163,7 +167,7 @@ mod tests {
             eip712_name: "4mica".to_string(),
             eip712_version: "1".to_string(),
             chain_id: 1,
-            active_guarantee_version: active,
+            max_accepted_guarantee_version: max,
             accepted_guarantee_versions: accepted,
             active_guarantee_domain_separator:
                 "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -214,6 +218,6 @@ mod tests {
     fn auto_rejects_missing_validation_input_when_only_v2_is_accepted() {
         let err = prepare_payment_guarantee_claims(&params(2, vec![2]), intent(), None)
             .expect_err("missing validation input must fail");
-        assert!(err.to_string().contains("requires V2"));
+        assert!(err.to_string().contains("validation-gated"));
     }
 }

@@ -1,8 +1,9 @@
 use crate::error::{ServiceError, ServiceResult};
 use alloy_primitives::{Address, B256, Signature, U256, keccak256};
-use alloy_sol_types::{SolStruct, SolValue, eip712_domain, sol};
+use alloy_sol_types::{SolStruct, SolValue, eip712_domain};
 use rpc::{
     CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, SigningScheme,
+    SolGuaranteeRequestClaimsV1, SolGuaranteeRequestClaimsV2,
 };
 use std::str::FromStr;
 
@@ -11,36 +12,6 @@ pub mod constants;
 pub mod jwt;
 pub mod siwe;
 pub mod utils;
-
-sol! {
-    struct SolGuaranteeRequestClaimsV1 {
-        address user;
-        address recipient;
-        uint256  tabId;
-        uint256 reqId;
-        uint256 amount;
-        address asset;
-        uint64  timestamp;
-    }
-
-    struct SolGuaranteeRequestClaimsV2 {
-        address user;
-        address recipient;
-        uint256 tabId;
-        uint256 reqId;
-        uint256 amount;
-        address asset;
-        uint64 timestamp;
-        address validationRegistryAddress;
-        bytes32 validationRequestHash;
-        uint256 validationChainId;
-        address validatorAddress;
-        uint256 validatorAgentId;
-        uint8 minValidationScore;
-        bytes32 validationSubjectHash;
-        string requiredValidationTag;
-    }
-}
 
 /// Verify that the request was signed by `claims.user_address`
 pub fn verify_guarantee_request_signature(
@@ -104,6 +75,10 @@ fn digest_for_guarantee_request(
     }
 }
 
+fn parse_addr(field: &'static str, value: &str) -> ServiceResult<Address> {
+    Address::from_str(value).map_err(|_| ServiceError::InvalidParams(format!("invalid {field}")))
+}
+
 /// Compute an EIP-712 signing hash for any supported guarantee request version.
 fn eip712_digest(
     params: &CorePublicParameters,
@@ -114,11 +89,6 @@ fn eip712_digest(
         version:  params.eip712_version.clone(),
         chain_id: params.chain_id,
     );
-
-    let parse_addr = |field: &'static str, value: &str| {
-        Address::from_str(value)
-            .map_err(|_| ServiceError::InvalidParams(format!("invalid {field}")))
-    };
 
     match claims {
         PaymentGuaranteeRequestClaims::V1(c) => {
@@ -162,11 +132,6 @@ fn eip191_digest(
     user: Address,
     recipient: Address,
 ) -> ServiceResult<B256> {
-    let parse_addr = |field: &'static str, value: &str| {
-        Address::from_str(value)
-            .map_err(|_| ServiceError::InvalidParams(format!("invalid {field}")))
-    };
-
     let data = match claims {
         PaymentGuaranteeRequestClaims::V1(c) => SolGuaranteeRequestClaimsV1 {
             user,

@@ -17,22 +17,14 @@ use crypto::bls::{BLSCert, BlsClaims};
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::info;
 use rpc::{
-    GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
-    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeRequestEssentials,
+    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
+    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
+    PaymentGuaranteeRequestEssentials,
 };
 use sea_orm::{ConnectionTrait, TransactionTrait};
-use std::collections::BTreeSet;
 use std::str::FromStr;
 
 impl CoreService {
-    fn guarantee_request_version(claims: &PaymentGuaranteeRequestClaims) -> u64 {
-        match claims {
-            PaymentGuaranteeRequestClaims::V1(_) => GUARANTEE_CLAIMS_VERSION,
-            PaymentGuaranteeRequestClaims::V2(_) => GUARANTEE_CLAIMS_VERSION_V2,
-        }
-    }
-
     pub async fn verify_guarantee_request_claims_v1(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV1,
@@ -175,14 +167,6 @@ impl CoreService {
         }
     }
 
-    fn accepted_guarantee_versions(&self) -> BTreeSet<u64> {
-        self.inner
-            .accepted_guarantee_versions
-            .iter()
-            .copied()
-            .collect()
-    }
-
     fn guarantee_domain_for_version(&self, version: u64) -> ServiceResult<[u8; 32]> {
         self.inner
             .guarantee_domains
@@ -236,16 +220,22 @@ impl CoreService {
 
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
-        let request_version = Self::guarantee_request_version(&req.claims);
+        let request_version = req.claims.version();
         if !self
             .inner
             .accepted_guarantee_versions
             .contains(&request_version)
         {
-            let accepted_versions = self
-                .accepted_guarantee_versions()
+            let mut sorted: Vec<u64> = self
+                .inner
+                .accepted_guarantee_versions
+                .iter()
+                .copied()
+                .collect();
+            sorted.sort_unstable();
+            let accepted_versions = sorted
                 .into_iter()
-                .map(|version| version.to_string())
+                .map(|v| v.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(ServiceError::InvalidParams(format!(

@@ -148,7 +148,7 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
         .join(",");
     build_core_service_with_guarantee_config(
         persist_ctx,
-        config.guarantee.request_version,
+        config.guarantee.max_accepted_version,
         accepted_request_versions,
         config.guarantee.trusted_validation_registries,
     )
@@ -157,17 +157,17 @@ async fn build_core_service(persist_ctx: PersistCtx) -> anyhow::Result<CoreServi
 
 async fn build_core_service_with_active_version(
     persist_ctx: PersistCtx,
-    active_guarantee_version: u64,
+    max_accepted_guarantee_version: u64,
 ) -> anyhow::Result<CoreService> {
-    let trusted_validation_registries = if active_guarantee_version == 2 {
+    let trusted_validation_registries = if max_accepted_guarantee_version == 2 {
         "0x1111111111111111111111111111111111111111".to_string()
     } else {
         String::new()
     };
     build_core_service_with_guarantee_config(
         persist_ctx,
-        active_guarantee_version,
-        active_guarantee_version.to_string(),
+        max_accepted_guarantee_version,
+        max_accepted_guarantee_version.to_string(),
         trusted_validation_registries,
     )
     .await
@@ -175,12 +175,12 @@ async fn build_core_service_with_active_version(
 
 async fn build_core_service_with_guarantee_config(
     persist_ctx: PersistCtx,
-    active_guarantee_version: u64,
+    max_accepted_guarantee_version: u64,
     accepted_request_versions: String,
     trusted_validation_registries: String,
 ) -> anyhow::Result<CoreService> {
     let mut config = AppConfig::fetch()?;
-    config.guarantee.request_version = active_guarantee_version;
+    config.guarantee.max_accepted_version = max_accepted_guarantee_version;
     config.guarantee.accepted_request_versions = accepted_request_versions.clone();
     config.guarantee.trusted_validation_registries = trusted_validation_registries;
     let read_provider = build_read_provider()?;
@@ -1902,7 +1902,7 @@ async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Resu
     let core_service = build_core_service_with_active_version(ctx, 2).await?;
     let params = core_service.public_params();
 
-    assert_eq!(params.active_guarantee_version, 2);
+    assert_eq!(params.max_accepted_guarantee_version, 2);
     assert!(
         params.active_guarantee_domain_separator.starts_with("0x")
             && params.active_guarantee_domain_separator.len() == 66
@@ -1916,12 +1916,13 @@ async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Resu
 
 #[tokio::test]
 #[serial_test::serial]
-async fn core_service_public_params_support_active_guarantee_version_v1() -> anyhow::Result<()> {
+async fn core_service_public_params_support_max_accepted_guarantee_version_v1() -> anyhow::Result<()>
+{
     load_env();
     let ctx = PersistCtx::new().await?;
     let core_service = build_core_service_with_active_version(ctx, 1).await?;
     let params = core_service.public_params();
-    assert_eq!(params.active_guarantee_version, 1);
+    assert_eq!(params.max_accepted_guarantee_version, 1);
     Ok(())
 }
 

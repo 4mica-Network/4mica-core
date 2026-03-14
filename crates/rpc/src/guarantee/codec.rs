@@ -3,10 +3,7 @@ use alloy_sol_types::{SolValue, sol};
 use std::str::FromStr;
 use thiserror::Error;
 
-use super::{
-    GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
-    PaymentGuaranteeValidationPolicyV2,
-};
+use super::{GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeValidationPolicyV2};
 
 sol! {
     struct GuaranteeClaimsV1 {
@@ -62,7 +59,7 @@ impl GuaranteeClaimsVersion {
     fn as_u64(self) -> u64 {
         match self {
             Self::V1 => GUARANTEE_CLAIMS_VERSION,
-            Self::V2 => GUARANTEE_CLAIMS_VERSION_V2,
+            Self::V2 => 2,
         }
     }
 }
@@ -73,7 +70,7 @@ impl TryFrom<u64> for GuaranteeClaimsVersion {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             GUARANTEE_CLAIMS_VERSION => Ok(Self::V1),
-            GUARANTEE_CLAIMS_VERSION_V2 => Ok(Self::V2),
+            2 => Ok(Self::V2),
             _ => Err(CodecError::UnsupportedVersion(value)),
         }
     }
@@ -329,7 +326,7 @@ mod tests {
             total_amount: U256::from(5001),
             asset_address: asset_addr.to_string(),
             timestamp: 1_700_000_000,
-            version: GUARANTEE_CLAIMS_VERSION_V2,
+            version: 2,
             validation_policy: Some(policy),
         }
     }
@@ -396,7 +393,7 @@ mod tests {
                 .parse()
                 .expect("asset address must parse"),
             timestamp: claims.timestamp,
-            version: GUARANTEE_CLAIMS_VERSION_V2,
+            version: 2,
             validation_registry_address: policy.validation_registry_address,
             validation_request_hash: policy.validation_request_hash,
             validation_chain_id: policy.validation_chain_id,
@@ -407,8 +404,7 @@ mod tests {
             required_validation_tag: policy.required_validation_tag.clone(),
         };
 
-        let encoded =
-            (GUARANTEE_CLAIMS_VERSION_V2, forged_claims.abi_encode()).abi_encode_sequence();
+        let encoded = (2, forged_claims.abi_encode()).abi_encode_sequence();
         let err = decode_guarantee_claims(&encoded).expect_err("non-canonical v2 must fail");
         assert!(err.to_string().contains("validation invariant failed"));
     }

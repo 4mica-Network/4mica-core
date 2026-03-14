@@ -68,7 +68,7 @@ async fn build_core_service(
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
     let mut config = AppConfig::fetch()?;
-    config.guarantee.request_version = 1;
+    config.guarantee.max_accepted_version = 1;
     config.guarantee.accepted_request_versions = "1".to_string();
     config.guarantee.trusted_validation_registries.clear();
     let read_provider = build_read_provider()?;

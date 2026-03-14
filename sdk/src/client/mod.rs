@@ -36,7 +36,7 @@ struct Inner<S> {
     wallet_provider: OnceCell<DynProvider>,
     contract_address: Address,
     operator_public_key: BlsPublicKey,
-    active_guarantee_version: u64,
+    max_accepted_guarantee_version: u64,
     active_guarantee_domain: [u8; 32],
     guarantee_domains: HashMap<u64, [u8; 32]>,
     auth_session: Option<AuthSession<S>>,
@@ -74,7 +74,7 @@ impl<S> ClientCtx<S> {
         let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
         let contract = Core4Mica::new(contract_address, provider.clone());
-        let (active_guarantee_version, active_guarantee_domain, guarantee_domains) =
+        let (max_accepted_guarantee_version, active_guarantee_domain, guarantee_domains) =
             Self::fetch_guarantee_metadata(&public_params, &contract).await?;
 
         Ok(Self(Arc::new(Inner {
@@ -85,7 +85,7 @@ impl<S> ClientCtx<S> {
             wallet_provider: OnceCell::new(),
             contract_address,
             operator_public_key,
-            active_guarantee_version,
+            max_accepted_guarantee_version,
             active_guarantee_domain,
             guarantee_domains,
             auth_session,
@@ -146,7 +146,7 @@ impl<S> ClientCtx<S> {
         public_params: &CorePublicParameters,
         contract: &Core4MicaInstance<DynProvider>,
     ) -> Result<(u64, [u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
-        let active_version = public_params.active_guarantee_version;
+        let max_version = public_params.max_accepted_guarantee_version;
         let mut guarantee_domains = HashMap::new();
         // Iterate over whichever versions the core reports as accepted, rather than a hardcoded
         // list. Adding V3 in the rpc crate is the only change required.
@@ -160,11 +160,11 @@ impl<S> ClientCtx<S> {
                 guarantee_domains.insert(version, version_config.domainSeparator.into());
             }
 
-            if version == active_version {
+            if version == max_version {
                 if !version_config.enabled {
                     return Err(ClientError::Initialization(format!(
-                        "active guarantee version {} is disabled on-chain",
-                        active_version
+                        "max accepted guarantee version {} is disabled on-chain",
+                        max_version
                     )));
                 }
 
@@ -180,8 +180,8 @@ impl<S> ClientCtx<S> {
 
                     if expected_domain != version_config.domainSeparator {
                         return Err(ClientError::Initialization(format!(
-                            "active guarantee domain mismatch between core metadata and contract for version {}",
-                            active_version
+                            "guarantee domain mismatch between core metadata and contract for version {}",
+                            max_version
                         )));
                     }
                 }
@@ -190,16 +190,16 @@ impl<S> ClientCtx<S> {
 
         let active_guarantee_domain =
             guarantee_domains
-                .get(&active_version)
+                .get(&max_version)
                 .copied()
                 .ok_or_else(|| {
                     ClientError::Initialization(format!(
-                        "missing guarantee domain metadata for active version {}",
-                        active_version
+                        "missing guarantee domain metadata for max accepted version {}",
+                        max_version
                     ))
                 })?;
 
-        Ok((active_version, active_guarantee_domain, guarantee_domains))
+        Ok((max_version, active_guarantee_domain, guarantee_domains))
     }
 
     fn contract_address(&self) -> Address {
@@ -215,7 +215,7 @@ impl<S> ClientCtx<S> {
     }
 
     fn active_guarantee_version(&self) -> u64 {
-        self.0.active_guarantee_version
+        self.0.max_accepted_guarantee_version
     }
 
     fn active_guarantee_domain(&self) -> &[u8; 32] {

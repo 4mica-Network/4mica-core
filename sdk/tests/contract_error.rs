@@ -154,7 +154,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         V2(PaymentGuaranteeRequestClaimsV2),
     }
 
-    let claims = match public_params.active_guarantee_version {
+    let claims = match public_params.max_accepted_guarantee_version {
         1 => IssuedClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user_address.clone(),
             recipient_address: recipient_address.clone(),
@@ -300,9 +300,10 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     let result = recipient_client.recipient.remunerate(bls_cert).await;
     dbg!(&result);
     match result {
-        Err(RemunerateError::TabNotYetOverdue) if public_params.active_guarantee_version == 1 => {}
+        Err(RemunerateError::TabNotYetOverdue)
+            if public_params.max_accepted_guarantee_version == 1 => {}
         Err(err)
-            if public_params.active_guarantee_version == 2
+            if public_params.max_accepted_guarantee_version == 2
                 && is_expected_v2_remuneration_precondition_error(&err) => {}
         Err(RemunerateError::Transport(msg))
             if msg.contains("historical state")
@@ -314,7 +315,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         }
         other => panic!(
             "expected a decoded precondition error for guarantee version {}, got {other:?}",
-            public_params.active_guarantee_version
+            public_params.max_accepted_guarantee_version
         ),
     }
     Ok(())

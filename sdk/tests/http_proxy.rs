@@ -33,7 +33,7 @@ async fn rpc_proxy_get_public_params_round_trip() {
         eip712_name: "4mica".into(),
         eip712_version: "1".into(),
         chain_id: 1337,
-        active_guarantee_version: 1,
+        max_accepted_guarantee_version: 1,
         accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".into(),
@@ -133,7 +133,7 @@ async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
         eip712_name: "4mica".into(),
         eip712_version: "1".into(),
         chain_id: 84532,
-        active_guarantee_version: 2,
+        max_accepted_guarantee_version: 2,
         accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
@@ -161,7 +161,7 @@ async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
 
     let proxy = RpcProxy::new(&base).expect("create proxy");
     let got = proxy.get_public_params().await.expect("get params");
-    assert_eq!(got.active_guarantee_version, 2);
+    assert_eq!(got.max_accepted_guarantee_version, 2);
     assert_eq!(
         got.active_guarantee_domain_separator,
         params.active_guarantee_domain_separator

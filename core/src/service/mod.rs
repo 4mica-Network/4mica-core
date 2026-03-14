@@ -133,7 +133,7 @@ impl CoreService {
                 })
             })
             .collect::<anyhow::Result<HashSet<Address>>>()?;
-        let active_guarantee_version = guarantee_config.request_version;
+        let max_accepted_version = guarantee_config.max_accepted_version;
         let accepted_guarantee_versions = guarantee_config
             .accepted_request_versions()?
             .into_iter()
@@ -146,16 +146,16 @@ impl CoreService {
             .copied()
             .collect::<Vec<_>>();
         accepted_guarantee_versions_public.sort_unstable();
-        let active_guarantee_domain = deps
+        let max_accepted_domain = deps
             .guarantee_domains
-            .get(&active_guarantee_version)
+            .get(&max_accepted_version)
             .ok_or_else(|| {
                 anyhow!(
-                    "missing guarantee domain for active guarantee version {}",
-                    active_guarantee_version
+                    "missing guarantee domain for max accepted guarantee version {}",
+                    max_accepted_version
                 )
             })?;
-        let active_guarantee_domain_separator = crypto::hex::encode_hex(active_guarantee_domain);
+        let active_guarantee_domain_separator = crypto::hex::encode_hex(max_accepted_domain);
 
         let inner = Inner {
             config,
@@ -166,7 +166,7 @@ impl CoreService {
                 eip712_name,
                 eip712_version,
                 chain_id: deps.chain_id,
-                active_guarantee_version,
+                max_accepted_guarantee_version: max_accepted_version,
                 accepted_guarantee_versions: accepted_guarantee_versions_public,
                 active_guarantee_domain_separator,
                 trusted_validation_registries,

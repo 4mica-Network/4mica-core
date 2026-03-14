@@ -7,7 +7,6 @@ use super::{codec, compute_validation_request_hash, compute_validation_subject_h
 const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 pub const GUARANTEE_CLAIMS_VERSION: u64 = 1;
-pub const GUARANTEE_CLAIMS_VERSION_V2: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentGuaranteeValidationPolicyV2 {
@@ -44,6 +43,7 @@ impl PaymentGuaranteeClaims {
         domain: [u8; 32],
         total_amount: U256,
     ) -> Self {
+        let version = request.version();
         match request {
             PaymentGuaranteeRequestClaims::V1(claims) => Self {
                 domain,
@@ -55,7 +55,7 @@ impl PaymentGuaranteeClaims {
                 total_amount,
                 asset_address: claims.asset_address.clone(),
                 timestamp: claims.timestamp,
-                version: GUARANTEE_CLAIMS_VERSION,
+                version,
                 validation_policy: None,
             },
             PaymentGuaranteeRequestClaims::V2(claims) => Self {
@@ -68,21 +68,16 @@ impl PaymentGuaranteeClaims {
                 total_amount,
                 asset_address: claims.asset_address.clone(),
                 timestamp: claims.timestamp,
-                version: GUARANTEE_CLAIMS_VERSION_V2,
+                version,
                 validation_policy: Some(claims.validation_policy.clone()),
             },
         }
     }
 
     pub fn validate_v2_policy_binding(&self) -> anyhow::Result<()> {
-        if self.version != GUARANTEE_CLAIMS_VERSION_V2 {
+        let Some(policy) = &self.validation_policy else {
             return Ok(());
-        }
-
-        let policy = self
-            .validation_policy
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("v2 guarantee claims require validation_policy"))?;
+        };
 
         validate_policy_binding(
             &self.user_address,
@@ -441,6 +436,16 @@ impl PaymentGuaranteeRequestEssentials for PaymentGuaranteeRequestClaims {
 pub enum PaymentGuaranteeRequestClaims {
     V1(PaymentGuaranteeRequestClaimsV1),
     V2(PaymentGuaranteeRequestClaimsV2),
+}
+
+impl PaymentGuaranteeRequestClaims {
+    /// Returns the numeric version identifier for this claims variant.
+    pub fn version(&self) -> u64 {
+        match self {
+            Self::V1(_) => GUARANTEE_CLAIMS_VERSION,
+            Self::V2(_) => 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

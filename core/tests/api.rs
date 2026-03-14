@@ -225,7 +225,7 @@ async fn build_signed_req(
     asset_address: &str,
 ) -> PaymentGuaranteeRequest {
     let ts = timestamp.unwrap_or_else(|| Utc::now().timestamp() as u64);
-    if public_params.active_guarantee_version == 2 {
+    if public_params.max_accepted_guarantee_version == 2 {
         let validation_subject_hash = compute_validation_subject_hash(
             user_addr,
             recipient_addr,
@@ -2325,7 +2325,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 1,
+        max_accepted_guarantee_version: 1,
         accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2350,7 +2350,7 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 1,
+        max_accepted_guarantee_version: 1,
         accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2401,7 +2401,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 1,
+        max_accepted_guarantee_version: 1,
         accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2460,7 +2460,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 1,
+        max_accepted_guarantee_version: 1,
         accepted_guarantee_versions: vec![1],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2491,7 +2491,7 @@ async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 2,
+        max_accepted_guarantee_version: 2,
         accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2514,7 +2514,7 @@ async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 2,
+        max_accepted_guarantee_version: 2,
         accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2537,7 +2537,7 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 2,
+        max_accepted_guarantee_version: 2,
         accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2567,7 +2567,7 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 2,
+        max_accepted_guarantee_version: 2,
         accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2597,7 +2597,7 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 2,
+        max_accepted_guarantee_version: 2,
         accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -2627,7 +2627,7 @@ async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyh
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        active_guarantee_version: 2,
+        max_accepted_guarantee_version: 2,
         accepted_guarantee_versions: vec![1, 2],
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
