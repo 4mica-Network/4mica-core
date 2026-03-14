@@ -7,7 +7,7 @@ use core_service::{
         constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
     },
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
-    ethereum::{CoreContractApi, RecordPaymentTx},
+    ethereum::{CoreContractApi, GuaranteeVersionConfig, RecordPaymentTx},
     persist::{PersistCtx, repo},
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -17,7 +17,7 @@ use entities::tabs;
 use rand::random;
 use rpc::CreatePaymentTabRequest;
 use sea_orm::{EntityTrait, Set};
-use std::{panic, sync::Arc, sync::Once};
+use std::{collections::HashMap, panic, sync::Arc, sync::Once};
 
 const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
 const DEFAULT_ROLE: &str = "user";
@@ -67,7 +67,10 @@ async fn build_core_service(
 ) -> anyhow::Result<CoreService> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
-    let config = AppConfig::fetch()?;
+    let mut config = AppConfig::fetch()?;
+    config.guarantee.max_accepted_version = 1;
+    config.guarantee.accepted_request_versions = "1".to_string();
+    config.guarantee.trusted_validation_registries.clear();
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
 
@@ -84,7 +87,7 @@ async fn build_core_service(
             contract_api,
             chain_id,
             read_provider,
-            guarantee_domain: [0u8; 32],
+            guarantee_domains: HashMap::from([(1u64, [0u8; 32])]),
             tab_expiration_time,
         },
     )
@@ -404,10 +407,16 @@ impl CoreContractApi for MockContractApi {
         Ok(self.chain_id)
     }
 
-    async fn get_guarantee_domain_separator(
+    async fn get_guarantee_version_config(
         &self,
-    ) -> Result<[u8; 32], core_service::error::CoreContractApiError> {
-        Ok(self.domain)
+        version: u64,
+    ) -> Result<GuaranteeVersionConfig, core_service::error::CoreContractApiError> {
+        Ok(GuaranteeVersionConfig {
+            version,
+            domain_separator: self.domain,
+            decoder: alloy::primitives::Address::ZERO,
+            enabled: true,
+        })
     }
 
     async fn get_tab_expiration_time(

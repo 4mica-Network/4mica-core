@@ -12,16 +12,17 @@ use crate::{
 };
 use alloy::{
     network::{EthereumWallet, TxSigner},
-    primitives::Address,
+    primitives::{Address, B256},
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::{Signature, Signer},
 };
 use rpc::{ApiClientError, CorePublicParameters, RpcProxy};
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use url::Url;
 
 use self::{recipient::RecipientClient, user::UserClient};
 use crypto::bls::BlsPublicKey;
+use std::collections::HashMap;
 
 pub mod model;
 pub mod recipient;
@@ -32,10 +33,12 @@ struct Inner<S> {
     rpc_proxy: RpcProxy,
     ethereum_http_rpc_url: Url,
     provider: DynProvider,
-    wallet_provider: Mutex<Option<DynProvider>>,
+    wallet_provider: OnceCell<DynProvider>,
     contract_address: Address,
     operator_public_key: BlsPublicKey,
-    guarantee_domain: [u8; 32],
+    max_accepted_guarantee_version: u64,
+    active_guarantee_domain: [u8; 32],
+    guarantee_domains: HashMap<u64, [u8; 32]>,
     auth_session: Option<AuthSession<S>>,
 }
 
@@ -71,17 +74,20 @@ impl<S> ClientCtx<S> {
         let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
         let contract = Core4Mica::new(contract_address, provider.clone());
-        let on_chain_domain = Self::fetch_guarantee_domain(&contract).await?;
+        let (max_accepted_guarantee_version, active_guarantee_domain, guarantee_domains) =
+            Self::fetch_guarantee_metadata(&public_params, &contract).await?;
 
         Ok(Self(Arc::new(Inner {
             cfg,
             rpc_proxy,
             ethereum_http_rpc_url,
             provider,
-            wallet_provider: Mutex::new(None),
+            wallet_provider: OnceCell::new(),
             contract_address,
             operator_public_key,
-            guarantee_domain: on_chain_domain,
+            max_accepted_guarantee_version,
+            active_guarantee_domain,
+            guarantee_domains,
             auth_session,
         })))
     }
@@ -136,15 +142,64 @@ impl<S> ClientCtx<S> {
         }
     }
 
-    async fn fetch_guarantee_domain(
+    async fn fetch_guarantee_metadata(
+        public_params: &CorePublicParameters,
         contract: &Core4MicaInstance<DynProvider>,
-    ) -> Result<[u8; 32], ClientError> {
-        contract
-            .guaranteeDomainSeparator()
-            .call()
-            .await
-            .map(Into::into)
-            .map_err(|e| ClientError::Initialization(e.to_string()))
+    ) -> Result<(u64, [u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
+        let max_version = public_params.max_accepted_guarantee_version;
+        let mut guarantee_domains = HashMap::new();
+        // Iterate over whichever versions the core reports as accepted, rather than a hardcoded
+        // list. Adding V3 in the rpc crate is the only change required.
+        for version in public_params.accepted_guarantee_versions_or_default() {
+            let version_config = contract
+                .getGuaranteeVersionConfig(version)
+                .call()
+                .await
+                .map_err(|e| ClientError::Initialization(e.to_string()))?;
+            if version_config.enabled {
+                guarantee_domains.insert(version, version_config.domainSeparator.into());
+            }
+
+            if version == max_version {
+                if !version_config.enabled {
+                    return Err(ClientError::Initialization(format!(
+                        "max accepted guarantee version {} is disabled on-chain",
+                        max_version
+                    )));
+                }
+
+                if !public_params.active_guarantee_domain_separator.is_empty() {
+                    let expected_domain = public_params
+                        .active_guarantee_domain_separator
+                        .parse::<B256>()
+                        .map_err(|e| {
+                            ClientError::Initialization(format!(
+                                "invalid active guarantee domain separator from core: {e}"
+                            ))
+                        })?;
+
+                    if expected_domain != version_config.domainSeparator {
+                        return Err(ClientError::Initialization(format!(
+                            "guarantee domain mismatch between core metadata and contract for version {}",
+                            max_version
+                        )));
+                    }
+                }
+            }
+        }
+
+        let active_guarantee_domain =
+            guarantee_domains
+                .get(&max_version)
+                .copied()
+                .ok_or_else(|| {
+                    ClientError::Initialization(format!(
+                        "missing guarantee domain metadata for max accepted version {}",
+                        max_version
+                    ))
+                })?;
+
+        Ok((max_version, active_guarantee_domain, guarantee_domains))
     }
 
     fn contract_address(&self) -> Address {
@@ -159,8 +214,16 @@ impl<S> ClientCtx<S> {
         &self.0.operator_public_key
     }
 
-    fn guarantee_domain(&self) -> &[u8; 32] {
-        &self.0.guarantee_domain
+    fn active_guarantee_version(&self) -> u64 {
+        self.0.max_accepted_guarantee_version
+    }
+
+    fn active_guarantee_domain(&self) -> &[u8; 32] {
+        &self.0.active_guarantee_domain
+    }
+
+    fn guarantee_domain_for_version(&self, version: u64) -> Option<&[u8; 32]> {
+        self.0.guarantee_domains.get(&version)
     }
 
     fn signer(&self) -> &S {
@@ -205,20 +268,19 @@ impl<S> ClientCtx<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
-        let mut wallet_provider = self.0.wallet_provider.lock().await;
-        if let Some(wallet_provider) = wallet_provider.as_ref() {
-            return Ok(wallet_provider.clone());
-        }
-
-        let wallet = EthereumWallet::new(self.0.cfg.signer.clone());
-        let provider = ProviderBuilder::new()
-            .wallet(wallet)
-            .connect(self.0.ethereum_http_rpc_url.as_ref())
-            .await
-            .map_err(|e| ClientError::Provider(e.to_string()))?
-            .erased();
-
-        wallet_provider.replace(provider.clone());
+        let provider = self
+            .0
+            .wallet_provider
+            .get_or_try_init(|| async {
+                let wallet = EthereumWallet::new(self.0.cfg.signer.clone());
+                ProviderBuilder::new()
+                    .wallet(wallet)
+                    .connect(self.0.ethereum_http_rpc_url.as_ref())
+                    .await
+                    .map_err(|e| ClientError::Provider(e.to_string()))
+                    .map(|p| p.erased())
+            })
+            .await?;
         Ok(provider.clone())
     }
 

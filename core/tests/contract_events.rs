@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, FixedBytes, U256, keccak256};
+use alloy::primitives::{FixedBytes, U256, keccak256};
 
 use alloy::providers::ext::AnvilApi;
 use alloy::providers::{DynProvider, Provider};
@@ -72,7 +72,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     let contract = env.contract.clone();
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
     let persist_ctx = core_service.persist_ctx();
 
     ensure_user(persist_ctx, &user_addr).await?;
@@ -115,7 +115,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     let contract = env.contract.clone();
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
     let persist_ctx = core_service.persist_ctx();
 
     // strictly ensure user exists before deposit events
@@ -173,7 +173,7 @@ async fn deposit_waits_for_finalized_head() -> anyhow::Result<()> {
     let contract = env.contract.clone();
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
     let persist_ctx = core_service.persist_ctx();
 
     ensure_user(persist_ctx, &user_addr).await?;
@@ -237,7 +237,7 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
         .expect("cursor should exist after upsert");
     let initial_created_at = initial_cursor.created_at;
 
-    let user_addr = env.signer_addr.to_string();
+    let user_addr = format!("{:#x}", env.signer_addr);
     ensure_user(&persist_ctx, &user_addr).await?;
 
     let deposit_amount = U256::from(9_000_000_000_000_000_000u128);
@@ -309,7 +309,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     let contract = env.contract.clone();
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
     let persist_ctx = core_service.persist_ctx();
 
     // ensure user exists before deposit/withdrawal events
@@ -382,7 +382,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let contract = env.contract.clone();
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
     let persist_ctx = core_service.persist_ctx();
 
     // ensure user exists before deposit/withdrawal events
@@ -515,17 +515,13 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     let contract = env.contract.clone();
     let core_service = env.core_service.clone();
     let access_manager = env.access_manager.clone();
-    let user_addr = env.signer_addr.to_string();
+    let user_addr = format!("{:#x}", env.signer_addr);
     let persist_ctx = core_service.persist_ctx();
 
-    let usdc_b = Address::with_last_byte(0x33);
-    let usdt_b = Address::with_last_byte(0x44);
     let contract_b = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
-        usdc_b,
-        usdt_b,
     )
     .await?;
 

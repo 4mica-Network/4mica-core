@@ -19,14 +19,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _ethGuarantee(
-            tabId,
-            tabTimestamp,
-            USER1,
-            USER2,
-            reqId,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(tabId, tabTimestamp, USER1, USER2, reqId, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
 
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
@@ -38,11 +31,10 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.remunerate(guaranteeData, signature);
 
         assertEq(USER2.balance, 0.5 ether);
-        (uint256 collateral, , ) = core4Mica.getUser(USER1);
+        (uint256 collateral,,) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.5 ether);
 
-        (uint256 paid, bool remunerated, address asset) = core4Mica
-            .getPaymentStatus(tabId);
+        (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(tabId);
         assertEq(paid, 0);
         assertTrue(remunerated);
         assertEq(asset, ETH_ASSET);
@@ -61,14 +53,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _ethGuarantee(
-            tabId,
-            tabTimestamp,
-            USER1,
-            USER2,
-            reqId,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(tabId, tabTimestamp, USER1, USER2, reqId, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -79,13 +64,11 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.remunerate(guaranteeData, signature);
 
         assertEq(USER2.balance, 0.25 ether);
-        (uint256 collateral, , ) = core4Mica.getUser(USER1);
+        (uint256 collateral,,) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.75 ether);
     }
 
-    function test_Remunerate_TwoTabs_PartialPaymentDoesNotDoubleSpend()
-        public
-    {
+    function test_Remunerate_TwoTabs_PartialPaymentDoesNotDoubleSpend() public {
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -100,22 +83,8 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g1 = _ethGuarantee(
-            tabId1,
-            tabTimestamp,
-            USER1,
-            USER2,
-            reqId1,
-            0.6 ether
-        );
-        Guarantee memory g2 = _ethGuarantee(
-            tabId2,
-            tabTimestamp,
-            USER1,
-            USER2,
-            reqId2,
-            0.6 ether
-        );
+        Guarantee memory g1 = _ethGuarantee(tabId1, tabTimestamp, USER1, USER2, reqId1, 0.6 ether);
+        Guarantee memory g2 = _ethGuarantee(tabId2, tabTimestamp, USER1, USER2, reqId2, 0.6 ether);
         BLS.G2Point memory signature1 = _signGuarantee(g1, TEST_PRIVATE_KEY);
         BLS.G2Point memory signature2 = _signGuarantee(g2, TEST_PRIVATE_KEY);
         bytes memory guaranteeData1 = _encodeGuaranteeWithVersion(g1);
@@ -126,19 +95,17 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData1, signature1);
 
-        (uint256 collateralAfterFirst, , ) = core4Mica.getUser(USER1);
+        (uint256 collateralAfterFirst,,) = core4Mica.getUser(USER1);
         assertEq(collateralAfterFirst, 0.4 ether);
 
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData2, signature2);
 
         assertEq(USER2.balance, user2BalanceBefore + 1 ether);
-        (uint256 collateralAfterSecond, , ) = core4Mica.getUser(USER1);
+        (uint256 collateralAfterSecond,,) = core4Mica.getUser(USER1);
         assertEq(collateralAfterSecond, 0);
 
-        (uint256 paid, bool remunerated, ) = core4Mica.getPaymentStatus(
-            tabId2
-        );
+        (uint256 paid, bool remunerated,) = core4Mica.getPaymentStatus(tabId2);
         assertEq(paid, 0.2 ether);
         assertTrue(remunerated);
     }
@@ -154,29 +121,17 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _guarantee(
-            tabId,
-            tabTimestamp,
-            USER1,
-            USER2,
-            reqId,
-            remunerationAmount,
-            address(usdc)
-        );
+        Guarantee memory g = _guarantee(tabId, tabTimestamp, USER1, USER2, reqId, remunerationAmount, address(usdc));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
         vm.expectEmit(true, true, false, true);
-        emit Core4Mica.RecipientRemunerated(
-            tabId,
-            address(usdc),
-            remunerationAmount
-        );
+        emit Core4Mica.RecipientRemunerated(tabId, address(usdc), remunerationAmount);
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
         assertEq(usdc.balanceOf(USER2), remunerationAmount);
-        (uint256 collateral, , ) = core4Mica.getUser(USER1, address(usdc));
+        (uint256 collateral,,) = core4Mica.getUser(USER1, address(usdc));
         assertEq(collateral, depositAmount - remunerationAmount);
     }
 
@@ -191,29 +146,17 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _guarantee(
-            tabId,
-            tabTimestamp,
-            USER1,
-            USER2,
-            reqId,
-            remunerationAmount,
-            address(usdt)
-        );
+        Guarantee memory g = _guarantee(tabId, tabTimestamp, USER1, USER2, reqId, remunerationAmount, address(usdt));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
         vm.expectEmit(true, true, false, true);
-        emit Core4Mica.RecipientRemunerated(
-            tabId,
-            address(usdt),
-            remunerationAmount
-        );
+        emit Core4Mica.RecipientRemunerated(tabId, address(usdt), remunerationAmount);
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
         assertEq(usdt.balanceOf(USER2), remunerationAmount);
-        (uint256 collateral, , ) = core4Mica.getUser(USER1, address(usdt));
+        (uint256 collateral,,) = core4Mica.getUser(USER1, address(usdt));
         assertEq(collateral, depositAmount - remunerationAmount);
     }
 
@@ -228,31 +171,16 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _guarantee(
-            tabId,
-            tabTimestamp,
-            USER1,
-            USER2,
-            41,
-            0.5 ether,
-            address(usdc)
-        );
+        Guarantee memory g = _guarantee(tabId, tabTimestamp, USER1, USER2, 41, 0.5 ether, address(usdc));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Core4Mica.InvalidAsset.selector,
-                address(usdc)
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.InvalidAsset.selector, address(usdc)));
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
     }
 
-    function test_Remunerate_GuaranteeIssuedBeforeWithdrawalRequestSynchronization()
-        public
-    {
+    function test_Remunerate_GuaranteeIssuedBeforeWithdrawalRequestSynchronization() public {
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -261,14 +189,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.requestWithdrawal(0.75 ether);
 
         vm.warp(block.timestamp + core4Mica.synchronizationDelay() - 1);
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            block.timestamp,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, block.timestamp, USER1, USER2, 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -276,9 +197,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
-        (uint256 collateral, , uint256 withdrawalAmount) = core4Mica.getUser(
-            USER1
-        );
+        (uint256 collateral,, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.5 ether);
         assertEq(withdrawalAmount, 0.25 ether);
 
@@ -286,13 +205,11 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.finalizeWithdrawal();
         assertEq(USER1.balance, 4.25 ether);
-        (collateral, , ) = core4Mica.getUser(USER1);
+        (collateral,,) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.25 ether);
     }
 
-    function test_Remunerate_GuaranteeIssuedAfterWithdrawalRequestSynchronization()
-        public
-    {
+    function test_Remunerate_GuaranteeIssuedAfterWithdrawalRequestSynchronization() public {
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
 
@@ -302,20 +219,11 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(block.timestamp + core4Mica.synchronizationDelay() + 1);
         uint256 amount = 0.24 ether;
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            block.timestamp,
-            USER1,
-            USER2,
-            17,
-            amount
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, block.timestamp, USER1, USER2, 17, amount);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        (uint256 collateral, , uint256 withdrawalAmount) = core4Mica.getUser(
-            USER1
-        );
+        (uint256 collateral,, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
         assertLe(amount, collateral - withdrawalAmount);
 
         vm.warp(block.timestamp + 15 days);
@@ -323,7 +231,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.remunerate(guaranteeData, signature);
         assertEq(USER2.balance, 0.24 ether);
 
-        (collateral, , withdrawalAmount) = core4Mica.getUser(USER1);
+        (collateral,, withdrawalAmount) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.76 ether);
         assertEq(withdrawalAmount, 0.75 ether);
 
@@ -331,19 +239,12 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.finalizeWithdrawal();
         assertEq(USER1.balance, 4.75 ether);
-        (collateral, , withdrawalAmount) = core4Mica.getUser(USER1);
+        (collateral,, withdrawalAmount) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.01 ether);
     }
 
     function test_Remunerate_Revert_AmountZero() public {
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            0,
-            USER1,
-            USER2,
-            17,
-            0
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, 0, USER1, USER2, 17, 0);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -353,14 +254,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
     }
 
     function test_Remunerate_Revert_InvalidRecipient() public {
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            0,
-            USER1,
-            address(0),
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, 0, USER1, address(0), 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -377,14 +271,8 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         uint256 grace = core4Mica.remunerationGracePeriod();
         vm.warp(grace + 100);
 
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            block.timestamp - grace - 1,
-            USER1,
-            address(revertRecipient),
-            17,
-            1 ether
-        );
+        Guarantee memory g =
+            _ethGuarantee(0x1234, block.timestamp - grace - 1, USER1, address(revertRecipient), 17, 1 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -396,14 +284,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
 
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            block.timestamp,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, block.timestamp, USER1, USER2, 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -418,14 +299,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(core4Mica.tabExpirationTime() + 5);
 
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            0,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, 0, USER1, USER2, 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -441,14 +315,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.warp(core4Mica.remunerationGracePeriod() + 5);
 
         uint256 tabId = 0x1234;
-        Guarantee memory g = _ethGuarantee(
-            tabId,
-            0,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(tabId, 0, USER1, USER2, 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -473,14 +340,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(OPERATOR);
         core4Mica.recordPayment(tabId, ETH_ASSET, 0.6 ether);
 
-        Guarantee memory g = _ethGuarantee(
-            tabId,
-            0,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(tabId, 0, USER1, USER2, 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -495,19 +355,10 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            0,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, 0, USER1, USER2, 17, 0.5 ether);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        bytes32 otherKey = bytes32(
-            0x1234123412341234123412341234123412341234123412341234123412341234
-        );
+        bytes32 otherKey = bytes32(0x1234123412341234123412341234123412341234123412341234123412341234);
         BLS.G2Point memory invalidSignature = _signGuarantee(g, otherKey);
 
         vm.expectRevert(Core4Mica.InvalidSignature.selector);
@@ -521,14 +372,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.warp(core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            0,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, 0, USER1, USER2, 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -543,17 +387,8 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.deposit{value: 2 ether}();
 
         vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
-        uint256 tabTimestamp = block.timestamp -
-            (core4Mica.remunerationGracePeriod() + 5);
-        Guarantee memory g = _guarantee(
-            0xBEEF,
-            tabTimestamp,
-            USER1,
-            USER2,
-            11,
-            500 ether,
-            address(usdc)
-        );
+        uint256 tabTimestamp = block.timestamp - (core4Mica.remunerationGracePeriod() + 5);
+        Guarantee memory g = _guarantee(0xBEEF, tabTimestamp, USER1, USER2, 11, 500 ether, address(usdc));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -568,16 +403,8 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.depositStablecoin(address(usdc), 750 ether);
 
         vm.warp(block.timestamp + core4Mica.remunerationGracePeriod() + 5);
-        uint256 tabTimestamp = block.timestamp -
-            (core4Mica.remunerationGracePeriod() + 5);
-        Guarantee memory g = _ethGuarantee(
-            0xC0FFEE,
-            tabTimestamp,
-            USER1,
-            USER2,
-            12,
-            1 ether
-        );
+        uint256 tabTimestamp = block.timestamp - (core4Mica.remunerationGracePeriod() + 5);
+        Guarantee memory g = _ethGuarantee(0xC0FFEE, tabTimestamp, USER1, USER2, 12, 1 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -590,25 +417,12 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.depositStablecoin(address(usdc), 500 ether);
 
-        Guarantee memory g = _guarantee(
-            0xAAAA,
-            10,
-            USER1,
-            USER2,
-            1,
-            100 ether,
-            address(0xBEEF)
-        );
+        Guarantee memory g = _guarantee(0xAAAA, 10, USER1, USER2, 1, 100 ether, address(0xBEEF));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
         vm.warp(10 + core4Mica.remunerationGracePeriod() + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Core4Mica.UnsupportedAsset.selector,
-                address(0xBEEF)
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedAsset.selector, address(0xBEEF)));
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
     }
@@ -621,23 +435,15 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
-        Guarantee memory g = _guarantee(
-            0xCCDD,
-            tabTimestamp,
-            USER1,
-            USER2,
-            7,
-            200 ether,
-            address(usdc)
-        );
+        Guarantee memory g = _guarantee(0xCCDD, tabTimestamp, USER1, USER2, 7, 200 ether, address(usdc));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
-        (uint256 ethCollateral, , ) = core4Mica.getUser(USER1);
-        (uint256 usdcCollateral, , ) = core4Mica.getUser(USER1, address(usdc));
+        (uint256 ethCollateral,,) = core4Mica.getUser(USER1);
+        (uint256 usdcCollateral,,) = core4Mica.getUser(USER1, address(usdc));
         assertEq(ethCollateral, 5 ether);
         assertEq(usdcCollateral, 300 ether);
     }
@@ -648,102 +454,62 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         core4Mica.deposit{value: 5 ether}();
         core4Mica.depositStablecoin(address(usdc), 500 ether);
         core4Mica.requestWithdrawal(3 ether);
-        (, uint256 requestTimestamp, ) = core4Mica.getUser(USER1);
+        (, uint256 requestTimestamp,) = core4Mica.getUser(USER1);
         vm.stopPrank();
 
         vm.warp(requestTimestamp + core4Mica.remunerationGracePeriod() + 5);
-        uint256 tabTimestamp = block.timestamp -
-            (core4Mica.remunerationGracePeriod() + 5);
-        Guarantee memory g = _guarantee(
-            0xDD01,
-            tabTimestamp,
-            USER1,
-            USER2,
-            21,
-            200 ether,
-            address(usdc)
-        );
+        uint256 tabTimestamp = block.timestamp - (core4Mica.remunerationGracePeriod() + 5);
+        Guarantee memory g = _guarantee(0xDD01, tabTimestamp, USER1, USER2, 21, 200 ether, address(usdc));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
-        (
-            uint256 collateral,
-            uint256 withdrawalTimestamp,
-            uint256 withdrawalAmount
-        ) = core4Mica.getUser(USER1);
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
         assertEq(withdrawalAmount, 3 ether);
         assertEq(withdrawalTimestamp, requestTimestamp);
         assertEq(collateral, 5 ether);
     }
 
-    function test_Remunerate_DifferentAssetDoesNotAffectStablecoinWithdrawal()
-        public
-    {
+    function test_Remunerate_DifferentAssetDoesNotAffectStablecoinWithdrawal() public {
         vm.warp(block.timestamp + 10 days);
         vm.startPrank(USER1);
         core4Mica.deposit{value: 5 ether}();
         core4Mica.depositStablecoin(address(usdc), 500 ether);
         core4Mica.requestWithdrawal(address(usdc), 250 ether);
-        (, uint256 requestTimestamp, uint256 requestAmount) = core4Mica.getUser(
-            USER1,
-            address(usdc)
-        );
+        (, uint256 requestTimestamp, uint256 requestAmount) = core4Mica.getUser(USER1, address(usdc));
         assertEq(requestAmount, 250 ether);
         vm.stopPrank();
 
         vm.warp(requestTimestamp + core4Mica.remunerationGracePeriod() + 5);
-        uint256 tabTimestamp = block.timestamp -
-            (core4Mica.remunerationGracePeriod() + 5);
-        Guarantee memory g = _ethGuarantee(
-            0xDD02,
-            tabTimestamp,
-            USER1,
-            USER2,
-            22,
-            1 ether
-        );
+        uint256 tabTimestamp = block.timestamp - (core4Mica.remunerationGracePeriod() + 5);
+        Guarantee memory g = _ethGuarantee(0xDD02, tabTimestamp, USER1, USER2, 22, 1 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
-        (
-            uint256 collateral,
-            uint256 withdrawalTimestamp,
-            uint256 withdrawalAmount
-        ) = core4Mica.getUser(USER1, address(usdc));
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) =
+            core4Mica.getUser(USER1, address(usdc));
         assertEq(withdrawalAmount, 250 ether);
         assertEq(withdrawalTimestamp, requestTimestamp);
         assertEq(collateral, 500 ether);
     }
 
-    function test_Remunerate_StablecoinBeforeSynchronizationReducesWithdrawal()
-        public
-    {
+    function test_Remunerate_StablecoinBeforeSynchronizationReducesWithdrawal() public {
         vm.warp(block.timestamp + 10 days);
         vm.prank(USER1);
         core4Mica.depositStablecoin(address(usdc), 600 ether);
 
         vm.prank(USER1);
         core4Mica.requestWithdrawal(address(usdc), 400 ether);
-        (, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica
-            .getUser(USER1, address(usdc));
+        (, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(USER1, address(usdc));
         assertEq(withdrawalAmount, 400 ether);
 
         uint256 tabTimestamp = withdrawalTimestamp - 1;
-        Guarantee memory g = _guarantee(
-            0xAA01,
-            tabTimestamp,
-            USER1,
-            USER2,
-            48,
-            150 ether,
-            address(usdc)
-        );
+        Guarantee memory g = _guarantee(0xAA01, tabTimestamp, USER1, USER2, 48, 150 ether, address(usdc));
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
@@ -751,11 +517,8 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER2);
         core4Mica.remunerate(guaranteeData, signature);
 
-        (
-            uint256 collateralAfter,
-            uint256 withdrawalTimestampAfter,
-            uint256 withdrawalAmountAfter
-        ) = core4Mica.getUser(USER1, address(usdc));
+        (uint256 collateralAfter, uint256 withdrawalTimestampAfter, uint256 withdrawalAmountAfter) =
+            core4Mica.getUser(USER1, address(usdc));
         assertEq(collateralAfter, 450 ether);
         assertEq(withdrawalTimestampAfter, withdrawalTimestamp);
         assertEq(withdrawalAmountAfter, 250 ether);
@@ -769,22 +532,11 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.requestWithdrawal(0.75 ether);
 
-        (
-            uint256 initialCollateral,
-            uint256 withdrawalTimestamp,
-            uint256 withdrawalAmount
-        ) = core4Mica.getUser(USER1);
+        (uint256 initialCollateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
 
         uint256 delay = 2 days;
         vm.warp(block.timestamp + delay);
-        Guarantee memory g = _ethGuarantee(
-            0x1234,
-            block.timestamp,
-            USER1,
-            USER2,
-            17,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(0x1234, block.timestamp, USER1, USER2, 17, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
@@ -792,7 +544,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
 
         vm.prank(USER1);
         core4Mica.finalizeWithdrawal();
-        (uint256 collateral, , ) = core4Mica.getUser(USER1);
+        (uint256 collateral,,) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.25 ether);
         assertEq(USER1.balance, 4.75 ether);
 
@@ -802,10 +554,7 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         vm.expectRevert(Core4Mica.DoubleSpendingDetected.selector);
         core4Mica.remunerate(guaranteeData, signature);
 
-        assertGt(
-            g.timestamp,
-            withdrawalTimestamp + core4Mica.synchronizationDelay()
-        );
+        assertGt(g.timestamp, withdrawalTimestamp + core4Mica.synchronizationDelay());
         assertGt(g.amount, initialCollateral - withdrawalAmount);
     }
 
@@ -846,13 +595,11 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         assertEq(USER2.balance, user2BalanceBefore + 0.7 ether);
 
         // Verify total_amount (0.7 ether) was deducted from client collateral
-        (uint256 collateral, , ) = core4Mica.getUser(USER1);
+        (uint256 collateral,,) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.3 ether);
     }
 
-    function test_Remunerate_Revert_InsufficientCollateralForTotalAmount()
-        public
-    {
+    function test_Remunerate_Revert_InsufficientCollateralForTotalAmount() public {
         vm.prank(USER1);
         core4Mica.deposit{value: 0.5 ether}();
 

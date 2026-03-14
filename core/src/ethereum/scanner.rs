@@ -245,7 +245,6 @@ impl EthereumEventScanner {
             crate::config::ConfirmationMode::Safe => {
                 let block = provider
                     .get_block_by_number(BlockNumberOrTag::Safe)
-                    .full()
                     .await
                     .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
                 block.map(|b| b.header.number)
@@ -260,7 +259,6 @@ impl EthereumEventScanner {
                 } else {
                     let block = provider
                         .get_block_by_number(BlockNumberOrTag::Finalized)
-                        .full()
                         .await
                         .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
                     block.map(|b| b.header.number)
@@ -451,7 +449,6 @@ impl EthereumEventScanner {
     ) -> Result<Option<String>, BlockchainListenerError> {
         let block = provider
             .get_block_by_number(BlockNumberOrTag::Number(block_number))
-            .full()
             .await
             .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
         Ok(block.map(|b| format!("{:#x}", b.hash())))
@@ -468,7 +465,6 @@ impl EthereumEventScanner {
         for number in start_block..=end_block {
             let block = provider
                 .get_block_by_number(BlockNumberOrTag::Number(number))
-                .full()
                 .await
                 .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
             let Some(block) = block else {

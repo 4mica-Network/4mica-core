@@ -53,7 +53,18 @@ pub async fn process_discovered_payment(ctx: &PersistCtx, payment: PaymentTx) ->
         );
         return Ok(());
     };
-    if tab.server_address != payment.to.to_string() {
+    let tab_recipient_address = match tab.server_address.parse::<Address>() {
+        Ok(addr) => addr,
+        Err(err) => {
+            warn!(
+                "Invalid recipient address {} for tab {} (err: {}). Skipping.",
+                tab.server_address, tab_id_str, err
+            );
+            return Ok(());
+        }
+    };
+
+    if tab_recipient_address != payment.to {
         warn!(
             "Recipient address does not match payment recipient for tab {}. Skipping.",
             tab_id_str

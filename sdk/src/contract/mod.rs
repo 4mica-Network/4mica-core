@@ -24,14 +24,13 @@ sol! {
         error InvalidAsset(address asset);
         error UnsupportedGuaranteeVersion(uint64 version);
         error InvalidGuaranteeDomain();
+        error MissingGuaranteeDecoder(uint64 version);
 
         // ========= Storage =========
         function remunerationGracePeriod() external view returns (uint256);
         function withdrawalGracePeriod() external view returns (uint256);
         function tabExpirationTime() external view returns (uint256);
         function synchronizationDelay() external view returns (uint256);
-        function USDC() external view returns (address);
-        function USDT() external view returns (address);
 
         /// TODO(#22): move key to registry
         function GUARANTEE_VERIFICATION_KEY() external view returns (
@@ -50,6 +49,21 @@ sol! {
         event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
         event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
+        event TabPaid(
+            uint256 indexed tab_id,
+            address indexed asset,
+            address indexed user,
+            address recipient,
+            uint256 amount
+        );
+        event GuaranteeVersionUpdated(
+            uint64 indexed version,
+            (bytes32,bytes32,bytes32,bytes32) verificationKey,
+            bytes32 domainSeparator,
+            address decoder,
+            bool enabled
+        );
+        event StablecoinAssetUpdated(address indexed asset, bool enabled);
 
         // ========= Structs =========
         struct WithdrawalRequest {
@@ -104,9 +118,7 @@ sol! {
         // ========= Constructor =========
         /// @param manager Address of AccessManager
         /// @param verificationKey Initial BLS verification key
-        /// @param usdc_ USDC token address
-        /// @param usdt_ USDT token address
-        constructor(address manager, (bytes32,bytes32,bytes32,bytes32) verificationKey, address usdc_, address usdt_);
+        constructor(address manager, (bytes32,bytes32,bytes32,bytes32) verificationKey);
 
         // ========= User flows =========
         function deposit() external payable;
@@ -139,6 +151,17 @@ sol! {
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
         function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
+        function setStablecoinAsset(address asset, bool enabled) external;
+        function setStablecoinAssets(address[] calldata assets, bool enabled) external;
+        function getGuaranteeVersionConfig(uint64 version)
+            external
+            view
+            returns (
+                G1Point memory verificationKey,
+                bytes32 domainSeparator,
+                address decoder,
+                bool enabled
+            );
         function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
 
         // ========= Views =========

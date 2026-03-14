@@ -43,7 +43,14 @@ fn parse_u256(s: &str) -> U256 {
 }
 
 fn unique_addr() -> String {
-    Address::random().to_string()
+    format!("{:#x}", Address::random())
+}
+
+fn normalize_address(raw: &str) -> String {
+    format!(
+        "{:#x}",
+        Address::from_str(raw).expect("valid address for test")
+    )
 }
 
 /// Insert a dummy tab so the listener can resolve user/server addresses.
@@ -55,11 +62,13 @@ async fn insert_tab(
 ) -> anyhow::Result<()> {
     use chrono::Utc;
     let now = Utc::now().naive_utc();
+    let user_addr = normalize_address(user_addr);
+    let server_addr = normalize_address(server_addr);
 
     let tab = tabs::ActiveModel {
         id: Set(format!("{tab_id:#x}")),
-        user_address: Set(user_addr.to_string()),
-        server_address: Set(server_addr.to_string()),
+        user_address: Set(user_addr),
+        server_address: Set(server_addr),
         asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
         start_ts: Set(now),
         status: Set(TabStatus::Open),
@@ -90,7 +99,7 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
 
     let server_addr = unique_addr();
 
@@ -164,7 +173,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
 
     let server_addr = unique_addr();
 
@@ -309,7 +318,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
 
     let server_addr = unique_addr();
 
@@ -380,7 +389,7 @@ async fn payment_transaction_does_not_unlock_collateral_before_confirmation() ->
     let core_service = env.core_service.clone();
     let signer_addr = env.signer_addr;
     let persist_ctx = core_service.persist_ctx();
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
 
     let server_addr = unique_addr();
 
@@ -453,7 +462,7 @@ async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> 
     let signer_addr = env.signer_addr;
 
     let persist_ctx = core_service.persist_ctx();
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
     let server_addr = unique_addr();
 
     repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_addr).await?;
