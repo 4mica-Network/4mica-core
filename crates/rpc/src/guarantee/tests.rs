@@ -36,23 +36,31 @@ fn sample_v2_claims() -> PaymentGuaranteeRequestClaimsV2 {
     let validation_request_hash =
         compute_validation_request_hash(&policy_without_hash).expect("build request hash");
 
-    PaymentGuaranteeRequestClaimsV2::new(
+    let policy = PaymentGuaranteeValidationPolicyV2 {
+        validation_registry_address: validation_registry
+            .parse::<Address>()
+            .expect("valid registry address"),
+        validation_request_hash: B256::from(validation_request_hash),
+        validation_chain_id: 84532,
+        validator_address: validator
+            .parse::<Address>()
+            .expect("valid validator address"),
+        validator_agent_id: U256::from(99u64),
+        min_validation_score: 80,
+        validation_subject_hash: B256::from(validation_subject_hash),
+        required_validation_tag: "hard-finality".to_string(),
+    };
+    PaymentGuaranteeRequestClaimsV2::builder(
         user.to_string(),
         recipient.to_string(),
         tab_id,
         req_id,
         amount,
         timestamp,
-        Some(asset.to_string()),
-        validation_registry.to_string(),
-        B256::from(validation_request_hash).to_string(),
-        84532,
-        validator.to_string(),
-        U256::from(99u64),
-        80,
-        B256::from(validation_subject_hash).to_string(),
-        Some("hard-finality".to_string()),
     )
+    .asset_address(asset.to_string())
+    .validation_policy(policy)
+    .build()
     .expect("valid v2 claims")
 }
 

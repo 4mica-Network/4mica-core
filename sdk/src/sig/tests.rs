@@ -11,7 +11,7 @@ use rpc::{
 use std::str::FromStr;
 
 use crate::error::SignPaymentError;
-use crate::sig::{PaymentSigner, PaymentSignerV2};
+use crate::sig::PaymentSigner;
 
 fn create_test_params() -> CorePublicParameters {
     CorePublicParameters {
@@ -99,38 +99,21 @@ fn verify_promise_signature(
     let sig = Signature::try_from(sig_bytes.as_slice())
         .map_err(|_| "invalid signature length".to_string())?;
 
-    let (user_addr, digest) = match &req.claims {
-        PaymentGuaranteeRequestClaims::V1(claims) => {
-            let user_addr = Address::from_str(&claims.user_address)
-                .map_err(|_| "invalid user address".to_string())?;
-            let recipient_addr = Address::from_str(&claims.recipient_address)
-                .map_err(|_| "invalid recipient address".to_string())?;
-            let digest = match req.scheme {
-                SigningScheme::Eip712 => crate::digest::eip712_digest(params, claims)
-                    .map_err(|_| "failed to compute digest".to_string())?,
-                SigningScheme::Eip191 => {
-                    crate::digest::eip191_digest(claims, user_addr, recipient_addr)
-                        .map_err(|_| "failed to compute digest".to_string())?
-                }
-            };
-            (user_addr, digest)
-        }
-        PaymentGuaranteeRequestClaims::V2(claims) => {
-            let user_addr = Address::from_str(&claims.user_address)
-                .map_err(|_| "invalid user address".to_string())?;
-            let recipient_addr = Address::from_str(&claims.recipient_address)
-                .map_err(|_| "invalid recipient address".to_string())?;
-            let digest = match req.scheme {
-                SigningScheme::Eip712 => crate::digest::eip712_digest_v2(params, claims)
-                    .map_err(|_| "failed to compute digest".to_string())?,
-                SigningScheme::Eip191 => {
-                    crate::digest::eip191_digest_v2(claims, user_addr, recipient_addr)
-                        .map_err(|_| "failed to compute digest".to_string())?
-                }
-            };
-            (user_addr, digest)
+    use rpc::PaymentGuaranteeRequestEssentials;
+    let user_addr = Address::from_str(req.claims.user_address())
+        .map_err(|_| "invalid user address".to_string())?;
+    let recipient_addr = Address::from_str(req.claims.recipient_address())
+        .map_err(|_| "invalid recipient address".to_string())?;
+
+    let digest = match req.scheme {
+        SigningScheme::Eip712 => crate::digest::eip712_digest_for_claims(params, &req.claims)
+            .map_err(|_| "failed to compute digest".to_string())?,
+        SigningScheme::Eip191 => {
+            crate::digest::eip191_digest_for_claims(&req.claims, user_addr, recipient_addr)
+                .map_err(|_| "failed to compute digest".to_string())?
         }
     };
+    let (user_addr, digest) = (user_addr, digest);
 
     let recovered = sig
         .recover_address_from_prehash(&digest)

@@ -7,7 +7,10 @@ use crypto::bls::KeyMaterial;
 use envconfig::Envconfig;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::warn;
-use rpc::{GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2};
+use rpc::{
+    GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, SUPPORTED_GUARANTEE_VERSIONS,
+    is_supported_guarantee_version,
+};
 use secrecy::zeroize::Zeroize;
 
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
@@ -150,11 +153,9 @@ pub struct GuaranteeConfig {
 impl GuaranteeConfig {
     pub fn accepted_request_versions(&self) -> anyhow::Result<Vec<u64>> {
         let mut versions = if self.accepted_request_versions.trim().is_empty() {
-            if self.request_version == GUARANTEE_CLAIMS_VERSION_V2 {
-                vec![GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2]
-            } else {
-                vec![self.request_version]
-            }
+            // Default: accept every version from 1 up to the active version so that
+            // upgrading to V3 (or higher) automatically accepts all prior versions too.
+            (GUARANTEE_CLAIMS_VERSION..=self.request_version).collect()
         } else {
             self.accepted_request_versions
                 .split(',')
@@ -212,9 +213,15 @@ impl GuaranteeConfig {
 
         // Ensures all configured addresses are valid and normalized.
         let allowlist = self.trusted_validation_registry_allowlist()?;
-        if accepted_versions.contains(&GUARANTEE_CLAIMS_VERSION_V2) && allowlist.is_empty() {
+        // Any version >= V2 requires on-chain validation; ensure the registry allowlist is set.
+        if accepted_versions
+            .iter()
+            .any(|&v| v >= GUARANTEE_CLAIMS_VERSION_V2)
+            && allowlist.is_empty()
+        {
             bail!(
-                "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when V2 guarantees are accepted"
+                "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when validation-gated guarantee versions are accepted (>= v{})",
+                GUARANTEE_CLAIMS_VERSION_V2
             );
         }
         Ok(())
@@ -222,13 +229,13 @@ impl GuaranteeConfig {
 }
 
 fn validate_guarantee_version(version: u64, field: &str) -> anyhow::Result<()> {
-    if version != GUARANTEE_CLAIMS_VERSION && version != GUARANTEE_CLAIMS_VERSION_V2 {
-        bail!(
-            "unsupported {field} '{}'; supported: {}, {}",
-            version,
-            GUARANTEE_CLAIMS_VERSION,
-            GUARANTEE_CLAIMS_VERSION_V2
-        );
+    if !is_supported_guarantee_version(version) {
+        let supported = SUPPORTED_GUARANTEE_VERSIONS
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("unsupported {field} '{version}'; supported: {supported}");
     }
     Ok(())
 }

@@ -2,8 +2,7 @@ use crate::error::{ServiceError, ServiceResult};
 use alloy_primitives::{Address, B256, Signature, U256, keccak256};
 use alloy_sol_types::{SolStruct, SolValue, eip712_domain, sol};
 use rpc::{
-    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2, SigningScheme,
+    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, SigningScheme,
 };
 use std::str::FromStr;
 
@@ -99,37 +98,16 @@ fn digest_for_guarantee_request(
     user_addr: Address,
     recipient_addr: Address,
 ) -> ServiceResult<B256> {
-    match (scheme, claims) {
-        (SigningScheme::Eip712, PaymentGuaranteeRequestClaims::V1(claims)) => {
-            eip712_digest_v1(params, claims)
-        }
-        (SigningScheme::Eip191, PaymentGuaranteeRequestClaims::V1(claims)) => {
-            eip191_digest_v1(claims, user_addr, recipient_addr)
-        }
-        (SigningScheme::Eip712, PaymentGuaranteeRequestClaims::V2(claims)) => {
-            eip712_digest_v2(params, claims)
-        }
-        (SigningScheme::Eip191, PaymentGuaranteeRequestClaims::V2(claims)) => {
-            eip191_digest_v2(claims, user_addr, recipient_addr)
-        }
+    match scheme {
+        SigningScheme::Eip712 => eip712_digest(params, claims),
+        SigningScheme::Eip191 => eip191_digest(claims, user_addr, recipient_addr),
     }
 }
 
-// /// Reject high-S signatures (secp256k1 malleability)
-// fn is_low_s(sig: &Signature) -> bool {
-//     // secp256k1 curve order:
-//     // n = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141
-//     // n/2:
-//     const N_OVER_2_HEX: &str = "7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0";
-//     // Alloy Signature exposes s() as U256 (in newer versions). If not, adapt accordingly.
-//     let s: U256 = sig.s();
-//     let n_over_2 = U256::from_str(N_OVER_2_HEX).unwrap();
-//     s <= n_over_2
-// }
-
-fn eip712_digest_v1(
+/// Compute an EIP-712 signing hash for any supported guarantee request version.
+fn eip712_digest(
     params: &CorePublicParameters,
-    claims: &PaymentGuaranteeRequestClaimsV1,
+    claims: &PaymentGuaranteeRequestClaims,
 ) -> ServiceResult<B256> {
     let domain = eip712_domain!(
         name:     params.eip712_name.clone(),
@@ -137,102 +115,88 @@ fn eip712_digest_v1(
         chain_id: params.chain_id,
     );
 
-    let message = SolGuaranteeRequestClaimsV1 {
-        user: Address::from_str(&claims.user_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid user address".into()))?,
-        recipient: Address::from_str(&claims.recipient_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?,
-        tabId: claims.tab_id,
-        reqId: claims.req_id,
-        amount: claims.amount,
-        asset: Address::from_str(&claims.asset_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
-        timestamp: claims.timestamp,
+    let parse_addr = |field: &'static str, value: &str| {
+        Address::from_str(value)
+            .map_err(|_| ServiceError::InvalidParams(format!("invalid {field}")))
     };
 
-    Ok(message.eip712_signing_hash(&domain))
+    match claims {
+        PaymentGuaranteeRequestClaims::V1(c) => {
+            let message = SolGuaranteeRequestClaimsV1 {
+                user: parse_addr("user address", &c.user_address)?,
+                recipient: parse_addr("recipient address", &c.recipient_address)?,
+                tabId: c.tab_id,
+                reqId: c.req_id,
+                amount: c.amount,
+                asset: parse_addr("asset address", &c.asset_address)?,
+                timestamp: c.timestamp,
+            };
+            Ok(message.eip712_signing_hash(&domain))
+        }
+        PaymentGuaranteeRequestClaims::V2(c) => {
+            let message = SolGuaranteeRequestClaimsV2 {
+                user: parse_addr("user address", &c.user_address)?,
+                recipient: parse_addr("recipient address", &c.recipient_address)?,
+                tabId: c.tab_id,
+                reqId: c.req_id,
+                amount: c.amount,
+                asset: parse_addr("asset address", &c.asset_address)?,
+                timestamp: c.timestamp,
+                validationRegistryAddress: c.validation_policy.validation_registry_address,
+                validationRequestHash: c.validation_policy.validation_request_hash,
+                validationChainId: U256::from(c.validation_policy.validation_chain_id),
+                validatorAddress: c.validation_policy.validator_address,
+                validatorAgentId: c.validation_policy.validator_agent_id,
+                minValidationScore: c.validation_policy.min_validation_score,
+                validationSubjectHash: c.validation_policy.validation_subject_hash,
+                requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
+            };
+            Ok(message.eip712_signing_hash(&domain))
+        }
+    }
 }
 
-fn eip191_digest_v1(
-    claims: &PaymentGuaranteeRequestClaimsV1,
+/// Compute an EIP-191 signing hash for any supported guarantee request version.
+fn eip191_digest(
+    claims: &PaymentGuaranteeRequestClaims,
     user: Address,
     recipient: Address,
 ) -> ServiceResult<B256> {
-    let data = SolGuaranteeRequestClaimsV1 {
-        user,
-        recipient,
-        tabId: claims.tab_id,
-        reqId: claims.req_id,
-        amount: claims.amount,
-        asset: Address::from_str(&claims.asset_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
-        timestamp: claims.timestamp,
-    }
-    .abi_encode();
-
-    let mut prefixed = format!("\x19Ethereum Signed Message:\n{}", data.len()).into_bytes();
-    prefixed.extend_from_slice(&data);
-    Ok(keccak256(prefixed))
-}
-
-fn eip712_digest_v2(
-    params: &CorePublicParameters,
-    claims: &PaymentGuaranteeRequestClaimsV2,
-) -> ServiceResult<B256> {
-    let domain = eip712_domain!(
-        name:     params.eip712_name.clone(),
-        version:  params.eip712_version.clone(),
-        chain_id: params.chain_id,
-    );
-
-    let message = SolGuaranteeRequestClaimsV2 {
-        user: Address::from_str(&claims.user_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid user address".into()))?,
-        recipient: Address::from_str(&claims.recipient_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid recipient address".into()))?,
-        tabId: claims.tab_id,
-        reqId: claims.req_id,
-        amount: claims.amount,
-        asset: Address::from_str(&claims.asset_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
-        timestamp: claims.timestamp,
-        validationRegistryAddress: claims.validation_policy.validation_registry_address,
-        validationRequestHash: claims.validation_policy.validation_request_hash,
-        validationChainId: U256::from(claims.validation_policy.validation_chain_id),
-        validatorAddress: claims.validation_policy.validator_address,
-        validatorAgentId: claims.validation_policy.validator_agent_id,
-        minValidationScore: claims.validation_policy.min_validation_score,
-        validationSubjectHash: claims.validation_policy.validation_subject_hash,
-        requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
+    let parse_addr = |field: &'static str, value: &str| {
+        Address::from_str(value)
+            .map_err(|_| ServiceError::InvalidParams(format!("invalid {field}")))
     };
 
-    Ok(message.eip712_signing_hash(&domain))
-}
-
-fn eip191_digest_v2(
-    claims: &PaymentGuaranteeRequestClaimsV2,
-    user: Address,
-    recipient: Address,
-) -> ServiceResult<B256> {
-    let data = SolGuaranteeRequestClaimsV2 {
-        user,
-        recipient,
-        tabId: claims.tab_id,
-        reqId: claims.req_id,
-        amount: claims.amount,
-        asset: Address::from_str(&claims.asset_address)
-            .map_err(|_| ServiceError::InvalidParams("invalid asset address".into()))?,
-        timestamp: claims.timestamp,
-        validationRegistryAddress: claims.validation_policy.validation_registry_address,
-        validationRequestHash: claims.validation_policy.validation_request_hash,
-        validationChainId: U256::from(claims.validation_policy.validation_chain_id),
-        validatorAddress: claims.validation_policy.validator_address,
-        validatorAgentId: claims.validation_policy.validator_agent_id,
-        minValidationScore: claims.validation_policy.min_validation_score,
-        validationSubjectHash: claims.validation_policy.validation_subject_hash,
-        requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
-    }
-    .abi_encode();
+    let data = match claims {
+        PaymentGuaranteeRequestClaims::V1(c) => SolGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            tabId: c.tab_id,
+            reqId: c.req_id,
+            amount: c.amount,
+            asset: parse_addr("asset address", &c.asset_address)?,
+            timestamp: c.timestamp,
+        }
+        .abi_encode(),
+        PaymentGuaranteeRequestClaims::V2(c) => SolGuaranteeRequestClaimsV2 {
+            user,
+            recipient,
+            tabId: c.tab_id,
+            reqId: c.req_id,
+            amount: c.amount,
+            asset: parse_addr("asset address", &c.asset_address)?,
+            timestamp: c.timestamp,
+            validationRegistryAddress: c.validation_policy.validation_registry_address,
+            validationRequestHash: c.validation_policy.validation_request_hash,
+            validationChainId: U256::from(c.validation_policy.validation_chain_id),
+            validatorAddress: c.validation_policy.validator_address,
+            validatorAgentId: c.validation_policy.validator_agent_id,
+            minValidationScore: c.validation_policy.min_validation_score,
+            validationSubjectHash: c.validation_policy.validation_subject_hash,
+            requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
+        }
+        .abi_encode(),
+    };
 
     let mut prefixed = format!("\x19Ethereum Signed Message:\n{}", data.len()).into_bytes();
     prefixed.extend_from_slice(&data);

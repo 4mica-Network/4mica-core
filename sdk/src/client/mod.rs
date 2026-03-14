@@ -17,7 +17,7 @@ use alloy::{
     signers::{Signature, Signer},
 };
 use rpc::{ApiClientError, CorePublicParameters, RpcProxy};
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use url::Url;
 
 use self::{recipient::RecipientClient, user::UserClient};
@@ -33,7 +33,7 @@ struct Inner<S> {
     rpc_proxy: RpcProxy,
     ethereum_http_rpc_url: Url,
     provider: DynProvider,
-    wallet_provider: Mutex<Option<DynProvider>>,
+    wallet_provider: OnceCell<DynProvider>,
     contract_address: Address,
     operator_public_key: BlsPublicKey,
     active_guarantee_version: u64,
@@ -82,7 +82,7 @@ impl<S> ClientCtx<S> {
             rpc_proxy,
             ethereum_http_rpc_url,
             provider,
-            wallet_provider: Mutex::new(None),
+            wallet_provider: OnceCell::new(),
             contract_address,
             operator_public_key,
             active_guarantee_version,
@@ -148,10 +148,9 @@ impl<S> ClientCtx<S> {
     ) -> Result<(u64, [u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
         let active_version = public_params.active_guarantee_version;
         let mut guarantee_domains = HashMap::new();
-        for version in [
-            rpc::GUARANTEE_CLAIMS_VERSION,
-            rpc::GUARANTEE_CLAIMS_VERSION_V2,
-        ] {
+        // Iterate over whichever versions the core reports as accepted, rather than a hardcoded
+        // list. Adding V3 in the rpc crate is the only change required.
+        for version in public_params.accepted_guarantee_versions_or_default() {
             let version_config = contract
                 .getGuaranteeVersionConfig(version)
                 .call()
@@ -269,20 +268,19 @@ impl<S> ClientCtx<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
-        let mut wallet_provider = self.0.wallet_provider.lock().await;
-        if let Some(wallet_provider) = wallet_provider.as_ref() {
-            return Ok(wallet_provider.clone());
-        }
-
-        let wallet = EthereumWallet::new(self.0.cfg.signer.clone());
-        let provider = ProviderBuilder::new()
-            .wallet(wallet)
-            .connect(self.0.ethereum_http_rpc_url.as_ref())
-            .await
-            .map_err(|e| ClientError::Provider(e.to_string()))?
-            .erased();
-
-        wallet_provider.replace(provider.clone());
+        let provider = self
+            .0
+            .wallet_provider
+            .get_or_try_init(|| async {
+                let wallet = EthereumWallet::new(self.0.cfg.signer.clone());
+                ProviderBuilder::new()
+                    .wallet(wallet)
+                    .connect(self.0.ethereum_http_rpc_url.as_ref())
+                    .await
+                    .map_err(|e| ClientError::Provider(e.to_string()))
+                    .map(|p| p.erased())
+            })
+            .await?;
         Ok(provider.clone())
     }
 

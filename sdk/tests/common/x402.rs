@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use rpc::{PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV2};
+use rpc::PaymentGuaranteeRequestClaims;
 use sdk_4mica::{
     PaymentSignature, SigningScheme,
     x402::{
@@ -26,18 +26,7 @@ pub struct MockSigner;
 impl FlowSigner for MockSigner {
     async fn sign_payment(
         &self,
-        _claims: sdk_4mica::PaymentGuaranteeRequestClaims,
-        _scheme: SigningScheme,
-    ) -> Result<PaymentSignature, sdk_4mica::error::X402Error> {
-        Ok(PaymentSignature {
-            signature: "0xsig".into(),
-            scheme: SigningScheme::Eip712,
-        })
-    }
-
-    async fn sign_payment_v2(
-        &self,
-        _claims: PaymentGuaranteeRequestClaimsV2,
+        _claims: PaymentGuaranteeRequestClaims,
         _scheme: SigningScheme,
     ) -> Result<PaymentSignature, sdk_4mica::error::X402Error> {
         Ok(PaymentSignature {

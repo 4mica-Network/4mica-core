@@ -21,7 +21,7 @@ use crate::{
         PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
         PreparedPaymentGuaranteeRequest, prepare_payment_guarantee_claims,
     },
-    sig::{PaymentSigner, PaymentSignerV2},
+    sig::PaymentSigner,
     validators::validate_address,
 };
 
@@ -328,26 +328,12 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
-        let send_result = if let Some(token) = erc20_token {
-            let token = validate_address(&token).map_err(|_| {
-                RequestWithdrawalError::InvalidParams(format!(
-                    "invalid ERC20 token address: {token}"
-                ))
-            })?;
-            self.ctx
-                .get_write_contract()
-                .await?
-                .requestWithdrawal_1(token, amount)
-                .send()
-                .await
-        } else {
-            self.ctx
-                .get_write_contract()
-                .await?
-                .requestWithdrawal_0(amount)
-                .send()
-                .await
-        };
+        let contract = self.ctx.get_write_contract().await?;
+        let send_result =
+            match parse_erc20_token(erc20_token, RequestWithdrawalError::InvalidParams)? {
+                Some(token) => contract.requestWithdrawal_1(token, amount).send().await,
+                None => contract.requestWithdrawal_0(amount).send().await,
+            };
 
         let receipt = send_result
             .map_err(RequestWithdrawalError::from)?
@@ -371,26 +357,12 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
-        let send_result = if let Some(token) = erc20_token {
-            let token = validate_address(&token).map_err(|_| {
-                CancelWithdrawalError::InvalidParams(format!(
-                    "invalid ERC20 token address: {token}"
-                ))
-            })?;
-            self.ctx
-                .get_write_contract()
-                .await?
-                .cancelWithdrawal_1(token)
-                .send()
-                .await
-        } else {
-            self.ctx
-                .get_write_contract()
-                .await?
-                .cancelWithdrawal_0()
-                .send()
-                .await
-        };
+        let contract = self.ctx.get_write_contract().await?;
+        let send_result =
+            match parse_erc20_token(erc20_token, CancelWithdrawalError::InvalidParams)? {
+                Some(token) => contract.cancelWithdrawal_1(token).send().await,
+                None => contract.cancelWithdrawal_0().send().await,
+            };
 
         let receipt = send_result
             .map_err(CancelWithdrawalError::from)?
@@ -414,26 +386,12 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
-        let send_result = if let Some(token) = erc20_token {
-            let token = validate_address(&token).map_err(|_| {
-                FinalizeWithdrawalError::InvalidParams(format!(
-                    "invalid ERC20 token address: {token}"
-                ))
-            })?;
-            self.ctx
-                .get_write_contract()
-                .await?
-                .finalizeWithdrawal_1(token)
-                .send()
-                .await
-        } else {
-            self.ctx
-                .get_write_contract()
-                .await?
-                .finalizeWithdrawal_0()
-                .send()
-                .await
-        };
+        let contract = self.ctx.get_write_contract().await?;
+        let send_result =
+            match parse_erc20_token(erc20_token, FinalizeWithdrawalError::InvalidParams)? {
+                Some(token) => contract.finalizeWithdrawal_1(token).send().await,
+                None => contract.finalizeWithdrawal_0().send().await,
+            };
 
         let receipt = send_result
             .map_err(FinalizeWithdrawalError::from)?
@@ -443,5 +401,19 @@ impl<S> UserClient<S> {
             .map_err(FinalizeWithdrawalError::from)?;
 
         Ok(receipt)
+    }
+}
+
+/// Parses an optional ERC-20 token string into an `Option<Address>`.
+/// Returns an error produced by `make_err` if the address string is present but invalid.
+fn parse_erc20_token<E>(
+    token: Option<String>,
+    make_err: impl FnOnce(String) -> E,
+) -> Result<Option<Address>, E> {
+    match token {
+        Some(t) => validate_address(&t)
+            .map(Some)
+            .map_err(|_| make_err(format!("invalid ERC20 token address: {t}"))),
+        None => Ok(None),
     }
 }

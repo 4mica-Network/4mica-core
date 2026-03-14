@@ -84,7 +84,7 @@ impl PaymentGuaranteeClaims {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("v2 guarantee claims require validation_policy"))?;
 
-        let expected_subject_hash = compute_validation_subject_hash(
+        validate_policy_binding(
             &self.user_address,
             &self.recipient_address,
             self.tab_id,
@@ -92,19 +92,8 @@ impl PaymentGuaranteeClaims {
             self.amount,
             &self.asset_address,
             self.timestamp,
-        )?;
-        if policy.validation_subject_hash != B256::from(expected_subject_hash) {
-            anyhow::bail!("validation_subject_hash is not canonical for the payment intent fields");
-        }
-
-        let expected_request_hash = compute_validation_request_hash(policy)?;
-        if policy.validation_request_hash != B256::from(expected_request_hash) {
-            anyhow::bail!(
-                "validation_request_hash is not canonical for the validation policy fields"
-            );
-        }
-
-        Ok(())
+            policy,
+        )
     }
 }
 
@@ -248,6 +237,9 @@ impl PaymentGuaranteeRequestClaimsV2 {
         }
     }
 
+    /// Prefer [`PaymentGuaranteeRequestClaimsV2::builder`] — it is composable and avoids
+    /// the long parameter list. This constructor exists only for backward compatibility.
+    #[deprecated(note = "use PaymentGuaranteeRequestClaimsV2::builder() instead")]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         user_address: String,
@@ -317,19 +309,16 @@ impl PaymentGuaranteeRequestClaimsV2 {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        let expected_subject_hash = self.compute_validation_subject_hash()?;
-        if self.validation_policy.validation_subject_hash != B256::from(expected_subject_hash) {
-            anyhow::bail!("validation_subject_hash is not canonical for the payment intent fields");
-        }
-
-        let expected_request_hash = self.compute_validation_request_hash()?;
-        if self.validation_policy.validation_request_hash != B256::from(expected_request_hash) {
-            anyhow::bail!(
-                "validation_request_hash is not canonical for the validation policy fields"
-            );
-        }
-
-        Ok(())
+        validate_policy_binding(
+            &self.user_address,
+            &self.recipient_address,
+            self.tab_id,
+            self.req_id,
+            self.amount,
+            &self.asset_address,
+            self.timestamp,
+            &self.validation_policy,
+        )
     }
 }
 
@@ -364,6 +353,41 @@ impl PaymentGuaranteeRequestClaimsV2Builder {
         claims.validate()?;
         Ok(claims)
     }
+}
+
+/// Validates that `validation_subject_hash` and `validation_request_hash` in the policy are
+/// canonical for the given payment intent fields. Used by both `PaymentGuaranteeRequestClaimsV2`
+/// and `PaymentGuaranteeClaims` to avoid duplicating this logic.
+#[allow(clippy::too_many_arguments)]
+fn validate_policy_binding(
+    user_address: &str,
+    recipient_address: &str,
+    tab_id: U256,
+    req_id: U256,
+    amount: U256,
+    asset_address: &str,
+    timestamp: u64,
+    policy: &PaymentGuaranteeValidationPolicyV2,
+) -> anyhow::Result<()> {
+    let expected_subject_hash = compute_validation_subject_hash(
+        user_address,
+        recipient_address,
+        tab_id,
+        req_id,
+        amount,
+        asset_address,
+        timestamp,
+    )?;
+    if policy.validation_subject_hash != B256::from(expected_subject_hash) {
+        anyhow::bail!("validation_subject_hash is not canonical for the payment intent fields");
+    }
+
+    let expected_request_hash = compute_validation_request_hash(policy)?;
+    if policy.validation_request_hash != B256::from(expected_request_hash) {
+        anyhow::bail!("validation_request_hash is not canonical for the validation policy fields");
+    }
+
+    Ok(())
 }
 
 fn parse_address(field: &str, value: &str) -> anyhow::Result<Address> {

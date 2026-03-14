@@ -45,16 +45,14 @@ pub struct CorePublicParameters {
 }
 
 impl CorePublicParameters {
+    /// Returns the accepted guarantee versions, falling back to a sensible default when the field
+    /// is absent (e.g. from an older core service).
+    ///
+    /// Default: every version from 1 up to and including `active_guarantee_version`.
+    /// V1-only cores → `[1]`, V2 cores → `[1, 2]`, future V3 cores → `[1, 2, 3]` automatically.
     pub fn accepted_guarantee_versions_or_default(&self) -> Vec<u64> {
         if self.accepted_guarantee_versions.is_empty() {
-            if self.active_guarantee_version == crate::guarantee::GUARANTEE_CLAIMS_VERSION_V2 {
-                vec![
-                    crate::guarantee::GUARANTEE_CLAIMS_VERSION,
-                    crate::guarantee::GUARANTEE_CLAIMS_VERSION_V2,
-                ]
-            } else {
-                vec![self.active_guarantee_version]
-            }
+            (crate::guarantee::GUARANTEE_CLAIMS_VERSION..=self.active_guarantee_version).collect()
         } else {
             self.accepted_guarantee_versions.clone()
         }

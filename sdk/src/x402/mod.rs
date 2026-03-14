@@ -22,15 +22,10 @@ pub use model::*;
 
 #[async_trait]
 pub trait FlowSigner: Send + Sync {
+    /// Signs any version of guarantee request claims. The single method to implement for V3+.
     async fn sign_payment(
         &self,
-        claims: PaymentGuaranteeRequestClaimsV1,
-        scheme: SigningScheme,
-    ) -> Result<PaymentSignature, X402Error>;
-
-    async fn sign_payment_v2(
-        &self,
-        claims: PaymentGuaranteeRequestClaimsV2,
+        claims: PaymentGuaranteeRequestClaims,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, X402Error>;
 }
@@ -42,24 +37,21 @@ where
 {
     async fn sign_payment(
         &self,
-        claims: PaymentGuaranteeRequestClaimsV1,
+        claims: PaymentGuaranteeRequestClaims,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, X402Error> {
-        self.user
-            .sign_payment(claims, scheme)
-            .await
-            .map_err(X402Error::Signing)
-    }
-
-    async fn sign_payment_v2(
-        &self,
-        claims: PaymentGuaranteeRequestClaimsV2,
-        scheme: SigningScheme,
-    ) -> Result<PaymentSignature, X402Error> {
-        self.user
-            .sign_payment_v2(claims, scheme)
-            .await
-            .map_err(X402Error::Signing)
+        match claims {
+            PaymentGuaranteeRequestClaims::V1(c) => self
+                .user
+                .sign_payment(c, scheme)
+                .await
+                .map_err(X402Error::Signing),
+            PaymentGuaranteeRequestClaims::V2(c) => self
+                .user
+                .sign_payment_v2(c, scheme)
+                .await
+                .map_err(X402Error::Signing),
+        }
     }
 }
 
@@ -100,7 +92,10 @@ where
         let claims = Self::build_claims_request_v1(&payment_requirements, &tab, &user_address)?;
         let signature = self
             .signer
-            .sign_payment(claims.clone(), SigningScheme::Eip712)
+            .sign_payment(
+                PaymentGuaranteeRequestClaims::V1(claims.clone()),
+                SigningScheme::Eip712,
+            )
             .await?;
 
         let payload = PaymentGuaranteeRequest::new(
@@ -152,7 +147,10 @@ where
         let claims = Self::build_claims_request_v2(&accepted, &tab, &user_address)?;
         let signature = self
             .signer
-            .sign_payment_v2(claims.clone(), SigningScheme::Eip712)
+            .sign_payment(
+                PaymentGuaranteeRequestClaims::V2(claims.clone()),
+                SigningScheme::Eip712,
+            )
             .await?;
 
         let payload = PaymentGuaranteeRequest::new(
