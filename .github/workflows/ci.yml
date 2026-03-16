@@ -109,6 +109,8 @@ jobs:
           VK_Y0: ${{ secrets.VK_Y0 }}
           VK_Y1: ${{ secrets.VK_Y1 }}
           TRUSTED_VALIDATION_REGISTRY: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
+          # Pin admin to anvil account #0 so CREATE2 address matches local.
+          ACCESS_MANAGER_ADMIN: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
         working-directory: contracts
         run: |
           forge script script/Core4MicaFullStack.s.sol:Core4MicaFullStackScript \
