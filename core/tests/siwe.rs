@@ -10,7 +10,8 @@ mod common;
 use common::contract::MockERC1271Wallet;
 
 // Anvil default account #0 — always funded on a fresh anvil instance.
-const ANVIL_DEFAULT_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const ANVIL_DEFAULT_KEY: &str =
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 fn build_provider(port: u16) -> anyhow::Result<DynProvider> {
     // In CI an anvil instance is already running; reuse it instead of spawning a new one.
