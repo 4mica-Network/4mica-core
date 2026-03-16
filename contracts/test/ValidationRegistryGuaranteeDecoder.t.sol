@@ -73,6 +73,30 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         decoder.decode(abi.encode(g));
     }
 
+    function test_decode_revertsWhenRegistryHasNoCode() public {
+        // Use an address with no deployed code to simulate a registry that doesn't exist
+        // on the local chain (e.g. a real registry deployed on mainnet but not on anvil).
+        address noCodeRegistry = address(0xdead);
+        address[] memory trustedRegistries = new address[](1);
+        trustedRegistries[0] = noCodeRegistry;
+        ValidationRegistryGuaranteeDecoder noCodeDecoder =
+            new ValidationRegistryGuaranteeDecoder(trustedRegistries);
+
+        ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
+        g.validation_registry_address = noCodeRegistry;
+        // validation_subject_hash is independent of registry address; only request hash needs recomputing.
+        g.validation_request_hash = _computeValidationRequestHash(g);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ValidationRegistryGuaranteeDecoder.ValidationLookupFailed.selector,
+                noCodeRegistry,
+                g.validation_request_hash
+            )
+        );
+        noCodeDecoder.decode(abi.encode(g));
+    }
+
     function test_decode_revertsWhenValidatorAddressMismatches() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
         address mismatchedValidator = address(0xBEEFCAFE);

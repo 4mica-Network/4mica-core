@@ -78,6 +78,14 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
             revert ValidationRequestHashMismatch(expectedRequestHash, g.validation_request_hash);
         }
 
+        // Explicitly guard against no-code addresses: a staticcall to an address with no
+        // code succeeds with empty returndata, and the subsequent ABI-decode failure is not
+        // reliably caught by try/catch (Solidity via-ir edge case), producing an empty revert
+        // instead of ValidationLookupFailed.
+        if (g.validation_registry_address.code.length == 0) {
+            revert ValidationLookupFailed(g.validation_registry_address, g.validation_request_hash);
+        }
+
         address validatorAddress;
         uint256 agentId;
         uint8 response;
