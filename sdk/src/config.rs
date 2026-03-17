@@ -222,7 +222,9 @@ impl<S> ConfigBuilder<S> {
 
 impl<S> Default for ConfigBuilder<S> {
     fn default() -> Self {
-        Self::empty().rpc_url("https://api.4mica.xyz/".to_string())
+        Self::empty()
+            .rpc_url("https://api.4mica.xyz/".to_string())
+            .enable_auth()
     }
 }
 
@@ -250,7 +252,7 @@ mod tests {
         assert!(builder.bearer_token.is_none());
         assert!(builder.auth_url.is_none());
         assert!(builder.auth_refresh_margin_secs.is_none());
-        assert!(!builder.auth_enabled);
+        assert!(builder.auth_enabled);
     }
 
     #[test]
@@ -269,7 +271,9 @@ mod tests {
         assert!(config.ethereum_http_rpc_url.is_none());
         assert!(config.contract_address.is_none());
         assert!(config.bearer_token.is_none());
-        assert!(config.auth.is_none());
+        let auth = config.auth.expect("default builder should enable auth");
+        assert_eq!(auth.auth_url.as_str(), "https://api.4mica.xyz/");
+        assert_eq!(auth.refresh_margin_secs, DEFAULT_AUTH_REFRESH_MARGIN_SECS);
     }
 
     #[test]
@@ -294,7 +298,7 @@ mod tests {
         );
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
         assert!(config.bearer_token.is_none());
-        assert!(config.auth.is_none());
+        assert!(config.auth.is_some());
     }
 
     #[test]
