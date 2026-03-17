@@ -11,7 +11,7 @@ use crate::{
         GuaranteeInfo, PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest,
         UserSuspensionStatus, UserTransactionInfo,
     },
-    core::CorePublicParameters,
+    core::{CorePublicParameters, SupportedTokensResponse},
     guarantee::PaymentGuaranteeRequest,
 };
 use crypto::bls::BLSCert;
@@ -96,6 +96,11 @@ impl RpcProxy {
 
     pub async fn get_public_params(&self) -> Result<CorePublicParameters, ApiClientError> {
         let url = self.url("/core/public-params")?;
+        self.get(url).await
+    }
+
+    pub async fn get_supported_tokens(&self) -> Result<SupportedTokensResponse, ApiClientError> {
+        let url = self.url("/core/tokens")?;
         self.get(url).await
     }
 

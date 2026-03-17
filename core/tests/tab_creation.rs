@@ -437,4 +437,10 @@ impl CoreContractApi for MockContractApi {
             block_hash: None,
         })
     }
+
+    async fn get_supported_tokens(
+        &self,
+    ) -> Result<Vec<rpc::SupportedTokenInfo>, core_service::error::CoreContractApiError> {
+        Ok(vec![])
+    }
 }

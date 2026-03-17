@@ -16,7 +16,7 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::{Signature, Signer},
 };
-use rpc::{ApiClientError, CorePublicParameters, RpcProxy};
+use rpc::{ApiClientError, CorePublicParameters, RpcProxy, SupportedTokensResponse};
 use tokio::sync::OnceCell;
 use url::Url;
 
@@ -339,5 +339,9 @@ impl<S> Client<S> {
         S: Signer + Sync,
     {
         self.ctx.login().await
+    }
+
+    pub async fn get_supported_tokens(&self) -> Result<SupportedTokensResponse, ApiClientError> {
+        self.ctx.0.rpc_proxy.get_supported_tokens().await
     }
 }

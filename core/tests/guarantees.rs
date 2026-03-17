@@ -1967,6 +1967,13 @@ async fn contract_api_rejects_disabled_guarantee_version() {
                 block_hash: None,
             })
         }
+
+        async fn get_supported_tokens(
+            &self,
+        ) -> Result<Vec<rpc::SupportedTokenInfo>, core_service::error::CoreContractApiError>
+        {
+            Ok(vec![])
+        }
     }
 
     let api = DisabledGuaranteeVersionApi;
@@ -2021,5 +2028,11 @@ impl CoreContractApi for MockContractApi {
             block_number: None,
             block_hash: None,
         })
+    }
+
+    async fn get_supported_tokens(
+        &self,
+    ) -> Result<Vec<rpc::SupportedTokenInfo>, core_service::error::CoreContractApiError> {
+        Ok(vec![])
     }
 }

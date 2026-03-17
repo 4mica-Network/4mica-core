@@ -16,7 +16,7 @@ use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use anyhow::anyhow;
 use crypto::bls::KeyMaterial;
 use log::{error, info};
-use rpc::{CorePublicParameters, UserSuspensionStatus};
+use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
 
 pub mod auth;
 pub mod event_handler;
@@ -224,6 +224,19 @@ impl CoreService {
             .erased();
 
         Ok(provider)
+    }
+
+    pub async fn get_supported_tokens(&self) -> ServiceResult<SupportedTokensResponse> {
+        let tokens = self
+            .inner
+            .contract_api
+            .get_supported_tokens()
+            .await
+            .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+        Ok(SupportedTokensResponse {
+            chain_id: self.inner.public_params.chain_id,
+            tokens,
+        })
     }
 
     pub async fn set_user_suspension(

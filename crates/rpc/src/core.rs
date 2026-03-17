@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+/// A single ERC-20 token supported by the Core4Mica contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupportedTokenInfo {
+    pub symbol: String,
+    pub address: String,
+    pub decimals: u8,
+}
+
+/// Response from `GET /core/tokens`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupportedTokensResponse {
+    pub chain_id: u64,
+    pub tokens: Vec<SupportedTokenInfo>,
+}
+
 fn default_max_accepted_guarantee_version() -> u64 {
     crate::guarantee::GUARANTEE_CLAIMS_VERSION
 }

@@ -7,6 +7,7 @@ use alloy::{
 use anyhow::anyhow;
 use async_trait::async_trait;
 use log::info;
+use rpc::SupportedTokenInfo;
 
 pub struct CoreContractProxy {
     provider: DynProvider,
@@ -52,6 +53,8 @@ pub trait CoreContractApi: Send + Sync {
     }
 
     async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError>;
+
+    async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError>;
 
     async fn record_payment(
         &self,
@@ -121,6 +124,23 @@ impl CoreContractApi for CoreContractProxy {
         let contract = self.build_contract();
         let expiration = contract.tabExpirationTime().call().await?;
         Ok(expiration.to())
+    }
+
+    async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {
+        let contract = self.build_contract();
+        let addresses = contract.getERC20Tokens().call().await?;
+        let mut tokens = Vec::with_capacity(addresses.len());
+        for addr in addresses {
+            let erc20 = ERC20Metadata::new(addr, self.provider.clone());
+            let symbol = erc20.symbol().call().await?;
+            let decimals = erc20.decimals().call().await?;
+            tokens.push(SupportedTokenInfo {
+                symbol,
+                address: addr.to_string(),
+                decimals,
+            });
+        }
+        Ok(tokens)
     }
 
     async fn record_payment(
