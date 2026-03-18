@@ -74,7 +74,11 @@ impl CoreService {
             ));
         }
 
-        if tab.asset_address != claims.asset_address {
+        let tab_asset = Address::from_str(&tab.asset_address)
+            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab asset address")))?;
+        let claim_asset = Address::from_str(&claims.asset_address)
+            .map_err(|_| ServiceError::InvalidParams("Invalid asset address".into()))?;
+        if tab_asset != claim_asset {
             return Err(ServiceError::InvalidParams("Invalid asset address".into()));
         }
 
