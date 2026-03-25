@@ -8,10 +8,12 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use log::info;
 use rpc::SupportedTokenInfo;
+use tokio::sync::Mutex;
 
 pub struct CoreContractProxy {
     provider: DynProvider,
     contract_address: Address,
+    tx_write_lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,6 +92,7 @@ impl CoreContractProxy {
         Ok(Self {
             provider,
             contract_address,
+            tx_write_lock: Mutex::new(()),
         })
     }
 
@@ -149,6 +152,9 @@ impl CoreContractApi for CoreContractProxy {
         asset: Address,
         amount: U256,
     ) -> Result<RecordPaymentTx, CoreContractApiError> {
+        // Serialize contract writes for the shared signer to avoid nonce races between
+        // overlapping payment-confirmation tasks.
+        let _guard = self.tx_write_lock.lock().await;
         let contract = self.build_contract();
         let tx = contract.recordPayment(tab_id, asset, amount);
 

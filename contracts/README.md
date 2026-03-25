@@ -206,20 +206,15 @@ The ABI is inside the `"abi"` field of this JSON file.
 
 ## 🔑 Role Management
 
-The deployment script currently:
+The deployment scripts already:
 
 - Deploys an `AccessManager`
 - Deploys `Core4Mica` managed by it
+- Maps operator/admin selectors to the expected roles
+- Grants `OPERATOR_ROLE` and `USER_ADMIN_ROLE` to the deployer during deployment
 
-**Next step:**  
-Extend the script to grant roles (e.g., `USER_ROLE`, `OPERATOR_ROLE`) so tests involving restricted functions don’t fail with `AccessManagedUnauthorized`.
-
-**Example inside `Core4MicaScript.s.sol` after deploy:**
-```solidity
-manager.grantRole(USER_ROLE, deployer);
-manager.grantRole(OPERATOR_ROLE, deployer);
-```
-This ensures the deployer account can interact with restricted functions.
+If you need a different operational setup, grant roles to your intended operator/admin accounts
+after deployment via `AccessManager`.
 
 ---
 
