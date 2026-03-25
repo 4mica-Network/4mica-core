@@ -19,11 +19,7 @@ contract MockERC20 {
     mapping(address => mapping(address => uint256)) public allowance;
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
-    event Approval(
-        address indexed owner,
-        address indexed spender,
-        uint256 amount
-    );
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
 
     constructor(string memory name_, string memory symbol_) {
         name = name_;
@@ -47,11 +43,7 @@ contract MockERC20 {
         return true;
     }
 
-    function transferFrom(
-        address from,
-        address to,
-        uint256 amount
-    ) external returns (bool) {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
         uint256 allowed = allowance[from][msg.sender];
         require(allowed >= amount, "ALLOWANCE");
         if (allowed != type(uint256).max) {
@@ -84,13 +76,10 @@ abstract contract Core4MicaTestBase is Test {
     uint64 internal constant OPERATOR_ROLE = 9;
     address internal constant ETH_ASSET = address(0);
 
-    bytes4 internal constant RECORD_PAYMENT_SELECTOR =
-        bytes4(keccak256("recordPayment(uint256,address,uint256)"));
+    bytes4 internal constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
 
     bytes32 internal constant TEST_PRIVATE_KEY =
-        bytes32(
-            0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3
-        );
+        bytes32(0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3);
 
     BLS.G1Point internal testPublicKey;
 
@@ -99,12 +88,9 @@ abstract contract Core4MicaTestBase is Test {
         usdc = new MockERC20("USD Coin", "USDC");
         usdt = new MockERC20("Tether USD", "USDT");
         testPublicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY);
-        core4Mica = new Core4Mica(
-            address(manager),
-            testPublicKey,
-            address(usdc),
-            address(usdt)
-        );
+        core4Mica = new Core4Mica(address(manager), testPublicKey);
+        core4Mica.setStablecoinAsset(address(usdc), true);
+        core4Mica.setStablecoinAsset(address(usdt), true);
 
         vm.deal(USER1, 5 ether);
         usdc.mint(USER1, 1_000_000 ether);
@@ -114,39 +100,28 @@ abstract contract Core4MicaTestBase is Test {
         usdt.approve(address(core4Mica), type(uint256).max);
         vm.stopPrank();
 
-        manager.setTargetFunctionRole(
-            address(core4Mica),
-            _asSingletonArray(RECORD_PAYMENT_SELECTOR),
-            OPERATOR_ROLE
-        );
+        manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
-        bytes4[] memory adminSelectors = new bytes4[](4);
+        bytes4[] memory adminSelectors = new bytes4[](6);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
         adminSelectors[3] = Core4Mica.unpause.selector;
+        adminSelectors[4] = Core4Mica.setStablecoinAsset.selector;
+        adminSelectors[5] = Core4Mica.setStablecoinAssets.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
-            manager.setTargetFunctionRole(
-                address(core4Mica),
-                _asSingletonArray(adminSelectors[i]),
-                USER_ADMIN_ROLE
-            );
+            manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
 
         manager.grantRole(USER_ADMIN_ROLE, address(this), 0);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
     }
 
-    function _signGuarantee(
-        Guarantee memory g,
-        bytes32 privKey
-    ) internal view returns (BLS.G2Point memory) {
+    function _signGuarantee(Guarantee memory g, bytes32 privKey) internal view returns (BLS.G2Point memory) {
         return BlsHelper.signGuarantee(g, privKey);
     }
 
-    function _encodeGuaranteeWithVersion(
-        Guarantee memory g
-    ) internal pure returns (bytes memory) {
+    function _encodeGuaranteeWithVersion(Guarantee memory g) internal pure returns (bytes memory) {
         return BlsHelper.encodeGuaranteeWithVersion(g);
     }
 
@@ -159,19 +134,18 @@ abstract contract Core4MicaTestBase is Test {
         uint256 amount,
         address asset
     ) internal view returns (Guarantee memory) {
-        return
-            Guarantee({
-                domain: core4Mica.guaranteeDomainSeparator(),
-                tab_id: tabId,
-                req_id: reqId,
-                client: client,
-                recipient: recipient,
-                amount: amount,
-                total_amount: amount,
-                asset: asset,
-                timestamp: uint64(tabTimestamp),
-                version: 1
-            });
+        return Guarantee({
+            domain: core4Mica.guaranteeDomainSeparator(),
+            tab_id: tabId,
+            req_id: reqId,
+            client: client,
+            recipient: recipient,
+            amount: amount,
+            total_amount: amount,
+            asset: asset,
+            timestamp: uint64(tabTimestamp),
+            version: 1
+        });
     }
 
     function _ethGuarantee(
@@ -182,32 +156,15 @@ abstract contract Core4MicaTestBase is Test {
         uint256 reqId,
         uint256 amount
     ) internal view returns (Guarantee memory) {
-        return
-            _guarantee(
-                tabId,
-                tabTimestamp,
-                client,
-                recipient,
-                reqId,
-                amount,
-                ETH_ASSET
-            );
+        return _guarantee(tabId, tabTimestamp, client, recipient, reqId, amount, ETH_ASSET);
     }
 
-    function _asSingletonArray(
-        bytes4 selector
-    ) internal pure returns (bytes4[] memory arr) {
+    function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
     }
 
-    function AccessUnauthorizedError(
-        address accessor
-    ) public pure returns (bytes memory) {
-        return
-            abi.encodeWithSelector(
-                IAccessManaged.AccessManagedUnauthorized.selector,
-                accessor
-            );
+    function AccessUnauthorizedError(address accessor) public pure returns (bytes memory) {
+        return abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, accessor);
     }
 }

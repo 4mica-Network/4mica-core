@@ -19,8 +19,8 @@ use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
     CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest, CreatePaymentTabResult,
-    GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, TabInfo,
-    UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
+    GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, SupportedTokensResponse,
+    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
 };
 use std::str::FromStr;
 
@@ -56,6 +56,7 @@ pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Route
         .route("/auth/logout", post(post_auth_logout))
         .route("/core/health", get(get_health))
         .route("/core/public-params", get(get_public_params))
+        .route("/core/tokens", get(get_supported_tokens))
         .route("/core/payment-tabs", post(create_payment_tab))
         .route("/core/guarantees", post(issue_guarantee))
         .route(
@@ -198,7 +199,7 @@ async fn auth_middleware(
 fn is_public_path(path: &str) -> bool {
     matches!(
         path,
-        "/auth" | "/core/health" | "/core/public-params" | "/metrics"
+        "/auth" | "/core/health" | "/core/public-params" | "/core/tokens" | "/metrics"
     ) || path.starts_with("/auth/")
 }
 
@@ -232,6 +233,13 @@ async fn get_public_params(
     State(service): State<CoreService>,
 ) -> Result<Json<CorePublicParameters>, ApiError> {
     Ok(Json(service.public_params()))
+}
+
+async fn get_supported_tokens(
+    State(service): State<CoreService>,
+) -> Result<Json<SupportedTokensResponse>, ApiError> {
+    let tokens = service.get_supported_tokens().await?;
+    Ok(Json(tokens))
 }
 
 async fn post_auth_nonce(

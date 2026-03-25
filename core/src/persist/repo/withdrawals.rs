@@ -38,8 +38,8 @@ pub async fn request_withdrawal_with_event(
     event: Option<&EventMeta>,
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
-    parse_address(&user_address)?;
-    parse_address(&asset_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
 
     ctx.db
         .transaction(|txn| {
@@ -134,11 +134,11 @@ pub async fn cancel_withdrawal_with_event(
     event: Option<&EventMeta>,
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
-    parse_address(&user_address)?;
-    parse_address(&asset_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
     match withdrawal::Entity::find()
-        .filter(withdrawal::Column::UserAddress.eq(user_address))
-        .filter(withdrawal::Column::AssetAddress.eq(asset_address))
+        .filter(withdrawal::Column::UserAddress.eq(&user_address))
+        .filter(withdrawal::Column::AssetAddress.eq(&asset_address))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
         .one(ctx.db.as_ref())
         .await?
@@ -178,10 +178,12 @@ pub async fn finalize_withdrawal_with_event(
     event: Option<&EventMeta>,
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
-    parse_address(&user_address)?;
-    parse_address(&asset_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
     ctx.db
         .transaction(|txn| {
+            let user_address = user_address.clone();
+            let asset_address = asset_address.clone();
             Box::pin(async move {
                 let now = Utc::now().naive_utc();
 
@@ -321,10 +323,12 @@ pub async fn revert_withdrawal_execution(
     asset_address: String,
     executed_amount: U256,
 ) -> Result<(), PersistDbError> {
-    parse_address(&user_address)?;
-    parse_address(&asset_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
     ctx.db
         .transaction(|txn| {
+            let user_address = user_address.clone();
+            let asset_address = asset_address.clone();
             Box::pin(async move {
                 let asset_balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
                 let current_total = U256::from_str(&asset_balance.total)

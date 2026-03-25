@@ -2,15 +2,16 @@
 
 # 4Mica Rust SDK
 
-The official Rust SDK for interacting with the 4Mica payment network
+The official Rust SDK for interacting with the 4Mica payment network.
 
 ## Overview
 
-4Mica is a payment network that enables cryptographically-enforced line of credit of autonomos payments. The SDK provides:
+4Mica is a payment network that enables cryptographically-enforced lines of credit for autonomous payments. The SDK provides:
 
 - **User Client**: Deposit collateral, sign payments, and manage withdrawals in ETH or ERC20 tokens
 - **Recipient Client**: Create payment tabs, verify payment guarantees, and claim from user collateral when payments aren't fulfilled
 - **X402 Flow Helper**: Generate X-PAYMENT headers for 402-protected HTTP resources via an X402-compatible service
+- **Guarantee V2 Support**: Build and verify validation-gated guarantees bound to ERC-8004 validation policy fields
 
 ## Installation
 
@@ -18,8 +19,27 @@ Add the SDK to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sdk-4mica = "0.5.0"
+sdk-4mica = "0.6.0"
 ```
+
+## Guarantee Versions
+
+The SDK supports both V1 and V2 guarantee flows.
+
+- V1 is the original signed payment-intent flow.
+- V2 adds ERC-8004 validation policy fields and gates `remunerate()` on on-chain validation.
+- Core advertises the accepted guarantee versions and trusted validation registries through
+  `/core/public-params`.
+- `GUARANTEE_REQUEST_VERSION` on the core service controls which versions core accepts by default.
+  It does not force the output certificate version. The issued version is derived from the request
+  payload.
+
+For callers there are three common paths:
+
+- `user.sign_payment(...)` signs explicit V1 claims.
+- `user.sign_payment_v2(...)` signs explicit V2 claims.
+- `user.sign_payment_auto(...)` chooses V1 or V2 from core metadata plus optional
+  `PaymentGuaranteeValidationInput`.
 
 ## Initialization and Configuration
 
@@ -42,7 +62,7 @@ The following parameters are **optional** and will be automatically fetched from
 #### 1. Using ConfigBuilder
 
 ```rust
-use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::{Signer, local::PrivateKeySigner};
 use sdk_4mica::{ConfigBuilder, Client};
 use std::str::FromStr;
 
@@ -112,7 +132,7 @@ Version 1 returns payment requirements in the JSON response body:
 - Retry the protected endpoint with `X-PAYMENT`; the resource server will call the facilitator `/verify` and `/settle`.
 
 ```rust
-use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::{Signer, local::PrivateKeySigner};
 use sdk_4mica::{Client, ConfigBuilder, X402Flow};
 use sdk_4mica::x402::PaymentRequirements;
 use serde::Deserialize;
@@ -129,6 +149,7 @@ struct ResourceResponse {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payer_signer = PrivateKeySigner::from_str(&std::env::var("PAYER_KEY")?)?;
+    let user_address = payer_signer.address().to_string();
     let payer = Client::new(
         ConfigBuilder::default()
             .signer(payer_signer)
@@ -183,6 +204,7 @@ use std::str::FromStr;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payer_signer = PrivateKeySigner::from_str(&std::env::var("PAYER_KEY")?)?;
+    let user_address = payer_signer.address().to_string();
     let payer = Client::new(
         ConfigBuilder::default()
             .signer(payer_signer)
@@ -272,6 +294,8 @@ Notes:
 - `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment
+- `sign_payment_v2(claims: PaymentGuaranteeRequestClaimsV2, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V2 payment with validation policy fields
+- `sign_payment_auto(intent: PaymentGuaranteeIntent, validation: Option<PaymentGuaranteeValidationInput>, scheme: SigningScheme) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>`: Build and sign either V1 or V2 claims using core metadata
 - `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String, erc20_token: Option<String>) -> Result<TransactionReceipt, PayTabError>`: Pay a tab directly on-chain in ETH or ERC20 token
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
@@ -283,6 +307,8 @@ Notes:
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
 - `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
+- `issue_payment_guarantee_v2(claims: PaymentGuaranteeRequestClaimsV2, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a V2 payment guarantee
+- `issue_prepared_payment_guarantee(request: PreparedPaymentGuaranteeRequest) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a guarantee from the output of `sign_payment_auto`
 - `remunerate(cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>`: Claim from user collateral using BLS certificate
 - `list_settled_tabs() -> Result<Vec<TabInfo>, RecipientQueryError>`: List all settled tabs for the recipient
 - `list_pending_remunerations() -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError>`: List pending remunerations for the recipient

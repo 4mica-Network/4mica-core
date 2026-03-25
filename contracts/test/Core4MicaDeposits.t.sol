@@ -12,11 +12,7 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
 
         core4Mica.deposit{value: 1 ether}();
 
-        (
-            uint256 collateral,
-            uint256 withdrawTimestamp,
-            uint256 withdrawAmount
-        ) = core4Mica.getUser(USER1);
+        (uint256 collateral, uint256 withdrawTimestamp, uint256 withdrawAmount) = core4Mica.getUser(USER1);
         assertEq(collateral, 1 ether, "Total collateral mismatch");
         assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
         assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
@@ -28,11 +24,7 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         core4Mica.deposit{value: 1 ether}();
         core4Mica.deposit{value: 3 ether}();
 
-        (
-            uint256 collateral,
-            uint256 withdrawTimestamp,
-            uint256 withdrawAmount
-        ) = core4Mica.getUser(USER1);
+        (uint256 collateral, uint256 withdrawTimestamp, uint256 withdrawAmount) = core4Mica.getUser(USER1);
         assertEq(collateral, 5 ether, "Total collateral mismatch");
         assertEq(withdrawTimestamp, 0, "Withdrawal timestamp should be 0");
         assertEq(withdrawAmount, 0, "Withdrawal amount should be 0");
@@ -47,11 +39,8 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         emit Core4Mica.CollateralDeposited(USER1, address(usdc), amount);
         core4Mica.depositStablecoin(address(usdc), amount);
 
-        (
-            uint256 collateral,
-            uint256 withdrawTimestamp,
-            uint256 withdrawAmount
-        ) = core4Mica.getUser(USER1, address(usdc));
+        (uint256 collateral, uint256 withdrawTimestamp, uint256 withdrawAmount) =
+            core4Mica.getUser(USER1, address(usdc));
         assertEq(collateral, amount);
         assertEq(withdrawTimestamp, 0);
         assertEq(withdrawAmount, 0);
@@ -82,12 +71,7 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         vm.prank(USER1);
         fake.approve(address(core4Mica), type(uint256).max);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Core4Mica.UnsupportedAsset.selector,
-                address(fake)
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedAsset.selector, address(fake)));
         vm.prank(USER1);
         core4Mica.depositStablecoin(address(fake), 10 ether);
     }
@@ -107,11 +91,8 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         emit Core4Mica.CollateralDeposited(USER1, address(usdt), amount);
         core4Mica.depositStablecoin(address(usdt), amount);
 
-        (
-            uint256 collateral,
-            uint256 withdrawTimestamp,
-            uint256 withdrawAmount
-        ) = core4Mica.getUser(USER1, address(usdt));
+        (uint256 collateral, uint256 withdrawTimestamp, uint256 withdrawAmount) =
+            core4Mica.getUser(USER1, address(usdt));
         assertEq(collateral, amount);
         assertEq(withdrawTimestamp, 0);
         assertEq(withdrawAmount, 0);

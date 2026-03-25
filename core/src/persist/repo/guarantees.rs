@@ -27,12 +27,12 @@ pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
     conn: &C,
     claims: &PaymentGuaranteeRequestClaimsV1,
 ) -> Result<U256, PersistDbError> {
-    parse_address(&claims.user_address)?;
-    parse_address(&claims.recipient_address)?;
-    parse_address(&claims.asset_address)?;
+    let user_address = parse_address(&claims.user_address)?.into_inner();
+    let recipient_address = parse_address(&claims.recipient_address)?.into_inner();
+    let asset_address = parse_address(&claims.asset_address)?.into_inner();
 
-    ensure_user_exists_on(conn, &claims.user_address).await?;
-    ensure_user_exists_on(conn, &claims.recipient_address).await?;
+    ensure_user_exists_on(conn, &user_address).await?;
+    ensure_user_exists_on(conn, &recipient_address).await?;
 
     let start_dt = Utc
         .timestamp_opt(claims.timestamp as i64, 0)
@@ -40,15 +40,14 @@ pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
         .ok_or_else(|| PersistDbError::InvalidTimestamp(claims.timestamp as i64))?
         .naive_utc();
 
-    let asset_balance =
-        get_user_balance_on(conn, &claims.user_address, &claims.asset_address).await?;
+    let asset_balance = get_user_balance_on(conn, &user_address, &asset_address).await?;
     let total = U256::from_str(&asset_balance.total)
         .map_err(|_| PersistDbError::InvalidCollateral("invalid collateral".into()))?;
     let locked = U256::from_str(&asset_balance.locked)
         .map_err(|_| PersistDbError::InvalidCollateral("invalid locked collateral".into()))?;
 
     let pending_amount =
-        match get_pending_withdrawal_on(conn, &claims.user_address, &claims.asset_address).await? {
+        match get_pending_withdrawal_on(conn, &user_address, &asset_address).await? {
             Some(withdrawal) => U256::from_str(&withdrawal.requested_amount)
                 .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?,
             None => U256::ZERO,
@@ -65,8 +64,8 @@ pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
 
     update_user_balance_and_version_on(
         conn,
-        &claims.user_address,
-        &claims.asset_address,
+        &user_address,
+        &asset_address,
         asset_balance.version,
         total,
         new_locked,
@@ -117,13 +116,16 @@ pub async fn prepare_and_store_guarantee_on<C: ConnectionTrait>(
         .single()
         .ok_or_else(|| PersistDbError::InvalidTimestamp(claims.timestamp as i64))?
         .naive_utc();
+    let from = parse_address(&claims.user_address)?.into_inner();
+    let to = parse_address(&claims.recipient_address)?.into_inner();
+    let asset = parse_address(&claims.asset_address)?.into_inner();
 
     let data = GuaranteeData {
         tab_id: claims.tab_id,
         req_id: claims.req_id,
-        from: claims.user_address.clone(),
-        to: claims.recipient_address.clone(),
-        asset: claims.asset_address.clone(),
+        from,
+        to,
+        asset,
         value: claims.amount,
         start_ts: start_dt,
         cert: cert_str,

@@ -1,8 +1,7 @@
 use alloy::signers::Signer;
 use sdk_4mica::client::recipient::RecipientClient;
 use sdk_4mica::{
-    BLSCert, Client, PaymentGuaranteeRequestClaims, SigningScheme, U256,
-    error::VerifyGuaranteeError,
+    BLSCert, Client, PaymentGuaranteeIntent, SigningScheme, U256, error::VerifyGuaranteeError,
 };
 use std::time::Duration;
 
@@ -48,11 +47,28 @@ where
     Ok(U256::ZERO)
 }
 
+fn guarantee_intent(
+    user_address: String,
+    recipient_address: String,
+    tab_id: U256,
+    req_id: U256,
+    amount: U256,
+    timestamp: u64,
+) -> PaymentGuaranteeIntent {
+    PaymentGuaranteeIntent {
+        user_address,
+        recipient_address,
+        tab_id,
+        req_id,
+        amount,
+        asset_address: ETH_ASSET_ADDRESS.to_string(),
+        timestamp,
+    }
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
-    // These wallet keys are picked from the default accounts in anvil test node
-
     let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
@@ -71,7 +87,6 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     let recipient_address = recipient_config.signer.address().to_string();
     let recipient_client = Client::new(recipient_config.clone()).await?;
 
-    // Step 1: User deposits collateral (2 ETH)
     let core_total_before = recipient_client
         .recipient
         .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
@@ -83,7 +98,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     let eth_asset_before =
         common::extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
 
-    let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
+    let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
     mine_confirmations(&user_config, 1).await?;
 
@@ -104,7 +119,6 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Step 2: Recipient creates a payment tab
     let tab_id = recipient_client
         .recipient
         .create_tab(
@@ -115,27 +129,27 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         )
         .await?;
 
-    // Step 3: User signs a payment (1 ETH)
     let start_timestamp = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
     let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
-    let claims = PaymentGuaranteeRequestClaims {
-        user_address: user_address.clone(),
-        recipient_address: recipient_address.clone(),
-        tab_id,
-        req_id,
-        amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
-        timestamp: start_timestamp,
-        asset_address: ETH_ASSET_ADDRESS.to_string(),
-    };
-    let payment_sig = user_client
+    let request = user_client
         .user
-        .sign_payment(claims.clone(), SigningScheme::Eip712)
+        .sign_payment_auto(
+            guarantee_intent(
+                user_address.clone(),
+                recipient_address.clone(),
+                tab_id,
+                req_id,
+                U256::from(1_000_000_000_000_000_000u128),
+                start_timestamp,
+            ),
+            None,
+            SigningScheme::Eip712,
+        )
         .await?;
 
-    // Step 4: User issues guarantee
     let bls_cert = recipient_client
         .recipient
-        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
+        .issue_prepared_payment_guarantee(request)
         .await?;
 
     let recipient = &recipient_client.recipient;
@@ -193,7 +207,6 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         "malformed signature should be rejected"
     );
 
-    // Step 5: User pays the tab
     let _receipt = user_client
         .user
         .pay_tab(
@@ -254,7 +267,6 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     let recipient_address = recipient_config.signer.address().to_string();
     let recipient_client = Client::new(recipient_config.clone()).await?;
 
-    // Ensure sufficient collateral for two guarantees.
     let core_total_before = recipient_client
         .recipient
         .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
@@ -262,7 +274,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
         .map(|info| info.total)
         .unwrap_or(U256::ZERO);
 
-    let deposit_amount = U256::from(3_000_000_000_000_000_000u128); // 3 ETH
+    let deposit_amount = U256::from(3_000_000_000_000_000_000u128);
     let _receipt = user_client.user.deposit(deposit_amount, None).await?;
     mine_confirmations(&user_config, 1).await?;
 
@@ -275,7 +287,6 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Recipient creates a payment tab.
     let tab_id = recipient_client
         .recipient
         .create_tab(
@@ -294,40 +305,51 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
 
     let base_ts = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
 
-    // Issue first guarantee.
     let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
-    let mut claims = PaymentGuaranteeRequestClaims {
-        user_address: user_address.clone(),
-        recipient_address: recipient_address.clone(),
-        tab_id,
-        req_id,
-        amount: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
-        timestamp: base_ts,
-        asset_address: ETH_ASSET_ADDRESS.to_string(),
-    };
-    let sig_first = user_client
-        .user
-        .sign_payment(claims.clone(), SigningScheme::Eip712)
-        .await?;
     let cert_first = recipient_client
         .recipient
-        .issue_payment_guarantee(claims.clone(), sig_first.signature, sig_first.scheme)
+        .issue_prepared_payment_guarantee(
+            user_client
+                .user
+                .sign_payment_auto(
+                    guarantee_intent(
+                        user_address.clone(),
+                        recipient_address.clone(),
+                        tab_id,
+                        req_id,
+                        U256::from(1_000_000_000_000_000_000u128),
+                        base_ts,
+                    ),
+                    None,
+                    SigningScheme::Eip712,
+                )
+                .await?,
+        )
         .await?;
     let parsed_first = recipient_client
         .recipient
         .verify_payment_guarantee(&cert_first)?;
     let first_req_id = parsed_first.req_id;
 
-    // Issue second guarantee with a different amount but same timestamp.
-    claims.amount = U256::from(1_500_000_000_000_000_000u128); // 1.5 ETH
-    claims.req_id = first_req_id + U256::from(1u64);
-    let sig_second = user_client
-        .user
-        .sign_payment(claims.clone(), SigningScheme::Eip712)
-        .await?;
     let cert_second = recipient_client
         .recipient
-        .issue_payment_guarantee(claims.clone(), sig_second.signature, sig_second.scheme)
+        .issue_prepared_payment_guarantee(
+            user_client
+                .user
+                .sign_payment_auto(
+                    guarantee_intent(
+                        user_address.clone(),
+                        recipient_address.clone(),
+                        tab_id,
+                        first_req_id + U256::from(1u64),
+                        U256::from(1_500_000_000_000_000_000u128),
+                        base_ts,
+                    ),
+                    None,
+                    SigningScheme::Eip712,
+                )
+                .await?,
+        )
         .await?;
     let parsed_second = recipient_client
         .recipient

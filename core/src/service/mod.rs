@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -10,11 +11,12 @@ use crate::{
     ethereum::{CoreContractApi, CoreContractProxy},
     persist::{PersistCtx, repo},
 };
+use alloy::primitives::Address;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use anyhow::anyhow;
 use crypto::bls::KeyMaterial;
 use log::{error, info};
-use rpc::{CorePublicParameters, UserSuspensionStatus};
+use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
 
 pub mod auth;
 pub mod event_handler;
@@ -27,7 +29,9 @@ mod tab;
 pub struct Inner {
     config: AppConfig,
     public_params: CorePublicParameters,
-    guarantee_domain: [u8; 32],
+    trusted_validation_registry_set: HashSet<Address>,
+    accepted_guarantee_versions: HashSet<u64>,
+    guarantee_domains: HashMap<u64, [u8; 32]>,
     tab_expiration_time: AtomicU64,
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
@@ -44,7 +48,7 @@ pub struct CoreServiceDeps {
     pub contract_api: Arc<dyn CoreContractApi>,
     pub chain_id: u64,
     pub read_provider: DynProvider,
-    pub guarantee_domain: [u8; 32],
+    pub guarantee_domains: HashMap<u64, [u8; 32]>,
     pub tab_expiration_time: u64,
 }
 
@@ -52,6 +56,9 @@ impl CoreService {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
         let persist_ctx = PersistCtx::new().await?;
         let eth_cfg = config.ethereum_config.clone();
+        let guarantee_config = config.guarantee.clone();
+        guarantee_config.validate()?;
+        let accepted_guarantee_versions = guarantee_config.accepted_request_versions()?;
 
         let contract_api = Arc::new(CoreContractProxy::new(&config).await?);
 
@@ -67,12 +74,24 @@ impl CoreService {
         }
 
         let read_provider = Self::build_ws_provider(eth_cfg.clone()).await?;
-        let on_chain_domain = contract_api.get_guarantee_domain_separator().await?;
+        let mut guarantee_domains = HashMap::new();
+        for version in accepted_guarantee_versions {
+            let version_config = contract_api.get_guarantee_version_config(version).await?;
+            if !version_config.enabled {
+                anyhow::bail!(
+                    "accepted guarantee version {} is disabled on-chain",
+                    version
+                );
+            }
+            info!(
+                "on-chain guarantee v{} domain separator: {} (decoder: {})",
+                version_config.version,
+                crypto::hex::encode_hex(&version_config.domain_separator),
+                version_config.decoder
+            );
+            guarantee_domains.insert(version, version_config.domain_separator);
+        }
         let tab_expiration_time = contract_api.get_tab_expiration_time().await?;
-        info!(
-            "on-chain guarantee domain separator: 0x{}",
-            crypto::hex::encode_hex(&on_chain_domain)
-        );
         info!("on-chain tab expiration time: {}s", tab_expiration_time);
 
         Self::new_with_dependencies(
@@ -82,7 +101,7 @@ impl CoreService {
                 contract_api,
                 chain_id: actual_chain_id,
                 read_provider,
-                guarantee_domain: on_chain_domain,
+                guarantee_domains,
                 tab_expiration_time,
             },
         )
@@ -99,6 +118,44 @@ impl CoreService {
         let eip712_name = config.eip712.name.clone();
         let eip712_version = config.eip712.version.clone();
         let eth_config = config.ethereum_config.clone();
+        let guarantee_config = config.guarantee.clone();
+        guarantee_config.validate()?;
+        let trusted_validation_registries =
+            guarantee_config.trusted_validation_registry_allowlist()?;
+        let trusted_validation_registry_set: HashSet<Address> = trusted_validation_registries
+            .iter()
+            .map(|registry| {
+                registry.parse::<Address>().map_err(|_| {
+                    anyhow!(
+                        "invalid normalized trusted validation registry address: {}",
+                        registry
+                    )
+                })
+            })
+            .collect::<anyhow::Result<HashSet<Address>>>()?;
+        let max_accepted_version = guarantee_config.max_accepted_version;
+        let accepted_guarantee_versions = guarantee_config
+            .accepted_request_versions()?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let validation_hash_canonicalization_version = guarantee_config
+            .validation_hash_canonicalization_version
+            .clone();
+        let mut accepted_guarantee_versions_public = accepted_guarantee_versions
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        accepted_guarantee_versions_public.sort_unstable();
+        let max_accepted_domain = deps
+            .guarantee_domains
+            .get(&max_accepted_version)
+            .ok_or_else(|| {
+                anyhow!(
+                    "missing guarantee domain for max accepted guarantee version {}",
+                    max_accepted_version
+                )
+            })?;
+        let active_guarantee_domain_separator = crypto::hex::encode_hex(max_accepted_domain);
 
         let inner = Inner {
             config,
@@ -109,8 +166,15 @@ impl CoreService {
                 eip712_name,
                 eip712_version,
                 chain_id: deps.chain_id,
+                max_accepted_guarantee_version: max_accepted_version,
+                accepted_guarantee_versions: accepted_guarantee_versions_public,
+                active_guarantee_domain_separator,
+                trusted_validation_registries,
+                validation_hash_canonicalization_version,
             },
-            guarantee_domain: deps.guarantee_domain,
+            trusted_validation_registry_set,
+            accepted_guarantee_versions,
+            guarantee_domains: deps.guarantee_domains,
             tab_expiration_time: AtomicU64::new(deps.tab_expiration_time),
             persist_ctx: deps.persist_ctx,
             read_provider: deps.read_provider,
@@ -160,6 +224,19 @@ impl CoreService {
             .erased();
 
         Ok(provider)
+    }
+
+    pub async fn get_supported_tokens(&self) -> ServiceResult<SupportedTokensResponse> {
+        let tokens = self
+            .inner
+            .contract_api
+            .get_supported_tokens()
+            .await
+            .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+        Ok(SupportedTokensResponse {
+            chain_id: self.inner.public_params.chain_id,
+            tokens,
+        })
     }
 
     pub async fn set_user_suspension(
