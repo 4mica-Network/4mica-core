@@ -19,7 +19,7 @@ This repository contains the **Core4Mica** smart contract, along with deployment
 
 ```bash
 git clone <your-repo-url>
-cd <your-repo>
+cd <your-repo>/contracts
 ```
 
 ### 2. Install dependencies
@@ -35,7 +35,7 @@ Place the `.env` file in the project root (next to `foundry.toml`).
 **Example `.env`:**
 ```ini
 # Private key of your deployer account (do not commit this!)
-PRIVATE_KEY=0xabc123...deadbeef
+DEPLOYER_PRIVATE_KEY=0xabc123...deadbeef
 
 # Deployment target RPC
 DEPLOY_RPC_URL=http://127.0.0.1:8545
@@ -82,7 +82,7 @@ anvil
 
 ### 2. Configure `.env`
 
-Copy one private key into `.env` as `PRIVATE_KEY=...`.
+Copy one private key into `.env` as `DEPLOYER_PRIVATE_KEY=...`.
 
 ### 3. Run the deployment script
 

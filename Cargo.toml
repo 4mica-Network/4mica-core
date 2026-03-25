@@ -17,13 +17,13 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-rpc = { version = "0.6.0", path = "crates/rpc", package = "rpc-4mica" }
-crypto = { version = "0.6.0", path = "crates/crypto", package = "crypto-4mica" }
-blockchain = { version = "0.6.0", path = "crates/blockchain" }
-migration = { version = "0.6.0", path = "crates/migration" }
-entities = { version = "0.6.0", path = "crates/entities" }
-metrics-4mica = { version = "0.6.0", path = "crates/metrics" }
-derive-4mica = { version = "0.6.0", path = "crates/derive" }
+rpc = { version = "1.0.0", path = "crates/rpc", package = "rpc-4mica" }
+crypto = { version = "1.0.0", path = "crates/crypto", package = "crypto-4mica" }
+blockchain = { version = "1.0.0", path = "crates/blockchain" }
+migration = { version = "1.0.0", path = "crates/migration" }
+entities = { version = "1.0.0", path = "crates/entities" }
+metrics-4mica = { version = "1.0.0", path = "crates/metrics" }
+derive-4mica = { version = "1.0.0", path = "crates/derive" }
 
 chrono = "0.4.42"
 anyhow = "1.0.95"
