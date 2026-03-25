@@ -197,6 +197,14 @@ pub enum ServiceError {
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
+impl ServiceError {
+    pub fn unsupported_guarantee_request_version(version: &str) -> Self {
+        ServiceError::InvalidParams(format!(
+            "guarantee request version {version} is not supported yet"
+        ))
+    }
+}
+
 impl From<PersistDbError> for ServiceError {
     fn from(e: PersistDbError) -> Self {
         match e {

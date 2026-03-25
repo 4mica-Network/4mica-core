@@ -94,6 +94,14 @@ fn init_config() -> AppConfig {
     AppConfig::fetch().expect("Failed to load test config")
 }
 
+fn force_local_e2e_guarantee_defaults(cfg: &mut AppConfig) {
+    // These tests deploy a fresh Core4Mica with only the initial guarantee version enabled.
+    // Pin the local harness to V1 so it does not inherit V2-only settings from the developer's env.
+    cfg.guarantee.max_accepted_version = 1;
+    cfg.guarantee.accepted_request_versions.clear();
+    cfg.guarantee.trusted_validation_registries.clear();
+}
+
 async fn deploy_contracts(
     provider: DynProvider,
     admin_addr: Address,
@@ -118,10 +126,20 @@ async fn deploy_contracts(
         provider.clone(),
         *access_manager.address(),
         dummy_verification_key(),
-        *usdc.address(),
-        *usdt.address(),
     )
     .await?;
+    contract
+        .setStablecoinAsset(*usdc.address(), true)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    contract
+        .setStablecoinAsset(*usdt.address(), true)
+        .send()
+        .await?
+        .watch()
+        .await?;
 
     debug!(
         "Contracts deployed: \n\tcore_4mica={:?}\n\tusdc={:?}\n\tusdt={:?}\n\taccess_manager={:?}",
@@ -136,6 +154,7 @@ async fn deploy_contracts(
 
 pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     let mut cfg = init_config();
+    force_local_e2e_guarantee_defaults(&mut cfg);
     let anvil_port = allocate_anvil_port()?;
 
     let provider = ProviderBuilder::new()

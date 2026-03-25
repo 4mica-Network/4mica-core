@@ -1,3 +1,4 @@
+use alloy::primitives::Address;
 use reqwest::Url;
 use rpc::PaymentGuaranteeRequest;
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,18 @@ impl X402PaymentRequirements for PaymentRequirements {
 pub struct PaymentRequirementsExtra {
     #[serde(alias = "tabEndpoint")]
     pub tab_endpoint: Option<Url>,
+    #[serde(default, alias = "validationRegistryAddress")]
+    pub validation_registry_address: Option<Address>,
+    #[serde(default, alias = "validationChainId")]
+    pub validation_chain_id: Option<u64>,
+    #[serde(default, alias = "validatorAddress")]
+    pub validator_address: Option<Address>,
+    #[serde(default, alias = "validatorAgentId")]
+    pub validator_agent_id: Option<String>,
+    #[serde(default, alias = "minValidationScore")]
+    pub min_validation_score: Option<u8>,
+    #[serde(default, alias = "requiredValidationTag")]
+    pub required_validation_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

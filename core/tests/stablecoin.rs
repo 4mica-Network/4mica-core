@@ -19,7 +19,14 @@ use crate::common::setup::setup_e2e_environment;
 static NUMBER_OF_TRIALS: u32 = 60;
 
 fn unique_addr() -> String {
-    Address::random().to_string()
+    format!("{:#x}", Address::random())
+}
+
+fn normalize_address(raw: &str) -> String {
+    format!(
+        "{:#x}",
+        raw.parse::<Address>().expect("valid address for test")
+    )
 }
 
 async fn mine_confirmations(provider: &DynProvider, blocks: u64) -> anyhow::Result<()> {
@@ -39,12 +46,15 @@ async fn insert_tab(
 ) -> anyhow::Result<()> {
     use chrono::Utc;
     let now = Utc::now().naive_utc();
+    let user_addr = normalize_address(user_addr);
+    let server_addr = normalize_address(server_addr);
+    let asset_addr = normalize_address(asset_addr);
 
     let tab = tabs::ActiveModel {
         id: Set(format!("{tab_id:#x}")),
-        user_address: Set(user_addr.to_string()),
-        server_address: Set(server_addr.to_string()),
-        asset_address: Set(asset_addr.to_string()),
+        user_address: Set(user_addr),
+        server_address: Set(server_addr),
+        asset_address: Set(asset_addr),
         start_ts: Set(now),
         status: Set(TabStatus::Open),
         settlement_status: Set(SettlementStatus::Pending),
@@ -90,7 +100,7 @@ async fn transfer_usdc_does_not_unlock_collateral_before_confirmation() -> anyho
         .watch()
         .await?;
 
-    let user_address = signer_addr.to_string();
+    let user_address = format!("{signer_addr:#x}");
     repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_address).await?;
 
     // deposit 50 USDC
@@ -214,7 +224,7 @@ async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
         .watch()
         .await?;
 
-    let user_address = signer_addr.to_string();
+    let user_address = format!("{signer_addr:#x}");
     repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_address).await?;
 
     // deposit 50 USDC
@@ -322,7 +332,7 @@ async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let core_service = env.core_service.clone();
     let usdc = env.usdc.clone();
     let signer_addr = env.signer_addr;
-    let user_addr = signer_addr.to_string();
+    let user_addr = format!("{signer_addr:#x}");
     let persist_ctx = core_service.persist_ctx();
 
     // ensure user exists before deposit/withdrawal events

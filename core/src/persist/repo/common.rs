@@ -13,10 +13,10 @@ pub struct Address(String);
 impl Address {
     pub fn parse(raw: impl AsRef<str>) -> Result<Self, PersistDbError> {
         let trimmed = raw.as_ref().trim();
-        let _ = AlloyAddress::from_str(trimmed).map_err(|e| {
+        let parsed = AlloyAddress::from_str(trimmed).map_err(|e| {
             PersistDbError::InvariantViolation(format!("invalid address {trimmed}: {e}"))
         })?;
-        Ok(Self(trimmed.to_owned()))
+        Ok(Self(format!("{parsed:#x}")))
     }
 
     pub fn as_str(&self) -> &str {
@@ -73,4 +73,20 @@ pub fn map_pending_withdrawal_err(
 
 pub fn parse_address(addr: impl AsRef<str>) -> Result<Address, PersistDbError> {
     Address::parse(addr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Address;
+
+    #[test]
+    fn parse_normalizes_addresses_to_lowercase_hex() {
+        let parsed = Address::parse("  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266  ")
+            .expect("valid address");
+
+        assert_eq!(
+            parsed.as_str(),
+            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        );
+    }
 }

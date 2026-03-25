@@ -1,6 +1,9 @@
 use alloy::primitives::U256;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use rpc::{PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestEssentials};
+use rpc::{
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestEssentials,
+    compute_validation_request_hash, compute_validation_subject_hash,
+};
 use sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2};
 
 mod common;
@@ -74,11 +77,34 @@ async fn sign_payment_v2_respects_payment_requirements() {
     assert_eq!(envelope.payload.signature, "0xsig");
 
     let claims = match envelope.payload.claims {
-        PaymentGuaranteeRequestClaims::V1(claims) => claims,
-        #[allow(unused)]
-        _ => panic!("legacy claims version found!"),
+        PaymentGuaranteeRequestClaims::V2(claims) => claims,
+        _ => panic!("expected v2 claims"),
     };
     assert_eq!(claims.recipient_address, accepted.pay_to);
+    assert_eq!(
+        claims.validation_policy.validation_chain_id, 84532,
+        "expected validation chain id from accepted.extra"
+    );
+    let expected_subject_hash = compute_validation_subject_hash(
+        &claims.user_address,
+        &claims.recipient_address,
+        claims.tab_id,
+        claims.req_id,
+        claims.amount,
+        &claims.asset_address,
+        claims.timestamp,
+    )
+    .expect("subject hash");
+    assert_eq!(
+        claims.validation_policy.validation_subject_hash.to_string(),
+        alloy::primitives::B256::from(expected_subject_hash).to_string()
+    );
+    let expected_request_hash =
+        compute_validation_request_hash(&claims.validation_policy).expect("request hash");
+    assert_eq!(
+        claims.validation_policy.validation_request_hash.to_string(),
+        alloy::primitives::B256::from(expected_request_hash).to_string()
+    );
 
     handle.abort();
 }
@@ -129,6 +155,10 @@ async fn sign_payment_v2_requests_tab_correctly() {
         .expect("sign payment v2");
 
     assert_eq!(payment.payload.claims.tab_id(), U256::from(0x1234));
+    assert!(matches!(
+        payment.payload.claims,
+        PaymentGuaranteeRequestClaims::V2(_)
+    ));
 
     handle.abort();
 }

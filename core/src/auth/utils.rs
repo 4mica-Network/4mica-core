@@ -33,6 +33,11 @@ pub fn parse_wallet_address(raw: &str) -> ServiceResult<Address> {
         .map_err(|_| ServiceError::InvalidParams("invalid wallet address".into()))
 }
 
+pub fn normalize_wallet_address(raw: &str) -> ServiceResult<String> {
+    let address = parse_wallet_address(raw)?;
+    Ok(format!("{address:#x}"))
+}
+
 pub fn validate_wallet_status(status: &str) -> ServiceResult<()> {
     let status = status.trim();
     if status.is_empty() {
@@ -52,4 +57,17 @@ pub fn validate_wallet_status(status: &str) -> ServiceResult<()> {
         return Err(ServiceError::Unauthorized("wallet role not active".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_wallet_address;
+
+    #[test]
+    fn normalize_wallet_address_returns_lowercase_hex() {
+        let normalized = normalize_wallet_address("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
+            .expect("valid address");
+
+        assert_eq!(normalized, "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
+    }
 }

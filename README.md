@@ -30,8 +30,10 @@ Visit the official website: [https://4mica.xyz](https://4mica.xyz)
 
 ## 📚 Documentation
 
-- Developer docs: [https://4mica.xyz/resources/technical-docs](https://4mica.xyz/resources/technical-docsz)
+- Developer docs: [https://4mica.xyz/resources/technical-docs](https://4mica.xyz/resources/technical-docs)
 - Rust SDK API: [crates.io/sdk-4mica](https://crates.io/crates/sdk-4mica) · [docs.rs](https://docs.rs/sdk-4mica)
+- Contract deployment and activation: [contracts/README.md](contracts/README.md) · [contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md)
+- V2 implementation notes: [changes.md](changes.md)
 
 ---
 
@@ -47,7 +49,7 @@ Install from crates.io:
 
 ```toml
 [dependencies]
-sdk-4mica = "0.5.0"
+sdk-4mica = "0.6.0"
 ```
 
 Minimal bootstrap:
@@ -71,6 +73,19 @@ async fn main() -> anyhow::Result<()> {
 
 See `sdk/README.md` for full examples, configuration options, and X402 flows.
 
+## Guarantee V2
+
+This repository includes the ERC-8004 validation-gated remuneration flow described in
+[`changes.md`](changes.md).
+
+- Core accepts guarantee request versions according to `GUARANTEE_REQUEST_VERSION` and
+  `GUARANTEE_ACCEPTED_REQUEST_VERSIONS`.
+- The output certificate version is derived from the incoming request payload. The env var does
+  not force the issued version.
+- When V2 is accepted, `TRUSTED_VALIDATION_REGISTRIES` must be configured.
+- Activate V2 on-chain with the runbook in
+  [contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md).
+
 ---
 
 ## Run Locally
@@ -88,9 +103,12 @@ To run the project locally, execute:
 deployment/deploy_local.sh
 ```
 
-This script prepares and launches all required development services. It is designed to:
+This script prepares and launches all required development services. It deploys the local stack
+and starts the services needed for end-to-end development.
 
-For more details, refer to the documentation.
+For contract deployment and V2 activation details, refer to
+[contracts/README.md](contracts/README.md) and
+[contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md).
 
 ---
 

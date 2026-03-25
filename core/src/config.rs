@@ -1,16 +1,23 @@
 use std::{str::FromStr, sync::Arc};
 
+use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, bail};
 use crypto::bls::KeyMaterial;
 use envconfig::Envconfig;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::warn;
+use rpc::{
+    GUARANTEE_CLAIMS_VERSION, SUPPORTED_GUARANTEE_VERSIONS, is_supported_guarantee_version,
+    version_requires_validation_registry,
+};
 use secrecy::zeroize::Zeroize;
 
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
 pub const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+pub const VALIDATION_HASH_CANONICALIZATION_VERSION_V1: &str =
+    rpc::VALIDATION_REQUEST_BINDING_DOMAIN_V1;
 const DEFAULT_AUTH_JWT_SECRET: &str = "dev-insecure-change-me";
 const PLACEHOLDER_AUTH_JWT_SECRET: &str = "replace-with-32+bytes-random";
 
@@ -128,6 +135,109 @@ pub struct Eip712Config {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Envconfig)]
+pub struct GuaranteeConfig {
+    /// Ceiling for the default accepted-version range. The output guarantee version is always
+    /// determined by the incoming claim payload — this value only controls which versions core
+    /// will accept and which on-chain domain separators are loaded at startup.
+    #[envconfig(from = "GUARANTEE_REQUEST_VERSION", default = "1")]
+    pub max_accepted_version: u64,
+    #[envconfig(from = "GUARANTEE_ACCEPTED_REQUEST_VERSIONS", default = "")]
+    pub accepted_request_versions: String,
+    #[envconfig(from = "TRUSTED_VALIDATION_REGISTRIES", default = "")]
+    pub trusted_validation_registries: String,
+    #[envconfig(
+        from = "VALIDATION_HASH_CANONICALIZATION_VERSION",
+        default = "4MICA_VALIDATION_REQUEST_V1"
+    )]
+    pub validation_hash_canonicalization_version: String,
+}
+
+impl GuaranteeConfig {
+    pub fn accepted_request_versions(&self) -> anyhow::Result<Vec<u64>> {
+        let mut versions = if self.accepted_request_versions.trim().is_empty() {
+            // Default: accept every version from 1 up to max_accepted_version so that
+            // upgrading to V3 (or higher) automatically accepts all prior versions too.
+            (GUARANTEE_CLAIMS_VERSION..=self.max_accepted_version).collect()
+        } else {
+            self.accepted_request_versions
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    value.parse::<u64>().map_err(|_| {
+                        anyhow::anyhow!(
+                            "invalid guarantee request version in GUARANTEE_ACCEPTED_REQUEST_VERSIONS: {value}"
+                        )
+                    })
+                })
+                .collect::<anyhow::Result<Vec<u64>>>()?
+        };
+
+        versions.sort_unstable();
+        versions.dedup();
+        Ok(versions)
+    }
+
+    pub fn trusted_validation_registry_allowlist(&self) -> anyhow::Result<Vec<String>> {
+        self.trusted_validation_registries
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                Address::from_str(value)
+                    .map(|addr| addr.to_string())
+                    .map_err(|_| anyhow::anyhow!("invalid validation registry address: {value}"))
+            })
+            .collect()
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        validate_guarantee_version(self.max_accepted_version, "GUARANTEE_REQUEST_VERSION")?;
+        let accepted_versions = self.accepted_request_versions()?;
+        for version in &accepted_versions {
+            validate_guarantee_version(*version, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")?;
+        }
+        let canonicalization_version = self.validation_hash_canonicalization_version.trim();
+        if canonicalization_version.is_empty() {
+            bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");
+        }
+        if canonicalization_version != VALIDATION_HASH_CANONICALIZATION_VERSION_V1 {
+            bail!(
+                "unsupported VALIDATION_HASH_CANONICALIZATION_VERSION '{}'; supported: {}",
+                canonicalization_version,
+                VALIDATION_HASH_CANONICALIZATION_VERSION_V1
+            );
+        }
+
+        // Ensures all configured addresses are valid and normalized.
+        let allowlist = self.trusted_validation_registry_allowlist()?;
+        // Any validation-gated version (V2+) requires on-chain validation; ensure the allowlist is set.
+        if accepted_versions
+            .iter()
+            .any(|&v| version_requires_validation_registry(v))
+            && allowlist.is_empty()
+        {
+            bail!(
+                "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when validation-gated guarantee versions are accepted"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn validate_guarantee_version(version: u64, field: &str) -> anyhow::Result<()> {
+    if !is_supported_guarantee_version(version) {
+        let supported = SUPPORTED_GUARANTEE_VERSIONS
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("unsupported {field} '{version}'; supported: {supported}");
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct Secrets {
     pub bls_secret_key: KeyMaterial,
@@ -229,6 +339,7 @@ pub struct AppConfig {
     pub ethereum_config: EthereumConfig,
     pub database_config: DatabaseConfig,
     pub eip712: Eip712Config,
+    pub guarantee: GuaranteeConfig,
     pub auth: AuthConfig,
     pub monitoring: MonitoringConfig,
     /// Secrets are loaded into an Arc to avoid multiple allocations of the same secret.
@@ -247,6 +358,9 @@ impl AppConfig {
         let database_config =
             DatabaseConfig::init_from_env().context("Failed to load database config")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
+        let guarantee =
+            GuaranteeConfig::init_from_env().context("Failed to load guarantee config")?;
+        guarantee.validate().context("Invalid guarantee config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
         let monitoring =
             MonitoringConfig::init_from_env().context("Failed to load monitoring config")?;
@@ -257,9 +371,153 @@ impl AppConfig {
             ethereum_config,
             database_config,
             eip712,
+            guarantee,
             auth,
             monitoring,
             secrets,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GuaranteeConfig;
+
+    #[test]
+    fn guarantee_config_accepts_valid_v1_and_v2() {
+        let v1 = GuaranteeConfig {
+            max_accepted_version: 1,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        v1.validate().expect("v1 config must be valid");
+
+        let v2 = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries:
+                "0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222"
+                    .to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        v2.validate().expect("v2 config must be valid");
+        let allowlist = v2
+            .trusted_validation_registry_allowlist()
+            .expect("allowlist should parse");
+        assert_eq!(allowlist.len(), 2);
+    }
+
+    #[test]
+    fn guarantee_config_rejects_invalid_registry_allowlist() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries:
+                "0x1111111111111111111111111111111111111111,not-an-address".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("invalid allowlist should be rejected");
+        assert!(
+            err.to_string()
+                .contains("invalid validation registry address")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_invalid_hash_canonicalization_version() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "   ".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("empty canonicalization version should fail");
+        assert!(
+            err.to_string()
+                .contains("VALIDATION_HASH_CANONICALIZATION_VERSION")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_unsupported_hash_canonicalization_version() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("unsupported canonicalization version should fail");
+        assert!(
+            err.to_string()
+                .contains("unsupported VALIDATION_HASH_CANONICALIZATION_VERSION")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_v2_without_trusted_validation_registries() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("v2 config without allowlist should fail");
+        assert!(err.to_string().contains("TRUSTED_VALIDATION_REGISTRIES"));
+    }
+
+    #[test]
+    fn guarantee_config_rejects_unsupported_request_version() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 3,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("unsupported guarantee request version should fail");
+        assert!(
+            err.to_string()
+                .contains("unsupported GUARANTEE_REQUEST_VERSION")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_defaults_to_accepting_v1_and_v2_when_active_is_v2() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+
+        let versions = cfg
+            .accepted_request_versions()
+            .expect("accepted versions should resolve");
+        assert_eq!(versions, vec![1, 2]);
+    }
+
+    #[test]
+    fn guarantee_config_accepts_explicit_accepted_versions() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: "2".to_string(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        };
+
+        let versions = cfg
+            .accepted_request_versions()
+            .expect("accepted versions should resolve");
+        assert_eq!(versions, vec![2]);
     }
 }

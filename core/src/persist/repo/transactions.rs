@@ -445,7 +445,7 @@ pub async fn fail_transaction(
     user_address: String,
     transaction_id: String,
 ) -> Result<(), PersistDbError> {
-    parse_address(&user_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
 
     ctx.db
         .transaction(|txn| {

@@ -5,5 +5,5 @@ pub mod proxy;
 pub mod scanner;
 
 pub use contract::contract_abi;
-pub use proxy::{CoreContractApi, CoreContractProxy, RecordPaymentTx};
+pub use proxy::{CoreContractApi, CoreContractProxy, GuaranteeVersionConfig, RecordPaymentTx};
 pub use scanner::EthereumEventScanner;

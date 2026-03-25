@@ -161,7 +161,18 @@ impl EthereumEventHandler for CoreService {
             return Ok(());
         };
 
-        if tab.user_address != user.to_string() {
+        let tab_user_address: Address = match tab.user_address.parse() {
+            Ok(address) => address,
+            Err(err) => {
+                warn!(
+                    "Invalid tab user address {} for tab {} (err: {}). Skipping.",
+                    &tab.user_address, tab_id_str, err
+                );
+                return Ok(());
+            }
+        };
+
+        if tab_user_address != user {
             warn!(
                 "User address does not match tab user address for tab {}. Skipping.",
                 tab_id_str

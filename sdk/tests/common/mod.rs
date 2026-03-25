@@ -68,7 +68,13 @@ pub async fn get_chain_timestamp<S>(config: &Config<S>) -> anyhow::Result<u64> {
 }
 
 pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::Result<()> {
-    if blocks == 0 {
+    load_core_env();
+    let finalized_depth = std::env::var("FINALIZED_HEAD_DEPTH")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let total_blocks = blocks.saturating_add(finalized_depth);
+    if total_blocks == 0 {
         return Ok(());
     }
 
@@ -77,17 +83,65 @@ pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::R
         rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
     }
     let public_params = rpc_proxy.get_public_params().await?;
-    reqwest::Client::new()
+    let response = reqwest::Client::new()
         .post(public_params.ethereum_http_rpc_url)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "anvil_mine",
-            "params": [blocks]
+            "params": [total_blocks]
         }))
         .send()
         .await?
         .error_for_status()?;
+    let payload: serde_json::Value = response.json().await?;
+    if let Some(err) = payload.get("error") {
+        let message = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or_default();
+        if code == -32601 || message.contains("Method not found") {
+            // Non-anvil RPCs do not support `anvil_mine`; tests will rely on natural block progress.
+            return Ok(());
+        }
+        bail!("anvil_mine failed: code={code}, message={message}");
+    }
+    Ok(())
+}
+
+pub async fn assert_core_contract_deployed<S>(config: &Config<S>) -> anyhow::Result<()> {
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    let public_params = rpc_proxy.get_public_params().await?;
+
+    let response = reqwest::Client::new()
+        .post(public_params.ethereum_http_rpc_url.clone())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getCode",
+            "params": [public_params.contract_address, "latest"]
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let payload: serde_json::Value = response.json().await?;
+    let code = payload
+        .get("result")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing result from eth_getCode response"))?;
+
+    if code == "0x" || code == "0x0" {
+        bail!(
+            "core contract has no bytecode at configured address on current RPC; contract_address={}, ethereum_http_rpc_url={}",
+            public_params.contract_address,
+            public_params.ethereum_http_rpc_url
+        );
+    }
+
     Ok(())
 }
 
@@ -114,7 +168,7 @@ pub async fn wait_for_collateral_increase<S: Signer + Sync>(
     increase_by: U256,
 ) -> anyhow::Result<()> {
     let poll_interval = Duration::from_millis(200);
-    let timeout = Duration::from_secs(30);
+    let timeout = Duration::from_secs(60);
     let start = Instant::now();
     let user_address = user_address.to_string();
     let asset_address = asset_address.to_string();

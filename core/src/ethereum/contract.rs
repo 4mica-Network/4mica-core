@@ -171,6 +171,12 @@ pub mod contract_abi {
             /// View: list of ERC20 tokens supported by the contract.
             function getERC20Tokens() external view returns (address[] memory);
         }
+
+        #[sol(rpc)]
+        contract ERC20Metadata {
+            function symbol() external view returns (string memory);
+            function decimals() external view returns (uint8);
+        }
     }
 }
 

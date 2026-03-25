@@ -39,8 +39,8 @@ pub async fn deposit_with_event(
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
     let now = now();
-    parse_address(&user_address)?;
-    parse_address(&asset_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
     let user_for_log = user_address.clone();
     let asset_for_log = asset_address.clone();
     info!("persist.deposit start user={user_for_log} asset={asset_for_log} amount={amount}");

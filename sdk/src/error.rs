@@ -76,6 +76,8 @@ pub enum ClientError {
 
 #[derive(Debug, Error)]
 pub enum SignPaymentError {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
     #[error("address mismatch: signer={signer:?} != claims.user_address={claims}")]
     AddressMismatch { signer: Address, claims: String },
     #[error("invalid user address in claims")]
@@ -125,10 +127,34 @@ pub enum RemunerateError {
     CertificateInvalid(#[source] Error),
     #[error("certificate signature mismatch before submission")]
     CertificateMismatch,
+    #[error("guarantee version mismatch: expected {expected}, got {actual}")]
+    GuaranteeVersionMismatch { expected: u64, actual: u64 },
     #[error("guarantee domain mismatch")]
     GuaranteeDomainMismatch,
     #[error("unsupported guarantee version: {0}")]
     UnsupportedGuaranteeVersion(u64),
+    #[error("invalid min validation score")]
+    InvalidMinValidationScore,
+    #[error("invalid validation chain id")]
+    InvalidValidationChainId,
+    #[error("untrusted validation registry: {0}")]
+    UntrustedValidationRegistry(Address),
+    #[error("validation subject hash mismatch")]
+    ValidationSubjectHashMismatch,
+    #[error("validation request hash mismatch")]
+    ValidationRequestHashMismatch,
+    #[error("validation lookup failed")]
+    ValidationLookupFailed,
+    #[error("validation pending")]
+    ValidationPending,
+    #[error("validation score too low")]
+    ValidationScoreTooLow,
+    #[error("validation validator mismatch")]
+    ValidationValidatorMismatch,
+    #[error("validation agent mismatch")]
+    ValidationAgentMismatch,
+    #[error("validation tag mismatch")]
+    ValidationTagMismatch,
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -285,6 +311,8 @@ pub enum VerifyGuaranteeError {
     InvalidCertificate(#[source] Error),
     #[error("certificate signature mismatch")]
     CertificateMismatch,
+    #[error("guarantee version mismatch: expected {expected}, got {actual}")]
+    GuaranteeVersionMismatch { expected: u64, actual: u64 },
     #[error("guarantee domain mismatch")]
     GuaranteeDomainMismatch,
     #[error("unsupported guarantee version: {0}")]
@@ -337,6 +365,18 @@ impl RevertDetails {
         })
     }
 }
+
+const INVALID_MIN_VALIDATION_SCORE_SELECTOR: u32 = 0x940e8e0e;
+const INVALID_VALIDATION_CHAIN_ID_SELECTOR: u32 = 0xabe8d799;
+const UNTRUSTED_VALIDATION_REGISTRY_SELECTOR: u32 = 0x6098bbe0;
+const VALIDATION_SUBJECT_HASH_MISMATCH_SELECTOR: u32 = 0xd7201f6e;
+const VALIDATION_REQUEST_HASH_MISMATCH_SELECTOR: u32 = 0x95ce60ab;
+const VALIDATION_LOOKUP_FAILED_SELECTOR: u32 = 0x105163d4;
+const VALIDATION_PENDING_SELECTOR: u32 = 0x860263f8;
+const VALIDATION_SCORE_TOO_LOW_SELECTOR: u32 = 0xf44670f9;
+const VALIDATION_VALIDATOR_MISMATCH_SELECTOR: u32 = 0x9e8eb320;
+const VALIDATION_AGENT_MISMATCH_SELECTOR: u32 = 0xe474a924;
+const VALIDATION_TAG_MISMATCH_SELECTOR: u32 = 0x0604e144;
 
 trait ContractErrorTarget {
     fn from_unknown_revert(revert: RevertDetails) -> Self;
@@ -410,19 +450,71 @@ impl_contract_error_target!(PayTabError);
 impl_contract_error_target!(GetUserError);
 impl_contract_error_target!(TabPaymentStatusError);
 
-impl_from_alloy_error!(RemunerateError, {
-    Core4Mica::Core4MicaErrors::TabNotYetOverdue(_) => Self::TabNotYetOverdue,
-    Core4Mica::Core4MicaErrors::TabExpired(_) => Self::TabExpired,
-    Core4Mica::Core4MicaErrors::TabPreviouslyRemunerated(_) => Self::TabPreviouslyRemunerated,
-    Core4Mica::Core4MicaErrors::TabAlreadyPaid(_) => Self::TabAlreadyPaid,
-    Core4Mica::Core4MicaErrors::InvalidSignature(_) => Self::InvalidSignature,
-    Core4Mica::Core4MicaErrors::DoubleSpendingDetected(_) => Self::DoubleSpendingDetected,
-    Core4Mica::Core4MicaErrors::InvalidRecipient(_) => Self::InvalidRecipient,
-    Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
-    Core4Mica::Core4MicaErrors::TransferFailed(_) => Self::TransferFailed,
-    Core4Mica::Core4MicaErrors::InvalidGuaranteeDomain(_) => Self::GuaranteeDomainMismatch,
-    Core4Mica::Core4MicaErrors::UnsupportedGuaranteeVersion(err) => Self::UnsupportedGuaranteeVersion(err.version),
-});
+impl From<alloy_contract::Error> for RemunerateError {
+    fn from(error: alloy_contract::Error) -> Self {
+        if let Some(decoded) = error.as_decoded_interface_error::<Core4Mica::Core4MicaErrors>() {
+            match decoded {
+                Core4Mica::Core4MicaErrors::TabNotYetOverdue(_) => return Self::TabNotYetOverdue,
+                Core4Mica::Core4MicaErrors::TabExpired(_) => return Self::TabExpired,
+                Core4Mica::Core4MicaErrors::TabPreviouslyRemunerated(_) => {
+                    return Self::TabPreviouslyRemunerated;
+                }
+                Core4Mica::Core4MicaErrors::TabAlreadyPaid(_) => return Self::TabAlreadyPaid,
+                Core4Mica::Core4MicaErrors::InvalidSignature(_) => return Self::InvalidSignature,
+                Core4Mica::Core4MicaErrors::DoubleSpendingDetected(_) => {
+                    return Self::DoubleSpendingDetected;
+                }
+                Core4Mica::Core4MicaErrors::InvalidRecipient(_) => return Self::InvalidRecipient,
+                Core4Mica::Core4MicaErrors::AmountZero(_) => return Self::AmountZero,
+                Core4Mica::Core4MicaErrors::TransferFailed(_) => return Self::TransferFailed,
+                Core4Mica::Core4MicaErrors::InvalidGuaranteeDomain(_) => {
+                    return Self::GuaranteeDomainMismatch;
+                }
+                Core4Mica::Core4MicaErrors::UnsupportedGuaranteeVersion(err) => {
+                    return Self::UnsupportedGuaranteeVersion(err.version);
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(revert) = RevertDetails::from_error(&error) {
+            return match revert.selector {
+                INVALID_MIN_VALIDATION_SCORE_SELECTOR => Self::InvalidMinValidationScore,
+                INVALID_VALIDATION_CHAIN_ID_SELECTOR => Self::InvalidValidationChainId,
+                UNTRUSTED_VALIDATION_REGISTRY_SELECTOR => decode_address_argument(&revert.data)
+                    .map(Self::UntrustedValidationRegistry)
+                    .unwrap_or(Self::UnknownRevert {
+                        selector: revert.selector,
+                        data: revert.data,
+                    }),
+                VALIDATION_SUBJECT_HASH_MISMATCH_SELECTOR => Self::ValidationSubjectHashMismatch,
+                VALIDATION_REQUEST_HASH_MISMATCH_SELECTOR => Self::ValidationRequestHashMismatch,
+                VALIDATION_LOOKUP_FAILED_SELECTOR => Self::ValidationLookupFailed,
+                VALIDATION_PENDING_SELECTOR => Self::ValidationPending,
+                VALIDATION_SCORE_TOO_LOW_SELECTOR => Self::ValidationScoreTooLow,
+                VALIDATION_VALIDATOR_MISMATCH_SELECTOR => Self::ValidationValidatorMismatch,
+                VALIDATION_AGENT_MISMATCH_SELECTOR => Self::ValidationAgentMismatch,
+                VALIDATION_TAG_MISMATCH_SELECTOR => Self::ValidationTagMismatch,
+                _ => Self::UnknownRevert {
+                    selector: revert.selector,
+                    data: revert.data,
+                },
+            };
+        }
+
+        Self::Transport(error.to_string())
+    }
+}
+
+fn decode_address_argument(data: &[u8]) -> Option<Address> {
+    if data.len() < 36 {
+        return None;
+    }
+
+    let mut address = [0u8; 20];
+    address.copy_from_slice(&data[16..36]);
+    Some(Address::from(address))
+}
 
 impl_from_alloy_error!(FinalizeWithdrawalError, {
     Core4Mica::Core4MicaErrors::NoWithdrawalRequested(_) => Self::NoWithdrawalRequested,

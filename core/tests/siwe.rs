@@ -1,3 +1,4 @@
+use alloy::network::EthereumWallet;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
@@ -8,7 +9,21 @@ use test_log::test;
 mod common;
 use common::contract::MockERC1271Wallet;
 
+// Anvil default account #0 — always funded on a fresh anvil instance.
+const ANVIL_DEFAULT_KEY: &str =
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
 fn build_provider(port: u16) -> anyhow::Result<DynProvider> {
+    // In CI an anvil instance is already running; reuse it instead of spawning a new one.
+    if let Ok(rpc_url) = std::env::var("ETHEREUM_HTTP_RPC_URL") {
+        let signer: PrivateKeySigner = ANVIL_DEFAULT_KEY.parse()?;
+        let wallet = EthereumWallet::from(signer);
+        let provider = ProviderBuilder::new()
+            .wallet(wallet)
+            .connect_http(rpc_url.parse()?);
+        return Ok(provider.erased());
+    }
+
     let provider_res = std::panic::catch_unwind(|| {
         ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| anvil.port(port))
     });

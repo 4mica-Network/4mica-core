@@ -39,10 +39,10 @@ contract Core4MicaPausableTest is Core4MicaTestBase {
         core4Mica.unpause();
         assertFalse(core4Mica.paused());
 
-        (uint256 collateralBefore, , ) = core4Mica.getUser(USER1);
+        (uint256 collateralBefore,,) = core4Mica.getUser(USER1);
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
-        (uint256 collateralAfter, , ) = core4Mica.getUser(USER1);
+        (uint256 collateralAfter,,) = core4Mica.getUser(USER1);
         assertEq(collateralAfter, collateralBefore + 1 ether);
     }
 
@@ -55,14 +55,7 @@ contract Core4MicaPausableTest is Core4MicaTestBase {
         uint256 tabTimestamp = 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
-        Guarantee memory g = _ethGuarantee(
-            tabId,
-            tabTimestamp,
-            USER1,
-            USER2,
-            reqId,
-            0.5 ether
-        );
+        Guarantee memory g = _ethGuarantee(tabId, tabTimestamp, USER1, USER2, reqId, 0.5 ether);
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
