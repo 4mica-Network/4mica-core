@@ -76,25 +76,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### 2. Using Environment Variables
+#### 2. Using Environment Variables (`ConfigBuilder::from_env`)
 
-Set the following environment variables:
+`ConfigBuilder::from_env()` reads these keys:
 
-```bash
-export 4MICA_WALLET_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-# Optional (defaults to https://api.4mica.xyz/ if not set; override for local dev)
-export 4MICA_RPC_URL="http://localhost:3000"
-export 4MICA_ETHEREUM_HTTP_RPC_URL="http://localhost:8545"
-export 4MICA_CONTRACT_ADDRESS="0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
+- `4MICA_WALLET_PRIVATE_KEY` (required)
+- `4MICA_RPC_URL` (optional; defaults to `https://api.4mica.xyz/`)
+- `4MICA_ETHEREUM_HTTP_RPC_URL` (optional)
+- `4MICA_CONTRACT_ADDRESS` (optional)
+- `4MICA_BEARER_TOKEN` (optional)
+- `4MICA_AUTH_URL` (optional)
+- `4MICA_AUTH_REFRESH_MARGIN_SECS` (optional)
+
+Because these variable names start with a digit, use a `.env` file (or set process env programmatically) instead of `export` in a shell.
+
+Example `.env`:
+
+```ini
+4MICA_WALLET_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+4MICA_RPC_URL=http://localhost:3000
+4MICA_ETHEREUM_HTTP_RPC_URL=http://localhost:8545
+4MICA_CONTRACT_ADDRESS=0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0
 ```
 
 Then in your code:
 
 ```rust
-use sdk_4mica::{ConfigBuilder, Client};
+use sdk_4mica::{Client, ConfigBuilder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv::dotenv().ok();
+
     let config = ConfigBuilder::from_env()? // Loads environment variables
         .build()?;
 
@@ -102,6 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+Add `dotenv = "0.15"` to your app dependencies if you load `.env` files this way.
 
 ## Usage
 
@@ -293,7 +308,7 @@ Notes:
 - `deposit(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, DepositError>`: Deposit collateral in ETH or ERC20 token
 - `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
-- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment
+- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V1 payment (`PaymentGuaranteeRequestClaims` is the SDK alias for V1 claims)
 - `sign_payment_v2(claims: PaymentGuaranteeRequestClaimsV2, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V2 payment with validation policy fields
 - `sign_payment_auto(intent: PaymentGuaranteeIntent, validation: Option<PaymentGuaranteeValidationInput>, scheme: SigningScheme) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>`: Build and sign either V1 or V2 claims using core metadata
 - `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String, erc20_token: Option<String>) -> Result<TransactionReceipt, PayTabError>`: Pay a tab directly on-chain in ETH or ERC20 token
