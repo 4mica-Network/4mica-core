@@ -12,6 +12,7 @@ use sea_orm::{
 use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
+use super::collateral::unlock_user_collateral_on;
 use super::common::{now, parse_address};
 use super::users::ensure_user_exists_on;
 use crate::metrics::misc::record_db_time;
@@ -191,7 +192,10 @@ pub async fn mark_payment_transaction_recorded(
 ) -> Result<(), PersistDbError> {
     user_transaction::Entity::update_many()
         .filter(user_transaction::Column::TxId.eq(transaction_id))
-        .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Pending))
+        .filter(user_transaction::Column::Status.is_in([
+            UserTransactionStatus::Pending,
+            UserTransactionStatus::Confirmed,
+        ]))
         .col_expr(
             user_transaction::Column::Status,
             user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
@@ -225,6 +229,101 @@ pub async fn mark_payment_transaction_recorded(
         .exec(ctx.db.as_ref())
         .await?;
     Ok(())
+}
+
+#[measure(record_db_time)]
+pub async fn finalize_recorded_payment_transaction(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<bool, PersistDbError> {
+    let tx_id = transaction_id.to_string();
+    let finalized = ctx
+        .db
+        .transaction(|txn| {
+            let tx_id = tx_id.clone();
+            Box::pin(async move {
+                // Claim the row so only one worker can finalize+unlock this transaction.
+                // We must change predicate fields here; updating only UpdatedAt is not enough
+                // because a concurrent worker can still satisfy the same WHERE clause.
+                let claim = user_transaction::Entity::update_many()
+                    .filter(user_transaction::Column::TxId.eq(&tx_id))
+                    .filter(user_transaction::Column::Finalized.eq(false))
+                    .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Recorded))
+                    .col_expr(
+                        user_transaction::Column::Finalized,
+                        sea_orm::sea_query::Expr::value(true),
+                    )
+                    .col_expr(
+                        user_transaction::Column::Status,
+                        user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                            UserTransactionStatus::Finalized,
+                        )),
+                    )
+                    .col_expr(
+                        user_transaction::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now()),
+                    )
+                    .exec(txn)
+                    .await?;
+                if claim.rows_affected == 0 {
+                    return Ok(false);
+                }
+
+                let tx_row = user_transaction::Entity::find_by_id(&tx_id)
+                    .one(txn)
+                    .await?
+                    .ok_or_else(|| PersistDbError::TransactionNotFound(tx_id.clone()))?;
+
+                let tab_id_str = tx_row.tab_id.clone().ok_or_else(|| {
+                    PersistDbError::InvariantViolation(format!(
+                        "recorded tx {} missing tab_id",
+                        tx_row.tx_id
+                    ))
+                })?;
+                let tab_id = U256::from_str(&tab_id_str).map_err(|e| {
+                    PersistDbError::InvariantViolation(format!(
+                        "invalid tab_id {} for tx {}: {e}",
+                        tab_id_str, tx_row.tx_id
+                    ))
+                })?;
+                let amount = U256::from_str(&tx_row.amount)
+                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+
+                unlock_user_collateral_on(
+                    txn,
+                    tab_id,
+                    tx_row.asset_address.clone(),
+                    amount,
+                    Some(tx_row.tx_id.clone()),
+                )
+                .await?;
+
+                let updated = user_transaction::Entity::update_many()
+                    .filter(user_transaction::Column::TxId.eq(&tx_id))
+                    .filter(user_transaction::Column::Finalized.eq(true))
+                    .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Finalized))
+                    .col_expr(
+                        user_transaction::Column::Verified,
+                        sea_orm::sea_query::Expr::value(true),
+                    )
+                    .col_expr(
+                        user_transaction::Column::Status,
+                        user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                            UserTransactionStatus::Finalized,
+                        )),
+                    )
+                    .col_expr(
+                        user_transaction::Column::UpdatedAt,
+                        sea_orm::sea_query::Expr::value(now()),
+                    )
+                    .exec(txn)
+                    .await?;
+
+                Ok(updated.rows_affected == 1)
+            })
+        })
+        .await?;
+    Ok(finalized)
 }
 
 #[measure(record_db_time)]
@@ -346,7 +445,7 @@ pub async fn fail_transaction(
     user_address: String,
     transaction_id: String,
 ) -> Result<(), PersistDbError> {
-    parse_address(&user_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
 
     ctx.db
         .transaction(|txn| {
@@ -369,6 +468,7 @@ pub async fn fail_transaction(
                 let mut active_model = tx_row.clone().into_active_model();
                 active_model.finalized = Set(true);
                 active_model.failed = Set(true);
+                active_model.status = Set(UserTransactionStatus::Reverted);
                 active_model.updated_at = Set(now());
                 active_model.update(txn).await?;
 

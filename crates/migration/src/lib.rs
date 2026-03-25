@@ -16,6 +16,8 @@ mod m20260213_000012_blockchain_event_v2;
 mod m20260213_000013_event_metadata;
 mod m20260213_000014_user_transaction_status_enum;
 mod m20260216_000000_guarantee_request;
+mod m20260305_000001_user_transaction_status_consistency;
+mod m20260305_000002_unlock_and_tab_amount_guardrails;
 
 pub struct Migrator;
 
@@ -39,6 +41,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260213_000013_event_metadata::Migration),
             Box::new(m20260213_000014_user_transaction_status_enum::Migration),
             Box::new(m20260216_000000_guarantee_request::Migration),
+            Box::new(m20260305_000001_user_transaction_status_consistency::Migration),
+            Box::new(m20260305_000002_unlock_and_tab_amount_guardrails::Migration),
         ]
     }
 }

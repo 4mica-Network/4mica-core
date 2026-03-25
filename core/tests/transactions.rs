@@ -1,6 +1,7 @@
 use alloy::primitives::U256;
 use core_service::persist::repo;
 use core_service::{config::DEFAULT_ASSET_ADDRESS, error::PersistDbError};
+use entities::sea_orm_active_enums::UserTransactionStatus;
 use entities::user_transaction;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use test_log::test;
@@ -179,6 +180,45 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
         read_collateral(&ctx, &other_addr, DEFAULT_ASSET_ADDRESS).await?,
         U256::from(10u64)
     );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::serial]
+async fn mark_recorded_accepts_confirmed_status() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let recipient = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+    repo::submit_payment_transaction(
+        &ctx,
+        user_addr.clone(),
+        recipient,
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        tx_id.clone(),
+        U256::from(3u64),
+    )
+    .await?;
+
+    repo::mark_payment_transaction_recorded(
+        &ctx,
+        &tx_id,
+        "0xrecordtx".to_string(),
+        Some(42),
+        Some("0xrecordblock".to_string()),
+    )
+    .await?;
+
+    let row = user_transaction::Entity::find_by_id(tx_id)
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+    assert_eq!(row.status, UserTransactionStatus::Recorded);
+    assert_eq!(row.record_tx_hash.as_deref(), Some("0xrecordtx"));
+    assert_eq!(row.record_tx_block_number, Some(42));
 
     Ok(())
 }

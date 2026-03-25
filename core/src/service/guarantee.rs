@@ -18,9 +18,10 @@ use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::info;
 use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestEssentials,
+    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
+    PaymentGuaranteeRequestEssentials,
 };
-use sea_orm::TransactionTrait;
+use sea_orm::{ConnectionTrait, TransactionTrait};
 use std::str::FromStr;
 
 impl CoreService {
@@ -73,7 +74,11 @@ impl CoreService {
             ));
         }
 
-        if tab.asset_address != claims.asset_address {
+        let tab_asset = Address::from_str(&tab.asset_address)
+            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab asset address")))?;
+        let claim_asset = Address::from_str(&claims.asset_address)
+            .map_err(|_| ServiceError::InvalidParams("Invalid asset address".into()))?;
+        if tab_asset != claim_asset {
             return Err(ServiceError::InvalidParams("Invalid asset address".into()));
         }
 
@@ -119,12 +124,94 @@ impl CoreService {
         Ok(())
     }
 
+    pub async fn verify_guarantee_request_claims_v2(
+        &self,
+        claims: &PaymentGuaranteeRequestClaimsV2,
+    ) -> ServiceResult<()> {
+        let base_claims = Self::v2_to_v1_claims(claims);
+        self.verify_guarantee_request_claims_v1(&base_claims)
+            .await?;
+
+        claims
+            .validate()
+            .map_err(|err| ServiceError::InvalidParams(err.to_string()))?;
+
+        let trusted_registries = &self.inner.trusted_validation_registry_set;
+        if !trusted_registries.is_empty() {
+            let claim_registry = claims.validation_policy.validation_registry_address;
+            if !trusted_registries.contains(&claim_registry) {
+                return Err(ServiceError::InvalidParams(format!(
+                    "validation registry {} is not trusted",
+                    claim_registry
+                )));
+            }
+        }
+
+        if claims.validation_policy.validation_chain_id != self.inner.public_params.chain_id {
+            return Err(ServiceError::InvalidParams(format!(
+                "validation_chain_id {} must match core chain_id {}",
+                claims.validation_policy.validation_chain_id, self.inner.public_params.chain_id
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn v2_to_v1_claims(
+        claims: &PaymentGuaranteeRequestClaimsV2,
+    ) -> PaymentGuaranteeRequestClaimsV1 {
+        PaymentGuaranteeRequestClaimsV1 {
+            user_address: claims.user_address.clone(),
+            recipient_address: claims.recipient_address.clone(),
+            tab_id: claims.tab_id,
+            req_id: claims.req_id,
+            amount: claims.amount,
+            asset_address: claims.asset_address.clone(),
+            timestamp: claims.timestamp,
+        }
+    }
+
+    fn guarantee_domain_for_version(&self, version: u64) -> ServiceResult<[u8; 32]> {
+        self.inner
+            .guarantee_domains
+            .get(&version)
+            .copied()
+            .ok_or_else(|| {
+                ServiceError::Other(anyhow!(
+                    "missing guarantee domain for accepted guarantee version {}",
+                    version
+                ))
+            })
+    }
+
     async fn create_bls_cert(&self, claims: PaymentGuaranteeClaims) -> ServiceResult<BLSCert> {
         let claims_bytes = <PaymentGuaranteeClaims as TryInto<Vec<u8>>>::try_into(claims)
             .map_err(ServiceError::Other)?;
         let claims = BlsClaims::from_bytes(claims_bytes);
         BLSCert::sign(self.bls_secret_key(), claims)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
+    }
+
+    async fn process_guarantee_request_claims_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        claims: &PaymentGuaranteeRequestClaims,
+    ) -> ServiceResult<alloy::primitives::U256> {
+        match claims {
+            PaymentGuaranteeRequestClaims::V1(claims) => {
+                self.verify_guarantee_request_claims_v1(claims).await?;
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, claims)
+                    .await
+                    .map_err(Into::into)
+            }
+            PaymentGuaranteeRequestClaims::V2(claims) => {
+                self.verify_guarantee_request_claims_v2(claims).await?;
+                let base_claims = Self::v2_to_v1_claims(claims);
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims)
+                    .await
+                    .map_err(Into::into)
+            }
+        }
     }
 
     pub async fn issue_payment_guarantee(
@@ -137,10 +224,33 @@ impl CoreService {
 
         let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
+        let request_version = req.claims.version();
+        if !self
+            .inner
+            .accepted_guarantee_versions
+            .contains(&request_version)
+        {
+            let mut sorted: Vec<u64> = self
+                .inner
+                .accepted_guarantee_versions
+                .iter()
+                .copied()
+                .collect();
+            sorted.sort_unstable();
+            let accepted_versions = sorted
+                .into_iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ServiceError::InvalidParams(format!(
+                "guarantee request version {} is not accepted; accepted versions are [{}]",
+                request_version, accepted_versions
+            )));
+        }
 
         info!(
-            "Received guarantee request v1; tab_id={}, amount={}",
-            tab_id, amount
+            "Received guarantee request {}; tab_id={}, amount={}",
+            request_version, tab_id, amount
         );
 
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
@@ -159,18 +269,15 @@ impl CoreService {
             .transaction::<_, _, ServiceError>(|txn| {
                 let self_clone = self.clone();
                 Box::pin(async move {
-                    let total_amount = match &req.claims {
-                        PaymentGuaranteeRequestClaims::V1(claims) => {
-                            self_clone
-                                .verify_guarantee_request_claims_v1(claims)
-                                .await?;
-                            repo::update_user_balance_and_tab_for_guarantee_on(txn, claims).await?
-                        }
-                    };
+                    let total_amount = self_clone
+                        .process_guarantee_request_claims_on(txn, &req.claims)
+                        .await?;
+                    let guarantee_domain =
+                        self_clone.guarantee_domain_for_version(request_version)?;
 
                     let claims = PaymentGuaranteeClaims::from_request(
                         &req.claims,
-                        self_clone.inner.guarantee_domain,
+                        guarantee_domain,
                         total_amount,
                     );
                     let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;

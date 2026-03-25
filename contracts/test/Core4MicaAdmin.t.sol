@@ -24,17 +24,14 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
-    function test_SetWithdrawalGracePeriod_Revert_Operator_Unauthorized()
-        public
-    {
+    function test_SetWithdrawalGracePeriod_Revert_Operator_Unauthorized() public {
         vm.prank(OPERATOR);
         vm.expectRevert(AccessUnauthorizedError(OPERATOR));
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
     function test_SetWithdrawalGracePeriod_Revert_IllegalValue() public {
-        uint256 invalid = core4Mica.synchronizationDelay() +
-            core4Mica.tabExpirationTime();
+        uint256 invalid = core4Mica.synchronizationDelay() + core4Mica.tabExpirationTime();
         vm.expectRevert(Core4Mica.IllegalValue.selector);
         core4Mica.setWithdrawalGracePeriod(invalid);
     }
@@ -59,9 +56,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         core4Mica.setRemunerationGracePeriod(2 days);
     }
 
-    function test_SetRemunerationGracePeriod_Revert_Operator_Unauthorized()
-        public
-    {
+    function test_SetRemunerationGracePeriod_Revert_Operator_Unauthorized() public {
         vm.prank(OPERATOR);
         vm.expectRevert(AccessUnauthorizedError(OPERATOR));
         core4Mica.setRemunerationGracePeriod(2 days);
@@ -101,8 +96,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetTabExpirationTime_Revert_IllegalValue() public {
         uint256 invalidLow = core4Mica.remunerationGracePeriod();
-        uint256 invalidHigh = core4Mica.withdrawalGracePeriod() -
-            core4Mica.synchronizationDelay();
+        uint256 invalidHigh = core4Mica.withdrawalGracePeriod() - core4Mica.synchronizationDelay();
 
         vm.expectRevert(Core4Mica.IllegalValue.selector);
         core4Mica.setTabExpirationTime(invalidLow);
@@ -131,47 +125,31 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         core4Mica.setSynchronizationDelay(5 hours);
     }
 
-    function test_SetSynchronizationDelay_Revert_Operator_Unauthorized()
-        public
-    {
+    function test_SetSynchronizationDelay_Revert_Operator_Unauthorized() public {
         vm.prank(OPERATOR);
         vm.expectRevert(AccessUnauthorizedError(OPERATOR));
         core4Mica.setSynchronizationDelay(5 hours);
     }
 
     function test_SetSynchronizationDelay_Revert_IllegalValue() public {
-        uint256 invalid = core4Mica.withdrawalGracePeriod() -
-            core4Mica.tabExpirationTime();
+        uint256 invalid = core4Mica.withdrawalGracePeriod() - core4Mica.tabExpirationTime();
         vm.expectRevert(Core4Mica.IllegalValue.selector);
         core4Mica.setSynchronizationDelay(invalid);
     }
 
     function test_SetVerificationKey() public {
         BLS.G1Point memory newKey = BLS.G1Point(
-            bytes32(
-                0x1000000000000000000000000000000000000000000000000000000000000001
-            ),
-            bytes32(
-                0x0100000000000000000000000000000000000000000000000000000000000010
-            ),
-            bytes32(
-                0x0010000000000000000000000000000000000000000000000000000000000100
-            ),
-            bytes32(
-                0x0001000000000000000000000000000000000000000000000000000000001000
-            )
+            bytes32(0x1000000000000000000000000000000000000000000000000000000000000001),
+            bytes32(0x0100000000000000000000000000000000000000000000000000000000000010),
+            bytes32(0x0010000000000000000000000000000000000000000000000000000000000100),
+            bytes32(0x0001000000000000000000000000000000000000000000000000000000001000)
         );
         vm.expectEmit(false, false, false, true);
         emit Core4Mica.VerificationKeyUpdated(newKey);
 
         core4Mica.setGuaranteeVerificationKey(newKey);
 
-        (
-            bytes32 x_a,
-            bytes32 x_b,
-            bytes32 y_a,
-            bytes32 y_b
-        ) = core4Mica.GUARANTEE_VERIFICATION_KEY();
+        (bytes32 x_a, bytes32 x_b, bytes32 y_a, bytes32 y_b) = core4Mica.GUARANTEE_VERIFICATION_KEY();
         assertEq(x_a, newKey.x_a);
         assertEq(x_b, newKey.x_b);
         assertEq(y_a, newKey.y_a);
@@ -180,18 +158,10 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetVerificationKey_Revert_User_Unauthorized() public {
         BLS.G1Point memory newKey = BLS.G1Point(
-            bytes32(
-                0x1000000000000000000000000000000000000000000000000000000000000001
-            ),
-            bytes32(
-                0x0100000000000000000000000000000000000000000000000000000000000010
-            ),
-            bytes32(
-                0x0010000000000000000000000000000000000000000000000000000000000100
-            ),
-            bytes32(
-                0x0001000000000000000000000000000000000000000000000000000000001000
-            )
+            bytes32(0x1000000000000000000000000000000000000000000000000000000000000001),
+            bytes32(0x0100000000000000000000000000000000000000000000000000000000000010),
+            bytes32(0x0010000000000000000000000000000000000000000000000000000000000100),
+            bytes32(0x0001000000000000000000000000000000000000000000000000000000001000)
         );
         vm.prank(USER1);
         vm.expectRevert(AccessUnauthorizedError(USER1));
@@ -200,18 +170,10 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetVerificationKey_Revert_Operator_Unauthorized() public {
         BLS.G1Point memory newKey = BLS.G1Point(
-            bytes32(
-                0x1000000000000000000000000000000000000000000000000000000000000001
-            ),
-            bytes32(
-                0x0100000000000000000000000000000000000000000000000000000000000010
-            ),
-            bytes32(
-                0x0010000000000000000000000000000000000000000000000000000000000100
-            ),
-            bytes32(
-                0x0001000000000000000000000000000000000000000000000000000000001000
-            )
+            bytes32(0x1000000000000000000000000000000000000000000000000000000000000001),
+            bytes32(0x0100000000000000000000000000000000000000000000000000000000000010),
+            bytes32(0x0010000000000000000000000000000000000000000000000000000000000100),
+            bytes32(0x0001000000000000000000000000000000000000000000000000000000001000)
         );
         vm.prank(OPERATOR);
         vm.expectRevert(AccessUnauthorizedError(OPERATOR));
@@ -247,12 +209,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         vm.expectEmit(false, false, false, true);
         emit Core4Mica.WithdrawalGracePeriodUpdated(newWithdrawal);
 
-        core4Mica.setTimingParameters(
-            newRem,
-            newTab,
-            newSync,
-            newWithdrawal
-        );
+        core4Mica.setTimingParameters(newRem, newTab, newSync, newWithdrawal);
 
         assertEq(core4Mica.remunerationGracePeriod(), newRem);
         assertEq(core4Mica.tabExpirationTime(), newTab);
@@ -262,19 +219,9 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetTimingParameters_Revert_InvalidOrdering() public {
         vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTimingParameters(
-            15 days,
-            10 days,
-            1 days,
-            40 days
-        );
+        core4Mica.setTimingParameters(15 days, 10 days, 1 days, 40 days);
 
         vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTimingParameters(
-            5 days,
-            10 days,
-            15 days,
-            20 days
-        );
+        core4Mica.setTimingParameters(5 days, 10 days, 15 days, 20 days);
     }
 }

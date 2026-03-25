@@ -46,10 +46,16 @@ pub fn random_address() -> String {
     format!("0x{:040x}", random::<u128>())
 }
 
+fn normalize_address(addr: &str) -> Result<String> {
+    let parsed = Address::from_str(addr).map_err(|err| anyhow!("invalid address {addr}: {err}"))?;
+    Ok(format!("{parsed:#x}"))
+}
+
 pub async fn ensure_user(ctx: &PersistCtx, addr: &str) -> Result<()> {
+    let addr = normalize_address(addr)?;
     let now = Utc::now().naive_utc();
     let am = user::ActiveModel {
-        address: Set(addr.to_string()),
+        address: Set(addr),
         version: Set(0),
         is_suspended: Set(false),
         created_at: Set(now),
@@ -70,7 +76,7 @@ pub async fn ensure_user_with_collateral(ctx: &PersistCtx, addr: &str, amount: U
     ensure_user(ctx, addr).await?;
     repo::deposit(
         ctx,
-        addr.to_string(),
+        normalize_address(addr)?,
         DEFAULT_ASSET_ADDRESS.to_string(),
         amount,
     )
@@ -79,8 +85,9 @@ pub async fn ensure_user_with_collateral(ctx: &PersistCtx, addr: &str, amount: U
 }
 
 pub async fn fetch_user(ctx: &PersistCtx, addr: &str) -> Result<user::Model> {
+    let addr = normalize_address(addr)?;
     user::Entity::find()
-        .filter(user::Column::Address.eq(addr.to_string()))
+        .filter(user::Column::Address.eq(addr.clone()))
         .one(ctx.db.as_ref())
         .await?
         .ok_or_else(|| anyhow!("user {addr} not found"))
@@ -100,26 +107,31 @@ pub async fn clear_tables(ctx: &PersistCtx, tables: &[&str]) -> Result<()> {
 }
 
 pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
-    clear_tables(
-        ctx,
-        &[
-            "UserTransaction",
-            "Withdrawal",
-            "Guarantee",
-            "Tabs",
-            "CollateralEvent",
-            "UserAssetBalance",
-            "User",
-            "AuthNonce",
-            "AuthRefreshToken",
-            "WalletRole",
-            "BlockchainEvent",
-            "BlockchainEventCursor",
-            "BlockchainBlock",
-            "ChainCursor",
-        ],
-    )
-    .await?;
+    // Use a single TRUNCATE so FK relationships are handled atomically.
+    ctx.db
+        .as_ref()
+        .execute(Statement::from_string(
+            ctx.db.get_database_backend(),
+            r#"
+TRUNCATE TABLE
+    "UserTransaction",
+    "Withdrawal",
+    "Guarantee",
+    "Tabs",
+    "CollateralEvent",
+    "UserAssetBalance",
+    "User",
+    "AuthNonce",
+    "AuthRefreshToken",
+    "WalletRole",
+    "BlockchainEvent",
+    "BlockchainEventCursor",
+    "BlockchainBlock",
+    "ChainCursor"
+RESTART IDENTITY CASCADE;
+"#,
+        ))
+        .await?;
 
     Ok(())
 }
@@ -129,6 +141,8 @@ pub async fn read_user_asset_balance(
     user_address: &str,
     asset_address: &str,
 ) -> Result<Option<user_asset_balance::Model>> {
+    let user_address = normalize_address(user_address)?;
+    let asset_address = normalize_address(asset_address)?;
     let balance = user_asset_balance::Entity::find()
         .filter(user_asset_balance::Column::UserAddress.eq(user_address))
         .filter(user_asset_balance::Column::AssetAddress.eq(asset_address))
@@ -169,7 +183,9 @@ pub async fn set_locked_collateral(
     asset_address: &str,
     amount: U256,
 ) -> Result<()> {
-    let balance = repo::get_user_balance_on(ctx.db.as_ref(), user_address, asset_address).await?;
+    let user_address = normalize_address(user_address)?;
+    let asset_address = normalize_address(asset_address)?;
+    let balance = repo::get_user_balance_on(ctx.db.as_ref(), &user_address, &asset_address).await?;
     let total = U256::from_str(&balance.total)
         .map_err(|e| anyhow!("invalid collateral {}: {}", balance.total, e))?;
     if amount > total {
@@ -181,8 +197,8 @@ pub async fn set_locked_collateral(
     }
     repo::update_user_balance_and_version_on(
         ctx.db.as_ref(),
-        user_address,
-        asset_address,
+        &user_address,
+        &asset_address,
         balance.version,
         total,
         amount,

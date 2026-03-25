@@ -7,10 +7,21 @@ use alloy::{
 use anyhow::anyhow;
 use async_trait::async_trait;
 use log::info;
+use rpc::SupportedTokenInfo;
+use tokio::sync::Mutex;
 
 pub struct CoreContractProxy {
     provider: DynProvider,
     contract_address: Address,
+    tx_write_lock: Mutex<()>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GuaranteeVersionConfig {
+    pub version: u64,
+    pub domain_separator: [u8; 32],
+    pub decoder: Address,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -24,9 +35,28 @@ pub struct RecordPaymentTx {
 pub trait CoreContractApi: Send + Sync {
     async fn get_chain_id(&self) -> Result<u64, CoreContractApiError>;
 
-    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError>;
+    async fn get_guarantee_version_config(
+        &self,
+        version: u64,
+    ) -> Result<GuaranteeVersionConfig, CoreContractApiError>;
+
+    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
+        let cfg = self
+            .get_guarantee_version_config(rpc::GUARANTEE_CLAIMS_VERSION)
+            .await?;
+
+        if !cfg.enabled {
+            return Err(CoreContractApiError::GuaranteeVersionDisabled(
+                rpc::GUARANTEE_CLAIMS_VERSION,
+            ));
+        }
+
+        Ok(cfg.domain_separator)
+    }
 
     async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError>;
+
+    async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError>;
 
     async fn record_payment(
         &self,
@@ -62,6 +92,7 @@ impl CoreContractProxy {
         Ok(Self {
             provider,
             contract_address,
+            tx_write_lock: Mutex::new(()),
         })
     }
 
@@ -77,20 +108,19 @@ impl CoreContractApi for CoreContractProxy {
         Ok(chain_id)
     }
 
-    async fn get_guarantee_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
+    async fn get_guarantee_version_config(
+        &self,
+        version: u64,
+    ) -> Result<GuaranteeVersionConfig, CoreContractApiError> {
         let contract = self.build_contract();
-        let version_config = contract
-            .getGuaranteeVersionConfig(rpc::GUARANTEE_CLAIMS_VERSION)
-            .call()
-            .await?;
+        let version_config = contract.getGuaranteeVersionConfig(version).call().await?;
 
-        if !version_config.enabled {
-            return Err(CoreContractApiError::GuaranteeVersionDisabled(
-                rpc::GUARANTEE_CLAIMS_VERSION,
-            ));
-        }
-
-        Ok(version_config.domainSeparator.into())
+        Ok(GuaranteeVersionConfig {
+            version,
+            domain_separator: version_config.domainSeparator.into(),
+            decoder: version_config.decoder,
+            enabled: version_config.enabled,
+        })
     }
 
     async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
@@ -99,12 +129,32 @@ impl CoreContractApi for CoreContractProxy {
         Ok(expiration.to())
     }
 
+    async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {
+        let contract = self.build_contract();
+        let addresses = contract.getERC20Tokens().call().await?;
+        let mut tokens = Vec::with_capacity(addresses.len());
+        for addr in addresses {
+            let erc20 = ERC20Metadata::new(addr, self.provider.clone());
+            let symbol = erc20.symbol().call().await?;
+            let decimals = erc20.decimals().call().await?;
+            tokens.push(SupportedTokenInfo {
+                symbol,
+                address: addr.to_string(),
+                decimals,
+            });
+        }
+        Ok(tokens)
+    }
+
     async fn record_payment(
         &self,
         tab_id: U256,
         asset: Address,
         amount: U256,
     ) -> Result<RecordPaymentTx, CoreContractApiError> {
+        // Serialize contract writes for the shared signer to avoid nonce races between
+        // overlapping payment-confirmation tasks.
+        let _guard = self.tx_write_lock.lock().await;
         let contract = self.build_contract();
         let tx = contract.recordPayment(tab_id, asset, amount);
 

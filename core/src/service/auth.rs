@@ -71,7 +71,7 @@ impl CoreService {
         req: AuthNonceRequest,
     ) -> ServiceResult<AuthNonceResponse> {
         let auth_cfg = &self.inner.config.auth;
-        let address = auth::utils::parse_wallet_address(&req.address)?.to_string();
+        let address = auth::utils::normalize_wallet_address(&req.address)?;
         let now = Utc::now();
         let expires_at = now + Duration::seconds(auth_cfg.nonce_ttl_secs);
         let nonce = repo::common::new_uuid();
@@ -108,7 +108,7 @@ impl CoreService {
             return Err(ServiceError::Unauthorized("address mismatch".into()));
         }
 
-        let address = expected_address.to_string();
+        let address = format!("{expected_address:#x}");
 
         if parsed.version.trim() != "1" {
             return Err(ServiceError::Unauthorized("invalid siwe version".into()));
