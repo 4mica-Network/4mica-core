@@ -18,6 +18,8 @@ pub struct PaymentGuaranteeValidationPolicyV2 {
     pub min_validation_score: u8,
     pub validation_subject_hash: B256,
     #[serde(default)]
+    pub job_hash: B256,
+    #[serde(default)]
     pub required_validation_tag: String,
 }
 
@@ -251,6 +253,7 @@ impl PaymentGuaranteeRequestClaimsV2 {
         validator_agent_id: U256,
         min_validation_score: u8,
         validation_subject_hash: String,
+        job_hash: String,
         required_validation_tag: Option<String>,
     ) -> anyhow::Result<Self> {
         let validation_policy = PaymentGuaranteeValidationPolicyV2 {
@@ -270,6 +273,7 @@ impl PaymentGuaranteeRequestClaimsV2 {
                 "validation_subject_hash",
                 &validation_subject_hash,
             )?,
+            job_hash: parse_b256("job_hash", &job_hash)?,
             required_validation_tag: required_validation_tag.unwrap_or_default(),
         };
         let mut builder = Self::builder(
@@ -364,6 +368,10 @@ fn validate_policy_binding(
     timestamp: u64,
     policy: &PaymentGuaranteeValidationPolicyV2,
 ) -> anyhow::Result<()> {
+    if policy.job_hash == B256::ZERO {
+        anyhow::bail!("job_hash must be provided for V2 validation policy");
+    }
+
     let expected_subject_hash = compute_validation_subject_hash(
         user_address,
         recipient_address,
@@ -435,7 +443,7 @@ impl PaymentGuaranteeRequestEssentials for PaymentGuaranteeRequestClaims {
 #[serde(rename_all = "snake_case", tag = "version")]
 pub enum PaymentGuaranteeRequestClaims {
     V1(PaymentGuaranteeRequestClaimsV1),
-    V2(PaymentGuaranteeRequestClaimsV2),
+    V2(Box<PaymentGuaranteeRequestClaimsV2>),
 }
 
 impl PaymentGuaranteeRequestClaims {

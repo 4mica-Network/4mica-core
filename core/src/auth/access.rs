@@ -1,6 +1,7 @@
 use super::constants::{ROLE_ADMIN, ROLE_FACILITATOR};
 use crate::error::{ServiceError, ServiceResult};
 use entities::tabs;
+use log::warn;
 use subtle::{Choice, ConstantTimeEq};
 
 #[derive(Clone, Debug)]
@@ -30,6 +31,10 @@ pub fn addresses_match(left: &str, right: &str) -> bool {
 
 pub fn require_scope(auth: &AccessContext, scope: &str) -> ServiceResult<()> {
     if !scope_contains(&auth.scopes, scope) {
+        warn!(
+            "auth scope denied: wallet={}, role={}, required_scope={}, token_scopes={:?}",
+            auth.wallet_address, auth.role, scope, auth.scopes
+        );
         return Err(ServiceError::Unauthorized("missing scope".into()));
     }
     Ok(())
@@ -51,6 +56,10 @@ pub fn require_recipient_match_or_facilitator(
     if !addresses_match(&auth.wallet_address, recipient_address)
         && require_facilitator_role(auth).is_err()
     {
+        warn!(
+            "auth recipient denied: wallet={}, role={}, recipient={}",
+            auth.wallet_address, auth.role, recipient_address
+        );
         return Err(ServiceError::Unauthorized(
             "recipient address does not match token subject and role is not facilitator".into(),
         ));

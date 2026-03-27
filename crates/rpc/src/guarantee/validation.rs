@@ -7,11 +7,11 @@ use std::sync::LazyLock;
 use super::PaymentGuaranteeValidationPolicyV2;
 
 pub const VALIDATION_SUBJECT_BINDING_DOMAIN_V1: &str = "4MICA_VALIDATION_SUBJECT_V1";
-pub const VALIDATION_REQUEST_BINDING_DOMAIN_V1: &str = "4MICA_VALIDATION_REQUEST_V1";
+pub const VALIDATION_REQUEST_BINDING_DOMAIN_V2: &str = "4MICA_VALIDATION_REQUEST_V2";
 static VALIDATION_SUBJECT_BINDING_DOMAIN_HASH: LazyLock<B256> =
     LazyLock::new(|| keccak256(VALIDATION_SUBJECT_BINDING_DOMAIN_V1.as_bytes()));
 static VALIDATION_REQUEST_BINDING_DOMAIN_HASH: LazyLock<B256> =
-    LazyLock::new(|| keccak256(VALIDATION_REQUEST_BINDING_DOMAIN_V1.as_bytes()));
+    LazyLock::new(|| keccak256(VALIDATION_REQUEST_BINDING_DOMAIN_V2.as_bytes()));
 
 sol! {
     struct ValidationSubjectPayloadV1 {
@@ -25,7 +25,7 @@ sol! {
         uint64 timestamp;
     }
 
-    struct ValidationRequestPayloadV1 {
+    struct ValidationRequestPayloadV2 {
         bytes32 bindingDomain;
         uint256 chainId;
         address validationRegistryAddress;
@@ -34,6 +34,7 @@ sol! {
         bytes32 validationSubjectHash;
         uint8 minValidationScore;
         bytes32 requiredValidationTagHash;
+        bytes32 jobHash;
     }
 }
 
@@ -65,7 +66,7 @@ pub fn compute_validation_request_hash(
     policy: &PaymentGuaranteeValidationPolicyV2,
 ) -> anyhow::Result<[u8; 32]> {
     validate_min_validation_score(policy.min_validation_score)?;
-    let payload = ValidationRequestPayloadV1 {
+    let payload = ValidationRequestPayloadV2 {
         bindingDomain: *VALIDATION_REQUEST_BINDING_DOMAIN_HASH,
         chainId: U256::from(policy.validation_chain_id),
         validationRegistryAddress: policy.validation_registry_address,
@@ -74,6 +75,7 @@ pub fn compute_validation_request_hash(
         validationSubjectHash: policy.validation_subject_hash,
         minValidationScore: policy.min_validation_score,
         requiredValidationTagHash: keccak256(policy.required_validation_tag.as_bytes()),
+        jobHash: policy.job_hash,
     }
     .abi_encode();
 

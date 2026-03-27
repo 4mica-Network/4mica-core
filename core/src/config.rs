@@ -16,8 +16,8 @@ use secrecy::zeroize::Zeroize;
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
 pub const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
-pub const VALIDATION_HASH_CANONICALIZATION_VERSION_V1: &str =
-    rpc::VALIDATION_REQUEST_BINDING_DOMAIN_V1;
+pub const VALIDATION_HASH_CANONICALIZATION_VERSION_V2: &str =
+    rpc::VALIDATION_REQUEST_BINDING_DOMAIN_V2;
 const DEFAULT_AUTH_JWT_SECRET: &str = "dev-insecure-change-me";
 const PLACEHOLDER_AUTH_JWT_SECRET: &str = "replace-with-32+bytes-random";
 
@@ -148,7 +148,7 @@ pub struct GuaranteeConfig {
     pub trusted_validation_registries: String,
     #[envconfig(
         from = "VALIDATION_HASH_CANONICALIZATION_VERSION",
-        default = "4MICA_VALIDATION_REQUEST_V1"
+        default = "4MICA_VALIDATION_REQUEST_V2"
     )]
     pub validation_hash_canonicalization_version: String,
 }
@@ -202,11 +202,11 @@ impl GuaranteeConfig {
         if canonicalization_version.is_empty() {
             bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");
         }
-        if canonicalization_version != VALIDATION_HASH_CANONICALIZATION_VERSION_V1 {
+        if canonicalization_version != VALIDATION_HASH_CANONICALIZATION_VERSION_V2 {
             bail!(
                 "unsupported VALIDATION_HASH_CANONICALIZATION_VERSION '{}'; supported: {}",
                 canonicalization_version,
-                VALIDATION_HASH_CANONICALIZATION_VERSION_V1
+                VALIDATION_HASH_CANONICALIZATION_VERSION_V2
             );
         }
 
@@ -389,7 +389,7 @@ mod tests {
             max_accepted_version: 1,
             accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         v1.validate().expect("v1 config must be valid");
 
@@ -399,7 +399,7 @@ mod tests {
             trusted_validation_registries:
                 "0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222"
                     .to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         v2.validate().expect("v2 config must be valid");
         let allowlist = v2
@@ -415,7 +415,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries:
                 "0x1111111111111111111111111111111111111111,not-an-address".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         let err = cfg
             .validate()
@@ -449,7 +449,7 @@ mod tests {
             max_accepted_version: 2,
             accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
         };
         let err = cfg
             .validate()
@@ -466,7 +466,7 @@ mod tests {
             max_accepted_version: 2,
             accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         let err = cfg
             .validate()
@@ -480,7 +480,7 @@ mod tests {
             max_accepted_version: 3,
             accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         let err = cfg
             .validate()
@@ -497,7 +497,7 @@ mod tests {
             max_accepted_version: 2,
             accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
 
         let versions = cfg
@@ -512,7 +512,7 @@ mod tests {
             max_accepted_version: 2,
             accepted_request_versions: "2".to_string(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
 
         let versions = cfg

@@ -38,7 +38,7 @@ async fn rpc_proxy_get_public_params_round_trip() {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".into(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".into(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".into(),
     };
 
     let router = Router::new().route(
@@ -141,7 +141,7 @@ async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
             "0x1111111111111111111111111111111111111111".into(),
             "0x2222222222222222222222222222222222222222".into(),
         ],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".into(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".into(),
     };
 
     let router = Router::new().route(
@@ -168,7 +168,7 @@ async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
     );
     assert_eq!(
         got.validation_hash_canonicalization_version,
-        "4MICA_VALIDATION_REQUEST_V1"
+        "4MICA_VALIDATION_REQUEST_V2"
     );
     assert_eq!(
         got.trusted_validation_registries,
@@ -209,12 +209,13 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
         validator_agent_id: U256::from(99u64),
         min_validation_score: 80,
         validation_subject_hash: B256::from(validation_subject_hash),
+        job_hash: B256::repeat_byte(0x11),
         required_validation_tag: "hard-finality".to_string(),
     };
     policy.validation_request_hash =
         B256::from(compute_validation_request_hash(&policy).expect("request hash"));
 
-    let claims = PaymentGuaranteeRequestClaims::V2(PaymentGuaranteeRequestClaimsV2 {
+    let claims = PaymentGuaranteeRequestClaims::V2(Box::new(PaymentGuaranteeRequestClaimsV2 {
         user_address: user.to_string(),
         recipient_address: recipient.to_string(),
         tab_id,
@@ -223,7 +224,7 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
         asset_address: asset.to_string(),
         timestamp,
         validation_policy: policy,
-    });
+    }));
 
     PaymentGuaranteeRequest::new(claims, "0x1234".to_string(), SigningScheme::Eip712)
 }

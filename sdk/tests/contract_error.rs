@@ -151,7 +151,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
 
     enum IssuedClaims {
         V1(PaymentGuaranteeRequestClaimsV1),
-        V2(PaymentGuaranteeRequestClaimsV2),
+        V2(Box<PaymentGuaranteeRequestClaimsV2>),
     }
 
     let claims = match public_params.max_accepted_guarantee_version {
@@ -189,12 +189,13 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
                 validator_agent_id: U256::from(1u64),
                 min_validation_score: 80,
                 validation_subject_hash: B256::from(validation_subject_hash),
+                job_hash: B256::repeat_byte(0x11),
                 required_validation_tag: "contract-error-test".to_string(),
             };
             validation_policy.validation_request_hash =
                 B256::from(compute_validation_request_hash(&validation_policy)?);
 
-            IssuedClaims::V2(
+            IssuedClaims::V2(Box::new(
                 PaymentGuaranteeRequestClaimsV2::builder(
                     user_address.clone(),
                     recipient_address.clone(),
@@ -206,7 +207,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
                 .asset_address(ETH_ASSET_ADDRESS.to_string())
                 .validation_policy(validation_policy)
                 .build()?,
-            )
+            ))
         }
         other => {
             return Err(anyhow::anyhow!(
@@ -233,6 +234,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
                 .await?
         }
         IssuedClaims::V2(claims) => {
+            let claims = *claims;
             let payment_sig = user_client
                 .user
                 .sign_payment_v2(claims.clone(), SigningScheme::Eip712)

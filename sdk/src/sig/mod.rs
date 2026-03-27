@@ -57,8 +57,12 @@ pub trait PaymentSigner: Send + Sync {
         claims: PaymentGuaranteeRequestClaimsV2,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError> {
-        self.sign_claims(params, PaymentGuaranteeRequestClaims::V2(claims), scheme)
-            .await
+        self.sign_claims(
+            params,
+            PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
+            scheme,
+        )
+        .await
     }
 }
 

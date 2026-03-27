@@ -77,6 +77,7 @@ pub fn sample_requirements_v2(tab_endpoint: &str) -> PaymentRequirementsV2 {
             "validatorAddress": Address::repeat_byte(0x22),
             "validatorAgentId": "77",
             "minValidationScore": 80u8,
+            "jobHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
             "requiredValidationTag": "hard-finality",
         })),
     }

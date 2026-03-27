@@ -36,6 +36,7 @@ V2 embeds a **validation policy** in the signed claims. When `remunerate()` is c
 | `validator_agent_id` | `U256` | Expected agent within that validator |
 | `min_validation_score` | `u8` | Threshold 1–100 (0 is rejected) |
 | `validation_subject_hash` | `bytes32` | Canonical commitment to the payment intent fields |
+| `job_hash` | `bytes32` | Required binding for the validation job |
 | `required_validation_tag` | `String` | Optional tag the registry response must carry |
 
 **`PaymentGuaranteeRequestClaimsV2`** — same base fields as V1 plus the policy above. Construction (builder or deserialization) validates that both hashes are canonical:
@@ -47,9 +48,9 @@ validation_subject_hash = keccak256(abi.encode(
 ))
 
 validation_request_hash = keccak256(abi.encode(
-    keccak256("4MICA_VALIDATION_REQUEST_V1"),
+    keccak256("4MICA_VALIDATION_REQUEST_V2"),
     chainId, registryAddress, validatorAddress, agentId,
-    validationSubjectHash, minScore, keccak256(tag)
+    validationSubjectHash, minScore, keccak256(tag), jobHash
 ))
 ```
 
@@ -67,7 +68,7 @@ Both functions are exported from `rpc` and used identically by core, SDK, and co
 
 - `GUARANTEE_REQUEST_VERSION` env var now populates `max_accepted_version` (renamed from `request_version`). The name clarifies it is the ceiling for the default accepted-version range, not the output version.
 - `TRUSTED_VALIDATION_REGISTRIES` — comma-separated ERC-155 address allowlist. Required when any accepted version is V2+; validated at startup.
-- `VALIDATION_HASH_CANONICALIZATION_VERSION` — must be `4MICA_VALIDATION_REQUEST_V1`; guards against future algorithm mismatches.
+- `VALIDATION_HASH_CANONICALIZATION_VERSION` — must be `4MICA_VALIDATION_REQUEST_V2`; guards against future algorithm mismatches.
 
 **Startup (`core/src/service/mod.rs`)**
 

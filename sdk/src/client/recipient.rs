@@ -151,8 +151,12 @@ impl<S> RecipientClient<S> {
     where
         S: Signer + Sync,
     {
-        self.issue_inner(PaymentGuaranteeRequestClaims::V2(claims), signature, scheme)
-            .await
+        self.issue_inner(
+            PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
+            signature,
+            scheme,
+        )
+        .await
     }
 
     pub async fn issue_prepared_payment_guarantee(
@@ -432,7 +436,7 @@ impl<S> RecipientClient<S> {
 #[cfg(test)]
 mod tests {
     use super::RecipientClient;
-    use alloy::primitives::{Address, U256};
+    use alloy::primitives::{Address, B256, U256};
     use rpc::{
         GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeValidationPolicyV2,
     };
@@ -460,6 +464,7 @@ mod tests {
                 validator_agent_id: U256::from(7u64),
                 min_validation_score: 80,
                 validation_subject_hash: Default::default(),
+                job_hash: B256::repeat_byte(0x11),
                 required_validation_tag: String::new(),
             }),
         }

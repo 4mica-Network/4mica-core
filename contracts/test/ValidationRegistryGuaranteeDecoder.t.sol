@@ -244,6 +244,7 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         g.validator_agent_id = 77;
         g.min_validation_score = 80;
         g.required_validation_tag = "hard-finality";
+        g.job_hash = keccak256("JOB");
 
         g.validation_subject_hash = _computeValidationSubjectHash(g);
         g.validation_request_hash = _computeValidationRequestHash(g);
@@ -293,7 +294,8 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
                 g.validator_agent_id,
                 g.validation_subject_hash,
                 g.min_validation_score,
-                keccak256(bytes(g.required_validation_tag))
+                keccak256(bytes(g.required_validation_tag)),
+                g.job_hash
             )
         );
     }

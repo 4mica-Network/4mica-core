@@ -31,6 +31,7 @@ fn sample_v2_claims() -> PaymentGuaranteeRequestClaimsV2 {
         validator_agent_id: U256::from(99u64),
         min_validation_score: 80,
         validation_subject_hash: B256::from(validation_subject_hash),
+        job_hash: B256::repeat_byte(0x11),
         required_validation_tag: "hard-finality".to_string(),
     };
     let validation_request_hash =
@@ -48,6 +49,7 @@ fn sample_v2_claims() -> PaymentGuaranteeRequestClaimsV2 {
         validator_agent_id: U256::from(99u64),
         min_validation_score: 80,
         validation_subject_hash: B256::from(validation_subject_hash),
+        job_hash: B256::repeat_byte(0x11),
         required_validation_tag: "hard-finality".to_string(),
     };
     PaymentGuaranteeRequestClaimsV2::builder(
@@ -88,7 +90,7 @@ fn v1_payload_deserializes_for_compatibility() {
 #[test]
 fn v2_payload_roundtrip_succeeds() {
     let claims = sample_v2_claims();
-    let wrapped = PaymentGuaranteeRequestClaims::V2(claims);
+    let wrapped = PaymentGuaranteeRequestClaims::V2(Box::new(claims));
     let encoded = serde_json::to_string(&wrapped).expect("serialize v2");
     let decoded: PaymentGuaranteeRequestClaims =
         serde_json::from_str(&encoded).expect("deserialize v2");
@@ -104,8 +106,8 @@ fn v2_payload_roundtrip_succeeds() {
 #[test]
 fn v2_serialization_flattens_validation_fields() {
     let claims = sample_v2_claims();
-    let payload =
-        serde_json::to_value(PaymentGuaranteeRequestClaims::V2(claims)).expect("serialize payload");
+    let payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
+        .expect("serialize payload");
     let object = payload.as_object().expect("payload should be object");
     assert!(object.contains_key("validator_address"));
     assert!(!object.contains_key("validation_policy"));
@@ -125,8 +127,8 @@ fn unknown_version_fails() {
 #[test]
 fn missing_required_v2_field_fails() {
     let claims = sample_v2_claims();
-    let mut payload =
-        serde_json::to_value(PaymentGuaranteeRequestClaims::V2(claims)).expect("serialize");
+    let mut payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
+        .expect("serialize");
     let object = payload
         .as_object_mut()
         .expect("payload must be a json object");
@@ -141,8 +143,8 @@ fn missing_required_v2_field_fails() {
 #[test]
 fn min_validation_score_out_of_range_fails() {
     let claims = sample_v2_claims();
-    let mut payload =
-        serde_json::to_value(PaymentGuaranteeRequestClaims::V2(claims)).expect("serialize");
+    let mut payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
+        .expect("serialize");
     let object = payload
         .as_object_mut()
         .expect("payload must be a json object");
@@ -163,8 +165,8 @@ fn min_validation_score_out_of_range_fails() {
 #[test]
 fn non_canonical_validation_request_hash_fails() {
     let claims = sample_v2_claims();
-    let mut payload =
-        serde_json::to_value(PaymentGuaranteeRequestClaims::V2(claims)).expect("serialize");
+    let mut payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
+        .expect("serialize");
     let object = payload
         .as_object_mut()
         .expect("payload must be a json object");

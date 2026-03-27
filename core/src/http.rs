@@ -13,6 +13,7 @@ use axum::{
 use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
 use http::{StatusCode, header::AUTHORIZATION};
+use log::{debug, warn};
 use metrics_4mica::http::HttpMetricsMiddleware;
 use metrics_exporter_prometheus::PrometheusHandle;
 use rpc::{
@@ -185,7 +186,19 @@ async fn auth_middleware(
     }
 
     let token = bearer_token(req.headers())?;
-    let claims = service.validate_access_token(token)?;
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let claims = service.validate_access_token(token).map_err(|err| {
+        warn!(
+            "auth token denied: method={}, path={}, error={}",
+            method, path, err
+        );
+        ApiError::from(err)
+    })?;
+    debug!(
+        "auth token accepted: method={}, path={}, wallet={}, role={}, scopes={:?}",
+        method, path, claims.sub, claims.role, claims.scopes
+    );
 
     req.extensions_mut().insert(AccessContext {
         wallet_address: claims.sub,

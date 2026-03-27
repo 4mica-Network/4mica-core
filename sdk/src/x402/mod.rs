@@ -48,7 +48,7 @@ where
                 .map_err(X402Error::Signing),
             PaymentGuaranteeRequestClaims::V2(c) => self
                 .user
-                .sign_payment_v2(c, scheme)
+                .sign_payment_v2(*c, scheme)
                 .await
                 .map_err(X402Error::Signing),
         }
@@ -148,13 +148,13 @@ where
         let signature = self
             .signer
             .sign_payment(
-                PaymentGuaranteeRequestClaims::V2(claims.clone()),
+                PaymentGuaranteeRequestClaims::V2(Box::new(claims.clone())),
                 SigningScheme::Eip712,
             )
             .await?;
 
         let payload = PaymentGuaranteeRequest::new(
-            PaymentGuaranteeRequestClaims::V2(claims.clone()),
+            PaymentGuaranteeRequestClaims::V2(Box::new(claims.clone())),
             signature.signature.clone(),
             signature.scheme.clone(),
         );
@@ -308,6 +308,11 @@ where
                 .min_validation_score
                 .ok_or_else(|| X402Error::InvalidExtra("missing minValidationScore".into()))?,
             validation_subject_hash: B256::from(validation_subject_hash),
+            job_hash: extra
+                .job_hash
+                .as_deref()
+                .ok_or_else(|| X402Error::InvalidExtra("missing jobHash".into()))
+                .and_then(|raw| parse_b256_field("jobHash", raw))?,
             required_validation_tag: extra.required_validation_tag.unwrap_or_default(),
         };
         validation_policy.validation_request_hash = B256::from(
@@ -389,6 +394,14 @@ fn parse_u256_field(field: &str, raw: &str) -> Result<U256, X402Error> {
         U256::from_str_radix(trimmed, 10)
     };
     value.map_err(|e| X402Error::InvalidNumber {
+        field: field.to_string(),
+        source: e.into(),
+    })
+}
+
+fn parse_b256_field(field: &str, raw: &str) -> Result<B256, X402Error> {
+    let trimmed = raw.trim();
+    <B256 as std::str::FromStr>::from_str(trimmed).map_err(|e| X402Error::InvalidNumber {
         field: field.to_string(),
         source: e.into(),
     })

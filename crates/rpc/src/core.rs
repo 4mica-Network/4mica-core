@@ -20,7 +20,7 @@ fn default_max_accepted_guarantee_version() -> u64 {
 }
 
 fn default_validation_hash_canonicalization_version() -> String {
-    crate::guarantee::VALIDATION_REQUEST_BINDING_DOMAIN_V1.to_string()
+    crate::guarantee::VALIDATION_REQUEST_BINDING_DOMAIN_V2.to_string()
 }
 
 fn default_accepted_guarantee_versions() -> Vec<u64> {

@@ -37,6 +37,7 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
         uint256 validator_agent_id;
         uint8 min_validation_score;
         bytes32 validation_subject_hash;
+        bytes32 job_hash;
         string required_validation_tag;
     }
 
@@ -175,7 +176,8 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
                 g.validator_agent_id,
                 g.validation_subject_hash,
                 g.min_validation_score,
-                keccak256(bytes(g.required_validation_tag))
+                keccak256(bytes(g.required_validation_tag)),
+                g.job_hash
             )
         );
     }
