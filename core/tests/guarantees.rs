@@ -328,6 +328,7 @@ sol! {
         uint256 validatorAgentId;
         uint8 minValidationScore;
         bytes32 validationSubjectHash;
+        bytes32 jobHash;
         string requiredValidationTag;
     }
 }
@@ -365,6 +366,7 @@ fn build_v2_claims(
         validator_agent_id: U256::from(77u64),
         min_validation_score: 80,
         validation_subject_hash: B256::from(validation_subject_hash),
+        job_hash: B256::repeat_byte(0x11),
         required_validation_tag: "hard-finality".to_string(),
     };
     validation_policy.validation_request_hash =
@@ -407,13 +409,14 @@ async fn sign_v2_request(
         validatorAgentId: claims.validation_policy.validator_agent_id,
         minValidationScore: claims.validation_policy.min_validation_score,
         validationSubjectHash: claims.validation_policy.validation_subject_hash,
+        jobHash: claims.validation_policy.job_hash,
         requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
     };
     let digest = msg.eip712_signing_hash(&domain);
     let sig = wallet.sign_hash(&digest).await?;
 
     Ok(PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(claims),
+        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip712,
     ))
@@ -1909,7 +1912,7 @@ async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Resu
     );
     assert_eq!(
         params.validation_hash_canonicalization_version,
-        "4MICA_VALIDATION_REQUEST_V1"
+        "4MICA_VALIDATION_REQUEST_V2"
     );
     Ok(())
 }

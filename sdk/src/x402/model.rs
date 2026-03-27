@@ -58,6 +58,8 @@ pub struct PaymentRequirementsExtra {
     pub validator_agent_id: Option<String>,
     #[serde(default, alias = "minValidationScore")]
     pub min_validation_score: Option<u8>,
+    #[serde(default, alias = "jobHash")]
+    pub job_hash: Option<String>,
     #[serde(default, alias = "requiredValidationTag")]
     pub required_validation_tag: Option<String>,
 }

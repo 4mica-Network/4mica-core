@@ -26,6 +26,7 @@ sol! {
         uint256 validatorAgentId;
         uint8 minValidationScore;
         bytes32 validationSubjectHash;
+        bytes32 jobHash;
         string requiredValidationTag;
     }
 }

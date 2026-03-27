@@ -254,6 +254,7 @@ async fn build_signed_req(
             validator_agent_id: U256::from(1u64),
             min_validation_score: 80,
             validation_subject_hash: B256::from(validation_subject_hash),
+            job_hash: B256::repeat_byte(0x11),
             required_validation_tag: "hard-finality".to_string(),
         };
         policy.validation_request_hash =
@@ -290,12 +291,13 @@ async fn build_signed_req(
             validatorAgentId: claims.validation_policy.validator_agent_id,
             minValidationScore: claims.validation_policy.min_validation_score,
             validationSubjectHash: claims.validation_policy.validation_subject_hash,
+            jobHash: claims.validation_policy.job_hash,
             requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
         };
         let digest = msg.eip712_signing_hash(&domain);
         let sig: Signature = wallet.sign_hash(&digest).await.unwrap();
         return PaymentGuaranteeRequest::new(
-            PaymentGuaranteeRequestClaims::V2(claims),
+            PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
             crypto::hex::encode_hex(&sig.as_bytes()),
             SigningScheme::Eip712,
         );
@@ -1385,6 +1387,7 @@ sol! {
         uint256 validatorAgentId;
         uint8 minValidationScore;
         bytes32 validationSubjectHash;
+        bytes32 jobHash;
         string requiredValidationTag;
     }
 }
@@ -1477,6 +1480,7 @@ fn sample_v2_claims(
         validator_agent_id: U256::from(77u64),
         min_validation_score: 80,
         validation_subject_hash: B256::from(validation_subject_hash),
+        job_hash: B256::repeat_byte(0x11),
         required_validation_tag: "hard-finality".to_string(),
     };
 
@@ -1515,6 +1519,7 @@ async fn build_eip712_signed_request_v2(
         validatorAgentId: claims.validation_policy.validator_agent_id,
         minValidationScore: claims.validation_policy.min_validation_score,
         validationSubjectHash: claims.validation_policy.validation_subject_hash,
+        jobHash: claims.validation_policy.job_hash,
         requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
     }
     .eip712_signing_hash(&eip712_domain!(
@@ -1525,7 +1530,7 @@ async fn build_eip712_signed_request_v2(
 
     let sig: Signature = wallet.sign_hash(&digest).await.expect("sign v2 eip712");
     PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(claims),
+        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip712,
     )
@@ -1551,6 +1556,7 @@ async fn build_eip191_signed_request_v2(
         validatorAgentId: claims.validation_policy.validator_agent_id,
         minValidationScore: claims.validation_policy.min_validation_score,
         validationSubjectHash: claims.validation_policy.validation_subject_hash,
+        jobHash: claims.validation_policy.job_hash,
         requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
     }
     .abi_encode();
@@ -1559,7 +1565,7 @@ async fn build_eip191_signed_request_v2(
     let digest = alloy::primitives::keccak256(prefixed);
     let sig: Signature = wallet.sign_hash(&digest).await.expect("sign v2 eip191");
     PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(claims),
+        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip191,
     )
@@ -2330,7 +2336,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
 
@@ -2355,7 +2361,7 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
 
@@ -2406,7 +2412,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -2465,7 +2471,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let mut req = build_eip712_signed_request(&params, &wallet).await;
@@ -2496,7 +2502,7 @@ async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let req = build_eip712_signed_request_v2(&params, &wallet).await;
@@ -2519,7 +2525,7 @@ async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let req = build_eip191_signed_request_v2(&params, &wallet).await;
@@ -2542,7 +2548,7 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let mut req = build_eip712_signed_request_v2(&params, &wallet).await;
@@ -2572,7 +2578,7 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let mut req = build_eip712_signed_request_v2(&params, &wallet).await;
@@ -2602,7 +2608,7 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let mut req = build_eip712_signed_request_v2(&params, &wallet).await;
@@ -2632,7 +2638,7 @@ async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyh
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let mut req = build_eip712_signed_request_v2(&params, &wallet).await;

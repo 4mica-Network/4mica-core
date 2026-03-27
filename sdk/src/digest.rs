@@ -56,6 +56,7 @@ pub fn eip712_digest_for_claims(
                 validatorAgentId: c.validation_policy.validator_agent_id,
                 minValidationScore: c.validation_policy.min_validation_score,
                 validationSubjectHash: c.validation_policy.validation_subject_hash,
+                jobHash: c.validation_policy.job_hash,
                 requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
             };
             Ok(message.eip712_signing_hash(&domain))
@@ -96,6 +97,7 @@ pub fn eip191_digest_for_claims(
             validatorAgentId: c.validation_policy.validator_agent_id,
             minValidationScore: c.validation_policy.min_validation_score,
             validationSubjectHash: c.validation_policy.validation_subject_hash,
+            jobHash: c.validation_policy.job_hash,
             requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
         }
         .abi_encode(),
