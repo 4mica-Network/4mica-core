@@ -37,6 +37,7 @@ sol! {
         uint256 validator_agent_id;
         uint8 min_validation_score;
         bytes32 validation_subject_hash;
+        bytes32 job_hash;
         string required_validation_tag;
     }
 }
@@ -162,6 +163,7 @@ fn encode_v2_claims(claims: &PaymentGuaranteeClaims) -> Result<Vec<u8>, CodecErr
         validator_agent_id: policy.validator_agent_id,
         min_validation_score: policy.min_validation_score,
         validation_subject_hash: policy.validation_subject_hash,
+        job_hash: policy.job_hash,
         required_validation_tag: policy.required_validation_tag.clone(),
     };
     Ok(claims_sol.abi_encode())
@@ -214,6 +216,7 @@ fn decode_v2_claims(
         validator_agent_id: claims_sol.validator_agent_id,
         min_validation_score: claims_sol.min_validation_score,
         validation_subject_hash: claims_sol.validation_subject_hash,
+        job_hash: claims_sol.job_hash,
         required_validation_tag: claims_sol.required_validation_tag,
     };
 
@@ -311,6 +314,7 @@ mod tests {
             validator_agent_id: U256::from(42),
             min_validation_score: 80,
             validation_subject_hash: B256::from(validation_subject_hash),
+            job_hash: B256::repeat_byte(0x11),
             required_validation_tag: "hard-finality".to_string(),
         };
         policy.validation_request_hash =
@@ -401,6 +405,7 @@ mod tests {
             validator_agent_id: policy.validator_agent_id,
             min_validation_score: policy.min_validation_score,
             validation_subject_hash: B256::repeat_byte(0xAB),
+            job_hash: policy.job_hash,
             required_validation_tag: policy.required_validation_tag.clone(),
         };
 
