@@ -220,7 +220,7 @@ impl<S> UserClient<S> {
             PreparedPaymentGuaranteeClaims::V2(claims) => {
                 self.ctx
                     .signer()
-                    .sign_request_v2(&public_params, claims.clone(), scheme)
+                    .sign_request_v2(&public_params, claims.as_ref().clone(), scheme)
                     .await?
             }
         };

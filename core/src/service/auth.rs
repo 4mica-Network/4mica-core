@@ -5,6 +5,7 @@ use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
 use crate::service::CoreService;
 use chrono::{Duration, Utc};
+use log::{debug, warn};
 use rpc::{
     AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse, AuthRefreshRequest,
     AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse, SiweTemplate,
@@ -57,12 +58,22 @@ impl CoreService {
             Some(model) => {
                 auth::utils::validate_wallet_status(&model.status)?;
                 let scopes = auth::utils::parse_wallet_scopes(address, model.scopes)?;
+                debug!(
+                    "loaded wallet role: address={}, role={}, status={}, scopes={:?}",
+                    address, model.role, model.status, scopes
+                );
                 Ok((model.role, scopes))
             }
-            None => Ok((
-                DEFAULT_ROLE.to_string(),
-                DEFAULT_SCOPES.map(|s| s.to_string()).to_vec(),
-            )),
+            None => {
+                warn!(
+                    "wallet role not found: address={}, using defaults role={}, scopes={:?}",
+                    address, DEFAULT_ROLE, DEFAULT_SCOPES
+                );
+                Ok((
+                    DEFAULT_ROLE.to_string(),
+                    DEFAULT_SCOPES.map(|s| s.to_string()).to_vec(),
+                ))
+            }
         }
     }
 

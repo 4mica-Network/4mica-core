@@ -26,7 +26,7 @@ fn create_test_params() -> CorePublicParameters {
         active_guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         trusted_validation_registries: Vec::new(),
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     }
 }
 
@@ -72,6 +72,7 @@ fn create_test_claims_v2(
         validator_agent_id: U256::from(42u64),
         min_validation_score: 80,
         validation_subject_hash: B256::from(validation_subject_hash),
+        job_hash: B256::repeat_byte(0x11),
         required_validation_tag: "hard-finality".to_string(),
     };
 
@@ -202,7 +203,7 @@ async fn test_eip712_sign_and_verify_success_v2() {
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip712));
 
     let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(claims),
+        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
         payment_sig.signature,
         payment_sig.scheme,
     );
@@ -232,7 +233,7 @@ async fn test_eip191_sign_and_verify_success_v2() {
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip191));
 
     let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(claims),
+        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
         payment_sig.signature,
         payment_sig.scheme,
     );
@@ -261,7 +262,7 @@ async fn test_eip712_signature_fails_with_tampered_v2_validation_field() {
     tampered_claims.validation_policy.validation_request_hash = B256::repeat_byte(0x11);
 
     let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(tampered_claims),
+        PaymentGuaranteeRequestClaims::V2(Box::new(tampered_claims)),
         result.signature,
         result.scheme,
     );

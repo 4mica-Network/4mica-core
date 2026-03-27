@@ -24,12 +24,13 @@ pub struct PaymentGuaranteeValidationInput {
     pub validator_agent_id: U256,
     pub min_validation_score: u8,
     pub required_validation_tag: String,
+    pub job_hash: B256,
 }
 
 #[derive(Debug, Clone)]
 pub enum PreparedPaymentGuaranteeClaims {
     V1(PaymentGuaranteeRequestClaimsV1),
-    V2(PaymentGuaranteeRequestClaimsV2),
+    V2(Box<PaymentGuaranteeRequestClaimsV2>),
 }
 
 impl PreparedPaymentGuaranteeClaims {
@@ -66,11 +67,9 @@ pub fn prepare_payment_guarantee_claims(
                     "validation input was provided, but no validation-gated guarantee version is accepted by core"
                 );
             }
-            Ok(PreparedPaymentGuaranteeClaims::V2(build_v2_claims(
-                public_params,
-                intent,
-                validation,
-            )?))
+            Ok(PreparedPaymentGuaranteeClaims::V2(Box::new(
+                build_v2_claims(public_params, intent, validation)?,
+            )))
         }
         None => {
             if accepts_v1 {
@@ -132,6 +131,7 @@ fn build_v2_claims(
         validator_agent_id: validation.validator_agent_id,
         min_validation_score: validation.min_validation_score,
         validation_subject_hash: B256::from(validation_subject_hash),
+        job_hash: validation.job_hash,
         required_validation_tag: validation.required_validation_tag,
     };
     validation_policy.validation_request_hash =
@@ -156,7 +156,7 @@ mod tests {
         PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
         prepare_payment_guarantee_claims,
     };
-    use alloy::primitives::{Address, U256};
+    use alloy::primitives::{Address, B256, U256};
     use rpc::CorePublicParameters;
 
     fn params(max: u64, accepted: Vec<u64>) -> CorePublicParameters {
@@ -174,7 +174,7 @@ mod tests {
             trusted_validation_registries: vec![
                 "0x1111111111111111111111111111111111111111".to_string(),
             ],
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         }
     }
 
@@ -208,6 +208,7 @@ mod tests {
                 validator_agent_id: U256::from(7u64),
                 min_validation_score: 80,
                 required_validation_tag: "hard-finality".to_string(),
+                job_hash: B256::repeat_byte(0x11),
             }),
         )
         .expect("claims");

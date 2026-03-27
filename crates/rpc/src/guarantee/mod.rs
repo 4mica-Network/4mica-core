@@ -11,7 +11,7 @@ pub use types::{
     PaymentGuaranteeRequestEssentials, PaymentGuaranteeValidationPolicyV2, SigningScheme,
 };
 pub use validation::{
-    VALIDATION_REQUEST_BINDING_DOMAIN_V1, VALIDATION_SUBJECT_BINDING_DOMAIN_V1,
+    VALIDATION_REQUEST_BINDING_DOMAIN_V2, VALIDATION_SUBJECT_BINDING_DOMAIN_V1,
     compute_validation_request_hash, compute_validation_subject_hash,
 };
 
