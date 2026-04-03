@@ -65,11 +65,12 @@ jobs:
           cat <<'EOF' > "${RUNNER_TEMP}/deploy.sh"
           set -euo pipefail
 
-          if ! command -v cargo >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          if [ -f "${HOME}/.cargo/env" ]; then
+            . "${HOME}/.cargo/env"
           fi
 
-          if [ -f "${HOME}/.cargo/env" ]; then
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             . "${HOME}/.cargo/env"
           fi
 
