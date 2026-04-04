@@ -31,6 +31,18 @@ pub struct TaskExecutionDurationMetric;
 #[counter(labels = FnExecLabels, name = "task_execution_total")]
 pub struct TaskExecutionTotalMetric;
 
+#[derive(Debug, Clone, MetricLabels)]
+pub struct TabGuaranteeVersionLabels {
+    pub guarantee_version: String,
+}
+
+#[derive(Clone, Metric)]
+#[counter(
+    labels = TabGuaranteeVersionLabels,
+    name = "active_tab_refetch_total"
+)]
+pub struct ActiveTabRefetchTotalMetric;
+
 pub fn record_db_time(fn_name: &'static str, duration: Duration) {
     let labels = FnExecLabels {
         name: fn_name.to_string(),
@@ -53,4 +65,11 @@ pub fn record_task_time(fn_name: &'static str, duration: Duration) {
     };
     TaskExecutionTotalMetric::get(&labels).increment(1);
     TaskExecutionDurationMetric::get(&labels).record(duration.as_secs_f64());
+}
+
+pub fn record_active_tab_refetch(guarantee_version: u64) {
+    let labels = TabGuaranteeVersionLabels {
+        guarantee_version: guarantee_version.to_string(),
+    };
+    ActiveTabRefetchTotalMetric::get(&labels).increment(1);
 }

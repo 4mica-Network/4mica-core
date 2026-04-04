@@ -3,10 +3,12 @@ use crate::auth::constants::SCOPE_TAB_CREATE;
 use crate::{
     config::{DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
     error::{ServiceError, ServiceResult},
+    metrics::record_active_tab_refetch,
     persist::repo,
 };
 use alloy::primitives::U256;
 use anyhow::anyhow;
+use log::info;
 use rpc::{CreatePaymentTabRequest, CreatePaymentTabResult};
 
 use super::CoreService;
@@ -71,6 +73,11 @@ impl CoreService {
         .await?
         {
             repo::CreateOrGetActiveTab::Existing(existing) => {
+                record_active_tab_refetch(req.guarantee_version);
+                info!(
+                    "active tab uniqueness conflict recovered by refetch: user={}, recipient={}, asset={}, guarantee_version={}",
+                    req.user_address, req.recipient_address, asset_address, req.guarantee_version
+                );
                 let id = crate::util::parse_tab_id(&existing.id)?;
                 let next_req_id = repo::increment_and_get_last_req_id(
                     &self.inner.persist_ctx,
