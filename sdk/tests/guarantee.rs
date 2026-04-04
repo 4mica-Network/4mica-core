@@ -1,4 +1,5 @@
 use alloy::signers::Signer;
+use rpc::RpcProxy;
 use sdk_4mica::client::recipient::RecipientClient;
 use sdk_4mica::{
     BLSCert, Client, PaymentGuaranteeIntent, SigningScheme, U256, error::VerifyGuaranteeError,
@@ -66,6 +67,22 @@ fn guarantee_intent(
         asset_address: ETH_ASSET_ADDRESS.to_string(),
         timestamp,
     }
+}
+
+async fn fetch_accepted_guarantee_versions<S>(
+    config: &sdk_4mica::Config<S>,
+) -> anyhow::Result<Vec<u64>>
+where
+    S: Signer + Sync,
+{
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    Ok(rpc_proxy
+        .get_public_params()
+        .await?
+        .accepted_guarantee_versions_or_default())
 }
 
 #[tokio::test]
@@ -250,6 +267,50 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     assert!(!tab_status.remunerated);
     assert_eq!(tab_status.asset, ETH_ASSET_ADDRESS.to_string());
 
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn create_tab_returns_distinct_ids_for_v1_and_v2() -> anyhow::Result<()> {
+    let recipient_config = build_authed_recipient_config(
+        "http://localhost:3000",
+        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+    )
+    .await?;
+    let recipient_client = Client::new(recipient_config.clone()).await?;
+
+    let accepted_versions = fetch_accepted_guarantee_versions(&recipient_config).await?;
+    if !accepted_versions.contains(&2) {
+        return Ok(());
+    }
+
+    let user_config = build_authed_user_config(
+        "http://localhost:3000",
+        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+    )
+    .await?;
+    let user_address = user_config.signer.address().to_string();
+    let recipient_address = recipient_config.signer.address().to_string();
+
+    let v1_tab = recipient_client
+        .recipient
+        .create_tab(
+            user_address.clone(),
+            recipient_address.clone(),
+            None,
+            Some(3600),
+            1,
+        )
+        .await?;
+    let v2_tab = recipient_client
+        .recipient
+        .create_tab(user_address, recipient_address, None, Some(3600), 2)
+        .await?;
+
+    assert_ne!(v1_tab.tab_id, v2_tab.tab_id);
+    assert_eq!(v1_tab.guarantee_version, 1);
+    assert_eq!(v2_tab.guarantee_version, 2);
     Ok(())
 }
 

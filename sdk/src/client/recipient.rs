@@ -60,7 +60,12 @@ impl<S> RecipientClient<S> {
         Ok(())
     }
 
-    /// Creates a new payment tab and returns the tab id
+    /// Creates or reuses a payment tab for a specific guarantee version.
+    ///
+    /// Active tab identity is version-scoped:
+    /// `(user_address, recipient_address, asset_address, guarantee_version)`.
+    /// The core may therefore return different active tabs for V1 and V2
+    /// even when the user, recipient, and asset are the same.
     ///
     /// ### Arguments
     ///
@@ -68,6 +73,7 @@ impl<S> RecipientClient<S> {
     /// * `recipient_address` - The address of the recipient who will receive the payment
     /// * `erc20_token` - The address of the ERC20 token to use for the payment, leave as `None` for ETH
     /// * `ttl` - The time to live for the tab in seconds
+    /// * `guarantee_version` - The guarantee version that this tab will accept
     pub async fn create_tab(
         &self,
         user_address: String,

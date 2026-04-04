@@ -41,6 +41,10 @@ For callers there are three common paths:
 - `user.sign_payment_auto(...)` chooses V1 or V2 from core metadata plus optional
   `PaymentGuaranteeValidationInput`.
 
+Tabs are also guarantee-version scoped. Active tab identity is
+`(user_address, recipient_address, asset_address, guarantee_version)`, so core may return
+different active tab IDs for V1 and V2 for the same user, recipient, and asset.
+
 ## Initialization and Configuration
 
 The SDK requires a signer and can use sensible defaults for the rest:
@@ -536,7 +540,7 @@ The recipient client allows you to create payment tabs, issue payment guarantees
 ```rust
 use sdk_4mica::U256;
 
-// Create a new payment tab for ETH
+// Create or reuse a V1 payment tab for ETH
 let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
 let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
 let ttl = Some(3600); // Tab expires in 1 hour (optional)
@@ -552,7 +556,7 @@ println!("Created ETH tab with ID: {}", tab.tab_id);
 println!("Asset: {}", tab.asset_address);
 println!("Guarantee version: {}", tab.guarantee_version);
 
-// Create a new payment tab for USDC
+// Create or reuse a V2 payment tab for the same identity but a different asset/version
 let token_address = "0x1234567890123456789012345678901234567890".to_string();
 let tab_usdc = client.recipient.create_tab(
     user_address,
@@ -563,6 +567,15 @@ let tab_usdc = client.recipient.create_tab(
 ).await?;
 println!("Created USDC tab with ID: {}", tab_usdc.tab_id);
 ```
+
+An active tab is reused only when all of these match:
+
+- `user_address`
+- `recipient_address`
+- `asset_address`
+- `guarantee_version`
+
+That means V1 and V2 tabs for the same user, recipient, and asset remain distinct.
 
 #### Get Tab Payment Status
 
