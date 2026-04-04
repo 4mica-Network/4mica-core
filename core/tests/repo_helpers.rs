@@ -400,12 +400,15 @@ async fn concurrent_tab_updates_version_conflict() -> anyhow::Result<()> {
 
     repo::create_pending_tab(
         &ctx,
-        tab_id,
-        &user_addr,
-        &server_addr,
-        DEFAULT_ASSET_ADDRESS,
-        start_ts,
-        3600,
+        repo::CreatePendingTabInput {
+            tab_id,
+            user_address: repo::Address::parse(&user_addr)?,
+            server_address: repo::Address::parse(&server_addr)?,
+            asset_address: repo::Address::parse(DEFAULT_ASSET_ADDRESS)?,
+            guarantee_version: 1,
+            start_ts,
+            ttl: 3600,
+        },
     )
     .await?;
 

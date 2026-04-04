@@ -225,7 +225,11 @@ async fn build_signed_req(
     asset_address: &str,
 ) -> PaymentGuaranteeRequest {
     let ts = timestamp.unwrap_or_else(|| Utc::now().timestamp() as u64);
-    if public_params.max_accepted_guarantee_version == 2 {
+    let accepted_versions = public_params.accepted_guarantee_versions_or_default();
+    let prefers_v1 = accepted_versions.contains(&1);
+    let requires_v2 = accepted_versions.iter().all(|&version| version >= 2);
+
+    if !prefers_v1 && requires_v2 {
         let validation_subject_hash = compute_validation_subject_hash(
             user_addr,
             recipient_addr,
@@ -516,6 +520,7 @@ async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
             recipient_address,
             erc20_token: None,
             ttl: None,
+            guarantee_version: 1,
         })
         .await
         .expect_err("missing scope should reject");
@@ -577,6 +582,7 @@ async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Resu
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(900),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -640,6 +646,7 @@ async fn core_api_get_tab_and_list_recipient_tabs() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -716,6 +723,7 @@ async fn core_api_list_recipient_tabs_case_insensitive_filter() -> anyhow::Resul
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(300),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -754,6 +762,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -857,6 +866,7 @@ async fn create_tab_rejects_unregistered_user() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: None,
+            guarantee_version: 1,
         })
         .await;
     assert!(tab_result.is_err(), "must reject if user is not registered");
@@ -879,6 +889,7 @@ async fn core_api_recipient_payments_and_events() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(1200),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -995,6 +1006,7 @@ async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(1200),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1072,6 +1084,7 @@ async fn core_api_collateral_events_empty_for_tab_without_events() -> anyhow::Re
             recipient_address: recipient_addr,
             erc20_token: None,
             ttl: Some(300),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1135,6 +1148,7 @@ async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1186,6 +1200,7 @@ async fn list_settled_tabs_returns_only_settled_entries() -> anyhow::Result<()> 
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1249,6 +1264,7 @@ async fn list_settled_tabs_ignores_pending_tabs() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1290,6 +1306,7 @@ async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await
         .expect_err("suspended user should not create tabs");
@@ -1316,6 +1333,7 @@ async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
             recipient_address: recipient_addr,
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab after unsuspending");
@@ -1589,6 +1607,7 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: None,
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -1666,6 +1685,7 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(900),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1733,6 +1753,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(1200),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1808,6 +1829,7 @@ async fn core_api_guarantee_queries_empty_state() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(300),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab")
@@ -1851,6 +1873,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(3600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -1967,6 +1990,7 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: None,
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -2015,6 +2039,7 @@ async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyho
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: None,
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -2076,6 +2101,7 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: Some(STABLE_ASSET_ADDRESS.to_string()),
             ttl: Some(3600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -2129,6 +2155,7 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
             recipient_address: recipient_addr.clone(),
             erc20_token: Some(STABLE_ASSET_ADDRESS.to_string()),
             ttl: Some(3600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -2170,6 +2197,7 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(3600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -2214,6 +2242,7 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
             recipient_address: tab_recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(3600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab");
@@ -2255,6 +2284,7 @@ async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(3600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab first time");
@@ -2265,6 +2295,7 @@ async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(3600),
+            guarantee_version: 1,
         })
         .await
         .expect("create tab second time");
@@ -2679,6 +2710,7 @@ async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> 
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await?
         .id;
@@ -2736,6 +2768,7 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
             recipient_address: recipient_addr.clone(),
             erc20_token: None,
             ttl: Some(600),
+            guarantee_version: 1,
         })
         .await?
         .id;

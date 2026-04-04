@@ -13,8 +13,8 @@ use rpc::{
 
 use crate::{
     client::model::{
-        AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, PendingRemunerationInfo,
-        RecipientPaymentInfo, TabInfo,
+        AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo,
+        PendingRemunerationInfo, RecipientPaymentInfo, TabInfo,
     },
     client::{ClientCtx, model::TabPaymentStatus},
     error::{
@@ -60,7 +60,12 @@ impl<S> RecipientClient<S> {
         Ok(())
     }
 
-    /// Creates a new payment tab and returns the tab id
+    /// Creates or reuses a payment tab for a specific guarantee version.
+    ///
+    /// Active tab identity is version-scoped:
+    /// `(user_address, recipient_address, asset_address, guarantee_version)`.
+    /// The core may therefore return different active tabs for V1 and V2
+    /// even when the user, recipient, and asset are the same.
     ///
     /// ### Arguments
     ///
@@ -68,13 +73,15 @@ impl<S> RecipientClient<S> {
     /// * `recipient_address` - The address of the recipient who will receive the payment
     /// * `erc20_token` - The address of the ERC20 token to use for the payment, leave as `None` for ETH
     /// * `ttl` - The time to live for the tab in seconds
+    /// * `guarantee_version` - The guarantee version that this tab will accept
     pub async fn create_tab(
         &self,
         user_address: String,
         recipient_address: String,
         erc20_token: Option<String>,
         ttl: Option<u64>,
-    ) -> Result<U256, CreateTabError>
+        guarantee_version: u64,
+    ) -> Result<CreateTabResult, CreateTabError>
     where
         S: Signer + Sync,
     {
@@ -87,9 +94,10 @@ impl<S> RecipientClient<S> {
                 recipient_address,
                 erc20_token,
                 ttl,
+                guarantee_version,
             })
             .await?;
-        Ok(result.id)
+        Ok(result.into())
     }
 
     pub async fn get_tab_payment_status(
