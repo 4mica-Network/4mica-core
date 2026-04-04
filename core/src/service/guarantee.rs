@@ -17,9 +17,9 @@ use crypto::bls::{BLSCert, BlsClaims};
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use log::info;
 use rpc::{
-    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
-    PaymentGuaranteeRequestEssentials,
+    GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeRequestEssentials,
 };
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use std::str::FromStr;
@@ -153,7 +153,7 @@ impl CoreService {
         claims: &PaymentGuaranteeRequestClaimsV2,
     ) -> ServiceResult<()> {
         let base_claims = Self::v2_to_v1_claims(claims);
-        self.verify_guarantee_request_claims_v1(&base_claims, 2)
+        self.verify_guarantee_request_claims_v1(&base_claims, GUARANTEE_CLAIMS_VERSION_V2)
             .await?;
 
         claims
@@ -221,17 +221,19 @@ impl CoreService {
         conn: &C,
         claims: &PaymentGuaranteeRequestClaims,
     ) -> ServiceResult<alloy::primitives::U256> {
+        let version = claims.version();
         match claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
-                self.verify_guarantee_request_claims_v1(claims, 1).await?;
-                repo::update_user_balance_and_tab_for_guarantee_on(conn, claims, 1)
+                self.verify_guarantee_request_claims_v1(claims, version)
+                    .await?;
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, claims, version)
                     .await
                     .map_err(Into::into)
             }
             PaymentGuaranteeRequestClaims::V2(claims) => {
                 self.verify_guarantee_request_claims_v2(claims).await?;
                 let base_claims = Self::v2_to_v1_claims(claims);
-                repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims, 2)
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims, version)
                     .await
                     .map_err(Into::into)
             }

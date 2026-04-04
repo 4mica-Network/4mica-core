@@ -7,6 +7,7 @@ use super::{codec, compute_validation_request_hash, compute_validation_subject_h
 const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 pub const GUARANTEE_CLAIMS_VERSION: u64 = 1;
+pub const GUARANTEE_CLAIMS_VERSION_V2: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentGuaranteeValidationPolicyV2 {
@@ -451,7 +452,7 @@ impl PaymentGuaranteeRequestClaims {
     pub fn version(&self) -> u64 {
         match self {
             Self::V1(_) => GUARANTEE_CLAIMS_VERSION,
-            Self::V2(_) => 2,
+            Self::V2(_) => GUARANTEE_CLAIMS_VERSION_V2,
         }
     }
 }
