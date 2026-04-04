@@ -14,34 +14,43 @@ use super::common::{now, parse_address};
 use super::users::ensure_user_is_active;
 use crate::metrics::misc::record_db_time;
 
+pub struct CreatePendingTabInput {
+    pub tab_id: alloy::primitives::U256,
+    pub user_address: super::common::Address,
+    pub server_address: super::common::Address,
+    pub asset_address: super::common::Address,
+    pub guarantee_version: u64,
+    pub start_ts: NaiveDateTime,
+    pub ttl: i64,
+}
+
 #[measure(record_db_time)]
 pub async fn create_pending_tab(
     ctx: &PersistCtx,
-    tab_id: alloy::primitives::U256,
-    user_address: &str,
-    server_address: &str,
-    asset_address: &str,
-    start_ts: NaiveDateTime,
-    ttl: i64,
+    input: CreatePendingTabInput,
 ) -> Result<(), PersistDbError> {
-    let user_address = parse_address(user_address)?;
-    let server_address = parse_address(server_address)?;
-    let asset_address = parse_address(asset_address)?;
-
-    ensure_user_is_active(ctx, user_address.as_str()).await?;
+    ensure_user_is_active(ctx, input.user_address.as_str()).await?;
 
     let new_tab = tabs::ActiveModel {
-        id: Set(u256_to_string(tab_id)),
-        user_address: Set(user_address.into_inner()),
-        server_address: Set(server_address.into_inner()),
-        asset_address: Set(asset_address.into_inner()),
-        start_ts: Set(start_ts),
-        ttl: Set(ttl),
+        id: Set(u256_to_string(input.tab_id)),
+        user_address: Set(input.user_address.into_inner()),
+        server_address: Set(input.server_address.into_inner()),
+        asset_address: Set(input.asset_address.into_inner()),
+        start_ts: Set(input.start_ts),
+        ttl: Set(input.ttl),
         status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(i32::try_from(input.guarantee_version).map_err(
+            |_| {
+                PersistDbError::InvariantViolation(format!(
+                    "guarantee version {} does not fit in i32",
+                    input.guarantee_version
+                ))
+            },
+        )?)),
         version: Set(1),
         created_at: Set(now()),
         updated_at: Set(now()),
@@ -95,11 +104,12 @@ pub async fn open_tab_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
-pub async fn find_active_tab_by_triplet(
+pub async fn find_active_tab_by_key(
     ctx: &PersistCtx,
     user_address: &str,
     server_address: &str,
     asset_address: &str,
+    guarantee_version: u64,
 ) -> Result<Option<tabs::Model>, PersistDbError> {
     let user_address = parse_address(user_address)?;
     let server_address = parse_address(server_address)?;
@@ -109,6 +119,14 @@ pub async fn find_active_tab_by_triplet(
         .filter(tabs::Column::UserAddress.eq(user_address.as_str()))
         .filter(tabs::Column::ServerAddress.eq(server_address.as_str()))
         .filter(tabs::Column::AssetAddress.eq(asset_address.as_str()))
+        .filter(tabs::Column::AcceptedGuaranteeVersion.eq(
+            i32::try_from(guarantee_version).map_err(|_| {
+                PersistDbError::InvariantViolation(format!(
+                    "guarantee version {} does not fit in i32",
+                    guarantee_version
+                ))
+            })?,
+        ))
         .filter(tabs::Column::Status.is_in(vec![TabStatus::Pending, TabStatus::Open]))
         .filter(
             Condition::all()

@@ -39,6 +39,10 @@ pub fn tab_model_to_info(tab: tabs::Model) -> ServiceResult<TabInfo> {
         user_address: tab.user_address,
         recipient_address: tab.server_address,
         asset_address: tab.asset_address,
+        accepted_guarantee_version: tab
+            .accepted_guarantee_version
+            .ok_or_else(|| anyhow!("tab {} missing accepted guarantee version", tab.id))?
+            as u64,
         start_timestamp,
         ttl_seconds: tab.ttl,
         status,
@@ -73,6 +77,7 @@ pub fn guarantee_model_to_info(model: entities::guarantee::Model) -> ServiceResu
     Ok(GuaranteeInfo {
         tab_id,
         req_id,
+        version: model.version as u64,
         from_address,
         to_address,
         asset_address,

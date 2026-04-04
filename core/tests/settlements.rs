@@ -76,6 +76,7 @@ async fn insert_tab(
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),

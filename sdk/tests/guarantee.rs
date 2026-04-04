@@ -48,6 +48,7 @@ where
 }
 
 fn guarantee_intent(
+    guarantee_version: u64,
     user_address: String,
     recipient_address: String,
     tab_id: U256,
@@ -56,6 +57,7 @@ fn guarantee_intent(
     timestamp: u64,
 ) -> PaymentGuaranteeIntent {
     PaymentGuaranteeIntent {
+        guarantee_version,
         user_address,
         recipient_address,
         tab_id,
@@ -119,15 +121,17 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     )
     .await?;
 
-    let tab_id = recipient_client
+    let tab = recipient_client
         .recipient
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
             None,
             Some(3600),
+            1,
         )
         .await?;
+    let tab_id = tab.tab_id;
 
     let start_timestamp = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
     let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
@@ -135,6 +139,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .user
         .sign_payment_auto(
             guarantee_intent(
+                tab.guarantee_version,
                 user_address.clone(),
                 recipient_address.clone(),
                 tab_id,
@@ -287,15 +292,17 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     )
     .await?;
 
-    let tab_id = recipient_client
+    let tab = recipient_client
         .recipient
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
             None,
             Some(3600),
+            1,
         )
         .await?;
+    let tab_id = tab.tab_id;
 
     let guarantees_before = recipient_client
         .recipient
@@ -313,6 +320,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
                 .user
                 .sign_payment_auto(
                     guarantee_intent(
+                        tab.guarantee_version,
                         user_address.clone(),
                         recipient_address.clone(),
                         tab_id,
@@ -338,6 +346,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
                 .user
                 .sign_payment_auto(
                     guarantee_intent(
+                        tab.guarantee_version,
                         user_address.clone(),
                         recipient_address.clone(),
                         tab_id,

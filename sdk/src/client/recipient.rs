@@ -13,8 +13,8 @@ use rpc::{
 
 use crate::{
     client::model::{
-        AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, PendingRemunerationInfo,
-        RecipientPaymentInfo, TabInfo,
+        AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo,
+        PendingRemunerationInfo, RecipientPaymentInfo, TabInfo,
     },
     client::{ClientCtx, model::TabPaymentStatus},
     error::{
@@ -74,7 +74,8 @@ impl<S> RecipientClient<S> {
         recipient_address: String,
         erc20_token: Option<String>,
         ttl: Option<u64>,
-    ) -> Result<U256, CreateTabError>
+        guarantee_version: u64,
+    ) -> Result<CreateTabResult, CreateTabError>
     where
         S: Signer + Sync,
     {
@@ -87,9 +88,10 @@ impl<S> RecipientClient<S> {
                 recipient_address,
                 erc20_token,
                 ttl,
+                guarantee_version,
             })
             .await?;
-        Ok(result.id)
+        Ok(result.into())
     }
 
     pub async fn get_tab_payment_status(

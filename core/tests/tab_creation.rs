@@ -123,6 +123,7 @@ async fn returns_existing_pending_tab_when_active() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: Some(600),
+                guarantee_version: 1,
             },
         )
         .await
@@ -137,6 +138,7 @@ async fn returns_existing_pending_tab_when_active() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: Some(1200),
+                guarantee_version: 1,
             },
         )
         .await
@@ -188,6 +190,7 @@ async fn closes_expired_pending_tab_and_creates_new_one() {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         created_at: Set(expired_start),
         updated_at: Set(expired_start),
@@ -205,6 +208,7 @@ async fn closes_expired_pending_tab_and_creates_new_one() {
                 recipient_address: recipient,
                 erc20_token: None,
                 ttl: Some(300),
+                guarantee_version: 1,
             },
         )
         .await
@@ -251,6 +255,7 @@ async fn returns_existing_open_tab_when_active() {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         created_at: Set(open_start),
         updated_at: Set(open_start),
@@ -268,6 +273,7 @@ async fn returns_existing_open_tab_when_active() {
                 recipient_address: recipient,
                 erc20_token: None,
                 ttl: Some(1200),
+                guarantee_version: 1,
             },
         )
         .await
@@ -308,6 +314,7 @@ async fn uses_default_ttl_when_not_provided() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: None,
+                guarantee_version: 1,
             },
         )
         .await
@@ -348,6 +355,7 @@ async fn rejects_ttl_exceeding_tab_expiration() {
                 recipient_address: recipient,
                 erc20_token: None,
                 ttl: Some(600),
+                guarantee_version: 1,
             },
         )
         .await
@@ -386,6 +394,7 @@ async fn facilitator_can_create_tab_for_recipient() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: Some(300),
+                guarantee_version: 1,
             },
         )
         .await

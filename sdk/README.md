@@ -318,7 +318,7 @@ Notes:
 
 #### RecipientClient Methods
 
-- `create_tab(user_address: String, recipient_address: String, erc20_token: Option<String>, ttl: Option<u64>) -> Result<U256, CreateTabError>`: Create a new payment tab in ETH or ERC20 token
+- `create_tab(user_address: String, recipient_address: String, erc20_token: Option<String>, ttl: Option<u64>, guarantee_version: u64) -> Result<CreateTabResult, CreateTabError>`: Create or reuse a payment tab for a specific guarantee version in ETH or ERC20 token
 - `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
 - `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
@@ -541,23 +541,27 @@ let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
 let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
 let ttl = Some(3600); // Tab expires in 1 hour (optional)
 
-let tab_id = client.recipient.create_tab(
+let tab = client.recipient.create_tab(
     user_address.clone(),
     recipient_address.clone(),
     None,  // None for ETH
-    ttl
+    ttl,
+    1,
 ).await?;
-println!("Created ETH tab with ID: {}", tab_id);
+println!("Created ETH tab with ID: {}", tab.tab_id);
+println!("Asset: {}", tab.asset_address);
+println!("Guarantee version: {}", tab.guarantee_version);
 
 // Create a new payment tab for USDC
 let token_address = "0x1234567890123456789012345678901234567890".to_string();
-let tab_id_usdc = client.recipient.create_tab(
+let tab_usdc = client.recipient.create_tab(
     user_address,
     recipient_address,
     Some(token_address),
-    ttl
+    ttl,
+    2,
 ).await?;
-println!("Created USDC tab with ID: {}", tab_id_usdc);
+println!("Created USDC tab with ID: {}", tab_usdc.tab_id);
 ```
 
 #### Get Tab Payment Status
@@ -640,17 +644,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Recipient creates a payment tab
     let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
     let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
-    let tab_id = recipient_client
+    let tab = recipient_client
         .recipient
-        .create_tab(user_address.clone(), recipient_address.clone(), None, Some(3600))
+        .create_tab(
+            user_address.clone(),
+            recipient_address.clone(),
+            None,
+            Some(3600),
+            1,
+        )
         .await?;
-    println!("Created tab: {}", tab_id);
+    println!("Created tab: {}", tab.tab_id);
 
     // 4. User signs a payment
     let claims = PaymentGuaranteeRequestClaims::new(
         user_address.clone(),
         recipient_address.clone(),
-        tab_id,
+        tab.tab_id,
         U256::ZERO,
         U256::from(1_000_000_000_000_000_000u128), // 1 ETH
         std::time::SystemTime::now()
@@ -716,22 +726,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Recipient creates a USDC payment tab
     let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
     let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
-    let tab_id = recipient_client
+    let tab = recipient_client
         .recipient
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
             Some(usdc_token.clone()),
-            Some(3600)
+            Some(3600),
+            1,
         )
         .await?;
-    println!("Created USDC tab: {}", tab_id);
+    println!("Created USDC tab: {}", tab.tab_id);
 
     // 4. User signs a USDC payment
     let claims = PaymentGuaranteeRequestClaims::new(
         user_address.clone(),
         recipient_address.clone(),
-        tab_id,
+        tab.tab_id,
         U256::ZERO,
         U256::from(1000_000_000u128), // 1,000 USDC
         std::time::SystemTime::now()

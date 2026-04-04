@@ -25,9 +25,32 @@ use sea_orm::{ConnectionTrait, TransactionTrait};
 use std::str::FromStr;
 
 impl CoreService {
+    fn verify_tab_guarantee_version(
+        tab: &entities::tabs::Model,
+        request_version: u64,
+    ) -> ServiceResult<()> {
+        if let Some(accepted_version) = tab.accepted_guarantee_version {
+            let accepted_version = accepted_version as u64;
+            if accepted_version != request_version {
+                return Err(ServiceError::InvalidParams(format!(
+                    "tab {} only accepts guarantee version {}, got {}",
+                    tab.id, accepted_version, request_version
+                )));
+            }
+        } else {
+            return Err(ServiceError::InvalidParams(format!(
+                "tab {} is missing an accepted guarantee version",
+                tab.id
+            )));
+        }
+
+        Ok(())
+    }
+
     pub async fn verify_guarantee_request_claims_v1(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV1,
+        claims_version: u64,
     ) -> ServiceResult<()> {
         let existing_guarantee =
             repo::get_guarantee(&self.inner.persist_ctx, claims.tab_id, claims.req_id).await?;
@@ -50,6 +73,7 @@ impl CoreService {
         let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, claims.tab_id).await? else {
             return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
         };
+        Self::verify_tab_guarantee_version(&tab, claims_version)?;
 
         if tab.status == TabStatus::Closed || tab.settlement_status != SettlementStatus::Pending {
             return Err(ServiceError::TabClosed);
@@ -129,7 +153,7 @@ impl CoreService {
         claims: &PaymentGuaranteeRequestClaimsV2,
     ) -> ServiceResult<()> {
         let base_claims = Self::v2_to_v1_claims(claims);
-        self.verify_guarantee_request_claims_v1(&base_claims)
+        self.verify_guarantee_request_claims_v1(&base_claims, 2)
             .await?;
 
         claims
@@ -199,15 +223,15 @@ impl CoreService {
     ) -> ServiceResult<alloy::primitives::U256> {
         match claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
-                self.verify_guarantee_request_claims_v1(claims).await?;
-                repo::update_user_balance_and_tab_for_guarantee_on(conn, claims)
+                self.verify_guarantee_request_claims_v1(claims, 1).await?;
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, claims, 1)
                     .await
                     .map_err(Into::into)
             }
             PaymentGuaranteeRequestClaims::V2(claims) => {
                 self.verify_guarantee_request_claims_v2(claims).await?;
                 let base_claims = Self::v2_to_v1_claims(claims);
-                repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims)
+                repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims, 2)
                     .await
                     .map_err(Into::into)
             }

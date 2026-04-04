@@ -32,12 +32,23 @@ impl CoreService {
             .erc20_token
             .clone()
             .unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
+        if !self
+            .inner
+            .accepted_guarantee_versions
+            .contains(&req.guarantee_version)
+        {
+            return Err(ServiceError::InvalidParams(format!(
+                "guarantee version {} is not accepted by core",
+                req.guarantee_version
+            )));
+        }
 
-        if let Some(existing) = repo::find_active_tab_by_triplet(
+        if let Some(existing) = repo::find_active_tab_by_key(
             &self.inner.persist_ctx,
             &req.user_address,
             &req.recipient_address,
             &asset_address,
+            req.guarantee_version,
         )
         .await?
         {
@@ -65,6 +76,10 @@ impl CoreService {
                         user_address: existing.user_address,
                         recipient_address: existing.server_address,
                         erc20_token: Some(asset_address),
+                        asset_address: existing.asset_address,
+                        guarantee_version: existing.accepted_guarantee_version.ok_or_else(|| {
+                            ServiceError::Other(anyhow!("existing tab missing guarantee version"))
+                        })? as u64,
                         next_req_id,
                     });
                 }
@@ -79,15 +94,21 @@ impl CoreService {
         }
 
         let tab_id = crate::util::generate_tab_id(&req.user_address, &req.recipient_address, ttl);
+        let user_address = repo::Address::parse(&req.user_address)?;
+        let recipient_address = repo::Address::parse(&req.recipient_address)?;
+        let repo_asset_address = repo::Address::parse(&asset_address)?;
 
         repo::create_pending_tab(
             &self.inner.persist_ctx,
-            tab_id,
-            &req.user_address,
-            &req.recipient_address,
-            &asset_address,
-            now,
-            ttl as i64,
+            repo::CreatePendingTabInput {
+                tab_id,
+                user_address,
+                server_address: recipient_address,
+                asset_address: repo_asset_address,
+                guarantee_version: req.guarantee_version,
+                start_ts: now,
+                ttl: ttl as i64,
+            },
         )
         .await?;
 
@@ -96,6 +117,8 @@ impl CoreService {
             user_address: req.user_address,
             recipient_address: req.recipient_address,
             erc20_token: req.erc20_token,
+            asset_address,
+            guarantee_version: req.guarantee_version,
             next_req_id: U256::ZERO,
         })
     }

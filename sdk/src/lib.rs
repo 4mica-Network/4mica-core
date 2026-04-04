@@ -20,7 +20,7 @@ pub use crate::error::RecipientQueryError;
 pub use auth::{AuthClient, AuthSession, AuthTokens};
 pub use client::Client;
 pub use client::model::{
-    AssetBalanceInfo, CollateralEventInfo, GuaranteeInfo, PendingRemunerationInfo,
+    AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo, PendingRemunerationInfo,
     RecipientPaymentInfo, TabInfo, TabPaymentStatus, UserInfo,
 };
 pub use config::AuthConfig;
