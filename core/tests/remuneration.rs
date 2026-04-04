@@ -56,6 +56,7 @@ async fn remuneration_and_payment_recorded_as_events() -> anyhow::Result<()> {
         total_amount: Set("10".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -143,6 +144,7 @@ async fn remuneration_reduces_locked_collateral() -> anyhow::Result<()> {
         total_amount: Set("10".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -232,6 +234,7 @@ async fn zero_amount_remuneration_is_recorded_once() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -301,6 +304,7 @@ async fn duplicate_remuneration_is_noop() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -394,6 +398,7 @@ async fn insufficient_collateral_rolls_back_and_keeps_status_pending() -> anyhow
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -474,6 +479,7 @@ async fn concurrent_remunerations_settle_once() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -580,6 +586,7 @@ async fn remuneration_is_noop_after_settlement() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };

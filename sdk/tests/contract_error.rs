@@ -131,17 +131,27 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
     }
 
     // Step 2: Recipient creates a payment tab
-    let tab_id = recipient_client
+    let public_params = fetch_public_params(&recipient_config).await?;
+    let guarantee_version = if public_params
+        .accepted_guarantee_versions_or_default()
+        .contains(&1)
+    {
+        1
+    } else {
+        2
+    };
+    let tab = recipient_client
         .recipient
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
             None,
             Some(3600),
+            guarantee_version,
         )
         .await?;
+    let tab_id = tab.tab_id;
     let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
-    let public_params = fetch_public_params(&recipient_config).await?;
 
     // Step 3: User signs a payment (1 ETH)
     let claim_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
@@ -154,7 +164,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         V2(Box<PaymentGuaranteeRequestClaimsV2>),
     }
 
-    let claims = match public_params.max_accepted_guarantee_version {
+    let claims = match guarantee_version {
         1 => IssuedClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user_address.clone(),
             recipient_address: recipient_address.clone(),
@@ -211,7 +221,7 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         }
         other => {
             return Err(anyhow::anyhow!(
-                "unsupported active guarantee version reported by core: {other}"
+                "unsupported tab guarantee version: {other}"
             ));
         }
     };

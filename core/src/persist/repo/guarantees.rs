@@ -26,6 +26,7 @@ use entities::tabs;
 pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
     conn: &C,
     claims: &PaymentGuaranteeRequestClaimsV1,
+    guarantee_version: u64,
 ) -> Result<U256, PersistDbError> {
     let user_address = parse_address(&claims.user_address)?.into_inner();
     let recipient_address = parse_address(&claims.recipient_address)?.into_inner();
@@ -80,6 +81,20 @@ pub async fn update_user_balance_and_tab_for_guarantee_on<C: ConnectionTrait>(
         .checked_add(claims.amount)
         .ok_or_else(|| PersistDbError::InvariantViolation("total amount overflow".into()))?;
 
+    let accepted_guarantee_version = tab.accepted_guarantee_version.ok_or_else(|| {
+        PersistDbError::InvariantViolation(format!(
+            "tab {} missing accepted guarantee version",
+            u256_to_string(claims.tab_id)
+        ))
+    })?;
+    if accepted_guarantee_version as u64 != guarantee_version {
+        return Err(PersistDbError::TabGuaranteeVersionMismatch {
+            tab_id: u256_to_string(claims.tab_id),
+            expected_version: accepted_guarantee_version as u64,
+            actual_version: guarantee_version,
+        });
+    }
+
     lock_and_update_tab_on(
         conn,
         claims.tab_id,
@@ -123,6 +138,7 @@ pub async fn prepare_and_store_guarantee_on<C: ConnectionTrait>(
     let data = GuaranteeData {
         tab_id: claims.tab_id,
         req_id: claims.req_id,
+        version: claims.version,
         from,
         to,
         asset,
@@ -149,6 +165,12 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
     let active_model = guarantee::ActiveModel {
         tab_id: Set(u256_to_string(data.tab_id)),
         req_id: Set(u256_to_string(data.req_id)),
+        version: Set(i32::try_from(data.version).map_err(|_| {
+            PersistDbError::InvariantViolation(format!(
+                "guarantee version {} does not fit in i32",
+                data.version
+            ))
+        })?),
         from_address: Set(data.from),
         to_address: Set(data.to),
         asset_address: Set(data.asset),

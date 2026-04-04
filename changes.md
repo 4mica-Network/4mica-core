@@ -97,6 +97,14 @@ V2 verification runs all V1 checks (duplicate, tab status, address match, timest
 
 **The output version is derived from the claim payload** (`req.claims.version()`). V1 request → V1 cert. V2 request → V2 cert. The env var has no effect on which version is issued.
 
+**Tab compatibility rule**
+
+Tabs are version-scoped. Active tab identity is
+`(user_address, recipient_address, asset_address, accepted_guarantee_version)`, and the tab's
+`accepted_guarantee_version` must match the guarantee version being issued against it.
+Future versions (V3+) must follow the same one-tab-per-version rule rather than reusing a tab
+across guarantee versions.
+
 **Signature verification (`core/src/auth/mod.rs`)**
 
 EIP-712 and EIP-191 digest functions dispatch on the claims variant. V2 includes all 15 fields in the signed struct. Any post-signing mutation to any validation policy field breaks the signature.

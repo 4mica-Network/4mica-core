@@ -41,6 +41,7 @@ async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Res
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -116,6 +117,7 @@ async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -192,6 +194,7 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };

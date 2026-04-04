@@ -14,10 +14,11 @@ use core_service::{
 };
 use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::tabs;
+use migration::{Migrator, MigratorTrait};
 use rand::random;
 use rpc::CreatePaymentTabRequest;
 use sea_orm::{EntityTrait, Set};
-use std::{collections::HashMap, panic, sync::Arc, sync::Once};
+use std::{panic, sync::Arc, sync::Once};
 
 const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
 const DEFAULT_ROLE: &str = "user";
@@ -65,12 +66,34 @@ async fn build_core_service(
     persist_ctx: PersistCtx,
     tab_expiration_time: u64,
 ) -> anyhow::Result<CoreService> {
+    build_core_service_with_guarantee_versions(persist_ctx, tab_expiration_time, &[1]).await
+}
+
+async fn build_core_service_with_guarantee_versions(
+    persist_ctx: PersistCtx,
+    tab_expiration_time: u64,
+    accepted_versions: &[u64],
+) -> anyhow::Result<CoreService> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
     let mut config = AppConfig::fetch()?;
-    config.guarantee.max_accepted_version = 1;
-    config.guarantee.accepted_request_versions = "1".to_string();
-    config.guarantee.trusted_validation_registries.clear();
+    let max_accepted_version = accepted_versions
+        .iter()
+        .copied()
+        .max()
+        .ok_or_else(|| anyhow::anyhow!("accepted_versions must not be empty"))?;
+    config.guarantee.max_accepted_version = max_accepted_version;
+    config.guarantee.accepted_request_versions = accepted_versions
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if accepted_versions.iter().any(|version| *version >= 2) {
+        config.guarantee.trusted_validation_registries =
+            "0x1111111111111111111111111111111111111111".to_string();
+    } else {
+        config.guarantee.trusted_validation_registries.clear();
+    }
     let read_provider = build_read_provider()?;
     let chain_id = read_provider.get_chain_id().await?;
 
@@ -87,7 +110,11 @@ async fn build_core_service(
             contract_api,
             chain_id,
             read_provider,
-            guarantee_domains: HashMap::from([(1u64, [0u8; 32])]),
+            guarantee_domains: accepted_versions
+                .iter()
+                .copied()
+                .map(|version| (version, [0u8; 32]))
+                .collect(),
             tab_expiration_time,
         },
     )
@@ -123,6 +150,7 @@ async fn returns_existing_pending_tab_when_active() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: Some(600),
+                guarantee_version: 1,
             },
         )
         .await
@@ -137,6 +165,7 @@ async fn returns_existing_pending_tab_when_active() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: Some(1200),
+                guarantee_version: 1,
             },
         )
         .await
@@ -188,6 +217,7 @@ async fn closes_expired_pending_tab_and_creates_new_one() {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         created_at: Set(expired_start),
         updated_at: Set(expired_start),
@@ -205,6 +235,7 @@ async fn closes_expired_pending_tab_and_creates_new_one() {
                 recipient_address: recipient,
                 erc20_token: None,
                 ttl: Some(300),
+                guarantee_version: 1,
             },
         )
         .await
@@ -251,6 +282,7 @@ async fn returns_existing_open_tab_when_active() {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         created_at: Set(open_start),
         updated_at: Set(open_start),
@@ -268,6 +300,7 @@ async fn returns_existing_open_tab_when_active() {
                 recipient_address: recipient,
                 erc20_token: None,
                 ttl: Some(1200),
+                guarantee_version: 1,
             },
         )
         .await
@@ -283,6 +316,133 @@ async fn returns_existing_open_tab_when_active() {
     assert_eq!(fetched.status, TabStatus::Open);
     assert_eq!(fetched.ttl, open_ttl);
     assert_eq!(fetched.last_req_id, "0x1");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn creates_distinct_active_tabs_per_guarantee_version() {
+    load_test_env();
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    let core_service = build_core_service_with_guarantee_versions(
+        ctx.clone(),
+        DEFAULT_TAB_EXPIRATION_TIME,
+        &[1, 2],
+    )
+    .await
+    .expect("core service");
+
+    let user = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user).await;
+    seed_user(&ctx, &recipient).await;
+    let auth = recipient_auth(&recipient);
+
+    let v1 = core_service
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user.clone(),
+                recipient_address: recipient.clone(),
+                erc20_token: None,
+                ttl: Some(600),
+                guarantee_version: 1,
+            },
+        )
+        .await
+        .expect("v1 tab");
+
+    let v2 = core_service
+        .create_payment_tab(
+            &auth,
+            CreatePaymentTabRequest {
+                user_address: user.clone(),
+                recipient_address: recipient.clone(),
+                erc20_token: None,
+                ttl: Some(600),
+                guarantee_version: 2,
+            },
+        )
+        .await
+        .expect("v2 tab");
+
+    assert_ne!(v1.id, v2.id);
+
+    let v1_stored = repo::get_tab_by_id(&ctx, v1.id)
+        .await
+        .expect("v1 tab fetch")
+        .expect("v1 tab present");
+    let v2_stored = repo::get_tab_by_id(&ctx, v2.id)
+        .await
+        .expect("v2 tab fetch")
+        .expect("v2 tab present");
+
+    assert_eq!(v1_stored.accepted_guarantee_version, Some(1));
+    assert_eq!(v2_stored.accepted_guarantee_version, Some(2));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn unique_index_rejects_duplicate_active_tab_identity() {
+    load_test_env();
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+    Migrator::up(ctx.db.as_ref(), None)
+        .await
+        .expect("apply latest migrations");
+
+    let user = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user).await;
+    seed_user(&ctx, &recipient).await;
+
+    let start = Utc::now().naive_utc();
+    let first = tabs::ActiveModel {
+        id: Set(u256_to_string(U256::from(random::<u128>()))),
+        user_address: Set(user.clone()),
+        server_address: Set(recipient.clone()),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
+        start_ts: Set(start),
+        ttl: Set(600),
+        status: Set(TabStatus::Pending),
+        settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
+        version: Set(1),
+        created_at: Set(start),
+        updated_at: Set(start),
+    };
+    tabs::Entity::insert(first)
+        .exec(ctx.db.as_ref())
+        .await
+        .expect("seed first active tab");
+
+    let duplicate = tabs::ActiveModel {
+        id: Set(u256_to_string(U256::from(random::<u128>()))),
+        user_address: Set(user),
+        server_address: Set(recipient),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
+        start_ts: Set(start),
+        ttl: Set(600),
+        status: Set(TabStatus::Open),
+        settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
+        version: Set(1),
+        created_at: Set(start),
+        updated_at: Set(start),
+    };
+    let err = tabs::Entity::insert(duplicate)
+        .exec(ctx.db.as_ref())
+        .await
+        .expect_err("duplicate active tab should violate unique index");
+
+    assert_eq!(
+        repo::common::constraint_name(&err).as_deref(),
+        Some("uniq_active_tab_identity")
+    );
 }
 
 #[tokio::test]
@@ -308,6 +468,7 @@ async fn uses_default_ttl_when_not_provided() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: None,
+                guarantee_version: 1,
             },
         )
         .await
@@ -348,6 +509,7 @@ async fn rejects_ttl_exceeding_tab_expiration() {
                 recipient_address: recipient,
                 erc20_token: None,
                 ttl: Some(600),
+                guarantee_version: 1,
             },
         )
         .await
@@ -386,6 +548,7 @@ async fn facilitator_can_create_tab_for_recipient() {
                 recipient_address: recipient.clone(),
                 erc20_token: None,
                 ttl: Some(300),
+                guarantee_version: 1,
             },
         )
         .await

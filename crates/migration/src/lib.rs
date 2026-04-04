@@ -18,6 +18,9 @@ mod m20260213_000014_user_transaction_status_enum;
 mod m20260216_000000_guarantee_request;
 mod m20260305_000001_user_transaction_status_consistency;
 mod m20260305_000002_unlock_and_tab_amount_guardrails;
+mod m20260403_000003_tab_accepted_guarantee_version;
+mod m20260403_000004_guarantee_version;
+mod m20260404_000005_active_tab_identity_unique;
 
 pub struct Migrator;
 
@@ -43,6 +46,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260216_000000_guarantee_request::Migration),
             Box::new(m20260305_000001_user_transaction_status_consistency::Migration),
             Box::new(m20260305_000002_unlock_and_tab_amount_guardrails::Migration),
+            Box::new(m20260403_000003_tab_accepted_guarantee_version::Migration),
+            Box::new(m20260403_000004_guarantee_version::Migration),
+            Box::new(m20260404_000005_active_tab_identity_unique::Migration),
         ]
     }
 }

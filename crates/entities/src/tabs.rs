@@ -24,6 +24,7 @@ pub struct Model {
     pub paid_amount: String,
     #[sea_orm(column_type = "Text")]
     pub last_req_id: String,
+    pub accepted_guarantee_version: Option<i32>,
     pub version: i32,
     pub created_at: DateTime,
     pub updated_at: DateTime,

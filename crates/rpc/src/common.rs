@@ -23,6 +23,7 @@ pub struct CreatePaymentTabRequest {
     pub erc20_token: Option<String>,
     /// Tab TTL in seconds
     pub ttl: Option<u64>,
+    pub guarantee_version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,8 @@ pub struct CreatePaymentTabResult {
     pub user_address: String,
     pub recipient_address: String,
     pub erc20_token: Option<String>,
+    pub asset_address: String,
+    pub guarantee_version: u64,
     pub next_req_id: U256,
 }
 
@@ -48,6 +51,7 @@ pub struct TabInfo {
     pub user_address: String,
     pub recipient_address: String,
     pub asset_address: String,
+    pub accepted_guarantee_version: u64,
     pub start_timestamp: i64,
     pub ttl_seconds: i64,
     pub status: String,
@@ -60,6 +64,7 @@ pub struct TabInfo {
 pub struct GuaranteeInfo {
     pub tab_id: U256,
     pub req_id: U256,
+    pub version: u64,
     pub from_address: String,
     pub to_address: String,
     pub asset_address: String,

@@ -14,6 +14,7 @@ pub use chain::{
     record_processed_payment_tx, record_scanned_event_tx_block, record_scanned_payment_tx_block,
 };
 pub use health::HealthCheckTask;
+pub use misc::record_active_tab_refetch;
 
 pub fn setup_metrics_recorder(config: &AppConfig) -> anyhow::Result<PrometheusHandle> {
     const EXPONENTIAL_SECONDS: &[f64] = &[

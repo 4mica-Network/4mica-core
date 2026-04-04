@@ -17,6 +17,7 @@ pub struct PersistCtx {
 pub struct GuaranteeData {
     pub tab_id: U256,
     pub req_id: U256,
+    pub version: u64,
     pub from: String,
     pub to: String,
     pub asset: String,

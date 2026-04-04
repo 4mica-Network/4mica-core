@@ -16,6 +16,7 @@ pub struct Model {
     pub asset_address: String,
     #[sea_orm(column_type = "Text")]
     pub value: String,
+    pub version: i32,
     pub start_ts: DateTime,
     #[sea_orm(column_type = "Text", nullable)]
     pub cert: String,

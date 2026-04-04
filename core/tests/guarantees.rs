@@ -85,6 +85,7 @@ async fn insert_test_tab(
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),
@@ -228,6 +229,7 @@ struct TestTabSpec {
     tab_id: U256,
     user_address: String,
     recipient_address: String,
+    guarantee_version: u64,
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
     status: TabStatus,
@@ -250,6 +252,7 @@ async fn insert_tab_with_status(ctx: &PersistCtx, spec: TestTabSpec) {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(spec.guarantee_version as i32)),
         version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),
@@ -269,12 +272,34 @@ async fn insert_pending_tab(
     start_ts: chrono::NaiveDateTime,
     ttl: i64,
 ) {
+    insert_pending_tab_with_version(
+        ctx,
+        tab_id,
+        user_address,
+        recipient_address,
+        1,
+        start_ts,
+        ttl,
+    )
+    .await;
+}
+
+async fn insert_pending_tab_with_version(
+    ctx: &PersistCtx,
+    tab_id: U256,
+    user_address: String,
+    recipient_address: String,
+    guarantee_version: u64,
+    start_ts: chrono::NaiveDateTime,
+    ttl: i64,
+) {
     insert_tab_with_status(
         ctx,
         TestTabSpec {
             tab_id,
             user_address,
             recipient_address,
+            guarantee_version,
             start_ts,
             ttl,
             status: TabStatus::Pending,
@@ -493,6 +518,7 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let data = GuaranteeData {
         tab_id,
         req_id,
+        version: 1,
         from: from_addr.clone(),
         to: to_addr.clone(),
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -555,6 +581,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(300),
     };
@@ -566,6 +593,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     let data1 = GuaranteeData {
         tab_id,
         req_id,
+        version: 1,
         from: from_addr.clone(),
         to: to_addr.clone(),
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -580,6 +608,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     let data2 = GuaranteeData {
         tab_id,
         req_id,
+        version: 1,
         from: from_addr,
         to: to_addr,
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -648,6 +677,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
         version: Set(1),
         ttl: Set(123),
     };
@@ -693,6 +723,7 @@ async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()>
     let g1 = GuaranteeData {
         tab_id,
         req_id: U256::from(0x12),
+        version: 1,
         from: user_addr.clone(),
         to: random_eth_address(),
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -706,6 +737,7 @@ async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()>
     let g2 = GuaranteeData {
         tab_id,
         req_id: U256::from(0x10),
+        version: 1,
         from: user_addr,
         to: random_eth_address(),
         asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -765,7 +797,7 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     };
 
     let txn = ctx.db.begin().await?;
-    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims).await?;
+    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims, 1).await?;
 
     assert_eq!(total_amount, U256::from(40u64));
 
@@ -843,7 +875,7 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
         timestamp: Utc::now().timestamp() as u64,
     };
 
-    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims).await;
+    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims, 1).await;
     assert!(matches!(res, Err(PersistDbError::InsufficientCollateral)));
 
     assert_eq!(
@@ -904,7 +936,7 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
     };
 
     let txn = ctx.db.begin().await?;
-    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims).await?;
+    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims, 1).await?;
 
     assert_eq!(total_amount, U256::from(30u64));
 
@@ -965,7 +997,7 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
         timestamp: i64::MAX as u64,
     };
 
-    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims).await;
+    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims, 1).await;
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));
 
     // locked collateral unchanged
@@ -1025,7 +1057,7 @@ async fn accepts_timestamp_within_tab_window_without_opening_tab() {
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
     core_service
-        .verify_guarantee_request_claims_v1(&claims)
+        .verify_guarantee_request_claims_v1(&claims, 1)
         .await
         .expect("claims should be valid");
 
@@ -1085,7 +1117,7 @@ async fn rejects_recipient_mismatch_on_guarantee_claims() {
     let claims = build_claims(tab_id, user_addr, wrong_recipient, U256::ZERO, claims_ts);
 
     let err = core_service
-        .verify_guarantee_request_claims_v1(&claims)
+        .verify_guarantee_request_claims_v1(&claims, 1)
         .await
         .expect_err("recipient mismatch should be rejected");
     assert!(matches!(
@@ -1141,6 +1173,7 @@ async fn rejects_timestamp_outside_tab_window() {
         core_service::persist::GuaranteeData {
             tab_id,
             req_id: U256::ZERO,
+            version: 1,
             from: user_addr.clone(),
             to: recipient_addr.clone(),
             asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1162,7 +1195,7 @@ async fn rejects_timestamp_outside_tab_window() {
         before_start,
     );
     let err = core_service
-        .verify_guarantee_request_claims_v1(&claims)
+        .verify_guarantee_request_claims_v1(&claims, 1)
         .await
         .expect_err("timestamp before start should fail");
     assert!(matches!(
@@ -1181,7 +1214,7 @@ async fn rejects_timestamp_outside_tab_window() {
         after_expiry,
     );
     let err = core_service
-        .verify_guarantee_request_claims_v1(&claims)
+        .verify_guarantee_request_claims_v1(&claims, 1)
         .await
         .expect_err("timestamp after expiry should fail");
     assert!(matches!(
@@ -1234,6 +1267,7 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
                 tab_id,
                 user_address: user_addr.clone(),
                 recipient_address: recipient_addr.clone(),
+                guarantee_version: 1,
                 start_ts,
                 ttl,
                 status: TabStatus::Open,
@@ -1247,6 +1281,7 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
             core_service::persist::GuaranteeData {
                 tab_id,
                 req_id: U256::ZERO,
+                version: 1,
                 from: user_addr.clone(),
                 to: recipient_addr.clone(),
                 asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1269,7 +1304,7 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
         );
 
         let err = core_service
-            .verify_guarantee_request_claims_v1(&claims)
+            .verify_guarantee_request_claims_v1(&claims, 1)
             .await
             .expect_err("finalized settlement should reject guarantees");
         assert!(matches!(err, core_service::error::ServiceError::TabClosed));
@@ -1309,6 +1344,7 @@ async fn rejects_guarantee_when_tab_closed() {
             tab_id,
             user_address: user_addr.clone(),
             recipient_address: recipient_addr.clone(),
+            guarantee_version: 1,
             start_ts,
             ttl,
             status: TabStatus::Closed,
@@ -1321,7 +1357,7 @@ async fn rejects_guarantee_when_tab_closed() {
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
     let err = core_service
-        .verify_guarantee_request_claims_v1(&claims)
+        .verify_guarantee_request_claims_v1(&claims, 1)
         .await
         .expect_err("closed tab should reject guarantees");
     assert!(matches!(err, core_service::error::ServiceError::TabClosed));
@@ -1368,7 +1404,7 @@ async fn pending_tab_expired_accepts_first_claim_without_reopening() {
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claim_ts);
 
     core_service
-        .verify_guarantee_request_claims_v1(&claims)
+        .verify_guarantee_request_claims_v1(&claims, 1)
         .await
         .expect("expired pending tab should be reopened");
 
@@ -1425,7 +1461,7 @@ async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
     let err = core_service
-        .verify_guarantee_request_claims_v1(&claims)
+        .verify_guarantee_request_claims_v1(&claims, 1)
         .await
         .expect_err("ttl exceeding tab expiration should be rejected");
     assert!(matches!(
@@ -1465,11 +1501,12 @@ async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Resu
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        2,
         Utc::now().naive_utc(),
         600,
     )
@@ -1519,11 +1556,12 @@ async fn issue_v2_guarantee_rejects_when_active_version_is_v1() -> anyhow::Resul
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        2,
         Utc::now().naive_utc(),
         600,
     )
@@ -1581,11 +1619,12 @@ async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepte
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        1,
         Utc::now().naive_utc(),
         600,
     )
@@ -1612,6 +1651,151 @@ async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepte
 
 #[tokio::test]
 #[serial_test::serial]
+async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_guarantee_config(
+        ctx.clone(),
+        2,
+        "1,2".to_string(),
+        "0x1111111111111111111111111111111111111111".to_string(),
+    )
+    .await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    let timestamp = Utc::now().timestamp() as u64;
+    insert_pending_tab_with_version(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        1,
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let claims = PaymentGuaranteeRequestClaimsV1 {
+        user_address,
+        recipient_address: recipient_address.clone(),
+        tab_id,
+        req_id: U256::ZERO,
+        amount: U256::from(5u64),
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    };
+    let req = sign_v1_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+
+    let tab = repo::get_tab_by_id(&ctx, tab_id)
+        .await?
+        .expect("tab should exist after issuing guarantee");
+    assert_eq!(tab.accepted_guarantee_version, Some(1));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_guarantee_config(
+        ctx.clone(),
+        2,
+        "1,2".to_string(),
+        "0x1111111111111111111111111111111111111111".to_string(),
+    )
+    .await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let tab_id = U256::from(rand::random::<u64>());
+    insert_pending_tab_with_version(
+        &ctx,
+        tab_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        1,
+        Utc::now().naive_utc(),
+        600,
+    )
+    .await;
+
+    let first_timestamp = Utc::now().timestamp() as u64;
+    let first_claims = PaymentGuaranteeRequestClaimsV1 {
+        user_address: user_address.clone(),
+        recipient_address: recipient_address.clone(),
+        tab_id,
+        req_id: U256::ZERO,
+        amount: U256::from(5u64),
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp: first_timestamp,
+    };
+    let first_req =
+        sign_v1_request(&core_service.public_params(), &user_wallet, first_claims).await?;
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), first_req)
+        .await?;
+
+    let second_claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        tab_id,
+        U256::from(1u64),
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        Utc::now().timestamp() as u64,
+    )?;
+    let second_req =
+        sign_v2_request(&core_service.public_params(), &user_wallet, second_claims).await?;
+
+    let err = core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), second_req)
+        .await
+        .expect_err("tab should reject switching guarantee versions");
+    assert!(matches!(
+        err,
+        ServiceError::InvalidParams(msg)
+            if msg.contains("only accepts guarantee version 1") && msg.contains("got 2")
+    ));
+
+    let tab = repo::get_tab_by_id(&ctx, tab_id)
+        .await?
+        .expect("tab should exist after rejection");
+    assert_eq!(tab.accepted_guarantee_version, Some(1));
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn issue_v2_guarantee_rejects_subject_hash_mismatch() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1632,11 +1816,12 @@ async fn issue_v2_guarantee_rejects_subject_hash_mismatch() -> anyhow::Result<()
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        2,
         Utc::now().naive_utc(),
         600,
     )
@@ -1688,11 +1873,12 @@ async fn issue_v2_guarantee_rejects_request_hash_mismatch() -> anyhow::Result<()
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        2,
         Utc::now().naive_utc(),
         600,
     )
@@ -1744,11 +1930,12 @@ async fn issue_v2_guarantee_rejects_min_validation_score_zero() -> anyhow::Resul
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        2,
         Utc::now().naive_utc(),
         600,
     )
@@ -1806,11 +1993,12 @@ async fn issue_v2_guarantee_rejects_untrusted_validation_registry() -> anyhow::R
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        2,
         Utc::now().naive_utc(),
         600,
     )
@@ -1868,11 +2056,12 @@ async fn issue_v2_guarantee_accepts_trusted_validation_registry() -> anyhow::Res
 
     let tab_id = U256::from(rand::random::<u64>());
     let timestamp = Utc::now().timestamp() as u64;
-    insert_pending_tab(
+    insert_pending_tab_with_version(
         &ctx,
         tab_id,
         user_address.clone(),
         recipient_address.clone(),
+        2,
         Utc::now().naive_utc(),
         600,
     )

@@ -120,8 +120,10 @@ where
             recipient_address.to_string(),
             None,
             Some(ttl_secs),
+            1,
         )
-        .await?;
+        .await?
+        .tab_id;
 
     if let Some(tab) = recipient.get_tab(tab_id).await?
         && tab.status == "OPEN"
@@ -136,8 +138,10 @@ where
                     recipient_address.to_string(),
                     None,
                     Some(ttl_secs),
+                    1,
                 )
-                .await?;
+                .await?
+                .tab_id;
         }
     }
 

@@ -3,7 +3,10 @@ use alloy_sol_types::{SolValue, sol};
 use std::str::FromStr;
 use thiserror::Error;
 
-use super::{GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeValidationPolicyV2};
+use super::{
+    GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
+    PaymentGuaranteeValidationPolicyV2,
+};
 
 sol! {
     struct GuaranteeClaimsV1 {
@@ -60,7 +63,7 @@ impl GuaranteeClaimsVersion {
     fn as_u64(self) -> u64 {
         match self {
             Self::V1 => GUARANTEE_CLAIMS_VERSION,
-            Self::V2 => 2,
+            Self::V2 => GUARANTEE_CLAIMS_VERSION_V2,
         }
     }
 }
@@ -71,7 +74,7 @@ impl TryFrom<u64> for GuaranteeClaimsVersion {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             GUARANTEE_CLAIMS_VERSION => Ok(Self::V1),
-            2 => Ok(Self::V2),
+            GUARANTEE_CLAIMS_VERSION_V2 => Ok(Self::V2),
             _ => Err(CodecError::UnsupportedVersion(value)),
         }
     }

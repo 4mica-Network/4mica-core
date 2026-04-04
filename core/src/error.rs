@@ -149,6 +149,13 @@ pub enum PersistDbError {
         expected_version: i32,
     },
 
+    #[error("tab {tab_id} only accepts guarantee version {expected_version}, got {actual_version}")]
+    TabGuaranteeVersionMismatch {
+        tab_id: String,
+        expected_version: u64,
+        actual_version: u64,
+    },
+
     #[error("invariant violation: {0}")]
     InvariantViolation(String),
 }
@@ -238,6 +245,13 @@ impl From<PersistDbError> for ServiceError {
             PersistDbError::AuthTokenInvalid(msg) => ServiceError::Unauthorized(msg),
             PersistDbError::UserBalanceLockConflict { .. } => ServiceError::OptimisticLockConflict,
             PersistDbError::TabLockConflict { .. } => ServiceError::OptimisticLockConflict,
+            PersistDbError::TabGuaranteeVersionMismatch {
+                tab_id,
+                expected_version,
+                actual_version,
+            } => ServiceError::InvalidParams(format!(
+                "tab {tab_id} only accepts guarantee version {expected_version}, got {actual_version}"
+            )),
             PersistDbError::InvariantViolation(msg) => ServiceError::Other(anyhow!(msg)),
             PersistDbError::DatabaseFailure(e) => {
                 ServiceError::Db(PersistDbError::DatabaseFailure(e))

@@ -8,6 +8,7 @@ use rpc::{
 
 #[derive(Debug, Clone)]
 pub struct PaymentGuaranteeIntent {
+    pub guarantee_version: u64,
     pub user_address: String,
     pub recipient_address: String,
     pub tab_id: U256,
@@ -55,33 +56,27 @@ pub fn prepare_payment_guarantee_claims(
     validation: Option<PaymentGuaranteeValidationInput>,
 ) -> anyhow::Result<PreparedPaymentGuaranteeClaims> {
     let accepted_versions = public_params.accepted_guarantee_versions_or_default();
-    let accepts_v1 = accepted_versions.contains(&GUARANTEE_CLAIMS_VERSION);
-    let accepts_validation_gated = accepted_versions
-        .iter()
-        .any(|&v| version_requires_validation_registry(v));
+    if !accepted_versions.contains(&intent.guarantee_version) {
+        anyhow::bail!(
+            "guarantee version {} is not accepted by core",
+            intent.guarantee_version
+        );
+    }
 
-    match validation {
-        Some(validation) => {
-            if !accepts_validation_gated {
-                anyhow::bail!(
-                    "validation input was provided, but no validation-gated guarantee version is accepted by core"
-                );
-            }
-            Ok(PreparedPaymentGuaranteeClaims::V2(Box::new(
+    match intent.guarantee_version {
+        GUARANTEE_CLAIMS_VERSION => match validation {
+            Some(_) => anyhow::bail!(
+                "validation input is only supported for validation-gated guarantee versions"
+            ),
+            None => Ok(PreparedPaymentGuaranteeClaims::V1(build_v1_claims(intent))),
+        },
+        version if version_requires_validation_registry(version) => match validation {
+            Some(validation) => Ok(PreparedPaymentGuaranteeClaims::V2(Box::new(
                 build_v2_claims(public_params, intent, validation)?,
-            )))
-        }
-        None => {
-            if accepts_v1 {
-                Ok(PreparedPaymentGuaranteeClaims::V1(build_v1_claims(intent)))
-            } else if accepts_validation_gated {
-                anyhow::bail!(
-                    "core requires validation-gated guarantees, but validation input is missing"
-                )
-            } else {
-                anyhow::bail!("core does not advertise any accepted guarantee versions")
-            }
-        }
+            ))),
+            None => anyhow::bail!("guarantee version {} requires validation input", version),
+        },
+        version => anyhow::bail!("unsupported guarantee version {}", version),
     }
 }
 
@@ -180,6 +175,7 @@ mod tests {
 
     fn intent() -> PaymentGuaranteeIntent {
         PaymentGuaranteeIntent {
+            guarantee_version: 1,
             user_address: Address::repeat_byte(0x11).to_string(),
             recipient_address: Address::repeat_byte(0x22).to_string(),
             tab_id: U256::from(1u64),
@@ -191,17 +187,19 @@ mod tests {
     }
 
     #[test]
-    fn auto_selects_v1_when_validation_input_is_missing() {
+    fn builds_v1_when_version_is_v1_and_validation_is_missing() {
         let claims = prepare_payment_guarantee_claims(&params(2, vec![1, 2]), intent(), None)
             .expect("claims");
         assert!(matches!(claims, PreparedPaymentGuaranteeClaims::V1(_)));
     }
 
     #[test]
-    fn auto_selects_v2_when_validation_input_is_present() {
+    fn builds_v2_when_version_is_v2_and_validation_is_present() {
+        let mut intent = intent();
+        intent.guarantee_version = 2;
         let claims = prepare_payment_guarantee_claims(
             &params(2, vec![1, 2]),
-            intent(),
+            intent,
             Some(PaymentGuaranteeValidationInput {
                 validation_registry_address: None,
                 validator_address: Address::repeat_byte(0x33),
@@ -216,9 +214,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_rejects_missing_validation_input_when_only_v2_is_accepted() {
-        let err = prepare_payment_guarantee_claims(&params(2, vec![2]), intent(), None)
+    fn rejects_missing_validation_input_for_v2() {
+        let mut intent = intent();
+        intent.guarantee_version = 2;
+        let err = prepare_payment_guarantee_claims(&params(2, vec![2]), intent, None)
             .expect_err("missing validation input must fail");
-        assert!(err.to_string().contains("validation-gated"));
+        assert!(err.to_string().contains("requires validation input"));
     }
 }
