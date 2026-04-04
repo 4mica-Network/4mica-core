@@ -2,7 +2,7 @@ use crate::auth::access::{self, AccessContext};
 use crate::auth::constants::SCOPE_TAB_CREATE;
 use crate::{
     config::{DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
-    error::{ServiceError, ServiceResult},
+    error::{PersistDbError, ServiceError, ServiceResult},
     persist::repo,
 };
 use alloy::primitives::U256;
@@ -10,6 +10,8 @@ use anyhow::anyhow;
 use rpc::{CreatePaymentTabRequest, CreatePaymentTabResult};
 
 use super::CoreService;
+
+const UNIQUE_ACTIVE_TAB_IDENTITY_INDEX: &str = "uniq_active_tab_identity";
 
 impl CoreService {
     pub async fn create_payment_tab(
@@ -98,7 +100,7 @@ impl CoreService {
         let recipient_address = repo::Address::parse(&req.recipient_address)?;
         let repo_asset_address = repo::Address::parse(&asset_address)?;
 
-        repo::create_pending_tab(
+        match repo::create_pending_tab(
             &self.inner.persist_ctx,
             repo::CreatePendingTabInput {
                 tab_id,
@@ -110,7 +112,48 @@ impl CoreService {
                 ttl: ttl as i64,
             },
         )
-        .await?;
+        .await
+        {
+            Ok(()) => {}
+            Err(PersistDbError::DatabaseFailure(db_err))
+                if repo::common::constraint_name(&db_err).as_deref()
+                    == Some(UNIQUE_ACTIVE_TAB_IDENTITY_INDEX) =>
+            {
+                let existing = repo::find_active_tab_by_key(
+                    &self.inner.persist_ctx,
+                    &req.user_address,
+                    &req.recipient_address,
+                    &asset_address,
+                    req.guarantee_version,
+                )
+                .await?
+                .ok_or_else(|| {
+                    ServiceError::Other(anyhow!(
+                        "active tab uniqueness conflict without a refetchable tab"
+                    ))
+                })?;
+
+                let next_req_id = repo::increment_and_get_last_req_id(
+                    &self.inner.persist_ctx,
+                    crate::util::parse_tab_id(&existing.id)?,
+                    self.inner.config.database_config.conflict_retries,
+                )
+                .await?;
+
+                return Ok(CreatePaymentTabResult {
+                    id: crate::util::parse_tab_id(&existing.id)?,
+                    user_address: existing.user_address,
+                    recipient_address: existing.server_address,
+                    erc20_token: Some(asset_address),
+                    asset_address: existing.asset_address,
+                    guarantee_version: existing.accepted_guarantee_version.ok_or_else(|| {
+                        ServiceError::Other(anyhow!("existing tab missing guarantee version"))
+                    })? as u64,
+                    next_req_id,
+                });
+            }
+            Err(err) => return Err(err.into()),
+        }
 
         Ok(CreatePaymentTabResult {
             id: tab_id,
