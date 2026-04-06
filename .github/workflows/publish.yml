@@ -52,7 +52,7 @@ jobs:
               run: |
                   set -euo pipefail
 
-                  crates=(crates/crypto crates/rpc crates/derive crates/metrics sdk)
+                  crates=(crates/derive crates/crypto crates/blockchain crates/metrics crates/rpc sdk)
 
                   for crate_path in "${crates[@]}"; do
                       echo "::group::Publishing ${crate_path}"

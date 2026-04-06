@@ -1,4 +1,5 @@
 use alloy::signers::Signer;
+use rpc::RpcProxy;
 use sdk_4mica::client::recipient::RecipientClient;
 use sdk_4mica::{
     BLSCert, Client, PaymentGuaranteeIntent, SigningScheme, U256, error::VerifyGuaranteeError,
@@ -48,6 +49,7 @@ where
 }
 
 fn guarantee_intent(
+    guarantee_version: u64,
     user_address: String,
     recipient_address: String,
     tab_id: U256,
@@ -56,6 +58,7 @@ fn guarantee_intent(
     timestamp: u64,
 ) -> PaymentGuaranteeIntent {
     PaymentGuaranteeIntent {
+        guarantee_version,
         user_address,
         recipient_address,
         tab_id,
@@ -64,6 +67,22 @@ fn guarantee_intent(
         asset_address: ETH_ASSET_ADDRESS.to_string(),
         timestamp,
     }
+}
+
+async fn fetch_accepted_guarantee_versions<S>(
+    config: &sdk_4mica::Config<S>,
+) -> anyhow::Result<Vec<u64>>
+where
+    S: Signer + Sync,
+{
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    Ok(rpc_proxy
+        .get_public_params()
+        .await?
+        .accepted_guarantee_versions_or_default())
 }
 
 #[tokio::test]
@@ -119,15 +138,17 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     )
     .await?;
 
-    let tab_id = recipient_client
+    let tab = recipient_client
         .recipient
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
             None,
             Some(3600),
+            1,
         )
         .await?;
+    let tab_id = tab.tab_id;
 
     let start_timestamp = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
     let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
@@ -135,6 +156,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
         .user
         .sign_payment_auto(
             guarantee_intent(
+                tab.guarantee_version,
                 user_address.clone(),
                 recipient_address.clone(),
                 tab_id,
@@ -250,6 +272,50 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn create_tab_returns_distinct_ids_for_v1_and_v2() -> anyhow::Result<()> {
+    let recipient_config = build_authed_recipient_config(
+        "http://localhost:3000",
+        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+    )
+    .await?;
+    let recipient_client = Client::new(recipient_config.clone()).await?;
+
+    let accepted_versions = fetch_accepted_guarantee_versions(&recipient_config).await?;
+    if !accepted_versions.contains(&2) {
+        return Ok(());
+    }
+
+    let user_config = build_authed_user_config(
+        "http://localhost:3000",
+        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+    )
+    .await?;
+    let user_address = user_config.signer.address().to_string();
+    let recipient_address = recipient_config.signer.address().to_string();
+
+    let v1_tab = recipient_client
+        .recipient
+        .create_tab(
+            user_address.clone(),
+            recipient_address.clone(),
+            None,
+            Some(3600),
+            1,
+        )
+        .await?;
+    let v2_tab = recipient_client
+        .recipient
+        .create_tab(user_address, recipient_address, None, Some(3600), 2)
+        .await?;
+
+    assert_ne!(v1_tab.tab_id, v2_tab.tab_id);
+    assert_eq!(v1_tab.guarantee_version, 1);
+    assert_eq!(v2_tab.guarantee_version, 2);
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     let user_config = build_authed_user_config(
         "http://localhost:3000",
@@ -287,15 +353,17 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
     )
     .await?;
 
-    let tab_id = recipient_client
+    let tab = recipient_client
         .recipient
         .create_tab(
             user_address.clone(),
             recipient_address.clone(),
             None,
             Some(3600),
+            1,
         )
         .await?;
+    let tab_id = tab.tab_id;
 
     let guarantees_before = recipient_client
         .recipient
@@ -313,6 +381,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
                 .user
                 .sign_payment_auto(
                     guarantee_intent(
+                        tab.guarantee_version,
                         user_address.clone(),
                         recipient_address.clone(),
                         tab_id,
@@ -338,6 +407,7 @@ async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
                 .user
                 .sign_payment_auto(
                     guarantee_intent(
+                        tab.guarantee_version,
                         user_address.clone(),
                         recipient_address.clone(),
                         tab_id,

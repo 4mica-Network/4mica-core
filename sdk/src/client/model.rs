@@ -1,8 +1,9 @@
 use alloy::primitives::U256;
 use rpc::{
     AssetBalanceInfo as RpcAssetBalanceInfo, CollateralEventInfo as RpcCollateralEventInfo,
-    GuaranteeInfo as RpcGuaranteeInfo, PendingRemunerationInfo as RpcPendingRemunerationInfo,
-    TabInfo as RpcTabInfo, UserTransactionInfo as RpcUserTransactionInfo,
+    CreatePaymentTabResult as RpcCreatePaymentTabResult, GuaranteeInfo as RpcGuaranteeInfo,
+    PendingRemunerationInfo as RpcPendingRemunerationInfo, TabInfo as RpcTabInfo,
+    UserTransactionInfo as RpcUserTransactionInfo,
 };
 
 use crate::contract::Core4Mica;
@@ -34,11 +35,35 @@ impl From<Core4Mica::UserAssetInfo> for UserInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct CreateTabResult {
+    pub tab_id: U256,
+    pub user_address: String,
+    pub recipient_address: String,
+    pub asset_address: String,
+    pub guarantee_version: u64,
+    pub next_req_id: U256,
+}
+
+impl From<RpcCreatePaymentTabResult> for CreateTabResult {
+    fn from(value: RpcCreatePaymentTabResult) -> Self {
+        Self {
+            tab_id: value.id,
+            user_address: value.user_address,
+            recipient_address: value.recipient_address,
+            asset_address: value.asset_address,
+            guarantee_version: value.guarantee_version,
+            next_req_id: value.next_req_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TabInfo {
     pub tab_id: U256,
     pub user_address: String,
     pub recipient_address: String,
     pub asset_address: String,
+    pub accepted_guarantee_version: u64,
     pub start_timestamp: i64,
     pub ttl_seconds: i64,
     pub status: String,
@@ -54,6 +79,7 @@ impl From<RpcTabInfo> for TabInfo {
             user_address: value.user_address,
             recipient_address: value.recipient_address,
             asset_address: value.asset_address,
+            accepted_guarantee_version: value.accepted_guarantee_version,
             start_timestamp: value.start_timestamp,
             ttl_seconds: value.ttl_seconds,
             status: value.status,
@@ -68,6 +94,7 @@ impl From<RpcTabInfo> for TabInfo {
 pub struct GuaranteeInfo {
     pub tab_id: U256,
     pub req_id: U256,
+    pub version: u64,
     pub from_address: String,
     pub to_address: String,
     pub asset_address: String,
@@ -81,6 +108,7 @@ impl From<RpcGuaranteeInfo> for GuaranteeInfo {
         Self {
             tab_id: value.tab_id,
             req_id: value.req_id,
+            version: value.version,
             from_address: value.from_address,
             to_address: value.to_address,
             asset_address: value.asset_address,

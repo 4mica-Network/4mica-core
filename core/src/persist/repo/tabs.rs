@@ -7,41 +7,59 @@ use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::tabs;
 use log::info;
 use metrics_4mica::measure;
-use sea_orm::{ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{
+    ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
+};
 use std::str::FromStr;
 
 use super::common::{now, parse_address};
 use super::users::ensure_user_is_active;
 use crate::metrics::misc::record_db_time;
 
+pub struct CreatePendingTabInput {
+    pub tab_id: alloy::primitives::U256,
+    pub user_address: super::common::Address,
+    pub server_address: super::common::Address,
+    pub asset_address: super::common::Address,
+    pub guarantee_version: u64,
+    pub start_ts: NaiveDateTime,
+    pub ttl: i64,
+}
+
+pub enum CreateOrGetActiveTab {
+    Created(tabs::Model),
+    Existing(tabs::Model),
+}
+
 #[measure(record_db_time)]
 pub async fn create_pending_tab(
     ctx: &PersistCtx,
-    tab_id: alloy::primitives::U256,
-    user_address: &str,
-    server_address: &str,
-    asset_address: &str,
-    start_ts: NaiveDateTime,
-    ttl: i64,
+    input: CreatePendingTabInput,
 ) -> Result<(), PersistDbError> {
-    let user_address = parse_address(user_address)?;
-    let server_address = parse_address(server_address)?;
-    let asset_address = parse_address(asset_address)?;
-
-    ensure_user_is_active(ctx, user_address.as_str()).await?;
+    ensure_user_is_active(ctx, input.user_address.as_str()).await?;
 
     let new_tab = tabs::ActiveModel {
-        id: Set(u256_to_string(tab_id)),
-        user_address: Set(user_address.into_inner()),
-        server_address: Set(server_address.into_inner()),
-        asset_address: Set(asset_address.into_inner()),
-        start_ts: Set(start_ts),
-        ttl: Set(ttl),
+        id: Set(u256_to_string(input.tab_id)),
+        user_address: Set(input.user_address.into_inner()),
+        server_address: Set(input.server_address.into_inner()),
+        asset_address: Set(input.asset_address.into_inner()),
+        start_ts: Set(input.start_ts),
+        ttl: Set(input.ttl),
         status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
         total_amount: Set("0".to_string()),
         paid_amount: Set("0".to_string()),
         last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(i32::try_from(input.guarantee_version).map_err(
+            |_| {
+                PersistDbError::InvariantViolation(format!(
+                    "guarantee version {} does not fit in i32",
+                    input.guarantee_version
+                ))
+            },
+        )?)),
         version: Set(1),
         created_at: Set(now()),
         updated_at: Set(now()),
@@ -50,6 +68,125 @@ pub async fn create_pending_tab(
 
     tabs::Entity::insert(new_tab).exec(ctx.db.as_ref()).await?;
     Ok(())
+}
+
+#[measure(record_db_time)]
+pub async fn create_or_get_active_tab(
+    ctx: &PersistCtx,
+    input: CreatePendingTabInput,
+    max_ttl: u64,
+    retries: usize,
+) -> Result<CreateOrGetActiveTab, PersistDbError> {
+    ensure_user_is_active(ctx, input.user_address.as_str()).await?;
+
+    let guarantee_version = i32::try_from(input.guarantee_version).map_err(|_| {
+        PersistDbError::InvariantViolation(format!(
+            "guarantee version {} does not fit in i32",
+            input.guarantee_version
+        ))
+    })?;
+    let user_address = input.user_address.into_inner();
+    let server_address = input.server_address.into_inner();
+    let asset_address = input.asset_address.into_inner();
+    let now_ts = input.start_ts.and_utc().timestamp();
+    let tab_id = input.tab_id;
+    let start_ts = input.start_ts;
+    let ttl = input.ttl;
+
+    for _attempt in 0..retries {
+        enum AttemptResult {
+            Created(tabs::Model),
+            Existing(tabs::Model),
+            Retry,
+        }
+
+        let user_address = user_address.clone();
+        let server_address = server_address.clone();
+        let asset_address = asset_address.clone();
+
+        let result = ctx
+            .db
+            .transaction(move |txn| {
+                Box::pin(async move {
+                    let new_tab = tabs::ActiveModel {
+                        id: Set(u256_to_string(tab_id)),
+                        user_address: Set(user_address.clone()),
+                        server_address: Set(server_address.clone()),
+                        asset_address: Set(asset_address.clone()),
+                        start_ts: Set(start_ts),
+                        ttl: Set(ttl),
+                        status: Set(TabStatus::Pending),
+                        settlement_status: Set(SettlementStatus::Pending),
+                        total_amount: Set("0".to_string()),
+                        paid_amount: Set("0".to_string()),
+                        last_req_id: Set("0x0".to_string()),
+                        accepted_guarantee_version: Set(Some(guarantee_version)),
+                        version: Set(1),
+                        created_at: Set(now()),
+                        updated_at: Set(now()),
+                    };
+                    info!("Creating new pending tab {}", new_tab.id.as_ref());
+
+                    let insert_res = tabs::Entity::insert(new_tab)
+                        .on_conflict(OnConflict::new().do_nothing().to_owned())
+                        .exec_without_returning(txn)
+                        .await?;
+
+                    if insert_res == 1 {
+                        let created = get_tab_by_id_on(txn, tab_id).await?;
+                        return Ok::<_, PersistDbError>(AttemptResult::Created(created));
+                    }
+
+                    let existing = find_active_tab_by_key_on(
+                        txn,
+                        &user_address,
+                        &server_address,
+                        &asset_address,
+                        guarantee_version,
+                    )
+                    .await?;
+
+                    let Some(existing) = existing else {
+                        return Ok(AttemptResult::Retry);
+                    };
+
+                    let expiry_ts = existing
+                        .start_ts
+                        .and_utc()
+                        .timestamp()
+                        .saturating_add(existing.ttl);
+                    let expired = existing.ttl <= 0 || expiry_ts < now_ts;
+                    let ttl_invalid = existing.ttl <= 0 || existing.ttl as u64 > max_ttl;
+
+                    if expired || ttl_invalid {
+                        tabs::Entity::update_many()
+                            .filter(tabs::Column::Id.eq(existing.id.clone()))
+                            .filter(tabs::Column::Status.ne(TabStatus::Closed))
+                            .set(tabs::ActiveModel {
+                                status: Set(TabStatus::Closed),
+                                updated_at: Set(now()),
+                                ..Default::default()
+                            })
+                            .exec(txn)
+                            .await?;
+                        Ok(AttemptResult::Retry)
+                    } else {
+                        Ok(AttemptResult::Existing(existing))
+                    }
+                })
+            })
+            .await?;
+
+        match result {
+            AttemptResult::Created(tab) => return Ok(CreateOrGetActiveTab::Created(tab)),
+            AttemptResult::Existing(tab) => return Ok(CreateOrGetActiveTab::Existing(tab)),
+            AttemptResult::Retry => continue,
+        }
+    }
+
+    Err(PersistDbError::InvariantViolation(
+        "failed to create or reuse an active tab after maximum retries".into(),
+    ))
 }
 
 #[measure(record_db_time)]
@@ -94,21 +231,18 @@ pub async fn open_tab_on<C: ConnectionTrait>(
     Ok(())
 }
 
-#[measure(record_db_time)]
-pub async fn find_active_tab_by_triplet(
-    ctx: &PersistCtx,
+async fn find_active_tab_by_key_on<C: ConnectionTrait>(
+    conn: &C,
     user_address: &str,
     server_address: &str,
     asset_address: &str,
+    guarantee_version: i32,
 ) -> Result<Option<tabs::Model>, PersistDbError> {
-    let user_address = parse_address(user_address)?;
-    let server_address = parse_address(server_address)?;
-    let asset_address = parse_address(asset_address)?;
-
     let tab = tabs::Entity::find()
-        .filter(tabs::Column::UserAddress.eq(user_address.as_str()))
-        .filter(tabs::Column::ServerAddress.eq(server_address.as_str()))
-        .filter(tabs::Column::AssetAddress.eq(asset_address.as_str()))
+        .filter(tabs::Column::UserAddress.eq(user_address))
+        .filter(tabs::Column::ServerAddress.eq(server_address))
+        .filter(tabs::Column::AssetAddress.eq(asset_address))
+        .filter(tabs::Column::AcceptedGuaranteeVersion.eq(guarantee_version))
         .filter(tabs::Column::Status.is_in(vec![TabStatus::Pending, TabStatus::Open]))
         .filter(
             Condition::all()
@@ -116,11 +250,38 @@ pub async fn find_active_tab_by_triplet(
                 .add(tabs::Column::SettlementStatus.ne(SettlementStatus::Remunerated)),
         )
         .order_by_desc(tabs::Column::UpdatedAt)
-        .one(ctx.db.as_ref())
+        .one(conn)
         .await
         .map_err(PersistDbError::DatabaseFailure)?;
 
     Ok(tab)
+}
+
+#[measure(record_db_time)]
+pub async fn find_active_tab_by_key(
+    ctx: &PersistCtx,
+    user_address: &str,
+    server_address: &str,
+    asset_address: &str,
+    guarantee_version: u64,
+) -> Result<Option<tabs::Model>, PersistDbError> {
+    let user_address = parse_address(user_address)?;
+    let server_address = parse_address(server_address)?;
+    let asset_address = parse_address(asset_address)?;
+
+    find_active_tab_by_key_on(
+        ctx.db.as_ref(),
+        user_address.as_str(),
+        server_address.as_str(),
+        asset_address.as_str(),
+        i32::try_from(guarantee_version).map_err(|_| {
+            PersistDbError::InvariantViolation(format!(
+                "guarantee version {} does not fit in i32",
+                guarantee_version
+            ))
+        })?,
+    )
+    .await
 }
 
 #[measure(record_db_time)]
