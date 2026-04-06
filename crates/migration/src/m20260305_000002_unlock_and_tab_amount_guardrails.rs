@@ -21,16 +21,6 @@ CHECK (total_amount ~ '^[0-9]+$') NOT VALID;
 ALTER TABLE "Tabs"
 ADD CONSTRAINT chk_tabs_paid_amount_numeric
 CHECK (paid_amount ~ '^[0-9]+$') NOT VALID;
-
-ALTER TABLE "Tabs"
-ADD CONSTRAINT chk_tabs_paid_not_above_total
-CHECK (
-  CASE
-    WHEN total_amount ~ '^[0-9]+$' AND paid_amount ~ '^[0-9]+$'
-      THEN paid_amount::numeric <= total_amount::numeric
-    ELSE false
-  END
-) NOT VALID;
 "#,
             )
             .await?;
@@ -43,9 +33,6 @@ CHECK (
             .get_connection()
             .execute_unprepared(
                 r#"
-ALTER TABLE "Tabs"
-DROP CONSTRAINT IF EXISTS chk_tabs_paid_not_above_total;
-
 ALTER TABLE "Tabs"
 DROP CONSTRAINT IF EXISTS chk_tabs_paid_amount_numeric;
 
