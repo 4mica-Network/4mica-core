@@ -8,6 +8,7 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
+import {MockAavePool, MockAToken, MockAaveProtocolDataProvider, MockPoolAddressesProvider} from "./helpers/MockAave.sol";
 
 contract MockERC20 {
     string public name;
@@ -67,6 +68,11 @@ abstract contract Core4MicaTestBase is Test {
     AccessManager internal manager;
     MockERC20 internal usdc;
     MockERC20 internal usdt;
+    MockAavePool internal mockPool;
+    MockAToken internal mockUsdcAToken;
+    MockAToken internal mockUsdtAToken;
+    MockAaveProtocolDataProvider internal mockDataProvider;
+    MockPoolAddressesProvider internal mockProvider;
 
     address internal constant USER1 = address(0x111);
     address internal constant USER2 = address(0x222);
@@ -88,9 +94,19 @@ abstract contract Core4MicaTestBase is Test {
         usdc = new MockERC20("USD Coin", "USDC");
         usdt = new MockERC20("Tether USD", "USDT");
         testPublicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY);
-        core4Mica = new Core4Mica(address(manager), testPublicKey);
-        core4Mica.setStablecoinAsset(address(usdc), true);
-        core4Mica.setStablecoinAsset(address(usdt), true);
+        mockPool = new MockAavePool();
+        mockDataProvider = new MockAaveProtocolDataProvider();
+        mockProvider = new MockPoolAddressesProvider();
+        mockUsdcAToken = new MockAToken(address(usdc), address(mockPool), "Aave USDC", "aUSDC");
+        mockUsdtAToken = new MockAToken(address(usdt), address(mockPool), "Aave USDT", "aUSDT");
+        mockPool.setReserve(address(usdc), address(mockUsdcAToken), 1e27);
+        mockPool.setReserve(address(usdt), address(mockUsdtAToken), 1e27);
+        mockDataProvider.setReserveAToken(address(usdc), address(mockUsdcAToken));
+        mockDataProvider.setReserveAToken(address(usdt), address(mockUsdtAToken));
+        mockProvider.setPool(address(mockPool));
+        mockProvider.setPoolDataProvider(address(mockDataProvider));
+
+        core4Mica = new Core4Mica(address(manager), testPublicKey, address(usdc), address(usdt));
 
         vm.deal(USER1, 5 ether);
         usdc.mint(USER1, 1_000_000 ether);
@@ -102,19 +118,29 @@ abstract contract Core4MicaTestBase is Test {
 
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
-        bytes4[] memory adminSelectors = new bytes4[](6);
+        bytes4[] memory adminSelectors = new bytes4[](10);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
         adminSelectors[3] = Core4Mica.unpause.selector;
         adminSelectors[4] = Core4Mica.setStablecoinAsset.selector;
         adminSelectors[5] = Core4Mica.setStablecoinAssets.selector;
+        adminSelectors[6] = Core4Mica.configureAave.selector;
+        adminSelectors[7] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[8] = Core4Mica.setStablecoinDepositsEnabled.selector;
+        adminSelectors[9] = Core4Mica.claimProtocolYield.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
 
         manager.grantRole(USER_ADMIN_ROLE, address(this), 0);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
+
+        core4Mica.configureAave(address(mockProvider), address(mockUsdcAToken), address(mockUsdtAToken));
+        core4Mica.setStablecoinAsset(address(usdc), true);
+        core4Mica.setStablecoinAsset(address(usdt), true);
+        core4Mica.setStablecoinDepositsEnabled(address(usdc), true);
+        core4Mica.setStablecoinDepositsEnabled(address(usdt), true);
     }
 
     function _signGuarantee(Guarantee memory g, bytes32 privKey) internal view returns (BLS.G2Point memory) {

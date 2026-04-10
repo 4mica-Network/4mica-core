@@ -19,13 +19,15 @@ contract Core4MicaFullStackSmokeTest is Test {
     uint64 private constant GUARANTEE_V2 = 2;
     bytes32 private constant TEST_PRIVATE_KEY =
         bytes32(0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3);
+    address private constant USDC = address(0xA0);
+    address private constant USDT = address(0xB0);
 
     function test_fullStackDeploymentConfiguresV1AndV2GuaranteeVersions() public {
         address deployer = address(this);
         AccessManager manager = new AccessManager(deployer);
         BLS.G1Point memory verificationKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY);
 
-        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey);
+        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, USDC, USDT);
         GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
 
         address[] memory trustedRegistries = new address[](1);
@@ -58,7 +60,7 @@ contract Core4MicaFullStackSmokeTest is Test {
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
-        bytes4[] memory adminSelectors = new bytes4[](11);
+        bytes4[] memory adminSelectors = new bytes4[](15);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
@@ -70,6 +72,10 @@ contract Core4MicaFullStackSmokeTest is Test {
         adminSelectors[8] = Core4Mica.unpause.selector;
         adminSelectors[9] = Core4Mica.setStablecoinAsset.selector;
         adminSelectors[10] = Core4Mica.setStablecoinAssets.selector;
+        adminSelectors[11] = Core4Mica.configureAave.selector;
+        adminSelectors[12] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[13] = Core4Mica.setStablecoinDepositsEnabled.selector;
+        adminSelectors[14] = Core4Mica.claimProtocolYield.selector;
 
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);

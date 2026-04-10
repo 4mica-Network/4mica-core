@@ -8,6 +8,11 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
+import {IAavePool} from "./interfaces/IAavePool.sol";
+import {IPoolAddressesProvider} from "./interfaces/IPoolAddressesProvider.sol";
+import {IAaveProtocolDataProvider} from "./interfaces/IAaveProtocolDataProvider.sol";
+import {IAToken} from "./interfaces/IAToken.sol";
+import {Core4MicaAccounting} from "./libraries/Core4MicaAccounting.sol";
 
 struct Guarantee {
     bytes32 domain;
@@ -27,9 +32,12 @@ interface IGuaranteeDecoder {
 }
 
 /// @title Core4Mica
-/// @notice Manages user collateral: deposits, locks by operators, withdrawals, and make-whole payouts.
+/// @notice Manages user collateral, delayed withdrawals, and make-whole payouts.
 contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
+
+    uint256 public constant MAX_YIELD_FEE_BPS = 5000;
+    uint256 public constant RECONCILIATION_DUST_TOLERANCE_SCALED = 1;
 
     // ========= Errors =========
     error AmountZero();
@@ -51,6 +59,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error UnsupportedGuaranteeVersion(uint64 version);
     error InvalidGuaranteeDomain();
     error MissingGuaranteeDecoder(uint64 version);
+    error AaveNotConfigured();
+    error FeeTooHigh();
+    error TreasuryClaimExceedsAvailable();
+    error UnsupportedTreasuryAsset(address asset);
+    error StablecoinWithdrawShortfall(address asset, uint256 requested, uint256 actual);
+    error AaveProviderReconfigurationBlocked();
+    error UserScaledBalanceUnderflow(address asset, address user, uint256 deduction, uint256 balance);
+    error ZeroAddress();
+    error InvalidAToken(address asset, address aToken);
+    error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
+    error SurplusClaimExceedsAvailable();
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -58,7 +77,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     uint256 public tabExpirationTime = 21 days;
     uint256 public synchronizationDelay = 6 hours;
 
-    /// TODO(#22): move key to registry
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
     bytes32 public guaranteeDomainSeparator;
 
@@ -73,9 +91,24 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     uint64 public constant INITIAL_GUARANTEE_VERSION = 1;
 
     address internal constant ETH_ASSET = address(0);
+    address public immutable usdc;
+    address public immutable usdt;
+
     mapping(address => bool) private stablecoinAssets;
     address[] private stablecoinAssetList;
     mapping(address => uint256) private stablecoinAssetIndexPlusOne;
+
+    mapping(address => bool) public stablecoinDepositsEnabled;
+    IPoolAddressesProvider public aaveAddressesProvider;
+    uint256 public yieldFeeBps;
+    mapping(address => address) internal stablecoinATokens;
+    mapping(address => address) internal approvedPoolForAsset;
+    mapping(address => mapping(address => uint256)) internal scaledStablecoinBalances;
+    mapping(address => mapping(address => uint256)) internal stablecoinPrincipalBalances;
+    mapping(address => uint256) internal protocolScaledStablecoinBalances;
+    mapping(address => uint256) internal totalUserScaledStablecoinBalances;
+    mapping(address => uint256) internal surplusScaledStablecoinBalances;
+    mapping(address => uint256) internal ethCollateralBalances;
 
     /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
     BLS.G1Point internal NEGATED_G1_GENERATOR = BLS.G1Point(
@@ -103,7 +136,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 withdrawalRequestAmount;
     }
 
-    mapping(address => mapping(address => uint256)) internal collateralBalances;
     mapping(address => mapping(address => WithdrawalRequest)) public withdrawalRequests;
     mapping(uint256 => PaymentStatus) public payments;
 
@@ -126,9 +158,21 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint64 indexed version, BLS.G1Point verificationKey, bytes32 domainSeparator, address decoder, bool enabled
     );
     event StablecoinAssetUpdated(address indexed asset, bool enabled);
+    event AaveConfigured(address indexed provider, address indexed pool);
+    event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+    event StablecoinDepositsEnabledUpdated(address indexed asset, bool enabled);
+    event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
+    event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
 
     // ========= Constructor =========
-    constructor(address manager, BLS.G1Point memory verificationKey) AccessManaged(manager) {
+    constructor(address manager, BLS.G1Point memory verificationKey, address usdc_, address usdt_)
+        AccessManaged(manager)
+    {
+        if (usdc_ == address(0) || usdt_ == address(0)) revert ZeroAddress();
+        if (usdc_ == usdt_) revert InvalidAsset(usdc_);
+
+        usdc = usdc_;
+        usdt = usdt_;
         GUARANTEE_VERIFICATION_KEY = verificationKey;
         guaranteeDomainSeparator = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V1", block.chainid, address(this)));
         guaranteeVersions[INITIAL_GUARANTEE_VERSION] = VersionConfig({
@@ -253,7 +297,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     ) external restricted {
         if (version == 0) revert UnsupportedGuaranteeVersion(version);
         if (version == INITIAL_GUARANTEE_VERSION && decoder != address(0)) {
-            // Version 1 decoding remains inline for gas efficiency.
             revert UnsupportedGuaranteeVersion(version);
         }
         VersionConfig storage config = guaranteeVersions[version];
@@ -293,6 +336,102 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
     }
 
+    function configureAave(address poolAddressesProvider, address usdcAToken, address usdtAToken) external restricted {
+        if (poolAddressesProvider == address(0) || usdcAToken == address(0) || usdtAToken == address(0)) {
+            revert ZeroAddress();
+        }
+        if (_hasOpenStablecoinPositions()) revert AaveProviderReconfigurationBlocked();
+
+        address usdcAsset = IAToken(usdcAToken).UNDERLYING_ASSET_ADDRESS();
+        address usdtAsset = IAToken(usdtAToken).UNDERLYING_ASSET_ADDRESS();
+        if (usdcAsset != usdc) revert InvalidAToken(usdc, usdcAToken);
+        if (usdtAsset != usdt) revert InvalidAToken(usdt, usdtAToken);
+        if (usdcAsset == usdtAsset) revert InvalidAsset(usdcAsset);
+
+        IPoolAddressesProvider provider = IPoolAddressesProvider(poolAddressesProvider);
+        address pool = provider.getPool();
+        address dataProvider = provider.getPoolDataProvider();
+        if (pool == address(0) || dataProvider == address(0)) revert ZeroAddress();
+
+        (address configuredUsdcAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(usdc);
+        (address configuredUsdtAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(usdt);
+        if (configuredUsdcAToken != usdcAToken) revert InvalidAToken(usdc, usdcAToken);
+        if (configuredUsdtAToken != usdtAToken) revert InvalidAToken(usdt, usdtAToken);
+
+        aaveAddressesProvider = provider;
+        stablecoinATokens[usdc] = usdcAToken;
+        stablecoinATokens[usdt] = usdtAToken;
+        approvedPoolForAsset[usdc] = address(0);
+        approvedPoolForAsset[usdt] = address(0);
+        emit AaveConfigured(poolAddressesProvider, pool);
+    }
+
+    function setYieldFeeBps(uint256 feeBps) external restricted {
+        if (feeBps > MAX_YIELD_FEE_BPS) revert FeeTooHigh();
+        uint256 oldFee = yieldFeeBps;
+        yieldFeeBps = feeBps;
+        emit YieldFeeBpsUpdated(oldFee, feeBps);
+    }
+
+    function setStablecoinDepositsEnabled(address asset, bool enabled) external restricted stablecoin(asset) {
+        stablecoinDepositsEnabled[asset] = enabled;
+        emit StablecoinDepositsEnabledUpdated(asset, enabled);
+    }
+
+    function claimProtocolYield(address asset, address to, uint256 amount)
+        external
+        restricted
+        nonReentrant
+        validRecipient(to)
+        stablecoin(asset)
+    {
+        uint256 index = _currentIndex(asset);
+        uint256 amountToClaim = amount;
+        if (amount == type(uint256).max) {
+            amountToClaim = _toUnderlyingRoundDown(protocolScaledStablecoinBalances[asset], index);
+            if (amountToClaim == 0) revert AmountZero();
+        } else if (amount == 0) {
+            revert AmountZero();
+        }
+
+        uint256 claimable = _toUnderlyingRoundDown(protocolScaledStablecoinBalances[asset], index);
+        if (amountToClaim > claimable) revert TreasuryClaimExceedsAvailable();
+
+        address aToken = _requireAToken(asset);
+        uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
+        uint256 actualWithdrawn = _aavePool().withdraw(asset, amountToClaim, to);
+        if (actualWithdrawn < amountToClaim) {
+            revert StablecoinWithdrawShortfall(asset, amountToClaim, actualWithdrawn);
+        }
+        uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
+        uint256 scaledBurn = scaledBefore - scaledAfter;
+        protocolScaledStablecoinBalances[asset] -= scaledBurn;
+        _syncSurplusScaledBalance(asset);
+        _checkReconciliation(asset);
+        emit ProtocolYieldClaimed(asset, to, actualWithdrawn);
+    }
+
+    function claimSurplusATokens(address asset, address to, uint256 scaledAmount)
+        external
+        restricted
+        nonReentrant
+        validRecipient(to)
+        stablecoin(asset)
+        nonZero(scaledAmount)
+    {
+        if (scaledAmount > surplusScaledStablecoinBalances[asset]) revert SurplusClaimExceedsAvailable();
+        address aToken = _requireAToken(asset);
+        uint256 nominalAmount = _toUnderlyingRoundDown(scaledAmount, _currentIndex(asset));
+        uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
+        IERC20(aToken).safeTransfer(to, nominalAmount);
+        uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
+        uint256 actualScaledRemoved = scaledBefore - scaledAfter;
+        if (actualScaledRemoved > surplusScaledStablecoinBalances[asset]) revert SurplusClaimExceedsAvailable();
+        surplusScaledStablecoinBalances[asset] -= actualScaledRemoved;
+        _checkReconciliation(asset);
+        emit SurplusATokensClaimed(asset, to, actualScaledRemoved, nominalAmount);
+    }
+
     function getGuaranteeVersionConfig(uint64 version)
         external
         view
@@ -304,7 +443,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     // ========= User flows =========
     function deposit() external payable nonReentrant nonZero(msg.value) whenNotPaused {
-        collateralBalances[msg.sender][ETH_ASSET] += msg.value;
+        ethCollateralBalances[msg.sender] += msg.value;
         emit CollateralDeposited(msg.sender, ETH_ASSET, msg.value);
     }
 
@@ -315,8 +454,21 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         nonZero(amount)
         whenNotPaused
     {
+        if (!stablecoinDepositsEnabled[asset]) revert IllegalValue();
+        address aToken = _requireAToken(asset);
+
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-        collateralBalances[msg.sender][asset] += amount;
+
+        uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
+        _ensureDepositApproval(asset, amount);
+        _aavePool().supply(asset, amount, address(this), 0);
+        uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
+        uint256 scaledCredit = scaledAfter - scaledBefore;
+
+        scaledStablecoinBalances[msg.sender][asset] += scaledCredit;
+        totalUserScaledStablecoinBalances[asset] += scaledCredit;
+        stablecoinPrincipalBalances[msg.sender][asset] += amount;
+        _syncSurplusScaledBalance(asset);
         emit CollateralDeposited(msg.sender, asset, amount);
     }
 
@@ -334,7 +486,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     function requestWithdrawalInternal(address user, address asset, uint256 amount) internal {
-        if (amount > collateralBalances[user][asset]) {
+        if (amount > _availableBalance(user, asset)) {
             revert InsufficientAvailable();
         }
 
@@ -373,22 +525,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             revert GracePeriodNotElapsed();
         }
 
-        /// The user's collateral may have been reduced since the withdrawal was requested.
-        /// As such, take the minimum of the two, making sure we never overdraw the account.
-        uint256 available = collateralBalances[user][asset];
-        uint256 withdrawal_amount = Math.min(available, request.amount);
-
-        collateralBalances[user][asset] = available - withdrawal_amount;
-        delete withdrawalRequests[user][asset];
-
         if (asset == ETH_ASSET) {
-            (bool ok,) = payable(user).call{value: withdrawal_amount}("");
-            if (!ok) revert TransferFailed();
-        } else {
-            IERC20(asset).safeTransfer(user, withdrawal_amount);
+            _finalizeEthWithdrawal(user, request);
+            return;
         }
 
-        emit CollateralWithdrawn(user, asset, withdrawal_amount);
+        _finalizeStablecoinWithdrawal(user, asset, request);
     }
 
     function payTabInERC20Token(uint256 tab_id, address asset, uint256 amount, address recipient)
@@ -403,23 +545,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         emit TabPaid(tab_id, asset, msg.sender, recipient, amount);
     }
 
-    /// TODO(#20): compress signature
-    /// TODO(#21): permit batch verification
     function remunerate(bytes calldata guaranteeData, BLS.G2Point calldata signature) external nonReentrant {
-        // Verify and decode the guarantee
         Guarantee memory g = verifyAndDecodeGuarantee(guaranteeData, signature);
 
-        // Validate amount and recipient
         if (g.amount == 0) revert AmountZero();
         if (g.total_amount == 0) revert AmountZero();
         if (g.recipient == address(0)) revert InvalidRecipient();
 
-        // Tab must be overdue
         if (block.timestamp < g.timestamp + remunerationGracePeriod) {
             revert TabNotYetOverdue();
         }
-
-        // Tab must not be expired
         if (g.timestamp + tabExpirationTime < block.timestamp) {
             revert TabExpired();
         }
@@ -427,46 +562,22 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         address asset = requireSupportedAsset(g.asset);
         PaymentStatus storage status = payments[g.tab_id];
 
-        // If payment doesn't exist yet (never been initialized), set the asset
         if (status.paid == 0 && !status.remunerated) {
             status.asset = asset;
-        } else {
-            // If payment already exists, verify the asset matches
-            if (status.asset != asset) revert InvalidAsset(asset);
+        } else if (status.asset != asset) {
+            revert InvalidAsset(asset);
         }
 
-        // Tab must not previously be remunerated
         if (status.remunerated) revert TabPreviouslyRemunerated();
-
-        // Tab must not be paid
         if (status.paid >= g.total_amount) revert TabAlreadyPaid();
         uint256 remaining = g.total_amount - status.paid;
 
-        // Client must have sufficient funds for the remainder
-        if (collateralBalances[g.client][asset] < remaining) {
-            revert DoubleSpendingDetected();
-        }
-
-        collateralBalances[g.client][asset] -= remaining;
-        status.remunerated = true;
-
-        // Subtract the remunerated value from the withdrawal request
-        // whenever the tab was opened BEFORE the withdrawal request
-        // was synchronized.
-        WithdrawalRequest storage wr = withdrawalRequests[g.client][asset];
-        if (wr.timestamp != 0 && g.timestamp < wr.timestamp + synchronizationDelay) {
-            uint256 deduction = Math.min(wr.amount, remaining);
-            wr.amount -= deduction;
-        }
-
         if (asset == ETH_ASSET) {
-            (bool ok,) = payable(g.recipient).call{value: remaining}("");
-            if (!ok) revert TransferFailed();
-        } else {
-            IERC20(asset).safeTransfer(g.recipient, remaining);
+            _remunerateEth(g, status, remaining);
+            return;
         }
 
-        emit RecipientRemunerated(g.tab_id, asset, remaining);
+        _remunerateStablecoin(g, status, asset, remaining);
     }
 
     // ========= Operator / Manager flows =========
@@ -479,12 +590,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     {
         PaymentStatus storage status = payments[tab_id];
 
-        // If payment doesn't exist yet (never been initialized), set the asset
         if (status.paid == 0 && !status.remunerated) {
             status.asset = asset;
-        } else {
-            // If payment already exists, verify the asset matches
-            if (status.asset != asset) revert InvalidAsset(asset);
+        } else if (status.asset != asset) {
+            revert InvalidAsset(asset);
         }
 
         status.paid += amount;
@@ -493,11 +602,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     // ========= Views / Helpers =========
     function collateral(address userAddr) external view returns (uint256) {
-        return collateralBalances[userAddr][ETH_ASSET];
+        return ethCollateralBalances[userAddr];
     }
 
     function collateral(address userAddr, address asset) external view supportedAsset(asset) returns (uint256) {
-        return collateralBalances[userAddr][asset];
+        if (asset == ETH_ASSET) return ethCollateralBalances[userAddr];
+        return _userWithdrawableStablecoinBalance(userAddr, asset);
     }
 
     function getUserAllAssets(address userAddr) external view returns (UserAssetInfo[] memory) {
@@ -507,7 +617,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         WithdrawalRequest storage ethRequest = withdrawalRequests[userAddr][ETH_ASSET];
         assetInfos[0] = UserAssetInfo({
             asset: ETH_ASSET,
-            collateral: collateralBalances[userAddr][ETH_ASSET],
+            collateral: ethCollateralBalances[userAddr],
             withdrawalRequestTimestamp: ethRequest.timestamp,
             withdrawalRequestAmount: ethRequest.amount
         });
@@ -518,7 +628,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
             assetInfos[i + 1] = UserAssetInfo({
                 asset: asset,
-                collateral: collateralBalances[userAddr][asset],
+                collateral: _userWithdrawableStablecoinBalance(userAddr, asset),
                 withdrawalRequestTimestamp: request.timestamp,
                 withdrawalRequestAmount: request.amount
             });
@@ -542,7 +652,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         returns (uint256 assetCollateral, uint256 withdrawalRequestTimestamp, uint256 withdrawalRequestAmount)
     {
         WithdrawalRequest storage request = withdrawalRequests[userAddr][asset];
-        assetCollateral = collateralBalances[userAddr][asset];
+        assetCollateral = asset == ETH_ASSET ? ethCollateralBalances[userAddr] : _userWithdrawableStablecoinBalance(userAddr, asset);
         withdrawalRequestTimestamp = request.timestamp;
         withdrawalRequestAmount = request.amount;
     }
@@ -561,6 +671,54 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             tokens[i] = stablecoinAssetList[i];
         }
         return tokens;
+    }
+
+    function principalBalance(address user, address asset) external view stablecoin(asset) returns (uint256) {
+        return stablecoinPrincipalBalances[user][asset];
+    }
+
+    function guaranteeCapacity(address user, address asset) external view stablecoin(asset) returns (uint256) {
+        return stablecoinPrincipalBalances[user][asset];
+    }
+
+    function grossYield(address user, address asset) external view stablecoin(asset) returns (uint256) {
+        return _grossYield(user, asset);
+    }
+
+    function protocolYieldShare(address user, address asset) external view stablecoin(asset) returns (uint256) {
+        return _protocolShareFromGross(_grossYield(user, asset));
+    }
+
+    function userNetYield(address user, address asset) external view stablecoin(asset) returns (uint256) {
+        return _userNetYield(user, asset);
+    }
+
+    function withdrawableBalance(address user, address asset) external view supportedAsset(asset) returns (uint256) {
+        return _availableBalance(user, asset);
+    }
+
+    function totalUserScaledBalance(address asset) external view stablecoin(asset) returns (uint256) {
+        return totalUserScaledStablecoinBalances[asset];
+    }
+
+    function protocolScaledBalance(address asset) external view stablecoin(asset) returns (uint256) {
+        return protocolScaledStablecoinBalances[asset];
+    }
+
+    function surplusScaledBalance(address asset) external view stablecoin(asset) returns (uint256) {
+        return surplusScaledStablecoinBalances[asset];
+    }
+
+    function contractScaledATokenBalance(address asset) external view stablecoin(asset) returns (uint256) {
+        return _scaledATokenBalance(asset);
+    }
+
+    function reconciliationDustToleranceScaled() external pure returns (uint256) {
+        return RECONCILIATION_DUST_TOLERANCE_SCALED;
+    }
+
+    function stablecoinAToken(address asset) external view returns (address) {
+        return stablecoinATokens[asset];
     }
 
     function verifyAndDecodeGuarantee(bytes memory guarantee, BLS.G2Point memory signature)
@@ -622,6 +780,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     function _setStablecoinAsset(address asset, bool enabled) internal {
         if (asset == ETH_ASSET) revert InvalidAsset(asset);
+        if (enabled && asset != usdc && asset != usdt) revert InvalidAsset(asset);
 
         bool current = stablecoinAssets[asset];
         if (current == enabled) return;
@@ -646,5 +805,246 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
 
         emit StablecoinAssetUpdated(asset, enabled);
+    }
+
+    function _aavePool() internal view returns (IAavePool pool) {
+        IPoolAddressesProvider provider = aaveAddressesProvider;
+        if (address(provider) == address(0)) revert AaveNotConfigured();
+        address poolAddress = provider.getPool();
+        if (poolAddress == address(0)) revert AaveNotConfigured();
+        pool = IAavePool(poolAddress);
+    }
+
+    function _requireAToken(address asset) internal view returns (address aToken) {
+        aToken = stablecoinATokens[asset];
+        if (aToken == address(0)) revert AaveNotConfigured();
+    }
+
+    function _currentIndex(address asset) internal view returns (uint256) {
+        return _aavePool().getReserveNormalizedIncome(asset);
+    }
+
+    function _toUnderlyingRoundDown(uint256 scaled, uint256 index) internal pure returns (uint256) {
+        return Core4MicaAccounting.toUnderlyingRoundDown(scaled, index);
+    }
+
+    function _toScaledRoundDown(uint256 amount, uint256 index) internal pure returns (uint256) {
+        return Core4MicaAccounting.toScaledRoundDown(amount, index);
+    }
+
+    function _toScaledRoundUp(uint256 amount, uint256 index) internal pure returns (uint256) {
+        return Core4MicaAccounting.toScaledRoundUp(amount, index);
+    }
+
+    function _actualStablecoinBalance(address user, address asset) internal view returns (uint256) {
+        return _toUnderlyingRoundDown(scaledStablecoinBalances[user][asset], _currentIndex(asset));
+    }
+
+    function _grossYield(address user, address asset) internal view returns (uint256) {
+        uint256 actualBalance = _actualStablecoinBalance(user, asset);
+        uint256 principal = stablecoinPrincipalBalances[user][asset];
+        return actualBalance > principal ? actualBalance - principal : 0;
+    }
+
+    function _protocolShareFromGross(uint256 gross) internal view returns (uint256) {
+        return Core4MicaAccounting.protocolShareFromGross(gross, yieldFeeBps);
+    }
+
+    function _netYieldFromGross(uint256 gross) internal view returns (uint256) {
+        return Core4MicaAccounting.netYieldFromGross(gross, yieldFeeBps);
+    }
+
+    function _userNetYield(address user, address asset) internal view returns (uint256) {
+        return _netYieldFromGross(_grossYield(user, asset));
+    }
+
+    function _userWithdrawableStablecoinBalance(address user, address asset) internal view returns (uint256) {
+        return stablecoinPrincipalBalances[user][asset] + _userNetYield(user, asset);
+    }
+
+    function _availableBalance(address user, address asset) internal view returns (uint256) {
+        if (asset == ETH_ASSET) {
+            return ethCollateralBalances[user];
+        }
+        return _userWithdrawableStablecoinBalance(user, asset);
+    }
+
+    function _scaledATokenBalance(address asset) internal view returns (uint256) {
+        address aToken = stablecoinATokens[asset];
+        if (aToken == address(0)) return 0;
+        return IAToken(aToken).scaledBalanceOf(address(this));
+    }
+
+    function _trackedScaledBalanceWithoutSurplus(address asset) internal view returns (uint256) {
+        return totalUserScaledStablecoinBalances[asset] + protocolScaledStablecoinBalances[asset];
+    }
+
+    function _syncSurplusScaledBalance(address asset) internal {
+        uint256 observed = _scaledATokenBalance(asset);
+        uint256 trackedWithoutSurplus = _trackedScaledBalanceWithoutSurplus(asset);
+        if (observed >= trackedWithoutSurplus) {
+            surplusScaledStablecoinBalances[asset] = observed - trackedWithoutSurplus;
+            return;
+        }
+        if (trackedWithoutSurplus - observed > RECONCILIATION_DUST_TOLERANCE_SCALED) {
+            revert ReconciliationLoss(asset, trackedWithoutSurplus, observed);
+        }
+        surplusScaledStablecoinBalances[asset] = 0;
+    }
+
+    function _checkReconciliation(address asset) internal view {
+        uint256 observed = _scaledATokenBalance(asset);
+        uint256 tracked = totalUserScaledStablecoinBalances[asset] + protocolScaledStablecoinBalances[asset]
+            + surplusScaledStablecoinBalances[asset];
+
+        if (observed > tracked) {
+            if (observed - tracked > RECONCILIATION_DUST_TOLERANCE_SCALED) {
+                revert ReconciliationLoss(asset, tracked, observed);
+            }
+        } else if (tracked > observed && tracked - observed > RECONCILIATION_DUST_TOLERANCE_SCALED) {
+            revert ReconciliationLoss(asset, tracked, observed);
+        }
+    }
+
+    function _ensureDepositApproval(address asset, uint256 amount) internal {
+        IERC20 token = IERC20(asset);
+        address pool = address(_aavePool());
+        if (approvedPoolForAsset[asset] == pool && token.allowance(address(this), pool) >= amount) {
+            return;
+        }
+
+        address oldPool = approvedPoolForAsset[asset];
+        if (oldPool != address(0) && oldPool != pool) {
+            token.forceApprove(oldPool, 0);
+        }
+        token.forceApprove(pool, type(uint256).max);
+        approvedPoolForAsset[asset] = pool;
+    }
+
+    function _syncWithdrawalRequestAfterStablecoinBalanceChange(address user, address asset) internal {
+        WithdrawalRequest storage wr = withdrawalRequests[user][asset];
+        if (wr.timestamp == 0) return;
+        uint256 available = _userWithdrawableStablecoinBalance(user, asset);
+        if (wr.amount > available) {
+            wr.amount = available;
+            if (available == 0) {
+                delete withdrawalRequests[user][asset];
+            }
+        }
+    }
+
+    function _hasOpenStablecoinPositions() internal view returns (bool) {
+        return totalUserScaledStablecoinBalances[usdc] != 0 || totalUserScaledStablecoinBalances[usdt] != 0
+            || protocolScaledStablecoinBalances[usdc] != 0 || protocolScaledStablecoinBalances[usdt] != 0
+            || surplusScaledStablecoinBalances[usdc] != 0 || surplusScaledStablecoinBalances[usdt] != 0;
+    }
+
+    function _grossForNetYield(uint256 desiredNet) internal view returns (uint256) {
+        return Core4MicaAccounting.grossForNetYield(desiredNet, yieldFeeBps);
+    }
+
+    function _finalizeEthWithdrawal(address user, WithdrawalRequest memory request) internal {
+        uint256 available = ethCollateralBalances[user];
+        uint256 ethWithdrawalAmount = Math.min(available, request.amount);
+        ethCollateralBalances[user] = available - ethWithdrawalAmount;
+        delete withdrawalRequests[user][ETH_ASSET];
+
+        (bool ok,) = payable(user).call{value: ethWithdrawalAmount}("");
+        if (!ok) revert TransferFailed();
+        emit CollateralWithdrawn(user, ETH_ASSET, ethWithdrawalAmount);
+    }
+
+    function _finalizeStablecoinWithdrawal(address user, address asset, WithdrawalRequest memory request) internal {
+        uint256 principal = stablecoinPrincipalBalances[user][asset];
+        uint256 gross = _grossYield(user, asset);
+        uint256 userNet = _netYieldFromGross(gross);
+        uint256 userWithdrawableBalance = principal + userNet;
+        uint256 withdrawalAmount = Math.min(request.amount, userWithdrawableBalance);
+        uint256 principalConsumed = Math.min(withdrawalAmount, principal);
+        uint256 userYieldWithdrawn = withdrawalAmount - principalConsumed;
+        uint256 remainingUserNet = userNet - userYieldWithdrawn;
+        uint256 remainingGross = _grossForNetYield(remainingUserNet);
+        uint256 protocolFeeReallocatedUnderlying = gross - userYieldWithdrawn - remainingGross;
+        uint256 protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, _currentIndex(asset));
+
+        (uint256 scaledBurn, uint256 actualWithdrawn) = _withdrawStablecoinAndMeasureScaledBurn(asset, withdrawalAmount, user);
+        if (actualWithdrawn < withdrawalAmount) {
+            revert StablecoinWithdrawShortfall(asset, withdrawalAmount, actualWithdrawn);
+        }
+
+        uint256 userScaledDeduction = scaledBurn + protocolScaledCredit;
+        uint256 userScaledBalance = scaledStablecoinBalances[user][asset];
+        if (userScaledDeduction > userScaledBalance) {
+            revert UserScaledBalanceUnderflow(asset, user, userScaledDeduction, userScaledBalance);
+        }
+
+        stablecoinPrincipalBalances[user][asset] = principal - principalConsumed;
+        scaledStablecoinBalances[user][asset] = userScaledBalance - userScaledDeduction;
+        totalUserScaledStablecoinBalances[asset] -= userScaledDeduction;
+        protocolScaledStablecoinBalances[asset] += protocolScaledCredit;
+        _syncSurplusScaledBalance(asset);
+        _checkReconciliation(asset);
+        delete withdrawalRequests[user][asset];
+        emit CollateralWithdrawn(user, asset, withdrawalAmount);
+    }
+
+    function _remunerateEth(Guarantee memory g, PaymentStatus storage status, uint256 remaining) internal {
+        if (ethCollateralBalances[g.client] < remaining) revert DoubleSpendingDetected();
+        ethCollateralBalances[g.client] -= remaining;
+        status.remunerated = true;
+
+        WithdrawalRequest storage ethRequest = withdrawalRequests[g.client][ETH_ASSET];
+        if (ethRequest.timestamp != 0 && g.timestamp < ethRequest.timestamp + synchronizationDelay) {
+            uint256 deduction = Math.min(ethRequest.amount, remaining);
+            ethRequest.amount -= deduction;
+        }
+
+        (bool ok,) = payable(g.recipient).call{value: remaining}("");
+        if (!ok) revert TransferFailed();
+        emit RecipientRemunerated(g.tab_id, ETH_ASSET, remaining);
+    }
+
+    function _remunerateStablecoin(Guarantee memory g, PaymentStatus storage status, address asset, uint256 remaining)
+        internal
+    {
+        uint256 principal = stablecoinPrincipalBalances[g.client][asset];
+        if (remaining > principal) revert DoubleSpendingDetected();
+
+        (uint256 scaledBurn, uint256 actualWithdrawn) = _withdrawStablecoinAndMeasureScaledBurn(asset, remaining, g.recipient);
+        if (actualWithdrawn < remaining) {
+            revert StablecoinWithdrawShortfall(asset, remaining, actualWithdrawn);
+        }
+
+        uint256 userScaledBalance = scaledStablecoinBalances[g.client][asset];
+        if (scaledBurn > userScaledBalance) {
+            revert UserScaledBalanceUnderflow(asset, g.client, scaledBurn, userScaledBalance);
+        }
+
+        stablecoinPrincipalBalances[g.client][asset] = principal - remaining;
+        scaledStablecoinBalances[g.client][asset] = userScaledBalance - scaledBurn;
+        totalUserScaledStablecoinBalances[asset] -= scaledBurn;
+        status.remunerated = true;
+
+        WithdrawalRequest storage stablecoinRequest = withdrawalRequests[g.client][asset];
+        if (stablecoinRequest.timestamp != 0 && g.timestamp < stablecoinRequest.timestamp + synchronizationDelay) {
+            uint256 deduction = Math.min(stablecoinRequest.amount, remaining);
+            stablecoinRequest.amount -= deduction;
+        }
+
+        _syncWithdrawalRequestAfterStablecoinBalanceChange(g.client, asset);
+        _syncSurplusScaledBalance(asset);
+        _checkReconciliation(asset);
+        emit RecipientRemunerated(g.tab_id, asset, remaining);
+    }
+
+    function _withdrawStablecoinAndMeasureScaledBurn(address asset, uint256 amount, address recipient)
+        internal
+        returns (uint256 scaledBurn, uint256 actualWithdrawn)
+    {
+        address aToken = _requireAToken(asset);
+        uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
+        actualWithdrawn = _aavePool().withdraw(asset, amount, recipient);
+        uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
+        scaledBurn = scaledBefore - scaledAfter;
     }
 }

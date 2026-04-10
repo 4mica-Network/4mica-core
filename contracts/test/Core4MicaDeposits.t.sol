@@ -45,7 +45,8 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         assertEq(withdrawTimestamp, 0);
         assertEq(withdrawAmount, 0);
         assertEq(usdc.balanceOf(USER1), starting - amount);
-        assertEq(usdc.balanceOf(address(core4Mica)), amount);
+        assertEq(usdc.balanceOf(address(core4Mica)), 0);
+        assertEq(usdc.balanceOf(address(mockPool)), amount);
     }
 
     function test_Deposit_RevertZeroEther() public {
@@ -97,6 +98,7 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         assertEq(withdrawTimestamp, 0);
         assertEq(withdrawAmount, 0);
         assertEq(usdt.balanceOf(USER1), starting - amount);
-        assertEq(usdt.balanceOf(address(core4Mica)), amount);
+        assertEq(usdt.balanceOf(address(core4Mica)), 0);
+        assertEq(usdt.balanceOf(address(mockPool)), amount);
     }
 }

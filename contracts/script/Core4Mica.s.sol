@@ -46,6 +46,7 @@ contract Core4MicaScript is Script {
         address deployer = vm.addr(deployerPrivateKey);
         address managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
         address[] memory stablecoins = _loadStablecoinAssets();
+        require(stablecoins.length == 2, "need USDC and USDT");
         string memory saltSeed = vm.envOr("CREATE2_SALT", string("4mica-core-v1"));
         bytes32 baseSalt = keccak256(bytes(saltSeed));
 
@@ -66,7 +67,10 @@ contract Core4MicaScript is Script {
         manager = AccessManager(managerAddress);
         address core4MicaAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CORE4MICA"),
-            abi.encodePacked(type(Core4Mica).creationCode, abi.encode(managerAddress, guaranteeVerificationKey))
+            abi.encodePacked(
+                type(Core4Mica).creationCode,
+                abi.encode(managerAddress, guaranteeVerificationKey, stablecoins[0], stablecoins[1])
+            )
         );
         Core4Mica core4Mica = Core4Mica(payable(core4MicaAddress));
 
@@ -75,7 +79,7 @@ contract Core4MicaScript is Script {
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
         // Admin-only config functions → USER_ADMIN_ROLE
-        bytes4[] memory adminSelectors = new bytes4[](11);
+        bytes4[] memory adminSelectors = new bytes4[](15);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         adminSelectors[2] = Core4Mica.setTabExpirationTime.selector;
@@ -87,6 +91,10 @@ contract Core4MicaScript is Script {
         adminSelectors[8] = Core4Mica.unpause.selector;
         adminSelectors[9] = Core4Mica.setStablecoinAsset.selector;
         adminSelectors[10] = Core4Mica.setStablecoinAssets.selector;
+        adminSelectors[11] = Core4Mica.configureAave.selector;
+        adminSelectors[12] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[13] = Core4Mica.setStablecoinDepositsEnabled.selector;
+        adminSelectors[14] = Core4Mica.claimProtocolYield.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
