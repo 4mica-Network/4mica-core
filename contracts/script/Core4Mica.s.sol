@@ -9,7 +9,11 @@ import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 
 contract Core4MicaScript is Script {
     error InvalidStablecoinConfiguration();
+    error PartialAaveConfiguration();
     error StablecoinReadbackMismatch();
+    error AaveReadbackMismatch(string field);
+    error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
+    error StablecoinDepositsEnabledReadbackMismatch(address asset, bool expected, bool actual);
 
     AccessManager manager;
     bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
@@ -109,6 +113,7 @@ contract Core4MicaScript is Script {
         if (stablecoins.length > 0) {
             core4Mica.setStablecoinAssets(stablecoins, true);
             _assertStablecoinReadback(core4Mica, stablecoins);
+            _configureOptionalAave(core4Mica, stablecoins);
         }
         vm.stopBroadcast();
 
@@ -162,6 +167,62 @@ contract Core4MicaScript is Script {
         if (storedAssets.length != expectedAssets.length) revert StablecoinReadbackMismatch();
         for (uint256 i = 0; i < expectedAssets.length; i++) {
             if (storedAssets[i] != expectedAssets[i]) revert StablecoinReadbackMismatch();
+        }
+    }
+
+    function _configureOptionalAave(Core4Mica core4Mica, address[] memory stablecoins) internal {
+        bool configureAave = vm.envOr("CONFIGURE_AAVE", false);
+        address provider = vm.envOr("AAVE_POOL_ADDRESSES_PROVIDER", address(0));
+        address usdcAToken = vm.envOr("USDC_ATOKEN", address(0));
+        address usdtAToken = vm.envOr("USDT_ATOKEN", address(0));
+
+        if (
+            (provider != address(0) || usdcAToken != address(0) || usdtAToken != address(0))
+                && (!configureAave || provider == address(0) || usdcAToken == address(0) || usdtAToken == address(0))
+        ) {
+            revert PartialAaveConfiguration();
+        }
+
+        if (configureAave) {
+            core4Mica.configureAave(provider, usdcAToken, usdtAToken);
+            if (address(core4Mica.aaveAddressesProvider()) != provider) {
+                revert AaveReadbackMismatch("provider");
+            }
+            if (core4Mica.stablecoinAToken(stablecoins[0]) != usdcAToken) {
+                revert AaveReadbackMismatch("usdcAToken");
+            }
+            if (core4Mica.stablecoinAToken(stablecoins[1]) != usdtAToken) {
+                revert AaveReadbackMismatch("usdtAToken");
+            }
+        }
+
+        bool setYieldFee = vm.envOr("SET_YIELD_FEE_BPS", false);
+        uint256 yieldFeeBps = vm.envOr("YIELD_FEE_BPS", uint256(0));
+        if (setYieldFee) {
+            core4Mica.setYieldFeeBps(yieldFeeBps);
+            uint256 storedYieldFeeBps = core4Mica.yieldFeeBps();
+            if (storedYieldFeeBps != yieldFeeBps) {
+                revert YieldFeeReadbackMismatch(yieldFeeBps, storedYieldFeeBps);
+            }
+        }
+
+        bool enableUsdcDeposits = vm.envOr("ENABLE_USDC_DEPOSITS", false);
+        bool enableUsdtDeposits = vm.envOr("ENABLE_USDT_DEPOSITS", false);
+        core4Mica.setStablecoinDepositsEnabled(stablecoins[0], enableUsdcDeposits);
+        core4Mica.setStablecoinDepositsEnabled(stablecoins[1], enableUsdtDeposits);
+
+        bool storedUsdcDepositsEnabled = core4Mica.stablecoinDepositsEnabled(stablecoins[0]);
+        if (storedUsdcDepositsEnabled != enableUsdcDeposits) {
+            revert StablecoinDepositsEnabledReadbackMismatch(
+                stablecoins[0], enableUsdcDeposits, storedUsdcDepositsEnabled
+            );
+        }
+
+        bool storedUsdtDepositsEnabled = core4Mica.stablecoinDepositsEnabled(stablecoins[1]);
+        if (storedUsdtDepositsEnabled != enableUsdtDeposits) {
+            revert StablecoinDepositsEnabledReadbackMismatch(
+                stablecoins[1], enableUsdtDeposits, storedUsdtDepositsEnabled
+            );
         }
     }
 }
