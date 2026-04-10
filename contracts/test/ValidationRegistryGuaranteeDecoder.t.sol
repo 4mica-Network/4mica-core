@@ -79,8 +79,7 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         address noCodeRegistry = address(0xdead);
         address[] memory trustedRegistries = new address[](1);
         trustedRegistries[0] = noCodeRegistry;
-        ValidationRegistryGuaranteeDecoder noCodeDecoder =
-            new ValidationRegistryGuaranteeDecoder(trustedRegistries);
+        ValidationRegistryGuaranteeDecoder noCodeDecoder = new ValidationRegistryGuaranteeDecoder(trustedRegistries);
 
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
         g.validationRegistryAddress = noCodeRegistry;

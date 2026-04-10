@@ -7,7 +7,12 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
-import {MockAavePool, MockAToken, MockAaveProtocolDataProvider, MockPoolAddressesProvider} from "./helpers/MockAave.sol";
+import {
+    MockAavePool,
+    MockAToken,
+    MockAaveProtocolDataProvider,
+    MockPoolAddressesProvider
+} from "./helpers/MockAave.sol";
 
 contract MockERC20 {
     string public name;

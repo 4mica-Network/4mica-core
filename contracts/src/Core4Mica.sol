@@ -258,11 +258,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         emit TabExpirationTimeUpdated(_expirationTime);
     }
 
-    function setSynchronizationDelay(uint256 _synchronizationDelay)
-        external
-        restricted
-        nonZero(_synchronizationDelay)
-    {
+    function setSynchronizationDelay(uint256 _synchronizationDelay) external restricted nonZero(_synchronizationDelay) {
         if (_synchronizationDelay + tabExpirationTime >= withdrawalGracePeriod) {
             revert IllegalValue();
         }
@@ -671,7 +667,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         returns (uint256 assetCollateral, uint256 withdrawalRequestTimestamp, uint256 withdrawalRequestAmount)
     {
         WithdrawalRequest storage request = withdrawalRequests[userAddr][asset];
-        assetCollateral = asset == ETH_ASSET ? ethCollateralBalances[userAddr] : _userWithdrawableStablecoinBalance(userAddr, asset);
+        assetCollateral =
+            asset == ETH_ASSET ? ethCollateralBalances[userAddr] : _userWithdrawableStablecoinBalance(userAddr, asset);
         withdrawalRequestTimestamp = request.timestamp;
         withdrawalRequestAmount = request.amount;
     }
@@ -995,7 +992,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 protocolFeeReallocatedUnderlying = gross - userYieldWithdrawn - remainingGross;
         uint256 protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, _currentIndex(asset));
 
-        (uint256 scaledBurn, uint256 actualWithdrawn) = _withdrawStablecoinAndMeasureScaledBurn(asset, withdrawalAmount, user);
+        (uint256 scaledBurn, uint256 actualWithdrawn) =
+            _withdrawStablecoinAndMeasureScaledBurn(asset, withdrawalAmount, user);
         if (actualWithdrawn < withdrawalAmount) {
             revert StablecoinWithdrawShortfall(asset, withdrawalAmount, actualWithdrawn);
         }
@@ -1038,7 +1036,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 principal = stablecoinPrincipalBalances[g.client][asset];
         if (remaining > principal) revert DoubleSpendingDetected();
 
-        (uint256 scaledBurn, uint256 actualWithdrawn) = _withdrawStablecoinAndMeasureScaledBurn(asset, remaining, g.recipient);
+        (uint256 scaledBurn, uint256 actualWithdrawn) =
+            _withdrawStablecoinAndMeasureScaledBurn(asset, remaining, g.recipient);
         if (actualWithdrawn < remaining) {
             revert StablecoinWithdrawShortfall(asset, remaining, actualWithdrawn);
         }
