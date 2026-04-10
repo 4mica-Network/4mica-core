@@ -39,6 +39,7 @@ sol! {
         error UnsupportedGuaranteeVersion(uint64 version);
         error InvalidGuaranteeDomain();
         error MissingGuaranteeDecoder(uint64 version);
+        error AaveNotConfigured();
 
         // ========= Storage =========
         function remunerationGracePeriod() external view returns (uint256);

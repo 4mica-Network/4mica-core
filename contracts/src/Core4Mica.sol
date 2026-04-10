@@ -840,7 +840,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     function _currentIndex(address asset) internal view returns (uint256) {
-        return _aavePool().getReserveNormalizedIncome(asset);
+        if (address(aaveAddressesProvider) == address(0) || stablecoinATokens[asset] == address(0)) {
+            return 1e27;
+        }
+
+        address poolAddress = aaveAddressesProvider.getPool();
+        if (poolAddress == address(0)) {
+            return 1e27;
+        }
+
+        return IAavePool(poolAddress).getReserveNormalizedIncome(asset);
     }
 
     function _toUnderlyingRoundDown(uint256 scaled, uint256 index) internal pure returns (uint256) {
