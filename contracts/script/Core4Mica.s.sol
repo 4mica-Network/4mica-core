@@ -8,6 +8,9 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 
 contract Core4MicaScript is Script {
+    error InvalidStablecoinConfiguration();
+    error StablecoinReadbackMismatch();
+
     AccessManager manager;
     bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
@@ -47,6 +50,7 @@ contract Core4MicaScript is Script {
         address managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
         address[] memory stablecoins = _loadStablecoinAssets();
         require(stablecoins.length == 2, "need USDC and USDT");
+        if (stablecoins[0] == stablecoins[1]) revert InvalidStablecoinConfiguration();
         string memory saltSeed = vm.envOr("CREATE2_SALT", string("4mica-core-v1"));
         bytes32 baseSalt = keccak256(bytes(saltSeed));
 
@@ -104,6 +108,7 @@ contract Core4MicaScript is Script {
         manager.grantRole(USER_ADMIN_ROLE, deployer, 0); // deployer can manage OPERATORs
         if (stablecoins.length > 0) {
             core4Mica.setStablecoinAssets(stablecoins, true);
+            _assertStablecoinReadback(core4Mica, stablecoins);
         }
         vm.stopBroadcast();
 
@@ -150,5 +155,13 @@ contract Core4MicaScript is Script {
         }
 
         return new address[](0);
+    }
+
+    function _assertStablecoinReadback(Core4Mica core4Mica, address[] memory expectedAssets) internal view {
+        address[] memory storedAssets = core4Mica.getERC20Tokens();
+        if (storedAssets.length != expectedAssets.length) revert StablecoinReadbackMismatch();
+        for (uint256 i = 0; i < expectedAssets.length; i++) {
+            if (storedAssets[i] != expectedAssets[i]) revert StablecoinReadbackMismatch();
+        }
     }
 }

@@ -34,6 +34,9 @@ import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 /// - CREATE2_SALT (optional, default "4mica-core-v1")
 /// - ACCESS_MANAGER_ADMIN (optional, default broadcaster address)
 contract Core4MicaFullStackScript is Script {
+    error InvalidStablecoinConfiguration();
+    error StablecoinReadbackMismatch();
+
     bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
         bytes4(keccak256("setTimingParameters(uint256,uint256,uint256,uint256)"));
@@ -48,6 +51,7 @@ contract Core4MicaFullStackScript is Script {
         address managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
         address[] memory stablecoins = _loadStablecoinAssets();
         require(stablecoins.length == 2, "need USDC and USDT");
+        if (stablecoins[0] == stablecoins[1]) revert InvalidStablecoinConfiguration();
 
         BLS.G1Point memory guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),
@@ -94,6 +98,7 @@ contract Core4MicaFullStackScript is Script {
         _configureRouterRoles(manager, router);
         if (stablecoins.length > 0) {
             core4Mica.setStablecoinAssets(stablecoins, true);
+            _assertStablecoinReadback(core4Mica, stablecoins);
         }
 
         BLS.G1Point memory v2VerificationKey = guaranteeVerificationKey;
@@ -200,5 +205,13 @@ contract Core4MicaFullStackScript is Script {
             revert("set both USDC_TOKEN and USDT_TOKEN or use STABLECOIN_*");
         }
         return new address[](0);
+    }
+
+    function _assertStablecoinReadback(Core4Mica core4Mica, address[] memory expectedAssets) internal view {
+        address[] memory storedAssets = core4Mica.getERC20Tokens();
+        if (storedAssets.length != expectedAssets.length) revert StablecoinReadbackMismatch();
+        for (uint256 i = 0; i < expectedAssets.length; i++) {
+            if (storedAssets[i] != expectedAssets[i]) revert StablecoinReadbackMismatch();
+        }
     }
 }
