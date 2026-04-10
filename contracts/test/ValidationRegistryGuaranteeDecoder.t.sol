@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {Guarantee} from "../src/Core4Mica.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ValidationBindingConstants} from "../src/ValidationBindingConstants.sol";
@@ -24,7 +24,7 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ValidationRegistryGuaranteeDecoder.ValidationPending.selector, g.validation_request_hash
+                ValidationRegistryGuaranteeDecoder.ValidationPending.selector, g.validationRequestHash
             )
         );
         decoder.decode(abi.encode(g));
@@ -32,11 +32,11 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_revertsWhenValidationScoreTooLow() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        _setValidationStatus(g, g.validator_address, g.validator_agent_id, 79, "", 1);
+        _setValidationStatus(g, g.validatorAddress, g.validatorAgentId, 79, "", 1);
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ValidationRegistryGuaranteeDecoder.ValidationScoreTooLow.selector, uint8(79), g.min_validation_score
+                ValidationRegistryGuaranteeDecoder.ValidationScoreTooLow.selector, uint8(79), g.minValidationScore
             )
         );
         decoder.decode(abi.encode(g));
@@ -44,16 +44,16 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_returnsGuaranteeWhenValidationPasses() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        _setValidationStatus(g, g.validator_address, g.validator_agent_id, 100, "hard-finality", 1);
+        _setValidationStatus(g, g.validatorAddress, g.validatorAgentId, 100, "hard-finality", 1);
 
         Guarantee memory decoded = decoder.decode(abi.encode(g));
         assertEq(decoded.domain, g.domain);
-        assertEq(decoded.tab_id, g.tab_id);
-        assertEq(decoded.req_id, g.req_id);
+        assertEq(decoded.tabId, g.tabId);
+        assertEq(decoded.reqId, g.reqId);
         assertEq(decoded.client, g.client);
         assertEq(decoded.recipient, g.recipient);
         assertEq(decoded.amount, g.amount);
-        assertEq(decoded.total_amount, g.total_amount);
+        assertEq(decoded.totalAmount, g.totalAmount);
         assertEq(decoded.asset, g.asset);
         assertEq(decoded.timestamp, g.timestamp);
         assertEq(decoded.version, g.version);
@@ -66,8 +66,8 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationLookupFailed.selector,
-                g.validation_registry_address,
-                g.validation_request_hash
+                g.validationRegistryAddress,
+                g.validationRequestHash
             )
         );
         decoder.decode(abi.encode(g));
@@ -83,15 +83,15 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
             new ValidationRegistryGuaranteeDecoder(trustedRegistries);
 
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        g.validation_registry_address = noCodeRegistry;
-        // validation_subject_hash is independent of registry address; only request hash needs recomputing.
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationRegistryAddress = noCodeRegistry;
+        // validationSubjectHash is independent of registry address; only request hash needs recomputing.
+        g.validationRequestHash = _computeValidationRequestHash(g);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationLookupFailed.selector,
                 noCodeRegistry,
-                g.validation_request_hash
+                g.validationRequestHash
             )
         );
         noCodeDecoder.decode(abi.encode(g));
@@ -100,12 +100,12 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
     function test_decode_revertsWhenValidatorAddressMismatches() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
         address mismatchedValidator = address(0xBEEFCAFE);
-        _setValidationStatus(g, mismatchedValidator, g.validator_agent_id, 100, "hard-finality", 1);
+        _setValidationStatus(g, mismatchedValidator, g.validatorAgentId, 100, "hard-finality", 1);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationValidatorMismatch.selector,
-                g.validator_address,
+                g.validatorAddress,
                 mismatchedValidator
             )
         );
@@ -114,13 +114,13 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_revertsWhenAgentIdMismatches() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        uint256 mismatchedAgentId = g.validator_agent_id + 1;
-        _setValidationStatus(g, g.validator_address, mismatchedAgentId, 100, "hard-finality", 1);
+        uint256 mismatchedAgentId = g.validatorAgentId + 1;
+        _setValidationStatus(g, g.validatorAddress, mismatchedAgentId, 100, "hard-finality", 1);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationAgentMismatch.selector,
-                g.validator_agent_id,
+                g.validatorAgentId,
                 mismatchedAgentId
             )
         );
@@ -129,12 +129,12 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_revertsWhenTagMismatchesAndRequiredTagIsSet() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        _setValidationStatus(g, g.validator_address, g.validator_agent_id, 100, "soft-finality", 1);
+        _setValidationStatus(g, g.validatorAddress, g.validatorAgentId, 100, "soft-finality", 1);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationTagMismatch.selector,
-                keccak256(bytes(g.required_validation_tag)),
+                keccak256(bytes(g.requiredValidationTag)),
                 keccak256(bytes("soft-finality"))
             )
         );
@@ -143,14 +143,14 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_revertsWhenValidationSubjectHashMismatches() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        g.validation_subject_hash = bytes32(uint256(0xAAAA));
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationSubjectHash = bytes32(uint256(0xAAAA));
+        g.validationRequestHash = _computeValidationRequestHash(g);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationSubjectHashMismatch.selector,
                 _computeValidationSubjectHash(g),
-                g.validation_subject_hash
+                g.validationSubjectHash
             )
         );
         decoder.decode(abi.encode(g));
@@ -158,13 +158,13 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_revertsWhenValidationRequestHashMismatches() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        g.validation_request_hash = bytes32(uint256(0xBBBB));
+        g.validationRequestHash = bytes32(uint256(0xBBBB));
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationRequestHashMismatch.selector,
                 _computeValidationRequestHash(g),
-                g.validation_request_hash
+                g.validationRequestHash
             )
         );
         decoder.decode(abi.encode(g));
@@ -172,16 +172,16 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_succeedsWhenResponseHashIsZero() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        _setValidationStatus(g, g.validator_address, g.validator_agent_id, 100, "hard-finality", 1);
+        _setValidationStatus(g, g.validatorAddress, g.validatorAgentId, 100, "hard-finality", 1);
 
         Guarantee memory decoded = decoder.decode(abi.encode(g));
-        assertEq(decoded.req_id, g.req_id);
+        assertEq(decoded.reqId, g.reqId);
     }
 
     function test_decode_revertsWhenMinValidationScoreIsZero() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        g.min_validation_score = 0;
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.minValidationScore = 0;
+        g.validationRequestHash = _computeValidationRequestHash(g);
 
         vm.expectRevert(
             abi.encodeWithSelector(ValidationRegistryGuaranteeDecoder.InvalidMinValidationScore.selector, uint8(0))
@@ -191,12 +191,12 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_revertsWhenValidationRegistryIsUntrusted() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        g.validation_registry_address = address(0xCAFE);
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationRegistryAddress = address(0xCAFE);
+        g.validationRequestHash = _computeValidationRequestHash(g);
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ValidationRegistryGuaranteeDecoder.UntrustedValidationRegistry.selector, g.validation_registry_address
+                ValidationRegistryGuaranteeDecoder.UntrustedValidationRegistry.selector, g.validationRegistryAddress
             )
         );
         decoder.decode(abi.encode(g));
@@ -204,14 +204,14 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function test_decode_revertsWhenValidationChainIdMismatches() public {
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g = _canonicalV2();
-        g.validation_chain_id = uint64(block.chainid + 1);
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationChainId = uint64(block.chainid + 1);
+        g.validationRequestHash = _computeValidationRequestHash(g);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.InvalidValidationChainId.selector,
                 uint64(block.chainid),
-                g.validation_chain_id
+                g.validationChainId
             )
         );
         decoder.decode(abi.encode(g));
@@ -229,25 +229,25 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function _canonicalV2() internal view returns (ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g) {
         g.domain = keccak256("DOMAIN");
-        g.tab_id = 101;
-        g.req_id = 1;
+        g.tabId = 101;
+        g.reqId = 1;
         g.client = address(0x1111);
         g.recipient = address(0x2222);
         g.amount = 5 ether;
-        g.total_amount = 8 ether;
+        g.totalAmount = 8 ether;
         g.asset = address(0x3333);
         g.timestamp = 1_750_000_000;
         g.version = GUARANTEE_CLAIMS_VERSION_V2;
-        g.validation_registry_address = address(registry);
-        g.validation_chain_id = uint64(block.chainid);
-        g.validator_address = address(0x4444);
-        g.validator_agent_id = 77;
-        g.min_validation_score = 80;
-        g.required_validation_tag = "hard-finality";
-        g.job_hash = keccak256("JOB");
+        g.validationRegistryAddress = address(registry);
+        g.validationChainId = uint64(block.chainid);
+        g.validatorAddress = address(0x4444);
+        g.validatorAgentId = 77;
+        g.minValidationScore = 80;
+        g.requiredValidationTag = "hard-finality";
+        g.jobHash = keccak256("JOB");
 
-        g.validation_subject_hash = _computeValidationSubjectHash(g);
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationSubjectHash = _computeValidationSubjectHash(g);
+        g.validationRequestHash = _computeValidationRequestHash(g);
     }
 
     function _setValidationStatus(
@@ -258,7 +258,7 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         string memory tag,
         uint256 lastUpdate
     ) internal {
-        registry.setStatus(g.validation_request_hash, validatorAddress, agentId, response, bytes32(0), tag, lastUpdate);
+        registry.setStatus(g.validationRequestHash, validatorAddress, agentId, response, bytes32(0), tag, lastUpdate);
     }
 
     function _computeValidationSubjectHash(ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g)
@@ -269,8 +269,8 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         return keccak256(
             abi.encode(
                 VALIDATION_SUBJECT_BINDING_DOMAIN_HASH,
-                g.tab_id,
-                g.req_id,
+                g.tabId,
+                g.reqId,
                 g.client,
                 g.recipient,
                 g.amount,
@@ -288,14 +288,14 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         return keccak256(
             abi.encode(
                 VALIDATION_REQUEST_BINDING_DOMAIN_HASH,
-                uint256(g.validation_chain_id),
-                g.validation_registry_address,
-                g.validator_address,
-                g.validator_agent_id,
-                g.validation_subject_hash,
-                g.min_validation_score,
-                keccak256(bytes(g.required_validation_tag)),
-                g.job_hash
+                uint256(g.validationChainId),
+                g.validationRegistryAddress,
+                g.validatorAddress,
+                g.validatorAgentId,
+                g.validationSubjectHash,
+                g.minValidationScore,
+                keccak256(bytes(g.requiredValidationTag)),
+                g.jobHash
             )
         );
     }

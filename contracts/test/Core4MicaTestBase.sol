@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "forge-std/Test.sol";
-import "../src/Core4Mica.sol";
-import {Guarantee} from "../src/Core4Mica.sol";
+import {Test} from "forge-std/Test.sol";
+import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -13,7 +12,7 @@ import {MockAavePool, MockAToken, MockAaveProtocolDataProvider, MockPoolAddresse
 contract MockERC20 {
     string public name;
     string public symbol;
-    uint8 public constant decimals = 18;
+    uint8 public constant DECIMALS = 18;
     uint256 public totalSupply;
 
     mapping(address => uint256) public balanceOf;
@@ -162,13 +161,14 @@ abstract contract Core4MicaTestBase is Test {
     ) internal view returns (Guarantee memory) {
         return Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: tabId,
-            req_id: reqId,
+            tabId: tabId,
+            reqId: reqId,
             client: client,
             recipient: recipient,
             amount: amount,
-            total_amount: amount,
+            totalAmount: amount,
             asset: asset,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });
@@ -190,7 +190,7 @@ abstract contract Core4MicaTestBase is Test {
         arr[0] = selector;
     }
 
-    function AccessUnauthorizedError(address accessor) public pure returns (bytes memory) {
+    function accessUnauthorizedError(address accessor) public pure returns (bytes memory) {
         return abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, accessor);
     }
 }

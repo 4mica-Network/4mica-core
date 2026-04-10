@@ -16,12 +16,12 @@ import {Core4MicaAccounting} from "./libraries/Core4MicaAccounting.sol";
 
 struct Guarantee {
     bytes32 domain;
-    uint256 tab_id;
-    uint256 req_id;
+    uint256 tabId;
+    uint256 reqId;
     address client;
     address recipient;
     uint256 amount;
-    uint256 total_amount;
+    uint256 totalAmount;
     address asset;
     uint64 timestamp;
     uint64 version;
@@ -77,6 +77,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     uint256 public tabExpirationTime = 21 days;
     uint256 public synchronizationDelay = 6 hours;
 
+    // forge-lint: disable-next-line(mixed-case-variable)
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
     bytes32 public guaranteeDomainSeparator;
 
@@ -91,7 +92,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     uint64 public constant INITIAL_GUARANTEE_VERSION = 1;
 
     address internal constant ETH_ASSET = address(0);
+    // forge-lint: disable-next-line(screaming-snake-case-immutable)
     address public immutable usdc;
+    // forge-lint: disable-next-line(screaming-snake-case-immutable)
     address public immutable usdt;
 
     mapping(address => bool) private stablecoinAssets;
@@ -111,7 +114,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     mapping(address => uint256) internal ethCollateralBalances;
 
     /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
-    BLS.G1Point internal NEGATED_G1_GENERATOR = BLS.G1Point(
+    BLS.G1Point internal negatedG1Generator = BLS.G1Point(
         bytes32(0x0000000000000000000000000000000017F1D3A73197D7942695638C4FA9AC0F),
         bytes32(0xC3688C4F9774B905A14E3A3F171BAC586C55E83FF97A1AEFFB3AF00ADB22C6BB),
         bytes32(0x00000000000000000000000000000000114D1D6855D545A8AA7D76C8CF2E21F2),
@@ -141,7 +144,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     // ========= Events =========
     event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
-    event RecipientRemunerated(uint256 indexed tab_id, address indexed asset, uint256 amount);
+    event RecipientRemunerated(uint256 indexed tabId, address indexed asset, uint256 amount);
     event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
     event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
     event WithdrawalCanceled(address indexed user, address indexed asset);
@@ -150,9 +153,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
     event SynchronizationDelayUpdated(uint256 newExpirationTime);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
-    event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
+    event PaymentRecorded(uint256 indexed tabId, address indexed asset, uint256 amount);
     event TabPaid(
-        uint256 indexed tab_id, address indexed asset, address indexed user, address recipient, uint256 amount
+        uint256 indexed tabId, address indexed asset, address indexed user, address recipient, uint256 amount
     );
     event GuaranteeVersionUpdated(
         uint64 indexed version, BLS.G1Point verificationKey, bytes32 domainSeparator, address decoder, bool enabled
@@ -188,23 +191,39 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     // ========= Modifiers =========
     modifier nonZero(uint256 amount) {
-        if (amount == 0) revert AmountZero();
+        _requireNonZero(amount);
         _;
     }
 
     modifier validRecipient(address recipient) {
-        if (recipient == address(0)) revert InvalidRecipient();
+        _requireValidRecipient(recipient);
         _;
     }
 
     modifier supportedAsset(address asset) {
-        if (!isSupportedAsset(asset)) revert UnsupportedAsset(asset);
+        _requireSupportedAsset(asset);
         _;
     }
 
     modifier stablecoin(address asset) {
-        if (!isStablecoin(asset)) revert UnsupportedAsset(asset);
+        _requireStablecoin(asset);
         _;
+    }
+
+    function _requireNonZero(uint256 amount) internal pure {
+        if (amount == 0) revert AmountZero();
+    }
+
+    function _requireValidRecipient(address recipient) internal pure {
+        if (recipient == address(0)) revert InvalidRecipient();
+    }
+
+    function _requireSupportedAsset(address asset) internal view {
+        if (!isSupportedAsset(asset)) revert UnsupportedAsset(asset);
+    }
+
+    function _requireStablecoin(address asset) internal view {
+        if (!isStablecoin(asset)) revert UnsupportedAsset(asset);
     }
 
     // ========= Admin / Manager configuration =========
@@ -490,7 +509,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             revert InsufficientAvailable();
         }
 
-        withdrawalRequests[user][asset] = WithdrawalRequest(block.timestamp, amount);
+        withdrawalRequests[user][asset] = WithdrawalRequest({timestamp: block.timestamp, amount: amount});
         emit WithdrawalRequested(user, asset, block.timestamp, amount);
     }
 
@@ -533,7 +552,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         _finalizeStablecoinWithdrawal(user, asset, request);
     }
 
-    function payTabInERC20Token(uint256 tab_id, address asset, uint256 amount, address recipient)
+    function payTabInERC20Token(uint256 tabId, address asset, uint256 amount, address recipient)
         external
         nonReentrant
         stablecoin(asset)
@@ -542,14 +561,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         whenNotPaused
     {
         IERC20(asset).safeTransferFrom(msg.sender, recipient, amount);
-        emit TabPaid(tab_id, asset, msg.sender, recipient, amount);
+        emit TabPaid(tabId, asset, msg.sender, recipient, amount);
     }
 
     function remunerate(bytes calldata guaranteeData, BLS.G2Point calldata signature) external nonReentrant {
         Guarantee memory g = verifyAndDecodeGuarantee(guaranteeData, signature);
 
         if (g.amount == 0) revert AmountZero();
-        if (g.total_amount == 0) revert AmountZero();
+        if (g.totalAmount == 0) revert AmountZero();
         if (g.recipient == address(0)) revert InvalidRecipient();
 
         if (block.timestamp < g.timestamp + remunerationGracePeriod) {
@@ -560,7 +579,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
 
         address asset = requireSupportedAsset(g.asset);
-        PaymentStatus storage status = payments[g.tab_id];
+        PaymentStatus storage status = payments[g.tabId];
 
         if (status.paid == 0 && !status.remunerated) {
             status.asset = asset;
@@ -569,8 +588,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
 
         if (status.remunerated) revert TabPreviouslyRemunerated();
-        if (status.paid >= g.total_amount) revert TabAlreadyPaid();
-        uint256 remaining = g.total_amount - status.paid;
+        if (status.paid >= g.totalAmount) revert TabAlreadyPaid();
+        uint256 remaining = g.totalAmount - status.paid;
 
         if (asset == ETH_ASSET) {
             _remunerateEth(g, status, remaining);
@@ -581,14 +600,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     // ========= Operator / Manager flows =========
-    function recordPayment(uint256 tab_id, address asset, uint256 amount)
+    function recordPayment(uint256 tabId, address asset, uint256 amount)
         external
         restricted
         supportedAsset(asset)
         nonZero(amount)
         nonReentrant
     {
-        PaymentStatus storage status = payments[tab_id];
+        PaymentStatus storage status = payments[tabId];
 
         if (status.paid == 0 && !status.remunerated) {
             status.asset = asset;
@@ -597,7 +616,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
 
         status.paid += amount;
-        emit PaymentRecorded(tab_id, asset, amount);
+        emit PaymentRecorded(tabId, asset, amount);
     }
 
     // ========= Views / Helpers =========
@@ -657,8 +676,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         withdrawalRequestAmount = request.amount;
     }
 
-    function getPaymentStatus(uint256 tab_id) external view returns (uint256 paid, bool remunerated, address asset) {
-        PaymentStatus storage status = payments[tab_id];
+    function getPaymentStatus(uint256 tabId) external view returns (uint256 paid, bool remunerated, address asset) {
+        PaymentStatus storage status = payments[tabId];
         paid = status.paid;
         remunerated = status.remunerated;
         asset = status.asset;
@@ -731,7 +750,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         if (!config.enabled) revert UnsupportedGuaranteeVersion(version);
 
         BLS.G1Point[] memory g1Points = new BLS.G1Point[](2);
-        g1Points[0] = NEGATED_G1_GENERATOR;
+        g1Points[0] = negatedG1Generator;
         g1Points[1] = config.verificationKey;
 
         BLS.G2Point[] memory g2Points = new BLS.G2Point[](2);
@@ -1001,7 +1020,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
         (bool ok,) = payable(g.recipient).call{value: remaining}("");
         if (!ok) revert TransferFailed();
-        emit RecipientRemunerated(g.tab_id, ETH_ASSET, remaining);
+        emit RecipientRemunerated(g.tabId, ETH_ASSET, remaining);
     }
 
     function _remunerateStablecoin(Guarantee memory g, PaymentStatus storage status, address asset, uint256 remaining)
@@ -1034,7 +1053,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         _syncWithdrawalRequestAfterStablecoinBalanceChange(g.client, asset);
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
-        emit RecipientRemunerated(g.tab_id, asset, remaining);
+        emit RecipientRemunerated(g.tabId, asset, remaining);
     }
 
     function _withdrawStablecoinAndMeasureScaledBurn(address asset, uint256 amount, address recipient)

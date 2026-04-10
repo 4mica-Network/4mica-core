@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "forge-std/Script.sol";
-import "../src/Core4Mica.sol";
+import {Script, console} from "forge-std/Script.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";

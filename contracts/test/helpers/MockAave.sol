@@ -14,16 +14,16 @@ contract MockAToken {
 
     string public name;
     string public symbol;
-    uint8 public constant decimals = 18;
+    uint8 public constant DECIMALS = 18;
 
-    address public immutable underlying;
-    address public immutable pool;
+    address public immutable UNDERLYING;
+    address public immutable POOL;
 
     mapping(address => uint256) internal _scaledBalances;
 
     constructor(address underlying_, address pool_, string memory name_, string memory symbol_) {
-        underlying = underlying_;
-        pool = pool_;
+        UNDERLYING = underlying_;
+        POOL = pool_;
         name = name_;
         symbol = symbol_;
     }
@@ -33,16 +33,16 @@ contract MockAToken {
     }
 
     function UNDERLYING_ASSET_ADDRESS() external view returns (address) {
-        return underlying;
+        return UNDERLYING;
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
-        MockAavePool(pool).transferAToken(msg.sender, to, underlying, amount);
+        MockAavePool(POOL).transferAToken(msg.sender, to, UNDERLYING, amount);
         return true;
     }
 
     function balanceOf(address user) external view returns (uint256) {
-        return MockAavePool(pool).nominalATokenBalance(underlying, user);
+        return MockAavePool(POOL).nominalATokenBalance(UNDERLYING, user);
     }
 
     function totalSupply() external pure returns (uint256) {
@@ -62,7 +62,7 @@ contract MockAToken {
     }
 
     function setScaledBalance(address user, uint256 scaledBalance) external {
-        require(msg.sender == pool, "ONLY_POOL");
+        require(msg.sender == POOL, "ONLY_POOL");
         _scaledBalances[user] = scaledBalance;
     }
 }

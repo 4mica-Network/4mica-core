@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
 import {Guarantee} from "../src/Core4Mica.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {IGuaranteeVersionModule} from "../src/interfaces/IGuaranteeVersionModule.sol";
@@ -11,12 +11,12 @@ import {BlsHelper} from "../src/BlsHelpers.sol";
 contract MockGuaranteeModuleV3 is IGuaranteeVersionModule {
     struct GuaranteeV3 {
         bytes32 domain;
-        uint256 tab_id;
-        uint256 req_id;
+        uint256 tabId;
+        uint256 reqId;
         address client;
         address recipient;
         uint256 amount;
-        uint256 total_amount;
+        uint256 totalAmount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -28,12 +28,12 @@ contract MockGuaranteeModuleV3 is IGuaranteeVersionModule {
         GuaranteeV3 memory g = abi.decode(payload, (GuaranteeV3));
         return Guarantee({
             domain: g.domain,
-            tab_id: g.tab_id,
-            req_id: g.req_id,
+            tabId: g.tabId,
+            reqId: g.reqId,
             client: g.client,
             recipient: g.recipient,
             amount: g.amount,
-            total_amount: g.total_amount,
+            totalAmount: g.totalAmount,
             asset: g.asset,
             timestamp: g.timestamp,
             version: g.version
@@ -45,12 +45,12 @@ contract VersionMismatchModule is IGuaranteeVersionModule {
     function decodeModule(bytes calldata) external pure override returns (Guarantee memory) {
         return Guarantee({
             domain: bytes32(uint256(1)),
-            tab_id: 1,
-            req_id: 1,
+            tabId: 1,
+            reqId: 1,
             client: address(0x111),
             recipient: address(0x222),
             amount: 1,
-            total_amount: 1,
+            totalAmount: 1,
             asset: address(0),
             timestamp: 1,
             version: 99
@@ -99,19 +99,19 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
 
         assertEq(decoded.version, ROUTED_VERSION);
         assertEq(decoded.domain, g3.domain);
-        assertEq(decoded.tab_id, g3.tab_id);
-        assertEq(decoded.req_id, g3.req_id);
+        assertEq(decoded.tabId, g3.tabId);
+        assertEq(decoded.reqId, g3.reqId);
         assertEq(decoded.client, g3.client);
         assertEq(decoded.recipient, g3.recipient);
         assertEq(decoded.amount, g3.amount);
-        assertEq(decoded.total_amount, g3.total_amount);
+        assertEq(decoded.totalAmount, g3.totalAmount);
         assertEq(decoded.asset, g3.asset);
         assertEq(decoded.timestamp, g3.timestamp);
     }
 
     function test_setVersionModule_revertUnauthorized() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         router.setVersionModule(ROUTED_VERSION, address(moduleV3));
     }
 
@@ -180,8 +180,8 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
         Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(outerGuarantee, signature);
         assertEq(decoded.version, ROUTED_VERSION);
         assertEq(decoded.domain, domainV3);
-        assertEq(decoded.tab_id, g3.tab_id);
-        assertEq(decoded.req_id, g3.req_id);
+        assertEq(decoded.tabId, g3.tabId);
+        assertEq(decoded.reqId, g3.reqId);
     }
 
     function test_core4Mica_verifyAndDecodeGuarantee_withRouterMissingModule_reverts() public {
@@ -201,13 +201,14 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
     function _g3(bytes32 domain, uint64 version) internal view returns (MockGuaranteeModuleV3.GuaranteeV3 memory) {
         return MockGuaranteeModuleV3.GuaranteeV3({
             domain: domain,
-            tab_id: 77,
-            req_id: 11,
+            tabId: 77,
+            reqId: 11,
             client: USER1,
             recipient: USER2,
             amount: 450 ether,
-            total_amount: 800 ether,
+            totalAmount: 800 ether,
             asset: address(usdc),
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(block.timestamp),
             version: version,
             jobHash: keccak256("job-hash"),
