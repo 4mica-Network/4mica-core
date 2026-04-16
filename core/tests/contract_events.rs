@@ -65,7 +65,7 @@ async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()>
 //
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -106,7 +106,7 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
     const NUMBER_OF_TRIALS: usize = 20;
 
@@ -166,7 +166,7 @@ async fn multiple_deposits_accumulate() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn deposit_waits_for_finalized_head() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -215,7 +215,7 @@ async fn deposit_waits_for_finalized_head() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -302,7 +302,7 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
 //
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -375,7 +375,7 @@ async fn withdrawal_request_and_cancel_events() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -441,7 +441,7 @@ async fn collateral_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
 // ────────────────────── CONFIG EVENTS (requires roles) ──────────────────────
 //
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -508,7 +508,7 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -522,6 +522,8 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
+        *env.usdc.address(),
+        *env.usdt.address(),
     )
     .await?;
 

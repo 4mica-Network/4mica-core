@@ -170,6 +170,12 @@ pub mod contract_abi {
 
             /// View: list of ERC20 tokens supported by the contract.
             function getERC20Tokens() external view returns (address[] memory);
+
+            /// View: cached aToken for a configured stablecoin asset.
+            function stablecoinAToken(address asset) external view returns (address);
+
+            /// View: guaranteeable collateral for a user/asset pair.
+            function guaranteeCapacity(address user, address asset) external view returns (uint256);
         }
 
         #[sol(rpc)]

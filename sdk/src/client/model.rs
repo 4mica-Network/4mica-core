@@ -35,6 +35,23 @@ impl From<Core4Mica::UserAssetInfo> for UserInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct StablecoinPosition {
+    pub asset: String,
+    pub principal: U256,
+    pub guarantee_capacity: U256,
+    pub gross_yield: U256,
+    pub protocol_yield_share: U256,
+    pub user_net_yield: U256,
+    pub withdrawable_balance: U256,
+    pub total_user_scaled_balance: U256,
+    pub protocol_scaled_balance: U256,
+    pub surplus_scaled_balance: U256,
+    pub contract_scaled_a_token_balance: U256,
+    pub stablecoin_a_token: String,
+    pub stablecoin_deposits_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct CreateTabResult {
     pub tab_id: U256,
     pub user_address: String,

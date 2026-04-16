@@ -26,12 +26,25 @@ sol! {
         error InvalidGuaranteeDomain();
         error MissingGuaranteeDecoder(uint64 version);
         error AaveNotConfigured();
+        error FeeTooHigh();
+        error TreasuryClaimExceedsAvailable();
+        error UnsupportedTreasuryAsset(address asset);
+        error StablecoinWithdrawShortfall(address asset, uint256 requested, uint256 actual);
+        error AaveProviderReconfigurationBlocked();
+        error UserScaledBalanceUnderflow(address asset, address user, uint256 deduction, uint256 balance);
+        error ZeroAddress();
+        error InvalidAToken(address asset, address aToken);
+        error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
+        error SurplusClaimExceedsAvailable();
 
         // ========= Storage =========
         function remunerationGracePeriod() external view returns (uint256);
         function withdrawalGracePeriod() external view returns (uint256);
         function tabExpirationTime() external view returns (uint256);
         function synchronizationDelay() external view returns (uint256);
+        function stablecoinDepositsEnabled(address asset) external view returns (bool);
+        function aaveAddressesProvider() external view returns (address);
+        function yieldFeeBps() external view returns (uint256);
 
         /// TODO(#22): move key to registry
         function GUARANTEE_VERIFICATION_KEY() external view returns (
@@ -40,7 +53,7 @@ sol! {
 
         // ========= Events =========
         event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
-        event RecipientRemunerated(uint256 indexed tab_id, address indexed asset, uint256 amount);
+        event RecipientRemunerated(uint256 indexed tabId, address indexed asset, uint256 amount);
         event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
         event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
         event WithdrawalCanceled(address indexed user, address indexed asset);
@@ -49,9 +62,9 @@ sol! {
         event TabExpirationTimeUpdated(uint256 newExpirationTime);
         event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
-        event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
+        event PaymentRecorded(uint256 indexed tabId, address indexed asset, uint256 amount);
         event TabPaid(
-            uint256 indexed tab_id,
+            uint256 indexed tabId,
             address indexed asset,
             address indexed user,
             address recipient,
@@ -65,6 +78,16 @@ sol! {
             bool enabled
         );
         event StablecoinAssetUpdated(address indexed asset, bool enabled);
+        event AaveConfigured(address indexed provider, address indexed pool);
+        event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+        event StablecoinDepositsEnabledUpdated(address indexed asset, bool enabled);
+        event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
+        event SurplusATokensClaimed(
+            address indexed asset,
+            address indexed to,
+            uint256 scaledAmount,
+            uint256 nominalAmount
+        );
 
         // ========= Structs =========
         struct WithdrawalRequest {
@@ -87,12 +110,12 @@ sol! {
 
         struct Guarantee {
             bytes32 domain;
-            uint256 tab_id;
-            uint256 req_id;
+            uint256 tabId;
+            uint256 reqId;
             address client;
             address recipient;
             uint256 amount;
-            uint256 total_amount;
+            uint256 totalAmount;
             address asset;
             uint64 timestamp;
             uint64 version;
@@ -119,7 +142,12 @@ sol! {
         // ========= Constructor =========
         /// @param manager Address of AccessManager
         /// @param verificationKey Initial BLS verification key
-        constructor(address manager, (bytes32,bytes32,bytes32,bytes32) verificationKey);
+        constructor(
+            address manager,
+            (bytes32,bytes32,bytes32,bytes32) verificationKey,
+            address usdc_,
+            address usdt_
+        );
 
         // ========= User flows =========
         function deposit() external payable;
@@ -154,6 +182,11 @@ sol! {
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
         function setStablecoinAsset(address asset, bool enabled) external;
         function setStablecoinAssets(address[] calldata assets, bool enabled) external;
+        function configureAave(address poolAddressesProvider, address usdcAToken, address usdtAToken) external;
+        function setYieldFeeBps(uint256 feeBps) external;
+        function setStablecoinDepositsEnabled(address asset, bool enabled) external;
+        function claimProtocolYield(address asset, address to, uint256 amount) external;
+        function claimSurplusATokens(address asset, address to, uint256 scaledAmount) external;
         function getGuaranteeVersionConfig(uint64 version)
             external
             view
@@ -163,7 +196,7 @@ sol! {
                 address decoder,
                 bool enabled
             );
-        function recordPayment(uint256 tab_id, address asset, uint256 amount) external;
+        function recordPayment(uint256 tabId, address asset, uint256 amount) external;
 
         // ========= Views =========
         function getUserAllAssets(address userAddr)
@@ -171,7 +204,7 @@ sol! {
             view
             returns (UserAssetInfo[] memory);
 
-        function getPaymentStatus(uint256 tab_id)
+        function getPaymentStatus(uint256 tabId)
             external
             view
             returns (uint256 paid, bool remunerated, address asset);
@@ -186,6 +219,18 @@ sol! {
 
         function collateral(address userAddr) external view returns (uint256);
         function collateral(address userAddr, address asset) external view returns (uint256);
+        function principalBalance(address user, address asset) external view returns (uint256);
+        function guaranteeCapacity(address user, address asset) external view returns (uint256);
+        function grossYield(address user, address asset) external view returns (uint256);
+        function protocolYieldShare(address user, address asset) external view returns (uint256);
+        function userNetYield(address user, address asset) external view returns (uint256);
+        function withdrawableBalance(address user, address asset) external view returns (uint256);
+        function totalUserScaledBalance(address asset) external view returns (uint256);
+        function protocolScaledBalance(address asset) external view returns (uint256);
+        function surplusScaledBalance(address asset) external view returns (uint256);
+        function contractScaledATokenBalance(address asset) external view returns (uint256);
+        function reconciliationDustToleranceScaled() external view returns (uint256);
+        function stablecoinAToken(address asset) external view returns (address);
 
         function getUser(address userAddr) external view returns (
             uint256 assetCollateral,

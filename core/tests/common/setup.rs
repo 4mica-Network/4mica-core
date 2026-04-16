@@ -1,14 +1,8 @@
-use std::{
-    net::TcpListener,
-    sync::{
-        Arc,
-        atomic::{AtomicU16, Ordering},
-    },
-};
+use std::{net::TcpListener, sync::Arc};
 
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WalletProvider};
-use alloy_primitives::{Address, FixedBytes};
-use anyhow::{Context, bail};
+use alloy_primitives::{Address, FixedBytes, U256};
+use anyhow::Context;
 use core_service::{
     config::{AppConfig, EthereumConfig},
     ethereum::EthereumEventScanner,
@@ -25,7 +19,9 @@ use crate::common::{
     contract::{
         AccessManager::{self, AccessManagerInstance},
         Core4Mica::{self, Core4MicaInstance},
+        MockAToken, MockAavePool, MockAaveProtocolDataProvider,
         MockERC20::{self, MockERC20Instance},
+        MockPoolAddressesProvider,
     },
     fixtures::{clear_all_tables, ensure_migrations},
 };
@@ -58,25 +54,14 @@ pub fn dummy_verification_key() -> (
 
 /// Reserve an unused TCP port for Anvil to bind to.
 fn allocate_anvil_port() -> anyhow::Result<u16> {
-    // Keep a running counter so concurrent tests do not pick the same ephemeral port.
-    static NEXT_PORT: AtomicU16 = AtomicU16::new(40101);
-
-    for _ in 0..200 {
-        let candidate = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
-        let listener = match TcpListener::bind(("127.0.0.1", candidate)) {
-            Ok(listener) => listener,
-            Err(_) => continue, // try the next port
-        };
-
-        let port = listener
-            .local_addr()
-            .context("failed to read reserved anvil port")?
-            .port();
-        drop(listener); // free the port so Anvil can take it
-        return Ok(port);
-    }
-
-    bail!("could not allocate a free port for Anvil")
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).context("failed to reserve ephemeral anvil port")?;
+    let port = listener
+        .local_addr()
+        .context("failed to read reserved anvil port")?
+        .port();
+    drop(listener); // free the port so Anvil can take it
+    Ok(port)
 }
 
 fn init_config() -> AppConfig {
@@ -112,7 +97,6 @@ async fn deploy_contracts(
     AccessManagerInstance<DynProvider>,
 )> {
     let access_manager = AccessManager::deploy(provider.clone(), admin_addr).await?;
-
     let usdc =
         MockERC20::deploy(provider.clone(), "USD Coin".to_string(), "USDC".to_string()).await?;
     let usdt = MockERC20::deploy(
@@ -121,11 +105,70 @@ async fn deploy_contracts(
         "USDT".to_string(),
     )
     .await?;
+    let mock_pool = MockAavePool::deploy(provider.clone()).await?;
+    let mock_data_provider = MockAaveProtocolDataProvider::deploy(provider.clone()).await?;
+    let mock_provider = MockPoolAddressesProvider::deploy(provider.clone()).await?;
+    let mock_usdc_a_token = MockAToken::deploy(
+        provider.clone(),
+        *usdc.address(),
+        *mock_pool.address(),
+        "Aave USDC".to_string(),
+        "aUSDC".to_string(),
+    )
+    .await?;
+    let mock_usdt_a_token = MockAToken::deploy(
+        provider.clone(),
+        *usdt.address(),
+        *mock_pool.address(),
+        "Aave USDT".to_string(),
+        "aUSDT".to_string(),
+    )
+    .await?;
+    let initial_index = U256::from_str_radix("1000000000000000000000000000", 10)?;
+
+    mock_pool
+        .setReserve(*usdc.address(), *mock_usdc_a_token.address(), initial_index)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mock_pool
+        .setReserve(*usdt.address(), *mock_usdt_a_token.address(), initial_index)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mock_data_provider
+        .setReserveAToken(*usdc.address(), *mock_usdc_a_token.address())
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mock_data_provider
+        .setReserveAToken(*usdt.address(), *mock_usdt_a_token.address())
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mock_provider
+        .setPool(*mock_pool.address())
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mock_provider
+        .setPoolDataProvider(*mock_data_provider.address())
+        .send()
+        .await?
+        .watch()
+        .await?;
 
     let contract = Core4Mica::deploy(
         provider.clone(),
         *access_manager.address(),
         dummy_verification_key(),
+        *usdc.address(),
+        *usdt.address(),
     )
     .await?;
     contract
@@ -140,13 +183,37 @@ async fn deploy_contracts(
         .await?
         .watch()
         .await?;
+    contract
+        .configureAave(
+            *mock_provider.address(),
+            *mock_usdc_a_token.address(),
+            *mock_usdt_a_token.address(),
+        )
+        .send()
+        .await?
+        .watch()
+        .await?;
+    contract
+        .setStablecoinDepositsEnabled(*usdc.address(), true)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    contract
+        .setStablecoinDepositsEnabled(*usdt.address(), true)
+        .send()
+        .await?
+        .watch()
+        .await?;
 
     debug!(
-        "Contracts deployed: \n\tcore_4mica={:?}\n\tusdc={:?}\n\tusdt={:?}\n\taccess_manager={:?}",
+        "Contracts deployed: \n\tcore_4mica={:?}\n\tusdc={:?}\n\tusdt={:?}\n\taccess_manager={:?}\n\tmock_pool={:?}\n\tmock_provider={:?}",
         contract.address(),
         usdc.address(),
         usdt.address(),
-        access_manager.address()
+        access_manager.address(),
+        mock_pool.address(),
+        mock_provider.address()
     );
 
     Ok((contract, usdc, usdt, access_manager))
@@ -170,8 +237,8 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         contract_address: contract.address().to_string(),
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
-        cron_job_settings: "*/2 * * * * *".to_string(),
-        event_scanner_cron: "*/2 * * * * *".to_string(),
+        cron_job_settings: "* * * * * *".to_string(),
+        event_scanner_cron: "* * * * * *".to_string(),
         confirmation_mode: "finalized".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
         payment_scan_lookback_blocks: 1,

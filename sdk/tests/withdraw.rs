@@ -11,9 +11,13 @@ use crate::common::{
 };
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 #[test_log::test]
 async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     // Setup user client
     let user_config = build_authed_user_config(
         "http://localhost:3000",
@@ -79,9 +83,13 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 #[test_log::test]
 async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     // Setup user client
     let user_config = build_authed_user_config(
         "http://localhost:3000",
@@ -135,9 +143,13 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 #[test_log::test]
 async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     // Setup user client
     let user_config = build_authed_user_config(
         "http://localhost:3000",

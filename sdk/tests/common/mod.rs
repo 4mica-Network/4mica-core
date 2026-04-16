@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 pub mod x402;
 
 pub const ETH_ASSET_ADDRESS: Address = Address::ZERO;
+const LOCAL_CORE_E2E_ENV: &str = "SDK_LOCAL_E2E";
 const ROLE_USER: &str = "user";
 const ROLE_RECIPIENT: &str = "recipient";
 const WALLET_STATUS_ACTIVE: &str = "active";
@@ -38,6 +39,17 @@ pub fn get_now() -> Duration {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
+}
+
+pub fn skip_without_local_core_stack() -> bool {
+    if std::env::var_os(LOCAL_CORE_E2E_ENV).is_some() {
+        return false;
+    }
+
+    eprintln!(
+        "skipping test: set {LOCAL_CORE_E2E_ENV}=1 to run SDK tests against a local core/anvil stack"
+    );
+    true
 }
 
 pub async fn get_chain_timestamp<S>(config: &Config<S>) -> anyhow::Result<u64> {
