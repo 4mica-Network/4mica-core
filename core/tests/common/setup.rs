@@ -163,44 +163,17 @@ async fn deploy_contracts(
         .watch()
         .await?;
 
+    let stablecoins = vec![*usdc.address(), *usdt.address()];
     let contract = Core4Mica::deploy(
         provider.clone(),
         *access_manager.address(),
         dummy_verification_key(),
-        *usdc.address(),
-        *usdt.address(),
+        stablecoins,
     )
     .await?;
+    let a_tokens = vec![*mock_usdc_a_token.address(), *mock_usdt_a_token.address()];
     contract
-        .setStablecoinAsset(*usdc.address(), true)
-        .send()
-        .await?
-        .watch()
-        .await?;
-    contract
-        .setStablecoinAsset(*usdt.address(), true)
-        .send()
-        .await?
-        .watch()
-        .await?;
-    contract
-        .configureAave(
-            *mock_provider.address(),
-            *mock_usdc_a_token.address(),
-            *mock_usdt_a_token.address(),
-        )
-        .send()
-        .await?
-        .watch()
-        .await?;
-    contract
-        .setStablecoinDepositsEnabled(*usdc.address(), true)
-        .send()
-        .await?
-        .watch()
-        .await?;
-    contract
-        .setStablecoinDepositsEnabled(*usdt.address(), true)
+        .configureAave(*mock_provider.address(), a_tokens)
         .send()
         .await?
         .watch()

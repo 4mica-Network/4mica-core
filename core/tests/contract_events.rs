@@ -522,8 +522,7 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
         &provider,
         *access_manager.address(),
         dummy_verification_key(),
-        *env.usdc.address(),
-        *env.usdt.address(),
+        vec![*env.usdc.address(), *env.usdt.address()],
     )
     .await?;
 
