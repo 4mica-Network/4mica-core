@@ -120,12 +120,10 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     }
 
     function test_GetUserAllAssets_DoesNotRequireAaveConfiguration() public {
-        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, address(usdc), address(usdt));
-        manager.setTargetFunctionRole(
-            address(bareCore), _asSingletonArray(Core4Mica.setStablecoinAsset.selector), USER_ADMIN_ROLE
-        );
-        bareCore.setStablecoinAsset(address(usdc), true);
-        bareCore.setStablecoinAsset(address(usdt), true);
+        address[] memory stablecoins = new address[](2);
+        stablecoins[0] = address(usdc);
+        stablecoins[1] = address(usdt);
+        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
 
         vm.prank(USER1);
         bareCore.deposit{value: 1 ether}();

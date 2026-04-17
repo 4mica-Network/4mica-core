@@ -14,29 +14,29 @@ library BlsHelper {
         );
     }
 
-    function getPublicKey(bytes32 privateKey) public view returns (BLS.G1Point memory) {
+    function getPublicKey(bytes32 privateKey) internal view returns (BLS.G1Point memory) {
         return blsScalarMul(g1Generator(), privateKey);
     }
 
-    function signGuarantee(Guarantee memory g, bytes32 privateKey) public view returns (BLS.G2Point memory) {
+    function signGuarantee(Guarantee memory g, bytes32 privateKey) internal view returns (BLS.G2Point memory) {
         return blsSign(encodeGuaranteeWithVersion(g), privateKey);
     }
 
     // === Helpers ===
 
-    function encodeGuarantee(Guarantee memory g) public pure returns (bytes memory) {
+    function encodeGuarantee(Guarantee memory g) internal pure returns (bytes memory) {
         return abi.encode(g);
     }
 
-    function encodeGuaranteeWithVersion(Guarantee memory g) public pure returns (bytes memory) {
+    function encodeGuaranteeWithVersion(Guarantee memory g) internal pure returns (bytes memory) {
         return abi.encode(g.version, abi.encode(g));
     }
 
-    function blsSign(bytes memory message, bytes32 privateKey) public view returns (BLS.G2Point memory) {
+    function blsSign(bytes memory message, bytes32 privateKey) internal view returns (BLS.G2Point memory) {
         return blsScalarMul(BLS.hashToG2(message), privateKey);
     }
 
-    function blsScalarMul(BLS.G1Point memory point, bytes32 scalar) public view returns (BLS.G1Point memory) {
+    function blsScalarMul(BLS.G1Point memory point, bytes32 scalar) internal view returns (BLS.G1Point memory) {
         BLS.G1Point[] memory g1Points = new BLS.G1Point[](1);
         g1Points[0] = point;
 
@@ -46,7 +46,7 @@ library BlsHelper {
         return BLS.msm(g1Points, scalars);
     }
 
-    function blsScalarMul(BLS.G2Point memory point, bytes32 scalar) public view returns (BLS.G2Point memory) {
+    function blsScalarMul(BLS.G2Point memory point, bytes32 scalar) internal view returns (BLS.G2Point memory) {
         BLS.G2Point[] memory g2Points = new BLS.G2Point[](1);
         g2Points[0] = point;
 

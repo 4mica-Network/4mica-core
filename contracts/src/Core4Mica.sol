@@ -92,16 +92,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     uint64 public constant INITIAL_GUARANTEE_VERSION = 1;
 
     address internal constant ETH_ASSET = address(0);
-    // forge-lint: disable-next-line(screaming-snake-case-immutable)
-    address public immutable usdc;
-    // forge-lint: disable-next-line(screaming-snake-case-immutable)
-    address public immutable usdt;
-
     mapping(address => bool) private stablecoinAssets;
     address[] private stablecoinAssetList;
     mapping(address => uint256) private stablecoinAssetIndexPlusOne;
 
-    mapping(address => bool) public stablecoinDepositsEnabled;
     IPoolAddressesProvider public aaveAddressesProvider;
     uint256 public yieldFeeBps;
     mapping(address => address) internal stablecoinATokens;
@@ -163,19 +157,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event StablecoinAssetUpdated(address indexed asset, bool enabled);
     event AaveConfigured(address indexed provider, address indexed pool);
     event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
-    event StablecoinDepositsEnabledUpdated(address indexed asset, bool enabled);
     event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
     event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
 
     // ========= Constructor =========
-    constructor(address manager, BLS.G1Point memory verificationKey, address usdc_, address usdt_)
+    constructor(address manager, BLS.G1Point memory verificationKey, address[] memory stablecoins_)
         AccessManaged(manager)
     {
-        if (usdc_ == address(0) || usdt_ == address(0)) revert ZeroAddress();
-        if (usdc_ == usdt_) revert InvalidAsset(usdc_);
-
-        usdc = usdc_;
-        usdt = usdt_;
+        if (stablecoins_.length == 0) revert AmountZero();
+        for (uint256 i = 0; i < stablecoins_.length; i++) {
+            _addStablecoinAsset(stablecoins_[i]);
+        }
         GUARANTEE_VERIFICATION_KEY = verificationKey;
         guaranteeDomainSeparator = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V1", block.chainid, address(this)));
         guaranteeVersions[INITIAL_GUARANTEE_VERSION] = VersionConfig({
@@ -341,43 +333,33 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         emit GuaranteeVersionUpdated(version, verificationKey, domainSeparatorToUse, decoderToUse, enabled);
     }
 
-    function setStablecoinAsset(address asset, bool enabled) external restricted {
-        _setStablecoinAsset(asset, enabled);
-    }
-
-    function setStablecoinAssets(address[] calldata assets, bool enabled) external restricted {
-        for (uint256 i = 0; i < assets.length; i++) {
-            _setStablecoinAsset(assets[i], enabled);
-        }
-    }
-
-    function configureAave(address poolAddressesProvider, address usdcAToken, address usdtAToken) external restricted {
-        if (poolAddressesProvider == address(0) || usdcAToken == address(0) || usdtAToken == address(0)) {
+    function configureAave(address poolAddressesProvider, address[] calldata aTokens) external restricted {
+        if (poolAddressesProvider == address(0)) {
             revert ZeroAddress();
         }
+        if (aTokens.length != stablecoinAssetList.length || aTokens.length == 0) revert InvalidAsset(address(0));
         if (_hasOpenStablecoinPositions()) revert AaveProviderReconfigurationBlocked();
-
-        address usdcAsset = IAToken(usdcAToken).UNDERLYING_ASSET_ADDRESS();
-        address usdtAsset = IAToken(usdtAToken).UNDERLYING_ASSET_ADDRESS();
-        if (usdcAsset != usdc) revert InvalidAToken(usdc, usdcAToken);
-        if (usdtAsset != usdt) revert InvalidAToken(usdt, usdtAToken);
-        if (usdcAsset == usdtAsset) revert InvalidAsset(usdcAsset);
 
         IPoolAddressesProvider provider = IPoolAddressesProvider(poolAddressesProvider);
         address pool = provider.getPool();
         address dataProvider = provider.getPoolDataProvider();
         if (pool == address(0) || dataProvider == address(0)) revert ZeroAddress();
 
-        (address configuredUsdcAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(usdc);
-        (address configuredUsdtAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(usdt);
-        if (configuredUsdcAToken != usdcAToken) revert InvalidAToken(usdc, usdcAToken);
-        if (configuredUsdtAToken != usdtAToken) revert InvalidAToken(usdt, usdtAToken);
-
         aaveAddressesProvider = provider;
-        stablecoinATokens[usdc] = usdcAToken;
-        stablecoinATokens[usdt] = usdtAToken;
-        approvedPoolForAsset[usdc] = address(0);
-        approvedPoolForAsset[usdt] = address(0);
+        for (uint256 i = 0; i < stablecoinAssetList.length; i++) {
+            address asset = stablecoinAssetList[i];
+            address aToken = aTokens[i];
+            if (aToken == address(0)) revert ZeroAddress();
+
+            address underlyingAsset = IAToken(aToken).UNDERLYING_ASSET_ADDRESS();
+            if (underlyingAsset != asset) revert InvalidAToken(asset, aToken);
+
+            (address configuredAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(asset);
+            if (configuredAToken != aToken) revert InvalidAToken(asset, aToken);
+
+            stablecoinATokens[asset] = aToken;
+            approvedPoolForAsset[asset] = address(0);
+        }
         emit AaveConfigured(poolAddressesProvider, pool);
     }
 
@@ -386,11 +368,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 oldFee = yieldFeeBps;
         yieldFeeBps = feeBps;
         emit YieldFeeBpsUpdated(oldFee, feeBps);
-    }
-
-    function setStablecoinDepositsEnabled(address asset, bool enabled) external restricted stablecoin(asset) {
-        stablecoinDepositsEnabled[asset] = enabled;
-        emit StablecoinDepositsEnabledUpdated(asset, enabled);
     }
 
     function claimProtocolYield(address asset, address to, uint256 amount)
@@ -469,7 +446,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         nonZero(amount)
         whenNotPaused
     {
-        if (!stablecoinDepositsEnabled[asset]) revert IllegalValue();
         address aToken = _requireAToken(asset);
 
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
@@ -577,11 +553,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         address asset = requireSupportedAsset(g.asset);
         PaymentStatus storage status = payments[g.tabId];
 
-        if (status.paid == 0 && !status.remunerated) {
-            status.asset = asset;
-        } else if (status.asset != asset) {
-            revert InvalidAsset(asset);
-        }
+        _setOrValidatePaymentAsset(status, asset);
 
         if (status.remunerated) revert TabPreviouslyRemunerated();
         if (status.paid >= g.totalAmount) revert TabAlreadyPaid();
@@ -605,11 +577,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     {
         PaymentStatus storage status = payments[tabId];
 
-        if (status.paid == 0 && !status.remunerated) {
-            status.asset = asset;
-        } else if (status.asset != asset) {
-            revert InvalidAsset(asset);
-        }
+        _setOrValidatePaymentAsset(status, asset);
 
         status.paid += amount;
         emit PaymentRecorded(tabId, asset, amount);
@@ -781,6 +749,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         revert DirectTransferNotAllowed();
     }
 
+    function _setOrValidatePaymentAsset(PaymentStatus storage status, address asset) internal {
+        if (status.paid == 0 && !status.remunerated) {
+            status.asset = asset;
+        } else if (status.asset != asset) {
+            revert InvalidAsset(asset);
+        }
+    }
+
     function requireSupportedAsset(address asset) internal view returns (address) {
         if (isSupportedAsset(asset)) return asset;
         revert UnsupportedAsset(asset);
@@ -794,33 +770,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         return stablecoinAssets[asset];
     }
 
-    function _setStablecoinAsset(address asset, bool enabled) internal {
+    function _addStablecoinAsset(address asset) internal {
         if (asset == ETH_ASSET) revert InvalidAsset(asset);
-        if (enabled && asset != usdc && asset != usdt) revert InvalidAsset(asset);
+        if (asset == address(0)) revert ZeroAddress();
+        if (stablecoinAssets[asset]) revert InvalidAsset(asset);
 
-        bool current = stablecoinAssets[asset];
-        if (current == enabled) return;
-
-        stablecoinAssets[asset] = enabled;
-        if (enabled) {
-            stablecoinAssetIndexPlusOne[asset] = stablecoinAssetList.length + 1;
-            stablecoinAssetList.push(asset);
-        } else {
-            uint256 indexPlusOne = stablecoinAssetIndexPlusOne[asset];
-            if (indexPlusOne != 0) {
-                uint256 index = indexPlusOne - 1;
-                uint256 lastIndex = stablecoinAssetList.length - 1;
-                if (index != lastIndex) {
-                    address movedAsset = stablecoinAssetList[lastIndex];
-                    stablecoinAssetList[index] = movedAsset;
-                    stablecoinAssetIndexPlusOne[movedAsset] = index + 1;
-                }
-                stablecoinAssetList.pop();
-                delete stablecoinAssetIndexPlusOne[asset];
-            }
-        }
-
-        emit StablecoinAssetUpdated(asset, enabled);
+        stablecoinAssets[asset] = true;
+        stablecoinAssetIndexPlusOne[asset] = stablecoinAssetList.length + 1;
+        stablecoinAssetList.push(asset);
+        emit StablecoinAssetUpdated(asset, true);
     }
 
     function _aavePool() internal view returns (IAavePool pool) {
@@ -838,12 +796,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     function _currentIndex(address asset) internal view returns (uint256) {
         if (address(aaveAddressesProvider) == address(0) || stablecoinATokens[asset] == address(0)) {
-            return 1e27;
+            return Core4MicaAccounting.RAY;
         }
 
         address poolAddress = aaveAddressesProvider.getPool();
         if (poolAddress == address(0)) {
-            return 1e27;
+            return Core4MicaAccounting.RAY;
         }
 
         return IAavePool(poolAddress).getReserveNormalizedIncome(asset);
@@ -959,9 +917,17 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     function _hasOpenStablecoinPositions() internal view returns (bool) {
-        return totalUserScaledStablecoinBalances[usdc] != 0 || totalUserScaledStablecoinBalances[usdt] != 0
-            || protocolScaledStablecoinBalances[usdc] != 0 || protocolScaledStablecoinBalances[usdt] != 0
-            || surplusScaledStablecoinBalances[usdc] != 0 || surplusScaledStablecoinBalances[usdt] != 0;
+        uint256 len = stablecoinAssetList.length;
+        for (uint256 i = 0; i < len; i++) {
+            address asset = stablecoinAssetList[i];
+            if (
+                totalUserScaledStablecoinBalances[asset] != 0 || protocolScaledStablecoinBalances[asset] != 0
+                    || surplusScaledStablecoinBalances[asset] != 0
+            ) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function _grossForNetYield(uint256 desiredNet) internal view returns (uint256) {

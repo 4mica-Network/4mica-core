@@ -84,14 +84,6 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         core4Mica.depositStablecoin(address(usdc), 0);
     }
 
-    function test_DepositStablecoin_RevertWhenDepositsDisabled() public {
-        core4Mica.setStablecoinDepositsEnabled(address(usdc), false);
-
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        vm.prank(USER1);
-        core4Mica.depositStablecoin(address(usdc), 10 ether);
-    }
-
     function test_DepositStablecoin_USDT() public {
         uint256 amount = 750 ether;
         uint256 starting = usdt.balanceOf(USER1);

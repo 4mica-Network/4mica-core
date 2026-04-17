@@ -110,7 +110,10 @@ abstract contract Core4MicaTestBase is Test {
         mockProvider.setPool(address(mockPool));
         mockProvider.setPoolDataProvider(address(mockDataProvider));
 
-        core4Mica = new Core4Mica(address(manager), testPublicKey, address(usdc), address(usdt));
+        address[] memory stablecoins = new address[](2);
+        stablecoins[0] = address(usdc);
+        stablecoins[1] = address(usdt);
+        core4Mica = new Core4Mica(address(manager), testPublicKey, stablecoins);
 
         vm.deal(USER1, 5 ether);
         usdc.mint(USER1, 1_000_000 ether);
@@ -122,17 +125,14 @@ abstract contract Core4MicaTestBase is Test {
 
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
-        bytes4[] memory adminSelectors = new bytes4[](10);
+        bytes4[] memory adminSelectors = new bytes4[](7);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
         adminSelectors[3] = Core4Mica.unpause.selector;
-        adminSelectors[4] = Core4Mica.setStablecoinAsset.selector;
-        adminSelectors[5] = Core4Mica.setStablecoinAssets.selector;
-        adminSelectors[6] = Core4Mica.configureAave.selector;
-        adminSelectors[7] = Core4Mica.setYieldFeeBps.selector;
-        adminSelectors[8] = Core4Mica.setStablecoinDepositsEnabled.selector;
-        adminSelectors[9] = Core4Mica.claimProtocolYield.selector;
+        adminSelectors[4] = Core4Mica.configureAave.selector;
+        adminSelectors[5] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[6] = Core4Mica.claimProtocolYield.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
@@ -140,11 +140,10 @@ abstract contract Core4MicaTestBase is Test {
         manager.grantRole(USER_ADMIN_ROLE, address(this), 0);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
 
-        core4Mica.configureAave(address(mockProvider), address(mockUsdcAToken), address(mockUsdtAToken));
-        core4Mica.setStablecoinAsset(address(usdc), true);
-        core4Mica.setStablecoinAsset(address(usdt), true);
-        core4Mica.setStablecoinDepositsEnabled(address(usdc), true);
-        core4Mica.setStablecoinDepositsEnabled(address(usdt), true);
+        address[] memory aTokens = new address[](2);
+        aTokens[0] = address(mockUsdcAToken);
+        aTokens[1] = address(mockUsdtAToken);
+        core4Mica.configureAave(address(mockProvider), aTokens);
     }
 
     function _signGuarantee(Guarantee memory g, bytes32 privKey) internal view returns (BLS.G2Point memory) {
