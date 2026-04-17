@@ -42,7 +42,6 @@ sol! {
         function withdrawalGracePeriod() external view returns (uint256);
         function tabExpirationTime() external view returns (uint256);
         function synchronizationDelay() external view returns (uint256);
-        function stablecoinDepositsEnabled(address asset) external view returns (bool);
         function aaveAddressesProvider() external view returns (address);
         function yieldFeeBps() external view returns (uint256);
 
@@ -80,7 +79,6 @@ sol! {
         event StablecoinAssetUpdated(address indexed asset, bool enabled);
         event AaveConfigured(address indexed provider, address indexed pool);
         event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
-        event StablecoinDepositsEnabledUpdated(address indexed asset, bool enabled);
         event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
         event SurplusATokensClaimed(
             address indexed asset,
@@ -145,8 +143,7 @@ sol! {
         constructor(
             address manager,
             (bytes32,bytes32,bytes32,bytes32) verificationKey,
-            address usdc_,
-            address usdt_
+            address[] memory stablecoins_
         );
 
         // ========= User flows =========
@@ -180,11 +177,8 @@ sol! {
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
         function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
-        function setStablecoinAsset(address asset, bool enabled) external;
-        function setStablecoinAssets(address[] calldata assets, bool enabled) external;
-        function configureAave(address poolAddressesProvider, address usdcAToken, address usdtAToken) external;
+        function configureAave(address poolAddressesProvider, address[] calldata aTokens) external;
         function setYieldFeeBps(uint256 feeBps) external;
-        function setStablecoinDepositsEnabled(address asset, bool enabled) external;
         function claimProtocolYield(address asset, address to, uint256 amount) external;
         function claimSurplusATokens(address asset, address to, uint256 scaledAmount) external;
         function getGuaranteeVersionConfig(uint64 version)

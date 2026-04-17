@@ -259,11 +259,6 @@ impl<S> UserClient<S> {
             .call()
             .await
             .map_err(GetUserError::from)?;
-        let stablecoin_deposits_enabled = contract
-            .stablecoinDepositsEnabled(asset_address)
-            .call()
-            .await
-            .map_err(GetUserError::from)?;
 
         Ok(StablecoinPosition {
             asset,
@@ -278,7 +273,6 @@ impl<S> UserClient<S> {
             surplus_scaled_balance,
             contract_scaled_a_token_balance,
             stablecoin_a_token: stablecoin_a_token.to_string(),
-            stablecoin_deposits_enabled,
         })
     }
 

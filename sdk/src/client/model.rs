@@ -48,7 +48,6 @@ pub struct StablecoinPosition {
     pub surplus_scaled_balance: U256,
     pub contract_scaled_a_token_balance: U256,
     pub stablecoin_a_token: String,
-    pub stablecoin_deposits_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
