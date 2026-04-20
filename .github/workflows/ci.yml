@@ -102,8 +102,9 @@ jobs:
       - name: Deploy smart contracts (full stack)
         env:
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-          USDC_TOKEN: ${{ secrets.USDC_TOKEN_HOLESKY }}
-          USDT_TOKEN: ${{ secrets.USDT_TOKEN_HOLESKY }}
+          STABLECOINS_COUNT: "2"
+          STABLECOIN_0: ${{ secrets.STABLECOIN_0 }}
+          STABLECOIN_1: ${{ secrets.STABLECOIN_1 }}
           VK_X0: ${{ secrets.VK_X0 }}
           VK_X1: ${{ secrets.VK_X1 }}
           VK_Y0: ${{ secrets.VK_Y0 }}
