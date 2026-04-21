@@ -250,7 +250,10 @@ mod tests {
         assert_eq!(EVENT_SIGNATURES.len(), EXPECTED_EVENT_SIGNATURES.len());
         assert_eq!(EVENT_SIGNATURES, EXPECTED_EVENT_SIGNATURES);
         assert_eq!(EVENT_SIGNATURES[0], CollateralDeposited::SIGNATURE);
-        assert_eq!(EVENT_SIGNATURE_HASHES[0], CollateralDeposited::SIGNATURE_HASH);
+        assert_eq!(
+            EVENT_SIGNATURE_HASHES[0],
+            CollateralDeposited::SIGNATURE_HASH
+        );
         assert_eq!(EVENT_SIGNATURES[12], GuaranteeVersionUpdated::SIGNATURE);
         assert_eq!(
             EVENT_SIGNATURE_HASHES[12],
