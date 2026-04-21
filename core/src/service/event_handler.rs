@@ -34,6 +34,7 @@ impl EthereumEventHandler for CoreService {
             Some(&meta),
         )
         .await?;
+        self.sync_stablecoin_balance_from_chain(user, asset).await?;
         Ok(())
     }
 
@@ -56,6 +57,21 @@ impl EthereumEventHandler for CoreService {
             Some(&meta),
         )
         .await?;
+        if let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? {
+            let user = match tab.user_address.parse::<Address>() {
+                Ok(user) => user,
+                Err(err) => {
+                    warn!(
+                        "Invalid user address {} for remunerated tab {} (err: {}). Skipping stablecoin sync.",
+                        tab.user_address,
+                        crate::util::u256_to_string(tab_id),
+                        err
+                    );
+                    return Ok(());
+                }
+            };
+            self.sync_stablecoin_balance_from_chain(user, asset).await?;
+        }
         Ok(())
     }
 
@@ -70,14 +86,26 @@ impl EthereumEventHandler for CoreService {
         info!("Collateral withdrawn by {user:?}: {amount}");
 
         let meta = event_meta_from_log(self, &log)?;
-        repo::finalize_withdrawal_with_event(
-            &self.inner.persist_ctx,
-            user.to_string(),
-            asset.to_string(),
-            amount,
-            Some(&meta),
-        )
-        .await?;
+        if self.stablecoin_a_token(asset).await?.is_some() {
+            repo::mark_withdrawal_executed_with_event(
+                &self.inner.persist_ctx,
+                user.to_string(),
+                asset.to_string(),
+                amount,
+                Some(&meta),
+            )
+            .await?;
+            self.sync_stablecoin_balance_from_chain(user, asset).await?;
+        } else {
+            repo::finalize_withdrawal_with_event(
+                &self.inner.persist_ctx,
+                user.to_string(),
+                asset.to_string(),
+                amount,
+                Some(&meta),
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -283,6 +311,98 @@ impl EthereumEventHandler for CoreService {
     async fn handle_unknown_event(&self, log: Log) -> Result<(), BlockchainListenerError> {
         info!("Unknown event: {:?}", log);
         Ok(())
+    }
+}
+
+impl CoreService {
+    async fn sync_stablecoin_balance_from_chain(
+        &self,
+        user: Address,
+        asset: Address,
+    ) -> Result<(), BlockchainListenerError> {
+        if asset == Address::ZERO {
+            return Ok(());
+        }
+
+        if self.stablecoin_a_token(asset).await?.is_none() {
+            return Ok(());
+        }
+
+        let contract = self.read_contract()?;
+        let guarantee_capacity = contract
+            .guaranteeCapacity(user, asset)
+            .call()
+            .await
+            .map_err(|err| {
+                BlockchainListenerError::EventHandlerError(format!(
+                    "failed to load guarantee capacity for user {user} asset {asset}: {err}"
+                ))
+            })?;
+
+        repo::sync_user_asset_total(
+            &self.inner.persist_ctx,
+            &user.to_string(),
+            &asset.to_string(),
+            guarantee_capacity,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    fn read_contract(
+        &self,
+    ) -> Result<
+        crate::ethereum::contract::contract_abi::Core4Mica::Core4MicaInstance<
+            alloy::providers::DynProvider,
+        >,
+        BlockchainListenerError,
+    > {
+        use crate::ethereum::contract::contract_abi::Core4Mica;
+
+        let contract_address = self
+            .inner
+            .config
+            .ethereum_config
+            .contract_address
+            .parse::<Address>()
+            .map_err(|err| {
+                BlockchainListenerError::EventHandlerError(format!(
+                    "failed to parse contract address {}: {err}",
+                    self.inner.config.ethereum_config.contract_address
+                ))
+            })?;
+
+        Ok(Core4Mica::new(
+            contract_address,
+            self.inner.read_provider.clone(),
+        ))
+    }
+
+    async fn stablecoin_a_token(
+        &self,
+        asset: Address,
+    ) -> Result<Option<Address>, BlockchainListenerError> {
+        if asset == Address::ZERO {
+            return Ok(None);
+        }
+
+        let contract = self.read_contract()?;
+        let a_token = contract
+            .stablecoinAToken(asset)
+            .call()
+            .await
+            .map_err(|err| {
+                BlockchainListenerError::EventHandlerError(format!(
+                    "failed to load stablecoin aToken for asset {asset}: {err}"
+                ))
+            })?;
+
+        if a_token == Address::ZERO {
+            Ok(None)
+        } else {
+            Ok(Some(a_token))
+        }
     }
 }
 

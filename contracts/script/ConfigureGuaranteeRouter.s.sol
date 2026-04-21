@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "forge-std/Script.sol";
+import {Script, console} from "forge-std/Script.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 
 /// @notice Configures a version module in GuaranteeDecoderRouter and optionally freezes it.

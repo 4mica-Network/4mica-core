@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "forge-std/Test.sol";
-import "../src/Core4Mica.sol";
-import {Guarantee} from "../src/Core4Mica.sol";
+import {Test} from "forge-std/Test.sol";
+import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
+import {
+    MockAavePool,
+    MockAToken,
+    MockAaveProtocolDataProvider,
+    MockPoolAddressesProvider
+} from "./helpers/MockAave.sol";
 
 contract MockERC20 {
     string public name;
     string public symbol;
-    uint8 public constant decimals = 18;
+    uint8 public constant DECIMALS = 18;
     uint256 public totalSupply;
 
     mapping(address => uint256) public balanceOf;
@@ -67,6 +72,11 @@ abstract contract Core4MicaTestBase is Test {
     AccessManager internal manager;
     MockERC20 internal usdc;
     MockERC20 internal usdt;
+    MockAavePool internal mockPool;
+    MockAToken internal mockUsdcAToken;
+    MockAToken internal mockUsdtAToken;
+    MockAaveProtocolDataProvider internal mockDataProvider;
+    MockPoolAddressesProvider internal mockProvider;
 
     address internal constant USER1 = address(0x111);
     address internal constant USER2 = address(0x222);
@@ -88,9 +98,22 @@ abstract contract Core4MicaTestBase is Test {
         usdc = new MockERC20("USD Coin", "USDC");
         usdt = new MockERC20("Tether USD", "USDT");
         testPublicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY);
-        core4Mica = new Core4Mica(address(manager), testPublicKey);
-        core4Mica.setStablecoinAsset(address(usdc), true);
-        core4Mica.setStablecoinAsset(address(usdt), true);
+        mockPool = new MockAavePool();
+        mockDataProvider = new MockAaveProtocolDataProvider();
+        mockProvider = new MockPoolAddressesProvider();
+        mockUsdcAToken = new MockAToken(address(usdc), address(mockPool), "Aave USDC", "aUSDC");
+        mockUsdtAToken = new MockAToken(address(usdt), address(mockPool), "Aave USDT", "aUSDT");
+        mockPool.setReserve(address(usdc), address(mockUsdcAToken), 1e27);
+        mockPool.setReserve(address(usdt), address(mockUsdtAToken), 1e27);
+        mockDataProvider.setReserveAToken(address(usdc), address(mockUsdcAToken));
+        mockDataProvider.setReserveAToken(address(usdt), address(mockUsdtAToken));
+        mockProvider.setPool(address(mockPool));
+        mockProvider.setPoolDataProvider(address(mockDataProvider));
+
+        address[] memory stablecoins = new address[](2);
+        stablecoins[0] = address(usdc);
+        stablecoins[1] = address(usdt);
+        core4Mica = new Core4Mica(address(manager), testPublicKey, stablecoins);
 
         vm.deal(USER1, 5 ether);
         usdc.mint(USER1, 1_000_000 ether);
@@ -102,19 +125,25 @@ abstract contract Core4MicaTestBase is Test {
 
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
 
-        bytes4[] memory adminSelectors = new bytes4[](6);
+        bytes4[] memory adminSelectors = new bytes4[](7);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
         adminSelectors[3] = Core4Mica.unpause.selector;
-        adminSelectors[4] = Core4Mica.setStablecoinAsset.selector;
-        adminSelectors[5] = Core4Mica.setStablecoinAssets.selector;
+        adminSelectors[4] = Core4Mica.configureAave.selector;
+        adminSelectors[5] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[6] = Core4Mica.claimProtocolYield.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
 
         manager.grantRole(USER_ADMIN_ROLE, address(this), 0);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
+
+        address[] memory aTokens = new address[](2);
+        aTokens[0] = address(mockUsdcAToken);
+        aTokens[1] = address(mockUsdtAToken);
+        core4Mica.configureAave(address(mockProvider), aTokens);
     }
 
     function _signGuarantee(Guarantee memory g, bytes32 privKey) internal view returns (BLS.G2Point memory) {
@@ -136,13 +165,14 @@ abstract contract Core4MicaTestBase is Test {
     ) internal view returns (Guarantee memory) {
         return Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: tabId,
-            req_id: reqId,
+            tabId: tabId,
+            reqId: reqId,
             client: client,
             recipient: recipient,
             amount: amount,
-            total_amount: amount,
+            totalAmount: amount,
             asset: asset,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });
@@ -164,7 +194,7 @@ abstract contract Core4MicaTestBase is Test {
         arr[0] = selector;
     }
 
-    function AccessUnauthorizedError(address accessor) public pure returns (bytes memory) {
+    function accessUnauthorizedError(address accessor) public pure returns (bytes memory) {
         return abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, accessor);
     }
 }

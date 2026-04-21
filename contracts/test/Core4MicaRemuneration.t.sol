@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract RevertingRecipient {
     receive() external payable {
@@ -570,13 +572,14 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         // Create a guarantee where amount differs from total_amount
         Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: tabId,
-            req_id: reqId,
+            tabId: tabId,
+            reqId: reqId,
             client: USER1,
             recipient: USER2,
             amount: 0.3 ether,
-            total_amount: 0.7 ether,
+            totalAmount: 0.7 ether,
             asset: ETH_ASSET,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });
@@ -609,13 +612,14 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         // User has enough for amount (0.3 ether) but not for total_amount (0.8 ether)
         Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: 0x8888,
-            req_id: 55,
+            tabId: 0x8888,
+            reqId: 55,
             client: USER1,
             recipient: USER2,
             amount: 0.3 ether,
-            total_amount: 0.8 ether,
+            totalAmount: 0.8 ether,
             asset: ETH_ASSET,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });
@@ -637,13 +641,14 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         // amount is non-zero but total_amount is zero
         Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: 0x7777,
-            req_id: 66,
+            tabId: 0x7777,
+            reqId: 66,
             client: USER1,
             recipient: USER2,
             amount: 0.5 ether,
-            total_amount: 0,
+            totalAmount: 0,
             asset: ETH_ASSET,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });

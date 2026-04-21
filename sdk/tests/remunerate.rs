@@ -149,9 +149,13 @@ where
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 #[test_log::test]
 async fn test_recipient_remuneration() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
@@ -293,9 +297,13 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 #[test_log::test]
 async fn test_double_remuneration_fails() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",

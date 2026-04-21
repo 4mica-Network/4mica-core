@@ -23,7 +23,7 @@ contract GuaranteeDecoderRouter is IGuaranteeDecoder, AccessManaged {
     constructor(address manager) AccessManaged(manager) {}
 
     function setVersionModule(uint64 version, address module) external restricted {
-        if (version == 0) revert InvalidVersion(version);
+        _requireValidVersion(version);
         if (isVersionFrozen[version]) revert FrozenVersion(version);
         if (module == address(0) || module.code.length == 0) {
             revert InvalidModule(module);
@@ -34,12 +34,16 @@ contract GuaranteeDecoderRouter is IGuaranteeDecoder, AccessManaged {
     }
 
     function freezeVersion(uint64 version) external restricted {
-        if (version == 0) revert InvalidVersion(version);
+        _requireValidVersion(version);
         if (moduleByVersion[version] == address(0)) revert UnknownVersion(version);
         if (isVersionFrozen[version]) revert FrozenVersion(version);
 
         isVersionFrozen[version] = true;
         emit VersionFrozen(version, msg.sender);
+    }
+
+    function _requireValidVersion(uint64 version) internal pure {
+        if (version == 0) revert InvalidVersion(version);
     }
 
     function decode(bytes calldata data) external view override returns (Guarantee memory) {

@@ -67,19 +67,35 @@ pub mod abi {
             address decoder,
             bool enabled
         );
+
+        #[derive(Debug)]
+        event StablecoinAssetUpdated(address indexed asset, bool enabled);
+
+        #[derive(Debug)]
+        event AaveConfigured(address indexed provider, address indexed pool);
+
+        #[derive(Debug)]
+        event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+
+        #[derive(Debug)]
+        event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
+
+        #[derive(Debug)]
+        event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
     }
 }
 
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
-    CollateralDeposited, CollateralWithdrawn, GuaranteeVersionUpdated, PaymentRecorded,
-    RecipientRemunerated, RemunerationGracePeriodUpdated, SynchronizationDelayUpdated,
+    AaveConfigured, CollateralDeposited, CollateralWithdrawn, GuaranteeVersionUpdated,
+    PaymentRecorded, ProtocolYieldClaimed, RecipientRemunerated, RemunerationGracePeriodUpdated,
+    StablecoinAssetUpdated, SurplusATokensClaimed, SynchronizationDelayUpdated,
     TabExpirationTimeUpdated, TabPaid, VerificationKeyUpdated, WithdrawalCanceled,
-    WithdrawalGracePeriodUpdated, WithdrawalRequested,
+    WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 13] = [
+pub const EVENT_SIGNATURES: [&str; 18] = [
     CollateralDeposited::SIGNATURE,
     RecipientRemunerated::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
@@ -93,10 +109,15 @@ pub const EVENT_SIGNATURES: [&str; 13] = [
     PaymentRecorded::SIGNATURE,
     TabPaid::SIGNATURE,
     GuaranteeVersionUpdated::SIGNATURE,
+    StablecoinAssetUpdated::SIGNATURE,
+    AaveConfigured::SIGNATURE,
+    YieldFeeBpsUpdated::SIGNATURE,
+    ProtocolYieldClaimed::SIGNATURE,
+    SurplusATokensClaimed::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 13] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     CollateralDeposited::SIGNATURE_HASH,
     RecipientRemunerated::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
@@ -110,6 +131,11 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 13] = [
     PaymentRecorded::SIGNATURE_HASH,
     TabPaid::SIGNATURE_HASH,
     GuaranteeVersionUpdated::SIGNATURE_HASH,
+    StablecoinAssetUpdated::SIGNATURE_HASH,
+    AaveConfigured::SIGNATURE_HASH,
+    YieldFeeBpsUpdated::SIGNATURE_HASH,
+    ProtocolYieldClaimed::SIGNATURE_HASH,
+    SurplusATokensClaimed::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -128,8 +154,12 @@ pub fn is_known_event_topic(topic0: &B256) -> bool {
 }
 
 // -----------------------------------------------------------------------------
-// Contract function bindings (for sending txs)
+// Contract function bindings
 // -----------------------------------------------------------------------------
+//
+// This is an intentionally curated subset of the Core4Mica callable ABI used by
+// core-service. It is not a full mirror of every public/external Solidity
+// function in `contracts/src/Core4Mica.sol`.
 
 pub mod contract_abi {
     use alloy::sol;
@@ -170,6 +200,12 @@ pub mod contract_abi {
 
             /// View: list of ERC20 tokens supported by the contract.
             function getERC20Tokens() external view returns (address[] memory);
+
+            /// View: cached aToken for a configured stablecoin asset.
+            function stablecoinAToken(address asset) external view returns (address);
+
+            /// View: guaranteeable collateral for a user/asset pair.
+            function guaranteeCapacity(address user, address asset) external view returns (uint256);
         }
 
         #[sol(rpc)]
@@ -187,23 +223,46 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
+    const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
+        "CollateralDeposited(address,address,uint256)",
+        "RecipientRemunerated(uint256,address,uint256)",
+        "CollateralWithdrawn(address,address,uint256)",
+        "WithdrawalRequested(address,address,uint256,uint256)",
+        "WithdrawalCanceled(address,address)",
+        "WithdrawalGracePeriodUpdated(uint256)",
+        "RemunerationGracePeriodUpdated(uint256)",
+        "TabExpirationTimeUpdated(uint256)",
+        "SynchronizationDelayUpdated(uint256)",
+        "VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32))",
+        "PaymentRecorded(uint256,address,uint256)",
+        "TabPaid(uint256,address,address,address,uint256)",
+        "GuaranteeVersionUpdated(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
+        "StablecoinAssetUpdated(address,bool)",
+        "AaveConfigured(address,address)",
+        "YieldFeeBpsUpdated(uint256,uint256)",
+        "ProtocolYieldClaimed(address,address,uint256)",
+        "SurplusATokensClaimed(address,address,uint256,uint256)",
+    ];
+
     #[test]
-    fn signatures_and_hashes_align() {
+    fn event_signatures_and_hashes_align() {
         assert_eq!(EVENT_SIGNATURES.len(), EVENT_SIGNATURE_HASHES.len());
-        assert_eq!(EVENT_SIGNATURES.len(), 13);
-        // spot check a couple of associated consts line up
+        assert_eq!(EVENT_SIGNATURES.len(), EXPECTED_EVENT_SIGNATURES.len());
+        assert_eq!(EVENT_SIGNATURES, EXPECTED_EVENT_SIGNATURES);
         assert_eq!(EVENT_SIGNATURES[0], CollateralDeposited::SIGNATURE);
         assert_eq!(
             EVENT_SIGNATURE_HASHES[0],
             CollateralDeposited::SIGNATURE_HASH
         );
+        assert_eq!(EVENT_SIGNATURES[12], GuaranteeVersionUpdated::SIGNATURE);
         assert_eq!(
-            EVENT_SIGNATURES[EVENT_SIGNATURES.len() - 1],
-            GuaranteeVersionUpdated::SIGNATURE
-        );
-        assert_eq!(
-            EVENT_SIGNATURE_HASHES[EVENT_SIGNATURE_HASHES.len() - 1],
+            EVENT_SIGNATURE_HASHES[12],
             GuaranteeVersionUpdated::SIGNATURE_HASH
+        );
+        assert_eq!(EVENT_SIGNATURES[17], SurplusATokensClaimed::SIGNATURE);
+        assert_eq!(
+            EVENT_SIGNATURE_HASHES[17],
+            SurplusATokensClaimed::SIGNATURE_HASH
         );
     }
 }

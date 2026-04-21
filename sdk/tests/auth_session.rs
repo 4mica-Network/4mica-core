@@ -169,7 +169,7 @@ async fn post_auth_refresh(
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn auth_session_single_flight_refresh() {
     let state = AuthTestState::new(false, 0, 60);
     let router = Router::new()
@@ -207,7 +207,7 @@ async fn auth_session_single_flight_refresh() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn auth_session_refresh_unauthorized_falls_back_to_login() {
     let state = AuthTestState::new(true, 0, 60);
     let router = Router::new()
