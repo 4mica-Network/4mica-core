@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
 
 contract Core4MicaPaymentsTest is Core4MicaTestBase {
     function test_RecordPayment() public {
@@ -95,7 +96,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
 
     function test_RecordPayment_Revert_Unauthorized() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.recordPayment(0x1234, ETH_ASSET, 0);
     }
 

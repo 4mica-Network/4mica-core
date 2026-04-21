@@ -4,7 +4,7 @@ use alloy::primitives::U256;
 use entities::user_asset_balance;
 use metrics_4mica::measure;
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, TransactionTrait};
 
 use super::common::{now, parse_address};
 use crate::metrics::misc::record_db_time;
@@ -134,4 +134,41 @@ pub async fn get_user_asset_balance(
         .one(ctx.db.as_ref())
         .await?;
     Ok(row)
+}
+
+#[measure(record_db_time)]
+pub async fn sync_user_asset_total(
+    ctx: &PersistCtx,
+    user_address: &str,
+    asset_address: &str,
+    new_total: U256,
+) -> Result<(), PersistDbError> {
+    let user_address = parse_address(user_address)?.into_inner();
+    let asset_address = parse_address(asset_address)?.into_inner();
+
+    ctx.db
+        .transaction(|txn| {
+            let user_address = user_address.clone();
+            let asset_address = asset_address.clone();
+            Box::pin(async move {
+                let balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
+                let locked = balance
+                    .locked
+                    .parse::<U256>()
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+                update_user_balance_and_version_on(
+                    txn,
+                    &user_address,
+                    &asset_address,
+                    balance.version,
+                    new_total,
+                    locked,
+                )
+                .await
+            })
+        })
+        .await?;
+
+    Ok(())
 }

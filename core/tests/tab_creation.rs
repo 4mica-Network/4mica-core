@@ -129,7 +129,7 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn returns_existing_pending_tab_when_active() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
@@ -187,7 +187,7 @@ async fn returns_existing_pending_tab_when_active() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn closes_expired_pending_tab_and_creates_new_one() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
@@ -253,7 +253,7 @@ async fn closes_expired_pending_tab_and_creates_new_one() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn returns_existing_open_tab_when_active() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
@@ -319,7 +319,7 @@ async fn returns_existing_open_tab_when_active() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn creates_distinct_active_tabs_per_guarantee_version() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
@@ -381,7 +381,7 @@ async fn creates_distinct_active_tabs_per_guarantee_version() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn unique_index_rejects_duplicate_active_tab_identity() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
@@ -446,7 +446,7 @@ async fn unique_index_rejects_duplicate_active_tab_identity() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn uses_default_ttl_when_not_provided() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
@@ -487,7 +487,7 @@ async fn uses_default_ttl_when_not_provided() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_ttl_exceeding_tab_expiration() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");
@@ -523,7 +523,7 @@ async fn rejects_ttl_exceeding_tab_expiration() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn facilitator_can_create_tab_for_recipient() {
     load_test_env();
     let ctx = PersistCtx::new().await.expect("persist ctx");

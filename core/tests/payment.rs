@@ -15,7 +15,7 @@ use common::fixtures::{clear_all_tables, ensure_user, init_test_env, random_addr
 use common::setup::setup_e2e_environment;
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
@@ -91,7 +91,7 @@ async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Res
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
@@ -162,7 +162,7 @@ async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
@@ -228,7 +228,7 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn reorg_does_not_mutate_without_finality() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();

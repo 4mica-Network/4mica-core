@@ -13,7 +13,7 @@ use common::fixtures::{ensure_user, ensure_user_with_collateral, init_test_env, 
 use crate::common::fixtures::read_collateral;
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -51,7 +51,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -81,7 +81,7 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -112,7 +112,7 @@ async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
 
 /// NEW: failing a non-existent transaction should error with TransactionNotFound.
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn fail_transaction_missing_tx_returns_err() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -133,7 +133,7 @@ async fn fail_transaction_missing_tx_returns_err() -> anyhow::Result<()> {
 
 /// NEW: failing a transaction with the wrong user must error and cause no side effects.
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -185,7 +185,7 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn mark_recorded_accepts_confirmed_status() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();

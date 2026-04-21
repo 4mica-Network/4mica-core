@@ -14,7 +14,7 @@ use common::fixtures::{ensure_user, ensure_user_with_collateral, init_test_env, 
 use crate::common::fixtures::read_collateral;
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -40,7 +40,7 @@ async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn duplicate_withdrawal_request_updates_existing_pending() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -105,7 +105,7 @@ async fn duplicate_withdrawal_request_updates_existing_pending() -> anyhow::Resu
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn request_withdrawal_after_cancelled_creates_new_pending() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -165,7 +165,7 @@ async fn request_withdrawal_after_cancelled_creates_new_pending() -> anyhow::Res
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn request_withdrawal_after_executed_creates_new_pending() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -233,7 +233,7 @@ async fn request_withdrawal_after_executed_creates_new_pending() -> anyhow::Resu
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 
@@ -281,7 +281,7 @@ async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 
@@ -340,7 +340,7 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -371,7 +371,7 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn finalize_without_any_request_errors_and_preserves_collateral() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -400,7 +400,7 @@ async fn finalize_without_any_request_errors_and_preserves_collateral() -> anyho
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 
@@ -437,7 +437,7 @@ async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> 
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 
@@ -467,7 +467,7 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn finalize_withdrawal_exceeding_requested_amount_takes_minimum() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -518,7 +518,7 @@ async fn finalize_withdrawal_exceeding_requested_amount_takes_minimum() -> anyho
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() -> anyhow::Result<()>
 {
     use entities::sea_orm_active_enums::WithdrawalStatus;
@@ -576,7 +576,7 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() -> anyhow::Result<()>
 {
     use entities::sea_orm_active_enums::WithdrawalStatus;
@@ -629,7 +629,7 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -698,7 +698,7 @@ async fn unique_pending_withdrawal_per_user_is_enforced() -> anyhow::Result<()> 
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn multiple_pending_withdrawals_per_user_different_assets_allowed() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -781,7 +781,7 @@ async fn multiple_pending_withdrawals_per_user_different_assets_allowed() -> any
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn deposit_and_withdraw_multiple_assets_updates_collateral_correctly() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::WithdrawalStatus;
 

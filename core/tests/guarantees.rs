@@ -477,7 +477,7 @@ async fn sign_v1_request(
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 fn domain_separator_matches_contract_logic() {
     let addr = Address::from_str("0xA15BB66138824a1c7167f5E85b957d04Dd34E468").unwrap();
     let domain = common::fixtures::compute_guarantee_domain_separator(31337, addr).unwrap();
@@ -488,7 +488,7 @@ fn domain_separator_matches_contract_logic() {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -543,7 +543,7 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 
@@ -632,7 +632,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -642,7 +642,7 @@ async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -697,7 +697,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -759,7 +759,7 @@ async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()>
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -838,7 +838,7 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
     let _config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -893,7 +893,7 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -969,7 +969,7 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
     let _config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -1017,7 +1017,7 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn accepts_timestamp_within_tab_window_without_opening_tab() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1073,7 +1073,7 @@ async fn accepts_timestamp_within_tab_window_without_opening_tab() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_recipient_mismatch_on_guarantee_claims() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1128,7 +1128,7 @@ async fn rejects_recipient_mismatch_on_guarantee_claims() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_timestamp_outside_tab_window() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1234,7 +1234,7 @@ async fn rejects_timestamp_outside_tab_window() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_guarantee_when_tab_settlement_finalized() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1312,7 +1312,7 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_guarantee_when_tab_closed() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1364,7 +1364,7 @@ async fn rejects_guarantee_when_tab_closed() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn pending_tab_expired_accepts_first_claim_without_reopening() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1421,7 +1421,7 @@ async fn pending_tab_expired_accepts_first_claim_without_reopening() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1480,7 +1480,7 @@ fn recipient_issue_auth(recipient_address: &str) -> AccessContext {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1535,7 +1535,7 @@ async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Resu
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_when_active_version_is_v1() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1591,7 +1591,7 @@ async fn issue_v2_guarantee_rejects_when_active_version_is_v1() -> anyhow::Resul
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepted()
 -> anyhow::Result<()> {
     load_env();
@@ -1650,7 +1650,7 @@ async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepte
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1711,7 +1711,7 @@ async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> 
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1795,7 +1795,7 @@ async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Resu
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_subject_hash_mismatch() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1852,7 +1852,7 @@ async fn issue_v2_guarantee_rejects_subject_hash_mismatch() -> anyhow::Result<()
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_request_hash_mismatch() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1909,7 +1909,7 @@ async fn issue_v2_guarantee_rejects_request_hash_mismatch() -> anyhow::Result<()
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_min_validation_score_zero() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1966,7 +1966,7 @@ async fn issue_v2_guarantee_rejects_min_validation_score_zero() -> anyhow::Resul
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_untrusted_validation_registry() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -2029,7 +2029,7 @@ async fn issue_v2_guarantee_rejects_untrusted_validation_registry() -> anyhow::R
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_accepts_trusted_validation_registry() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -2087,7 +2087,7 @@ async fn issue_v2_guarantee_accepts_trusted_validation_registry() -> anyhow::Res
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -2107,7 +2107,7 @@ async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Resu
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_service_public_params_support_max_accepted_guarantee_version_v1() -> anyhow::Result<()>
 {
     load_env();
@@ -2119,7 +2119,7 @@ async fn core_service_public_params_support_max_accepted_guarantee_version_v1() 
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn contract_api_rejects_disabled_guarantee_version() {
     struct DisabledGuaranteeVersionApi;
 

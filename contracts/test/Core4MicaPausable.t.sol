@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
 import {Guarantee} from "../src/Core4Mica.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
@@ -69,11 +69,11 @@ contract Core4MicaPausableTest is Core4MicaTestBase {
 
     function test_Pause_Revert_UnauthorizedCallers() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.pause();
 
         vm.prank(OPERATOR);
-        vm.expectRevert(AccessUnauthorizedError(OPERATOR));
+        vm.expectRevert(accessUnauthorizedError(OPERATOR));
         core4Mica.pause();
     }
 
@@ -81,11 +81,11 @@ contract Core4MicaPausableTest is Core4MicaTestBase {
         core4Mica.pause();
 
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.unpause();
 
         vm.prank(OPERATOR);
-        vm.expectRevert(AccessUnauthorizedError(OPERATOR));
+        vm.expectRevert(accessUnauthorizedError(OPERATOR));
         core4Mica.unpause();
 
         core4Mica.unpause();

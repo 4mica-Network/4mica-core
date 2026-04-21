@@ -5,7 +5,7 @@ mod common;
 use common::setup::setup_e2e_environment;
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_startup_when_max_accepted_guarantee_version_is_disabled_on_chain()
 -> anyhow::Result<()> {
     let mut env = setup_e2e_environment().await?;

@@ -78,7 +78,7 @@ async fn insert_tab(
 
 /// `Transfer` does not unlock collateral before confirmation.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn transfer_usdc_does_not_unlock_collateral_before_confirmation() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let contract = env.contract.clone();
@@ -198,7 +198,7 @@ async fn transfer_usdc_does_not_unlock_collateral_before_confirmation() -> anyho
 
 /// `TabPaid` with wrong recipient is ignored.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let contract = env.contract.clone();
@@ -325,7 +325,7 @@ async fn tab_paid_with_wrong_recipient_is_ignored() -> anyhow::Result<()> {
 
 /// `Withdrawal` flow for stablecoin → collateral withdrawn event reduces balance.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn stablecoin_withdrawn_event_reduces_balance() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();

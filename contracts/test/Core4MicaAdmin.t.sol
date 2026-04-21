@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract Core4MicaAdminTest is Core4MicaTestBase {
     function test_SetWithdrawalGracePeriod() public {
@@ -20,13 +22,13 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetWithdrawalGracePeriod_Revert_User_Unauthorized() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
     function test_SetWithdrawalGracePeriod_Revert_Operator_Unauthorized() public {
         vm.prank(OPERATOR);
-        vm.expectRevert(AccessUnauthorizedError(OPERATOR));
+        vm.expectRevert(accessUnauthorizedError(OPERATOR));
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
@@ -52,13 +54,13 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetRemunerationGracePeriod_Revert_User_Unauthorized() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.setRemunerationGracePeriod(2 days);
     }
 
     function test_SetRemunerationGracePeriod_Revert_Operator_Unauthorized() public {
         vm.prank(OPERATOR);
-        vm.expectRevert(AccessUnauthorizedError(OPERATOR));
+        vm.expectRevert(accessUnauthorizedError(OPERATOR));
         core4Mica.setRemunerationGracePeriod(2 days);
     }
 
@@ -84,13 +86,13 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetTabExpirationTime_Revert_User_Unauthorized() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.setTabExpirationTime(2 days);
     }
 
     function test_SetTabExpirationTime_Revert_Operator_Unauthorized() public {
         vm.prank(OPERATOR);
-        vm.expectRevert(AccessUnauthorizedError(OPERATOR));
+        vm.expectRevert(accessUnauthorizedError(OPERATOR));
         core4Mica.setTabExpirationTime(2 days);
     }
 
@@ -121,13 +123,13 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
     function test_SetSynchronizationDelay_Revert_User_Unauthorized() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.setSynchronizationDelay(5 hours);
     }
 
     function test_SetSynchronizationDelay_Revert_Operator_Unauthorized() public {
         vm.prank(OPERATOR);
-        vm.expectRevert(AccessUnauthorizedError(OPERATOR));
+        vm.expectRevert(accessUnauthorizedError(OPERATOR));
         core4Mica.setSynchronizationDelay(5 hours);
     }
 
@@ -149,11 +151,11 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
         core4Mica.setGuaranteeVerificationKey(newKey);
 
-        (bytes32 x_a, bytes32 x_b, bytes32 y_a, bytes32 y_b) = core4Mica.GUARANTEE_VERIFICATION_KEY();
-        assertEq(x_a, newKey.x_a);
-        assertEq(x_b, newKey.x_b);
-        assertEq(y_a, newKey.y_a);
-        assertEq(y_b, newKey.y_b);
+        (bytes32 xA, bytes32 xB, bytes32 yA, bytes32 yB) = core4Mica.GUARANTEE_VERIFICATION_KEY();
+        assertEq(xA, newKey.x_a);
+        assertEq(xB, newKey.x_b);
+        assertEq(yA, newKey.y_a);
+        assertEq(yB, newKey.y_b);
     }
 
     function test_SetVerificationKey_Revert_User_Unauthorized() public {
@@ -164,7 +166,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
             bytes32(0x0001000000000000000000000000000000000000000000000000000000001000)
         );
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.setGuaranteeVerificationKey(newKey);
     }
 
@@ -176,7 +178,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
             bytes32(0x0001000000000000000000000000000000000000000000000000000000001000)
         );
         vm.prank(OPERATOR);
-        vm.expectRevert(AccessUnauthorizedError(OPERATOR));
+        vm.expectRevert(accessUnauthorizedError(OPERATOR));
         core4Mica.setGuaranteeVerificationKey(newKey);
     }
 

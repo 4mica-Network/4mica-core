@@ -11,7 +11,7 @@ use crate::{
     PaymentSignature,
     client::{
         ClientCtx,
-        model::{TabPaymentStatus, UserInfo},
+        model::{StablecoinPosition, TabPaymentStatus, UserInfo},
     },
     error::{
         ApproveErc20Error, CancelWithdrawalError, DepositError, FinalizeWithdrawalError,
@@ -154,6 +154,125 @@ impl<S> UserClient<S> {
             paid: status.paid,
             remunerated: status.remunerated,
             asset: status.asset.to_string(),
+        })
+    }
+
+    pub async fn get_principal_balance(&self, asset: String) -> Result<U256, GetUserError>
+    where
+        S: Signer,
+    {
+        let asset = validate_address(&asset).map_err(|_| {
+            GetUserError::Transport(format!("invalid ERC20 token address: {asset}"))
+        })?;
+        let signer_address = self.ctx.signer_address();
+
+        self.ctx
+            .get_contract()
+            .principalBalance(signer_address, asset)
+            .call()
+            .await
+            .map_err(GetUserError::from)
+    }
+
+    pub async fn get_withdrawable_balance(&self, asset: String) -> Result<U256, GetUserError>
+    where
+        S: Signer,
+    {
+        let asset = validate_address(&asset).map_err(|_| {
+            GetUserError::Transport(format!("invalid ERC20 token address: {asset}"))
+        })?;
+        let signer_address = self.ctx.signer_address();
+
+        self.ctx
+            .get_contract()
+            .withdrawableBalance(signer_address, asset)
+            .call()
+            .await
+            .map_err(GetUserError::from)
+    }
+
+    pub async fn get_stablecoin_position(
+        &self,
+        asset: String,
+    ) -> Result<StablecoinPosition, GetUserError>
+    where
+        S: Signer,
+    {
+        let asset_address = validate_address(&asset).map_err(|_| {
+            GetUserError::Transport(format!("invalid ERC20 token address: {asset}"))
+        })?;
+        let signer_address = self.ctx.signer_address();
+        let contract = self.ctx.get_contract();
+
+        let principal = contract
+            .principalBalance(signer_address, asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let guarantee_capacity = contract
+            .guaranteeCapacity(signer_address, asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let gross_yield = contract
+            .grossYield(signer_address, asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let protocol_yield_share = contract
+            .protocolYieldShare(signer_address, asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let user_net_yield = contract
+            .userNetYield(signer_address, asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let withdrawable_balance = contract
+            .withdrawableBalance(signer_address, asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let total_user_scaled_balance = contract
+            .totalUserScaledBalance(asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let protocol_scaled_balance = contract
+            .protocolScaledBalance(asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let surplus_scaled_balance = contract
+            .surplusScaledBalance(asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let contract_scaled_a_token_balance = contract
+            .contractScaledATokenBalance(asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+        let stablecoin_a_token = contract
+            .stablecoinAToken(asset_address)
+            .call()
+            .await
+            .map_err(GetUserError::from)?;
+
+        Ok(StablecoinPosition {
+            asset,
+            principal,
+            guarantee_capacity,
+            gross_yield,
+            protocol_yield_share,
+            user_net_yield,
+            withdrawable_balance,
+            total_user_scaled_balance,
+            protocol_scaled_balance,
+            surplus_scaled_balance,
+            contract_scaled_a_token_balance,
+            stablecoin_a_token: stablecoin_a_token.to_string(),
         })
     }
 

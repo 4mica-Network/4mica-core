@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "forge-std/Script.sol";
+import {Script, console} from "forge-std/Script.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 

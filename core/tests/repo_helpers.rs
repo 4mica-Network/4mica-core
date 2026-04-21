@@ -36,7 +36,7 @@ pub async fn get_unfinalized_transactions_for_user(
 
 /// Ensure get_user_transactions only returns transactions for the given user.
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -76,7 +76,7 @@ async fn get_user_transactions_returns_only_users_txs() -> anyhow::Result<()> {
 
 /// Ensure get_unfinalized_transactions_for_user excludes the passed tx_id.
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -127,7 +127,7 @@ async fn get_unfinalized_transactions_excludes_given_id() -> anyhow::Result<()> 
 
 /// Ensure get_pending_withdrawals_for_user finds only pending ones.
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -159,7 +159,7 @@ async fn get_pending_withdrawals_for_user_returns_pending() -> anyhow::Result<()
 
 /// Ensure get_tab_by_id returns None for unknown id (simple smoke test)
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let res = repo::get_tab_by_id(&ctx, U256::from(12345u64)).await?;
@@ -168,7 +168,7 @@ async fn get_tab_by_id_none_for_unknown() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -226,7 +226,7 @@ async fn inserting_second_remunerate_event_for_tab_fails() -> anyhow::Result<()>
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let nonexistent_user = random_address();
@@ -251,7 +251,7 @@ async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> 
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn update_user_suspension_increments_version() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -272,7 +272,7 @@ async fn update_user_suspension_increments_version() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -323,7 +323,7 @@ async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> 
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_last_processed_blockchain_event_returns_latest() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -386,7 +386,7 @@ async fn get_last_processed_blockchain_event_returns_latest() -> anyhow::Result<
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn concurrent_tab_updates_version_conflict() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();

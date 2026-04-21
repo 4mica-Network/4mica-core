@@ -175,6 +175,14 @@ pub enum FinalizeWithdrawalError {
     GracePeriodNotElapsed,
     #[error("transfer failed")]
     TransferFailed,
+    #[error("unsupported asset: {0}")]
+    UnsupportedAsset(Address),
+    #[error("stablecoin withdraw shortfall for {asset}: requested {requested}, actual {actual}")]
+    StablecoinWithdrawShortfall {
+        asset: Address,
+        requested: String,
+        actual: String,
+    },
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -193,6 +201,8 @@ pub enum RequestWithdrawalError {
     AmountZero,
     #[error("insufficient available")]
     InsufficientAvailable,
+    #[error("unsupported asset: {0}")]
+    UnsupportedAsset(Address),
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -225,6 +235,12 @@ pub enum DepositError {
     InvalidParams(String),
     #[error("amount is zero")]
     AmountZero,
+    #[error("unsupported asset: {0}")]
+    UnsupportedAsset(Address),
+    #[error("illegal value")]
+    IllegalValue,
+    #[error("Aave is not configured")]
+    AaveNotConfigured,
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -255,6 +271,8 @@ pub enum PayTabError {
     InvalidParams(String),
     #[error("invalid asset")]
     InvalidAsset,
+    #[error("unsupported asset: {0}")]
+    UnsupportedAsset(Address),
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -267,6 +285,10 @@ pub enum PayTabError {
 
 #[derive(Debug, Error)]
 pub enum GetUserError {
+    #[error("unsupported asset: {0}")]
+    UnsupportedAsset(Address),
+    #[error("Aave is not configured")]
+    AaveNotConfigured,
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
@@ -520,11 +542,18 @@ impl_from_alloy_error!(FinalizeWithdrawalError, {
     Core4Mica::Core4MicaErrors::NoWithdrawalRequested(_) => Self::NoWithdrawalRequested,
     Core4Mica::Core4MicaErrors::GracePeriodNotElapsed(_) => Self::GracePeriodNotElapsed,
     Core4Mica::Core4MicaErrors::TransferFailed(_) => Self::TransferFailed,
+    Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
+    Core4Mica::Core4MicaErrors::StablecoinWithdrawShortfall(err) => Self::StablecoinWithdrawShortfall {
+        asset: err.asset,
+        requested: err.requested.to_string(),
+        actual: err.actual.to_string(),
+    },
 });
 
 impl_from_alloy_error!(RequestWithdrawalError, {
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
     Core4Mica::Core4MicaErrors::InsufficientAvailable(_) => Self::InsufficientAvailable,
+    Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
 });
 
 impl_from_alloy_error!(CancelWithdrawalError, {
@@ -533,14 +562,21 @@ impl_from_alloy_error!(CancelWithdrawalError, {
 
 impl_from_alloy_error!(DepositError, {
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
+    Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
+    Core4Mica::Core4MicaErrors::IllegalValue(_) => Self::IllegalValue,
+    Core4Mica::Core4MicaErrors::AaveNotConfigured(_) => Self::AaveNotConfigured,
 });
 
 impl_from_alloy_error!(PayTabError, {
     Core4Mica::Core4MicaErrors::InvalidAsset(_) => Self::InvalidAsset,
+    Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
 });
 
 impl_from_alloy_error!(ApproveErc20Error);
 
-impl_from_alloy_error!(GetUserError);
+impl_from_alloy_error!(GetUserError, {
+    Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
+    Core4Mica::Core4MicaErrors::AaveNotConfigured(_) => Self::AaveNotConfigured,
+});
 
 impl_from_alloy_error!(TabPaymentStatusError);
