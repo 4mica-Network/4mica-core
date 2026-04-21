@@ -145,7 +145,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
     event TabExpirationTimeUpdated(uint256 newExpirationTime);
-    event SynchronizationDelayUpdated(uint256 newExpirationTime);
+    event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
     event PaymentRecorded(uint256 indexed tabId, address indexed asset, uint256 amount);
     event TabPaid(
