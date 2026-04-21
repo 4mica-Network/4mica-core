@@ -67,19 +67,35 @@ pub mod abi {
             address decoder,
             bool enabled
         );
+
+        #[derive(Debug)]
+        event StablecoinAssetUpdated(address indexed asset, bool enabled);
+
+        #[derive(Debug)]
+        event AaveConfigured(address indexed provider, address indexed pool);
+
+        #[derive(Debug)]
+        event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+
+        #[derive(Debug)]
+        event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
+
+        #[derive(Debug)]
+        event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
     }
 }
 
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
-    CollateralDeposited, CollateralWithdrawn, GuaranteeVersionUpdated, PaymentRecorded,
-    RecipientRemunerated, RemunerationGracePeriodUpdated, SynchronizationDelayUpdated,
+    AaveConfigured, CollateralDeposited, CollateralWithdrawn, GuaranteeVersionUpdated,
+    PaymentRecorded, ProtocolYieldClaimed, RecipientRemunerated, RemunerationGracePeriodUpdated,
+    StablecoinAssetUpdated, SurplusATokensClaimed, SynchronizationDelayUpdated,
     TabExpirationTimeUpdated, TabPaid, VerificationKeyUpdated, WithdrawalCanceled,
-    WithdrawalGracePeriodUpdated, WithdrawalRequested,
+    WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 13] = [
+pub const EVENT_SIGNATURES: [&str; 18] = [
     CollateralDeposited::SIGNATURE,
     RecipientRemunerated::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
@@ -93,10 +109,15 @@ pub const EVENT_SIGNATURES: [&str; 13] = [
     PaymentRecorded::SIGNATURE,
     TabPaid::SIGNATURE,
     GuaranteeVersionUpdated::SIGNATURE,
+    StablecoinAssetUpdated::SIGNATURE,
+    AaveConfigured::SIGNATURE,
+    YieldFeeBpsUpdated::SIGNATURE,
+    ProtocolYieldClaimed::SIGNATURE,
+    SurplusATokensClaimed::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 13] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     CollateralDeposited::SIGNATURE_HASH,
     RecipientRemunerated::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
@@ -110,6 +131,11 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 13] = [
     PaymentRecorded::SIGNATURE_HASH,
     TabPaid::SIGNATURE_HASH,
     GuaranteeVersionUpdated::SIGNATURE_HASH,
+    StablecoinAssetUpdated::SIGNATURE_HASH,
+    AaveConfigured::SIGNATURE_HASH,
+    YieldFeeBpsUpdated::SIGNATURE_HASH,
+    ProtocolYieldClaimed::SIGNATURE_HASH,
+    SurplusATokensClaimed::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -196,7 +222,7 @@ mod tests {
     #[test]
     fn signatures_and_hashes_align() {
         assert_eq!(EVENT_SIGNATURES.len(), EVENT_SIGNATURE_HASHES.len());
-        assert_eq!(EVENT_SIGNATURES.len(), 13);
+        assert_eq!(EVENT_SIGNATURES.len(), 18);
         // spot check a couple of associated consts line up
         assert_eq!(EVENT_SIGNATURES[0], CollateralDeposited::SIGNATURE);
         assert_eq!(
