@@ -7,7 +7,7 @@ use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
 use crypto::bls::BLSCert;
 use entities::guarantee;
-use entities::sea_orm_active_enums::TabStatus;
+use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, TabStatus};
 use metrics_4mica::measure;
 use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaimsV1};
 use sea_orm::sea_query::OnConflict;
@@ -175,9 +175,16 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
         to_address: Set(data.to),
         asset_address: Set(data.asset),
         value: Set(data.value.to_string()),
+        cycle_id: Set(None),
+        guarantee_id: Set(None),
         start_ts: Set(data.start_ts),
         cert: Set(data.cert),
         request: Set(data.request),
+        settlement_status: Set(GuaranteeSettlementStatus::Issued),
+        dispute_deadline: Set(None),
+        finalized_at: Set(None),
+        netted_at: Set(None),
+        settled_at: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
     };

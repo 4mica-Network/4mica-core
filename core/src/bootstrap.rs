@@ -8,6 +8,7 @@ use core_service::{
     scheduler::TaskScheduler,
     service::{
         CoreService,
+        cycle::SettlementCycleTask,
         payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask},
     },
 };
@@ -65,6 +66,9 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         .await?;
     scheduler
         .add_task(Arc::new(FinalizePaymentsTask::new(service.clone())))
+        .await?;
+    scheduler
+        .add_task(Arc::new(SettlementCycleTask::new(service.clone())))
         .await?;
     scheduler
         .add_task(Arc::new(MetricsUpkeepTask::new(
