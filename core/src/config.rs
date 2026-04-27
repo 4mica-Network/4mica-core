@@ -226,6 +226,43 @@ impl GuaranteeConfig {
     }
 }
 
+#[derive(Debug, Clone, Envconfig)]
+pub struct SettlementCycleConfig {
+    #[envconfig(from = "SETTLEMENT_CYCLE_SECS", default = "86400")]
+    pub cycle_secs: u64,
+    #[envconfig(from = "SETTLEMENT_RESOLUTION_CUTOFF_SECS", default = "21600")]
+    pub resolution_cutoff_secs: u64,
+    #[envconfig(from = "SETTLEMENT_CLEARING_COMMIT_DELAY_SECS", default = "900")]
+    pub clearing_commit_delay_secs: u64,
+    #[envconfig(from = "SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS", default = "7200")]
+    pub payment_submission_window_secs: u64,
+    #[envconfig(from = "SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS", default = "14400")]
+    pub payment_finality_window_secs: u64,
+}
+
+impl SettlementCycleConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.cycle_secs == 0 {
+            bail!("SETTLEMENT_CYCLE_SECS must be > 0");
+        }
+        if self.resolution_cutoff_secs == 0 {
+            bail!("SETTLEMENT_RESOLUTION_CUTOFF_SECS must be > 0");
+        }
+        if self.clearing_commit_delay_secs == 0 {
+            bail!("SETTLEMENT_CLEARING_COMMIT_DELAY_SECS must be > 0");
+        }
+        if self.payment_submission_window_secs == 0 {
+            bail!("SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS must be > 0");
+        }
+        if self.payment_finality_window_secs < self.payment_submission_window_secs {
+            bail!(
+                "SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS must be >= SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS"
+            );
+        }
+        Ok(())
+    }
+}
+
 fn validate_guarantee_version(version: u64, field: &str) -> anyhow::Result<()> {
     if !is_supported_guarantee_version(version) {
         let supported = SUPPORTED_GUARANTEE_VERSIONS
@@ -340,6 +377,7 @@ pub struct AppConfig {
     pub database_config: DatabaseConfig,
     pub eip712: Eip712Config,
     pub guarantee: GuaranteeConfig,
+    pub settlement_cycle: SettlementCycleConfig,
     pub auth: AuthConfig,
     pub monitoring: MonitoringConfig,
     /// Secrets are loaded into an Arc to avoid multiple allocations of the same secret.
@@ -361,6 +399,11 @@ impl AppConfig {
         let guarantee =
             GuaranteeConfig::init_from_env().context("Failed to load guarantee config")?;
         guarantee.validate().context("Invalid guarantee config")?;
+        let settlement_cycle = SettlementCycleConfig::init_from_env()
+            .context("Failed to load settlement cycle config")?;
+        settlement_cycle
+            .validate()
+            .context("Invalid settlement cycle config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
         let monitoring =
             MonitoringConfig::init_from_env().context("Failed to load monitoring config")?;
@@ -372,6 +415,7 @@ impl AppConfig {
             database_config,
             eip712,
             guarantee,
+            settlement_cycle,
             auth,
             monitoring,
             secrets,
@@ -381,7 +425,7 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::GuaranteeConfig;
+    use super::{GuaranteeConfig, SettlementCycleConfig};
 
     #[test]
     fn guarantee_config_accepts_valid_v1_and_v2() {
@@ -519,5 +563,54 @@ mod tests {
             .accepted_request_versions()
             .expect("accepted versions should resolve");
         assert_eq!(versions, vec![2]);
+    }
+
+    #[test]
+    fn settlement_cycle_config_accepts_defaults() {
+        let cfg = SettlementCycleConfig {
+            cycle_secs: 86_400,
+            resolution_cutoff_secs: 21_600,
+            clearing_commit_delay_secs: 900,
+            payment_submission_window_secs: 7_200,
+            payment_finality_window_secs: 14_400,
+        };
+
+        cfg.validate()
+            .expect("default settlement cycle config must be valid");
+    }
+
+    #[test]
+    fn settlement_cycle_config_rejects_zero_cycle_length() {
+        let cfg = SettlementCycleConfig {
+            cycle_secs: 0,
+            resolution_cutoff_secs: 21_600,
+            clearing_commit_delay_secs: 900,
+            payment_submission_window_secs: 7_200,
+            payment_finality_window_secs: 14_400,
+        };
+
+        let err = cfg
+            .validate()
+            .expect_err("zero cycle length must be rejected");
+        assert!(err.to_string().contains("SETTLEMENT_CYCLE_SECS"));
+    }
+
+    #[test]
+    fn settlement_cycle_config_rejects_finality_before_submission() {
+        let cfg = SettlementCycleConfig {
+            cycle_secs: 86_400,
+            resolution_cutoff_secs: 21_600,
+            clearing_commit_delay_secs: 900,
+            payment_submission_window_secs: 7_200,
+            payment_finality_window_secs: 3_600,
+        };
+
+        let err = cfg
+            .validate()
+            .expect_err("finality before submission must be rejected");
+        assert!(
+            err.to_string()
+                .contains("SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS")
+        );
     }
 }

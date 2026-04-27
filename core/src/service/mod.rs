@@ -19,6 +19,7 @@ use log::{error, info};
 use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
 
 pub mod auth;
+pub mod cycle;
 pub mod event_handler;
 mod guarantee;
 pub mod health;

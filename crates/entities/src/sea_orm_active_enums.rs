@@ -76,3 +76,89 @@ pub enum UserTransactionStatus {
     #[sea_orm(string_value = "REVERTED")]
     Reverted,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "Enum",
+    enum_name = "guarantee_settlement_status"
+)]
+pub enum GuaranteeSettlementStatus {
+    #[sea_orm(string_value = "ISSUED")]
+    Issued,
+    #[sea_orm(string_value = "PENDING_VALIDATION")]
+    PendingValidation,
+    #[sea_orm(string_value = "FINALIZED_PAYABLE")]
+    FinalizedPayable,
+    #[sea_orm(string_value = "DISPUTED")]
+    Disputed,
+    #[sea_orm(string_value = "CANCELLED")]
+    Cancelled,
+    #[sea_orm(string_value = "NETTED")]
+    Netted,
+    #[sea_orm(string_value = "SETTLED")]
+    Settled,
+    #[sea_orm(string_value = "DEFAULT_REMUNERATED")]
+    DefaultRemunerated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "Enum",
+    enum_name = "settlement_cycle_status"
+)]
+pub enum SettlementCycleStatus {
+    #[sea_orm(string_value = "OPEN")]
+    Open,
+    #[sea_orm(string_value = "FROZEN")]
+    Frozen,
+    #[sea_orm(string_value = "NETTING_COMPUTED")]
+    NettingComputed,
+    #[sea_orm(string_value = "CLEARING_COMMITTED")]
+    ClearingCommitted,
+    #[sea_orm(string_value = "PAYMENT_WINDOW_OPEN")]
+    PaymentWindowOpen,
+    #[sea_orm(string_value = "FINALIZED")]
+    Finalized,
+    #[sea_orm(string_value = "DEFAULTED")]
+    Defaulted,
+    #[sea_orm(string_value = "CANCELLED")]
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "Enum",
+    enum_name = "participant_cycle_role"
+)]
+pub enum ParticipantCycleRole {
+    #[sea_orm(string_value = "NET_DEBTOR")]
+    NetDebtor,
+    #[sea_orm(string_value = "NET_CREDITOR")]
+    NetCreditor,
+    #[sea_orm(string_value = "FLAT")]
+    Flat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "Enum",
+    enum_name = "participant_cycle_status"
+)]
+pub enum ParticipantCycleStatus {
+    #[sea_orm(string_value = "UNPAID")]
+    Unpaid,
+    #[sea_orm(string_value = "CLAIMABLE")]
+    Claimable,
+    #[sea_orm(string_value = "PAID")]
+    Paid,
+    #[sea_orm(string_value = "CLAIMED")]
+    Claimed,
+    #[sea_orm(string_value = "DEFAULTED")]
+    Defaulted,
+    #[sea_orm(string_value = "FINALIZED")]
+    Finalized,
+}

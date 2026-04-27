@@ -78,12 +78,8 @@ contract Core4MicaFullStackSmokeTest is Test {
         _configureCoreRoles(manager, core4Mica, deployer);
         _configureRouterRoles(manager, router);
 
-        assertEq(
-            manager.getTargetFunctionRole(address(core4Mica), Core4Mica.configureAave.selector), GOVERNANCE_ROLE
-        );
-        assertEq(
-            manager.getTargetFunctionRole(address(core4Mica), Core4Mica.setYieldFeeBps.selector), GOVERNANCE_ROLE
-        );
+        assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.configureAave.selector), GOVERNANCE_ROLE);
+        assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.setYieldFeeBps.selector), GOVERNANCE_ROLE);
         assertEq(
             manager.getTargetFunctionRole(address(core4Mica), Core4Mica.claimProtocolYield.selector), TREASURY_ROLE
         );
@@ -91,18 +87,14 @@ contract Core4MicaFullStackSmokeTest is Test {
             manager.getTargetFunctionRole(address(core4Mica), Core4Mica.claimSurplusATokens.selector), TREASURY_ROLE
         );
         assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.pause.selector), GUARDIAN_ROLE);
-        assertEq(
-            manager.getTargetFunctionRole(address(core4Mica), Core4Mica.unpause.selector), GOVERNANCE_ROLE
-        );
-        assertEq(
-            manager.getTargetFunctionRole(address(core4Mica), RECORD_PAYMENT_SELECTOR), FOURMICA_OPERATOR_ROLE
-        );
-        assertEq(
-            manager.getTargetFunctionRole(address(router), router.setVersionModule.selector), GOVERNANCE_ROLE
-        );
+        assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.unpause.selector), GOVERNANCE_ROLE);
+        assertEq(manager.getTargetFunctionRole(address(core4Mica), RECORD_PAYMENT_SELECTOR), FOURMICA_OPERATOR_ROLE);
+        assertEq(manager.getTargetFunctionRole(address(router), router.setVersionModule.selector), GOVERNANCE_ROLE);
         assertEq(manager.getTargetFunctionRole(address(router), router.freezeVersion.selector), GOVERNANCE_ROLE);
 
-        _assertCanCall(manager, deployer, address(core4Mica), Core4Mica.setYieldFeeBps.selector, false, GOVERNANCE_DELAY);
+        _assertCanCall(
+            manager, deployer, address(core4Mica), Core4Mica.setYieldFeeBps.selector, false, GOVERNANCE_DELAY
+        );
         _assertCanCall(
             manager, deployer, address(core4Mica), Core4Mica.claimProtocolYield.selector, false, TREASURY_DELAY
         );
@@ -123,7 +115,9 @@ contract Core4MicaFullStackSmokeTest is Test {
         governanceSelectors[8] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
-            manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(governanceSelectors[i]), GOVERNANCE_ROLE);
+            manager.setTargetFunctionRole(
+                address(core4Mica), _asSingletonArray(governanceSelectors[i]), GOVERNANCE_ROLE
+            );
         }
 
         manager.setTargetFunctionRole(
