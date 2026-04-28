@@ -88,7 +88,6 @@ async fn sign_payment_v2_respects_payment_requirements() {
     let expected_subject_hash = compute_validation_subject_hash(
         &claims.user_address,
         &claims.recipient_address,
-        claims.tab_id,
         claims.req_id,
         claims.amount,
         &claims.asset_address,

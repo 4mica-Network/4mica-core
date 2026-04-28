@@ -195,7 +195,7 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
     let timestamp = 1_736_000_000u64;
 
     let validation_subject_hash =
-        compute_validation_subject_hash(user, recipient, tab_id, req_id, amount, asset, timestamp)
+        compute_validation_subject_hash(user, recipient, req_id, amount, asset, timestamp)
             .expect("subject hash");
     let mut policy = PaymentGuaranteeValidationPolicyV2 {
         validation_registry_address: Address::from_str(

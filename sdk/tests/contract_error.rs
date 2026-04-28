@@ -189,7 +189,6 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
             let validation_subject_hash = compute_validation_subject_hash(
                 &user_address,
                 &recipient_address,
-                tab_id,
                 req_id,
                 claim_amount,
                 &ETH_ASSET_ADDRESS.to_string(),

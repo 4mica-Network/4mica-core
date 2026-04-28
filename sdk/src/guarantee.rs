@@ -111,7 +111,6 @@ fn build_v2_claims(
     let validation_subject_hash = compute_validation_subject_hash(
         &intent.user_address,
         &intent.recipient_address,
-        intent.tab_id,
         intent.req_id,
         intent.amount,
         &intent.asset_address,
