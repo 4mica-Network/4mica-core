@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, Bytes, U256};
 use alloy_sol_types::{SolValue, sol};
 use std::str::FromStr;
 use thiserror::Error;
@@ -11,12 +11,11 @@ use super::{
 sol! {
     struct GuaranteeClaimsV1 {
         bytes32 domain;
-        uint256 tab_id;
+        uint256 cycle_id;
         uint256 req_id;
         address client;
         address recipient;
         uint256 amount;
-        uint256 total_amount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -24,12 +23,11 @@ sol! {
 
     struct GuaranteeClaimsV2 {
         bytes32 domain;
-        uint256 tab_id;
+        uint256 cycle_id;
         uint256 req_id;
         address client;
         address recipient;
         uint256 amount;
-        uint256 total_amount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -125,12 +123,11 @@ fn encode_v1_claims(claims: &PaymentGuaranteeClaims) -> Result<Vec<u8>, CodecErr
 
     let claims_sol = GuaranteeClaimsV1 {
         domain: claims.domain.into(),
-        tab_id: claims.tab_id,
+        cycle_id: claims.cycle_id,
         req_id: claims.req_id,
         client: parse_address("user_address", &claims.user_address)?,
         recipient: parse_address("recipient_address", &claims.recipient_address)?,
         amount: claims.amount,
-        total_amount: claims.total_amount,
         asset: parse_address("asset_address", &claims.asset_address)?,
         timestamp: claims.timestamp,
         version: claims.version,
@@ -150,12 +147,11 @@ fn encode_v2_claims(claims: &PaymentGuaranteeClaims) -> Result<Vec<u8>, CodecErr
 
     let claims_sol = GuaranteeClaimsV2 {
         domain: claims.domain.into(),
-        tab_id: claims.tab_id,
+        cycle_id: claims.cycle_id,
         req_id: claims.req_id,
         client: parse_address("user_address", &claims.user_address)?,
         recipient: parse_address("recipient_address", &claims.recipient_address)?,
         amount: claims.amount,
-        total_amount: claims.total_amount,
         asset: parse_address("asset_address", &claims.asset_address)?,
         timestamp: claims.timestamp,
         version: claims.version,
@@ -188,10 +184,11 @@ fn decode_v1_claims(
         domain: claims_sol.domain.into(),
         user_address: claims_sol.client.to_string(),
         recipient_address: claims_sol.recipient.to_string(),
-        tab_id: claims_sol.tab_id,
+        tab_id: U256::ZERO,
+        cycle_id: claims_sol.cycle_id,
         req_id: claims_sol.req_id,
         amount: claims_sol.amount,
-        total_amount: claims_sol.total_amount,
+        total_amount: claims_sol.cycle_id,
         asset_address: claims_sol.asset.to_string(),
         timestamp: claims_sol.timestamp,
         version,
@@ -227,10 +224,11 @@ fn decode_v2_claims(
         domain: claims_sol.domain.into(),
         user_address: claims_sol.client.to_string(),
         recipient_address: claims_sol.recipient.to_string(),
-        tab_id: claims_sol.tab_id,
+        tab_id: U256::ZERO,
+        cycle_id: claims_sol.cycle_id,
         req_id: claims_sol.req_id,
         amount: claims_sol.amount,
-        total_amount: claims_sol.total_amount,
+        total_amount: claims_sol.cycle_id,
         asset_address: claims_sol.asset.to_string(),
         timestamp: claims_sol.timestamp,
         version,
@@ -270,10 +268,11 @@ mod tests {
             domain: [1u8; 32],
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id: U256::from(100),
+            tab_id: U256::ZERO,
+            cycle_id: U256::from(100),
             req_id: U256::from(200),
             amount: U256::from(1000),
-            total_amount: U256::from(5000),
+            total_amount: U256::from(100),
             asset_address: asset_addr.to_string(),
             timestamp: 1234567890,
             version: GUARANTEE_CLAIMS_VERSION,
@@ -301,7 +300,6 @@ mod tests {
         let validation_subject_hash = compute_validation_subject_hash(
             &user_addr.to_string(),
             &recipient_addr.to_string(),
-            U256::from(101),
             U256::from(201),
             U256::from(1001),
             &asset_addr.to_string(),
@@ -327,10 +325,11 @@ mod tests {
             domain: [2u8; 32],
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id: U256::from(101),
+            tab_id: U256::ZERO,
+            cycle_id: U256::from(101),
             req_id: U256::from(201),
             amount: U256::from(1001),
-            total_amount: U256::from(5001),
+            total_amount: U256::from(101),
             asset_address: asset_addr.to_string(),
             timestamp: 1_700_000_000,
             version: 2,
@@ -383,7 +382,7 @@ mod tests {
 
         let forged_claims = GuaranteeClaimsV2 {
             domain: claims.domain.into(),
-            tab_id: claims.tab_id,
+            cycle_id: claims.cycle_id,
             req_id: claims.req_id,
             client: claims
                 .user_address
@@ -394,7 +393,6 @@ mod tests {
                 .parse()
                 .expect("recipient address must parse"),
             amount: claims.amount,
-            total_amount: claims.total_amount,
             asset: claims
                 .asset_address
                 .parse()

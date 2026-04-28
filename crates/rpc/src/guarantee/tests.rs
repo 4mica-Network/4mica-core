@@ -13,12 +13,11 @@ fn sample_v2_claims() -> PaymentGuaranteeRequestClaimsV2 {
     let asset = "0x0000000000000000000000000000000000000000";
     let validation_registry = "0x1111111111111111111111111111111111111111";
     let validator = "0x2222222222222222222222222222222222222222";
-    let tab_id = U256::from(42u64);
     let req_id = U256::from(7u64);
     let amount = U256::from(1_000u64);
     let timestamp = 1_736_000_000u64;
     let validation_subject_hash =
-        compute_validation_subject_hash(user, recipient, tab_id, req_id, amount, asset, timestamp)
+        compute_validation_subject_hash(user, recipient, req_id, amount, asset, timestamp)
             .expect("build subject hash");
 
     let policy_without_hash = PaymentGuaranteeValidationPolicyV2 {
@@ -55,7 +54,7 @@ fn sample_v2_claims() -> PaymentGuaranteeRequestClaimsV2 {
     PaymentGuaranteeRequestClaimsV2::builder(
         user.to_string(),
         recipient.to_string(),
-        tab_id,
+        U256::ZERO,
         req_id,
         amount,
         timestamp,
@@ -72,7 +71,6 @@ fn v1_payload_deserializes_for_compatibility() {
         "version": "v1",
         "user_address": "0x1234567890123456789012345678901234567890",
         "recipient_address": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-        "tab_id": "1",
         "req_id": "2",
         "amount": "3",
         "asset_address": "0x0000000000000000000000000000000000000000",

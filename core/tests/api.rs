@@ -102,7 +102,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV1 {
         address user;
         address recipient;
-        uint256  tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -233,7 +232,6 @@ async fn build_signed_req(
         let validation_subject_hash = compute_validation_subject_hash(
             user_addr,
             recipient_addr,
-            tab_id,
             req_id,
             amount,
             asset_address,
@@ -283,7 +281,6 @@ async fn build_signed_req(
         let msg = SolGuaranteeRequestClaimsV2 {
             user: Address::from_str(user_addr).unwrap(),
             recipient: Address::from_str(recipient_addr).unwrap(),
-            tabId: tab_id,
             reqId: req_id,
             amount,
             asset: Address::from_str(asset_address).unwrap(),
@@ -315,7 +312,6 @@ async fn build_signed_req(
     let msg = SolGuaranteeRequestClaimsV1 {
         user: Address::from_str(user_addr).unwrap(),
         recipient: Address::from_str(recipient_addr).unwrap(),
-        tabId: tab_id,
         reqId: req_id,
         amount,
         asset: Address::from_str(asset_address).unwrap(),
@@ -1393,7 +1389,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV2 {
         address user;
         address recipient;
-        uint256 tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -1438,7 +1433,6 @@ async fn build_eip712_signed_request(
     let msg = SolGuaranteeRequestClaimsV1 {
         user: wallet.address(),
         recipient,
-        tabId: U256::from(0x7461622d6f6b32u128),
         reqId: U256::from(0u64),
         amount: U256::from(42u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
@@ -1478,7 +1472,6 @@ fn sample_v2_claims(
     let validation_subject_hash = compute_validation_subject_hash(
         &user_address,
         &recipient_address,
-        tab_id,
         req_id,
         amount,
         &asset_address,
@@ -1525,7 +1518,6 @@ async fn build_eip712_signed_request_v2(
     let digest = SolGuaranteeRequestClaimsV2 {
         user: Address::from_str(&claims.user_address).expect("valid user"),
         recipient: Address::from_str(&claims.recipient_address).expect("valid recipient"),
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address).expect("valid asset"),
@@ -1562,7 +1554,6 @@ async fn build_eip191_signed_request_v2(
     let data = SolGuaranteeRequestClaimsV2 {
         user: Address::from_str(&claims.user_address).expect("valid user"),
         recipient: Address::from_str(&claims.recipient_address).expect("valid recipient"),
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address).expect("valid asset"),
@@ -2423,7 +2414,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         struct SolGuaranteeRequestClaimsV1 {
             address user;
             address recipient;
-            uint256  tabId;
             uint256 reqId;
             uint256 amount;
             address asset;
@@ -2455,7 +2445,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
     let msg = SolGuaranteeRequestClaimsV1 {
         user,
         recipient,
-        tabId: tab_id,
         reqId: U256::ZERO,
         amount: U256::from(1u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),

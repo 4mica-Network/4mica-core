@@ -4,7 +4,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV1 {
         address user;
         address recipient;
-        uint256  tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -14,7 +13,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV2 {
         address user;
         address recipient;
-        uint256 tabId;
         uint256 reqId;
         uint256 amount;
         address asset;

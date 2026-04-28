@@ -457,6 +457,7 @@ mod tests {
             domain,
             user_address: Address::repeat_byte(0x11).to_string(),
             recipient_address: Address::repeat_byte(0x22).to_string(),
+            cycle_id: U256::from(1u64),
             tab_id: U256::from(1u64),
             req_id: U256::from(2u64),
             amount: U256::from(3u64),

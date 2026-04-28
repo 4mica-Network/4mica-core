@@ -55,7 +55,6 @@ fn create_test_claims_v2(
     let validation_subject_hash = compute_validation_subject_hash(
         user_addr,
         recipient_addr,
-        tab_id,
         req_id,
         amount,
         &asset_address,

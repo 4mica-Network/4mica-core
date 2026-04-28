@@ -331,7 +331,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV1 {
         address user;
         address recipient;
-        uint256 tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -341,7 +340,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV2 {
         address user;
         address recipient;
-        uint256 tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -372,7 +370,6 @@ fn build_v2_claims(
     let validation_subject_hash = compute_validation_subject_hash(
         &user_address,
         &recipient_address,
-        tab_id,
         req_id,
         amount,
         &asset_address,
@@ -422,7 +419,6 @@ async fn sign_v2_request(
     let msg = SolGuaranteeRequestClaimsV2 {
         user: Address::from_str(&claims.user_address)?,
         recipient: Address::from_str(&claims.recipient_address)?,
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)?,
@@ -460,7 +456,6 @@ async fn sign_v1_request(
     let msg = SolGuaranteeRequestClaimsV1 {
         user: Address::from_str(&claims.user_address)?,
         recipient: Address::from_str(&claims.recipient_address)?,
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)?,

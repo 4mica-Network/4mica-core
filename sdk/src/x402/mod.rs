@@ -280,7 +280,6 @@ where
         let validation_subject_hash = compute_validation_subject_hash(
             user_address,
             requirements.pay_to(),
-            payment_context.tab_id,
             payment_context.req_id,
             payment_context.amount,
             requirements.asset(),

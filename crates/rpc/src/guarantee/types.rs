@@ -29,9 +29,12 @@ pub struct PaymentGuaranteeClaims {
     pub domain: [u8; 32],
     pub user_address: String,
     pub recipient_address: String,
+    #[serde(skip)]
     pub tab_id: U256,
+    pub cycle_id: U256,
     pub req_id: U256,
     pub amount: U256,
+    #[serde(skip)]
     pub total_amount: U256,
     pub asset_address: String,
     pub timestamp: u64,
@@ -44,36 +47,21 @@ impl PaymentGuaranteeClaims {
     pub fn from_request(
         request: &PaymentGuaranteeRequestClaims,
         domain: [u8; 32],
-        total_amount: U256,
+        cycle_id: U256,
     ) -> Self {
-        let version = request.version();
-        match request {
-            PaymentGuaranteeRequestClaims::V1(claims) => Self {
-                domain,
-                user_address: claims.user_address.clone(),
-                recipient_address: claims.recipient_address.clone(),
-                tab_id: claims.tab_id,
-                req_id: claims.req_id,
-                amount: claims.amount,
-                total_amount,
-                asset_address: claims.asset_address.clone(),
-                timestamp: claims.timestamp,
-                version,
-                validation_policy: None,
-            },
-            PaymentGuaranteeRequestClaims::V2(claims) => Self {
-                domain,
-                user_address: claims.user_address.clone(),
-                recipient_address: claims.recipient_address.clone(),
-                tab_id: claims.tab_id,
-                req_id: claims.req_id,
-                amount: claims.amount,
-                total_amount,
-                asset_address: claims.asset_address.clone(),
-                timestamp: claims.timestamp,
-                version,
-                validation_policy: Some(claims.validation_policy.clone()),
-            },
+        Self {
+            domain,
+            user_address: request.user_address().to_string(),
+            recipient_address: request.recipient_address().to_string(),
+            tab_id: request.tab_id(),
+            cycle_id,
+            req_id: request.req_id(),
+            amount: request.amount(),
+            total_amount: cycle_id,
+            asset_address: request.asset_address().to_string(),
+            timestamp: request.timestamp(),
+            version: request.version(),
+            validation_policy: request.validation_policy().cloned(),
         }
     }
 
@@ -85,7 +73,6 @@ impl PaymentGuaranteeClaims {
         validate_policy_binding(
             &self.user_address,
             &self.recipient_address,
-            self.tab_id,
             self.req_id,
             self.amount,
             &self.asset_address,
@@ -117,6 +104,7 @@ impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
 pub struct PaymentGuaranteeRequestClaimsV1 {
     pub user_address: String,
     pub recipient_address: String,
+    #[serde(default)]
     pub tab_id: U256,
     pub req_id: U256,
     pub amount: U256,
@@ -151,6 +139,7 @@ impl PaymentGuaranteeRequestClaimsV1 {
 struct PaymentGuaranteeRequestClaimsV2Unchecked {
     pub user_address: String,
     pub recipient_address: String,
+    #[serde(default)]
     pub tab_id: U256,
     pub req_id: U256,
     pub amount: U256,
@@ -164,6 +153,7 @@ struct PaymentGuaranteeRequestClaimsV2Unchecked {
 pub struct PaymentGuaranteeRequestClaimsV2 {
     pub user_address: String,
     pub recipient_address: String,
+    #[serde(default)]
     pub tab_id: U256,
     pub req_id: U256,
     pub amount: U256,
@@ -242,7 +232,7 @@ impl PaymentGuaranteeRequestClaimsV2 {
     pub fn new(
         user_address: String,
         recipient_address: String,
-        tab_id: U256,
+        _tab_id: U256,
         req_id: U256,
         amount: U256,
         timestamp: u64,
@@ -280,7 +270,7 @@ impl PaymentGuaranteeRequestClaimsV2 {
         let mut builder = Self::builder(
             user_address,
             recipient_address,
-            tab_id,
+            _tab_id,
             req_id,
             amount,
             timestamp,
@@ -296,7 +286,6 @@ impl PaymentGuaranteeRequestClaimsV2 {
         compute_validation_subject_hash(
             &self.user_address,
             &self.recipient_address,
-            self.tab_id,
             self.req_id,
             self.amount,
             &self.asset_address,
@@ -312,7 +301,6 @@ impl PaymentGuaranteeRequestClaimsV2 {
         validate_policy_binding(
             &self.user_address,
             &self.recipient_address,
-            self.tab_id,
             self.req_id,
             self.amount,
             &self.asset_address,
@@ -362,7 +350,6 @@ impl PaymentGuaranteeRequestClaimsV2Builder {
 fn validate_policy_binding(
     user_address: &str,
     recipient_address: &str,
-    tab_id: U256,
     req_id: U256,
     amount: U256,
     asset_address: &str,
@@ -376,7 +363,6 @@ fn validate_policy_binding(
     let expected_subject_hash = compute_validation_subject_hash(
         user_address,
         recipient_address,
-        tab_id,
         req_id,
         amount,
         asset_address,
@@ -407,7 +393,11 @@ pub trait PaymentGuaranteeRequestEssentials {
     fn user_address(&self) -> &str;
     fn recipient_address(&self) -> &str;
     fn tab_id(&self) -> U256;
+    fn req_id(&self) -> U256;
     fn amount(&self) -> U256;
+    fn asset_address(&self) -> &str;
+    fn timestamp(&self) -> u64;
+    fn validation_policy(&self) -> Option<&PaymentGuaranteeValidationPolicyV2>;
 }
 
 impl PaymentGuaranteeRequestEssentials for PaymentGuaranteeRequestClaims {
@@ -432,10 +422,38 @@ impl PaymentGuaranteeRequestEssentials for PaymentGuaranteeRequestClaims {
         }
     }
 
+    fn req_id(&self) -> U256 {
+        match self {
+            PaymentGuaranteeRequestClaims::V1(claims) => claims.req_id,
+            PaymentGuaranteeRequestClaims::V2(claims) => claims.req_id,
+        }
+    }
+
     fn amount(&self) -> U256 {
         match self {
             PaymentGuaranteeRequestClaims::V1(claims) => claims.amount,
             PaymentGuaranteeRequestClaims::V2(claims) => claims.amount,
+        }
+    }
+
+    fn asset_address(&self) -> &str {
+        match self {
+            PaymentGuaranteeRequestClaims::V1(claims) => &claims.asset_address,
+            PaymentGuaranteeRequestClaims::V2(claims) => &claims.asset_address,
+        }
+    }
+
+    fn timestamp(&self) -> u64 {
+        match self {
+            PaymentGuaranteeRequestClaims::V1(claims) => claims.timestamp,
+            PaymentGuaranteeRequestClaims::V2(claims) => claims.timestamp,
+        }
+    }
+
+    fn validation_policy(&self) -> Option<&PaymentGuaranteeValidationPolicyV2> {
+        match self {
+            PaymentGuaranteeRequestClaims::V1(_) => None,
+            PaymentGuaranteeRequestClaims::V2(claims) => Some(&claims.validation_policy),
         }
     }
 }
