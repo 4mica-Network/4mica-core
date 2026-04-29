@@ -19,10 +19,12 @@ use log::{error, info};
 use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
 
 pub mod auth;
+pub mod clearing;
 pub mod cycle;
 pub mod event_handler;
 mod guarantee;
 pub mod health;
+pub mod netting;
 pub mod payment;
 mod query;
 mod tab;
