@@ -241,3 +241,20 @@ pub async fn get_last_guarantee_for_tab(
         .await?;
     Ok(row)
 }
+
+#[measure(record_db_time)]
+pub async fn list_finalized_payable_guarantees_for_cycle_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+) -> Result<Vec<guarantee::Model>, PersistDbError> {
+    let rows = guarantee::Entity::find()
+        .filter(guarantee::Column::CycleId.eq(cycle_id))
+        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::FinalizedPayable))
+        .order_by_asc(guarantee::Column::FromAddress)
+        .order_by_asc(guarantee::Column::ToAddress)
+        .order_by_asc(guarantee::Column::AssetAddress)
+        .order_by_asc(guarantee::Column::ReqId)
+        .all(conn)
+        .await?;
+    Ok(rows)
+}

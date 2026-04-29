@@ -88,6 +88,56 @@ impl CoreService {
         Ok(frozen)
     }
 
+    pub async fn compute_due_cycle_netting(&self) -> crate::error::ServiceResult<Vec<String>> {
+        let now = Utc::now().naive_utc();
+        let due =
+            repo::list_frozen_cycles_resolution_due_on(self.inner.persist_ctx.db.as_ref(), now)
+                .await?;
+        let mut computed = Vec::new();
+        for cycle in due {
+            let cycle_id = cycle.id.clone();
+            self.compute_cycle_exposure_edges(&cycle_id).await?;
+            self.compute_cycle_participant_positions(&cycle_id).await?;
+            self.build_clearing_batch(&cycle_id).await?;
+            if self.mark_cycle_netting_computed(&cycle_id).await? {
+                computed.push(cycle_id);
+            }
+        }
+        Ok(computed)
+    }
+
+    pub async fn commit_due_clearing_batches(&self) -> crate::error::ServiceResult<Vec<String>> {
+        let now = Utc::now().naive_utc();
+        let due = repo::list_netting_computed_cycles_commit_due_on(
+            self.inner.persist_ctx.db.as_ref(),
+            now,
+        )
+        .await?;
+        let mut committed = Vec::new();
+        for cycle in due {
+            let cycle_id = cycle.id.clone();
+            self.commit_cycle_to_chain(&cycle_id).await?;
+            committed.push(cycle_id);
+        }
+        Ok(committed)
+    }
+
+    pub async fn process_due_cycle_finality(&self) -> crate::error::ServiceResult<Vec<String>> {
+        let now = Utc::now().naive_utc();
+        let due = repo::list_payment_window_cycles_finality_due_on(
+            self.inner.persist_ctx.db.as_ref(),
+            now,
+        )
+        .await?;
+        let mut finalized = Vec::new();
+        for cycle in due {
+            let cycle_id = cycle.id.clone();
+            self.finalize_cycle(&cycle_id).await?;
+            finalized.push(cycle_id);
+        }
+        Ok(finalized)
+    }
+
     async fn supported_settlement_assets(&self) -> crate::error::ServiceResult<Vec<String>> {
         let mut assets = BTreeSet::new();
         assets.insert(DEFAULT_ASSET_ADDRESS.to_string());
@@ -182,6 +232,9 @@ impl Task for SettlementCycleTask {
     #[measure(record_task_time, name = "settlement_cycles")]
     async fn run(&self) -> anyhow::Result<()> {
         let frozen = self.0.freeze_elapsed_cycles().await?;
+        let netted = self.0.compute_due_cycle_netting().await?;
+        let committed = self.0.commit_due_clearing_batches().await?;
+        let finalized = self.0.process_due_cycle_finality().await?;
         let opened = self.0.ensure_active_cycles().await?;
 
         if !opened.is_empty() {
@@ -189,6 +242,15 @@ impl Task for SettlementCycleTask {
         }
         if !frozen.is_empty() {
             info!("froze {} elapsed settlement cycle(s)", frozen.len());
+        }
+        if !netted.is_empty() {
+            info!("computed netting for {} settlement cycle(s)", netted.len());
+        }
+        if !committed.is_empty() {
+            info!("committed {} clearing batch(es)", committed.len());
+        }
+        if !finalized.is_empty() {
+            info!("finalized {} settlement cycle(s)", finalized.len());
         }
 
         Ok(())
