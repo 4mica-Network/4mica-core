@@ -4,10 +4,10 @@ use crate::error::PersistDbError;
 use crate::persist::{CycleGuaranteeData, GuaranteeData, PersistCtx};
 use crate::util::u256_to_string;
 use alloy::primitives::U256;
-use chrono::{TimeZone, Utc};
+use chrono::{NaiveDateTime, TimeZone, Utc};
 use crypto::bls::BLSCert;
-use entities::guarantee;
-use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, TabStatus};
+use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementCycleStatus, TabStatus};
+use entities::{guarantee, settlement_cycle};
 use metrics_4mica::measure;
 use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
@@ -30,7 +30,6 @@ pub struct PrepareCycleGuaranteeInput<'a> {
     pub request: &'a PaymentGuaranteeRequest,
     pub cycle_id: String,
     pub guarantee_id: String,
-    pub legacy_storage_id: U256,
     pub settlement_status: GuaranteeSettlementStatus,
 }
 
@@ -236,7 +235,6 @@ pub async fn prepare_and_store_cycle_guarantee_on<C: ConnectionTrait>(
     let asset = parse_address(&input.claims.asset_address)?.into_inner();
 
     let data = CycleGuaranteeData {
-        legacy_storage_id: input.legacy_storage_id,
         guarantee_id: input.guarantee_id,
         cycle_id: input.cycle_id,
         req_id: input.claims.req_id,
@@ -261,12 +259,20 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
     data: GuaranteeData,
 ) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
+    let legacy_cycle_id = format!("legacy:{}", u256_to_string(data.tab_id));
 
     ensure_user_exists_on(conn, &data.from).await?;
     ensure_user_exists_on(conn, &data.to).await?;
+    ensure_legacy_cycle_on(conn, &legacy_cycle_id, &data.asset, data.start_ts).await?;
 
     let active_model = guarantee::ActiveModel {
-        tab_id: Set(u256_to_string(data.tab_id)),
+        guarantee_id: Set(legacy_guarantee_id_for(
+            data.tab_id,
+            data.req_id,
+            data.version,
+        )),
+        legacy_tab_id: Set(Some(u256_to_string(data.tab_id))),
+        cycle_id: Set(legacy_cycle_id),
         req_id: Set(u256_to_string(data.req_id)),
         version: Set(i32::try_from(data.version).map_err(|_| {
             PersistDbError::InvariantViolation(format!(
@@ -278,8 +284,6 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
         to_address: Set(data.to),
         asset_address: Set(data.asset),
         value: Set(data.value.to_string()),
-        cycle_id: Set(None),
-        guarantee_id: Set(None),
         start_ts: Set(data.start_ts),
         cert: Set(data.cert),
         request: Set(data.request),
@@ -294,7 +298,7 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
 
     guarantee::Entity::insert(active_model)
         .on_conflict(
-            OnConflict::columns([guarantee::Column::TabId, guarantee::Column::ReqId])
+            OnConflict::column(guarantee::Column::GuaranteeId)
                 .do_nothing()
                 .to_owned(),
         )
@@ -315,7 +319,9 @@ pub async fn store_cycle_guarantee_on<C: ConnectionTrait>(
     ensure_user_exists_on(conn, &data.to).await?;
 
     let active_model = guarantee::ActiveModel {
-        tab_id: Set(u256_to_string(data.legacy_storage_id)),
+        guarantee_id: Set(data.guarantee_id.clone()),
+        legacy_tab_id: Set(Some(format!("cycle:{}", data.guarantee_id))),
+        cycle_id: Set(data.cycle_id),
         req_id: Set(u256_to_string(data.req_id)),
         version: Set(i32::try_from(data.version).map_err(|_| {
             PersistDbError::InvariantViolation(format!(
@@ -327,8 +333,6 @@ pub async fn store_cycle_guarantee_on<C: ConnectionTrait>(
         to_address: Set(data.to),
         asset_address: Set(data.asset),
         value: Set(data.value.to_string()),
-        cycle_id: Set(Some(data.cycle_id)),
-        guarantee_id: Set(Some(data.guarantee_id)),
         start_ts: Set(data.start_ts),
         cert: Set(data.cert),
         request: Set(data.request),
@@ -361,13 +365,75 @@ pub async fn get_guarantee_by_id_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
+pub async fn transition_guarantee_settlement_status_on<C: ConnectionTrait>(
+    conn: &C,
+    guarantee_id: &str,
+    allowed_from: &[GuaranteeSettlementStatus],
+    target: GuaranteeSettlementStatus,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let mut update = guarantee::ActiveModel {
+        settlement_status: Set(target.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    if target == GuaranteeSettlementStatus::FinalizedPayable {
+        update.finalized_at = Set(Some(now));
+    }
+
+    let result = guarantee::Entity::update_many()
+        .filter(guarantee::Column::GuaranteeId.eq(guarantee_id))
+        .filter(guarantee::Column::SettlementStatus.is_in(allowed_from.iter().cloned()))
+        .set(update)
+        .exec(conn)
+        .await?;
+
+    Ok(result.rows_affected == 1)
+}
+
+#[measure(record_db_time)]
+pub async fn release_locked_collateral_for_guarantee_on<C: ConnectionTrait>(
+    conn: &C,
+    guarantee: &guarantee::Model,
+) -> Result<(), PersistDbError> {
+    let amount = U256::from_str(&guarantee.value)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    if amount == U256::ZERO {
+        return Ok(());
+    }
+
+    let asset_balance =
+        get_user_balance_on(conn, &guarantee.from_address, &guarantee.asset_address).await?;
+    let total = U256::from_str(&asset_balance.total)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let locked = U256::from_str(&asset_balance.locked)
+        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    if amount > locked {
+        return Err(PersistDbError::InvariantViolation(format!(
+            "guarantee {} release amount exceeds locked collateral",
+            guarantee.guarantee_id
+        )));
+    }
+
+    update_user_balance_and_version_on(
+        conn,
+        &guarantee.from_address,
+        &guarantee.asset_address,
+        asset_balance.version,
+        total,
+        locked - amount,
+    )
+    .await
+}
+
+#[measure(record_db_time)]
 pub async fn get_guarantee(
     ctx: &PersistCtx,
     tab_id: U256,
     req_id: U256,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
     let res = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(guarantee::Column::ReqId.eq(u256_to_string(req_id)))
         .one(ctx.db.as_ref())
         .await?;
@@ -380,7 +446,7 @@ pub async fn get_guarantees_for_tab(
     tab_id: U256,
 ) -> Result<Vec<guarantee::Model>, PersistDbError> {
     let rows = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .order_by_asc(guarantee::Column::CreatedAt)
         .all(ctx.db.as_ref())
         .await?;
@@ -394,7 +460,7 @@ pub async fn get_last_guarantee_for_tab(
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
     let tab_id = u256_to_string(tab_id);
     let row = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(tab_id))
+        .filter(guarantee::Column::LegacyTabId.eq(tab_id))
         .order_by_desc(guarantee::Column::CreatedAt)
         .one(ctx.db.as_ref())
         .await?;
@@ -416,4 +482,50 @@ pub async fn list_finalized_payable_guarantees_for_cycle_on<C: ConnectionTrait>(
         .all(conn)
         .await?;
     Ok(rows)
+}
+
+fn legacy_guarantee_id_for(tab_id: U256, req_id: U256, version: u64) -> String {
+    format!(
+        "legacy:{}:{}:{}",
+        u256_to_string(tab_id),
+        u256_to_string(req_id),
+        version
+    )
+}
+
+async fn ensure_legacy_cycle_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    asset_address: &str,
+    at: chrono::NaiveDateTime,
+) -> Result<(), PersistDbError> {
+    let model = settlement_cycle::ActiveModel {
+        id: Set(cycle_id.to_string()),
+        asset_address: Set(asset_address.to_string()),
+        period_start: Set(at),
+        period_end: Set(at),
+        resolution_cutoff: Set(at),
+        clearing_commit_deadline: Set(at),
+        payment_submission_deadline: Set(at),
+        payment_finality_deadline: Set(at),
+        status: Set(SettlementCycleStatus::Finalized),
+        gross_payable_amount: Set("0".to_string()),
+        gross_receivable_amount: Set("0".to_string()),
+        net_settlement_amount: Set("0".to_string()),
+        clearing_batch_hash: Set(None),
+        commit_tx_hash: Set(None),
+        created_at: Set(at),
+        updated_at: Set(at),
+    };
+
+    settlement_cycle::Entity::insert(model)
+        .on_conflict(
+            OnConflict::column(settlement_cycle::Column::Id)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(conn)
+        .await?;
+
+    Ok(())
 }

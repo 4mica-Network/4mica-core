@@ -6,8 +6,12 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "Guarantee")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
-    pub tab_id: String,
-    #[sea_orm(primary_key, auto_increment = false)]
+    pub guarantee_id: String,
+    #[sea_orm(column_name = "tab_id", column_type = "Text", nullable)]
+    pub legacy_tab_id: Option<String>,
+    #[sea_orm(column_type = "Text")]
+    pub cycle_id: String,
+    #[sea_orm(column_type = "Text")]
     pub req_id: String,
     #[sea_orm(column_type = "Text")]
     pub from_address: String,
@@ -18,10 +22,6 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub value: String,
     pub version: i32,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub cycle_id: Option<String>,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub guarantee_id: Option<String>,
     pub start_ts: DateTime,
     #[sea_orm(column_type = "Text", nullable)]
     pub cert: String,
@@ -39,14 +39,6 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
-        belongs_to = "super::tabs::Entity",
-        from = "Column::TabId",
-        to = "super::tabs::Column::Id",
-        on_update = "Cascade",
-        on_delete = "Restrict"
-    )]
-    Tabs,
-    #[sea_orm(
         belongs_to = "super::settlement_cycle::Entity",
         from = "Column::CycleId",
         to = "super::settlement_cycle::Column::Id",
@@ -54,12 +46,6 @@ pub enum Relation {
         on_delete = "SetNull"
     )]
     SettlementCycle,
-}
-
-impl Related<super::tabs::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Tabs.def()
-    }
 }
 
 impl Related<super::settlement_cycle::Entity> for Entity {

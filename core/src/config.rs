@@ -43,6 +43,11 @@ pub struct EthereumConfig {
     pub http_rpc_url: String,
     #[envconfig(from = "ETHEREUM_CONTRACT_ADDRESS")]
     pub contract_address: String,
+    #[envconfig(
+        from = "ETHEREUM_CLEARING_HOUSE_ADDRESS",
+        default = "0x0000000000000000000000000000000000000000"
+    )]
+    pub clearing_house_address: String,
     #[envconfig(from = "CRON_JOB_SETTINGS", default = "0 */1 * * * *")]
     pub cron_job_settings: String,
     #[envconfig(from = "ETHEREUM_EVENT_SCANNER_CRON", default = "*/5 * * * * *")]

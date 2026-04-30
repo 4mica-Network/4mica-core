@@ -601,6 +601,18 @@ impl CoreContractApi for MockContractApi {
         })
     }
 
+    async fn commit_clearing_cycle(
+        &self,
+        _input: core_service::ethereum::ClearingCommitInput,
+    ) -> Result<core_service::ethereum::ClearingCommitTx, core_service::error::CoreContractApiError>
+    {
+        Ok(core_service::ethereum::ClearingCommitTx {
+            tx_hash: B256::ZERO,
+            block_number: None,
+            block_hash: None,
+        })
+    }
+
     async fn get_supported_tokens(
         &self,
     ) -> Result<Vec<rpc::SupportedTokenInfo>, core_service::error::CoreContractApiError> {

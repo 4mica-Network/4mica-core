@@ -54,7 +54,7 @@ pub fn tab_model_to_info(tab: tabs::Model) -> ServiceResult<TabInfo> {
 
 pub fn guarantee_model_to_info(model: entities::guarantee::Model) -> ServiceResult<GuaranteeInfo> {
     let entities::guarantee::Model {
-        tab_id: tab_id_str,
+        legacy_tab_id,
         req_id: req_id_str,
         from_address,
         to_address,
@@ -65,8 +65,11 @@ pub fn guarantee_model_to_info(model: entities::guarantee::Model) -> ServiceResu
         ..
     } = model;
 
-    let tab_id =
-        U256::from_str(&tab_id_str).map_err(|e| anyhow!("invalid tab id {}: {e}", tab_id_str))?;
+    let tab_id = match legacy_tab_id {
+        Some(tab_id_str) => U256::from_str(&tab_id_str)
+            .map_err(|e| anyhow!("invalid legacy tab id {}: {e}", tab_id_str))?,
+        None => U256::ZERO,
+    };
     let req_id =
         U256::from_str(&req_id_str).map_err(|e| anyhow!("invalid req id {}: {e}", req_id_str))?;
     let amount =
