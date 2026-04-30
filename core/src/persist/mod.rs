@@ -29,7 +29,6 @@ pub struct GuaranteeData {
 }
 
 pub struct CycleGuaranteeData {
-    pub legacy_storage_id: U256,
     pub guarantee_id: String,
     pub cycle_id: String,
     pub req_id: U256,

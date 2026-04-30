@@ -213,6 +213,19 @@ pub mod contract_abi {
             function symbol() external view returns (string memory);
             function decimals() external view returns (uint8);
         }
+
+        #[sol(rpc)]
+        contract ClearingHouse {
+            function commitCycle(
+                bytes32 cycleId,
+                address asset,
+                bytes32 merkleRoot,
+                uint256 totalNetDebit,
+                uint256 totalNetCredit,
+                uint64 paymentSubmissionDeadline,
+                uint64 paymentFinalityDeadline
+            ) external;
+        }
     }
 }
 

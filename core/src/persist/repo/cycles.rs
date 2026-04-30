@@ -354,6 +354,25 @@ pub async fn create_clearing_batch_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
+pub async fn set_clearing_batch_commit_tx_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    commit_tx_hash: String,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = clearing_batch::Entity::update_many()
+        .filter(clearing_batch::Column::CycleId.eq(cycle_id))
+        .set(clearing_batch::ActiveModel {
+            commit_tx_hash: Set(Some(commit_tx_hash)),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+#[measure(record_db_time)]
 pub async fn replace_cycle_exposure_edges_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
