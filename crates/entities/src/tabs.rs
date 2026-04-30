@@ -33,8 +33,6 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "super::guarantee::Entity")]
-    Guarantee,
     #[sea_orm(
         belongs_to = "super::user::Entity",
         from = "Column::UserAddress",
@@ -43,12 +41,6 @@ pub enum Relation {
         on_delete = "Restrict"
     )]
     User,
-}
-
-impl Related<super::guarantee::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Guarantee.def()
-    }
 }
 
 impl Related<super::user::Entity> for Entity {

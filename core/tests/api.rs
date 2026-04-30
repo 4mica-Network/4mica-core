@@ -1710,8 +1710,8 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
     let guarantee = &guarantees[0];
     assert_eq!(guarantee.req_id, u256_to_string(U256::ZERO));
     assert_eq!(guarantee.value, U256::from(5u64).to_string());
-    assert!(guarantee.cycle_id.is_some());
-    assert!(guarantee.guarantee_id.is_some());
+    assert!(!guarantee.cycle_id.is_empty());
+    assert!(!guarantee.guarantee_id.is_empty());
 
     Ok(())
 }

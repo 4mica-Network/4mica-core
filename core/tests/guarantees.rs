@@ -25,7 +25,7 @@ use core_service::{
     util::u256_to_string,
 };
 use crypto::bls::{BLSCert, BlsClaims};
-use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
+use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementStatus, TabStatus};
 use entities::{guarantee, user};
 use rand::random;
 use rpc::{
@@ -625,7 +625,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 
     // ── Verify only the first value persisted ──
     let g = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(guarantee::Column::ReqId.eq(u256_to_string(req_id)))
         .one(ctx.db.as_ref())
         .await?
@@ -832,7 +832,7 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
 
     // check guarantee row inserted
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(promise.req_id)))
         .one(ctx.db.as_ref())
         .await?;
@@ -888,7 +888,7 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
         U256::ZERO
     );
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(claims.req_id)))
         .one(ctx.db.as_ref())
         .await?;
@@ -1014,7 +1014,7 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
 
     // no guarantee row inserted
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(claims.req_id)))
         .one(ctx.db.as_ref())
         .await?;
@@ -1519,8 +1519,252 @@ async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Resu
     assert_eq!(stored.len(), 1, "v2 guarantee should be persisted");
     assert_eq!(stored[0].version, 2);
     assert_eq!(stored[0].req_id, u256_to_string(U256::ZERO));
-    assert!(stored[0].cycle_id.is_some());
-    assert!(stored[0].guarantee_id.is_some());
+    assert!(!stored[0].cycle_id.is_empty());
+    assert!(!stored[0].guarantee_id.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn pending_validation_guarantee_can_finalize_payable() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        U256::from(7u64),
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+    assert_eq!(
+        stored[0].settlement_status,
+        GuaranteeSettlementStatus::PendingValidation
+    );
+
+    assert!(
+        core_service
+            .finalize_guarantee_payable(&guarantee_id)
+            .await?
+    );
+    assert!(
+        !core_service
+            .finalize_guarantee_payable(&guarantee_id)
+            .await?
+    );
+
+    let finalized = repo::get_guarantee_by_id_on(ctx.db.as_ref(), &guarantee_id)
+        .await?
+        .expect("guarantee");
+    assert_eq!(
+        finalized.settlement_status,
+        GuaranteeSettlementStatus::FinalizedPayable
+    );
+    assert!(finalized.finalized_at.is_some());
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(5u64),
+        "finalization keeps collateral locked until settlement"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn pending_validation_guarantee_cancel_unlocks_collateral() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        U256::from(8u64),
+        U256::ZERO,
+        U256::from(6u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(6u64)
+    );
+
+    assert!(core_service.cancel_guarantee(&guarantee_id).await?);
+    assert!(!core_service.cancel_guarantee(&guarantee_id).await?);
+
+    let cancelled = repo::get_guarantee_by_id_on(ctx.db.as_ref(), &guarantee_id)
+        .await?
+        .expect("guarantee");
+    assert_eq!(
+        cancelled.settlement_status,
+        GuaranteeSettlementStatus::Cancelled
+    );
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn pending_validation_guarantee_can_be_disputed() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        U256::from(10u64),
+        U256::ZERO,
+        U256::from(6u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+
+    assert!(core_service.dispute_guarantee(&guarantee_id).await?);
+    assert!(!core_service.dispute_guarantee(&guarantee_id).await?);
+
+    let disputed = repo::get_guarantee_by_id_on(ctx.db.as_ref(), &guarantee_id)
+        .await?
+        .expect("guarantee");
+    assert_eq!(
+        disputed.settlement_status,
+        GuaranteeSettlementStatus::Disputed
+    );
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(6u64),
+        "disputed guarantees keep collateral locked"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn finalized_guarantee_cannot_be_cancelled() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        U256::from(9u64),
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+
+    core_service
+        .finalize_guarantee_payable(&guarantee_id)
+        .await?;
+    let err = core_service
+        .cancel_guarantee(&guarantee_id)
+        .await
+        .expect_err("finalized guarantee cannot be cancelled");
+    assert!(matches!(err, ServiceError::InvalidParams(_)));
+
     Ok(())
 }
 
@@ -2147,6 +2391,20 @@ async fn contract_api_rejects_disabled_guarantee_version() {
             })
         }
 
+        async fn commit_clearing_cycle(
+            &self,
+            _input: core_service::ethereum::ClearingCommitInput,
+        ) -> Result<
+            core_service::ethereum::ClearingCommitTx,
+            core_service::error::CoreContractApiError,
+        > {
+            Ok(core_service::ethereum::ClearingCommitTx {
+                tx_hash: B256::ZERO,
+                block_number: None,
+                block_hash: None,
+            })
+        }
+
         async fn get_supported_tokens(
             &self,
         ) -> Result<Vec<rpc::SupportedTokenInfo>, core_service::error::CoreContractApiError>
@@ -2203,6 +2461,18 @@ impl CoreContractApi for MockContractApi {
         _amount: U256,
     ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
         Ok(RecordPaymentTx {
+            tx_hash: B256::ZERO,
+            block_number: None,
+            block_hash: None,
+        })
+    }
+
+    async fn commit_clearing_cycle(
+        &self,
+        _input: core_service::ethereum::ClearingCommitInput,
+    ) -> Result<core_service::ethereum::ClearingCommitTx, core_service::error::CoreContractApiError>
+    {
+        Ok(core_service::ethereum::ClearingCommitTx {
             tx_hash: B256::ZERO,
             block_number: None,
             block_hash: None,

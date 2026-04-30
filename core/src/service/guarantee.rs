@@ -178,7 +178,7 @@ impl CoreService {
         }
 
         info!(
-            "Received cycle-native guarantee request {}; amount={}",
+            "Received cycle-native guarantee request variant {}; amount={}",
             request_version, amount
         );
 
@@ -195,7 +195,6 @@ impl CoreService {
             .await?;
         let signed_cycle_id = cycle_claim_id(&active_cycle.id);
         let guarantee_id = guarantee_id_for(&active_cycle.id, &req.claims);
-        let legacy_storage_id = legacy_storage_id_for(&guarantee_id);
 
         if repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), &guarantee_id)
             .await?
@@ -243,7 +242,6 @@ impl CoreService {
                             request: &req,
                             cycle_id,
                             guarantee_id,
-                            legacy_storage_id,
                             settlement_status: settlement_status_for_request(&req.claims),
                         },
                     )
@@ -262,14 +260,103 @@ impl CoreService {
 
         Ok(cert)
     }
+
+    pub async fn finalize_guarantee_payable(&self, guarantee_id: &str) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle(
+            guarantee_id,
+            &[
+                GuaranteeSettlementStatus::Issued,
+                GuaranteeSettlementStatus::PendingValidation,
+            ],
+            GuaranteeSettlementStatus::FinalizedPayable,
+            false,
+        )
+        .await
+    }
+
+    pub async fn dispute_guarantee(&self, guarantee_id: &str) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle(
+            guarantee_id,
+            &[
+                GuaranteeSettlementStatus::Issued,
+                GuaranteeSettlementStatus::PendingValidation,
+            ],
+            GuaranteeSettlementStatus::Disputed,
+            false,
+        )
+        .await
+    }
+
+    pub async fn cancel_guarantee(&self, guarantee_id: &str) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle(
+            guarantee_id,
+            &[
+                GuaranteeSettlementStatus::Issued,
+                GuaranteeSettlementStatus::PendingValidation,
+            ],
+            GuaranteeSettlementStatus::Cancelled,
+            true,
+        )
+        .await
+    }
+
+    async fn transition_guarantee_lifecycle(
+        &self,
+        guarantee_id: &str,
+        allowed_from: &[GuaranteeSettlementStatus],
+        target: GuaranteeSettlementStatus,
+        release_locked_collateral: bool,
+    ) -> ServiceResult<bool> {
+        let guarantee =
+            repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), guarantee_id)
+                .await?
+                .ok_or_else(|| ServiceError::NotFound(format!("Guarantee {guarantee_id}")))?;
+
+        if guarantee.settlement_status == target {
+            return Ok(false);
+        }
+        if !allowed_from.contains(&guarantee.settlement_status) {
+            return Err(ServiceError::InvalidParams(format!(
+                "guarantee {guarantee_id} is {:?}, cannot transition to {:?}",
+                guarantee.settlement_status, target
+            )));
+        }
+
+        self.inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let allowed_from = allowed_from.to_vec();
+                let guarantee = guarantee.clone();
+                let guarantee_id = guarantee_id.to_string();
+                let target = target.clone();
+                Box::pin(async move {
+                    let changed = repo::transition_guarantee_settlement_status_on(
+                        txn,
+                        &guarantee_id,
+                        &allowed_from,
+                        target,
+                        Utc::now().naive_utc(),
+                    )
+                    .await?;
+                    if changed && release_locked_collateral {
+                        repo::release_locked_collateral_for_guarantee_on(txn, &guarantee).await?;
+                    }
+                    Ok(changed)
+                })
+            })
+            .await
+            .map_err(|e| match e {
+                sea_orm::TransactionError::Transaction(inner) => inner,
+                sea_orm::TransactionError::Connection(err) => {
+                    PersistDbError::DatabaseFailure(err).into()
+                }
+            })
+    }
 }
 
 fn cycle_claim_id(cycle_id: &str) -> U256 {
     U256::from_be_bytes(keccak256(cycle_id.as_bytes()).into())
-}
-
-fn legacy_storage_id_for(guarantee_id: &str) -> U256 {
-    U256::from_be_bytes(keccak256(guarantee_id.as_bytes()).into())
 }
 
 fn guarantee_id_for(cycle_id: &str, claims: &PaymentGuaranteeRequestClaims) -> String {
