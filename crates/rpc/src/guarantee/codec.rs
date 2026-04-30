@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::{SolValue, sol};
 use std::str::FromStr;
 use thiserror::Error;
@@ -184,11 +184,9 @@ fn decode_v1_claims(
         domain: claims_sol.domain.into(),
         user_address: claims_sol.client.to_string(),
         recipient_address: claims_sol.recipient.to_string(),
-        tab_id: U256::ZERO,
         cycle_id: claims_sol.cycle_id,
         req_id: claims_sol.req_id,
         amount: claims_sol.amount,
-        total_amount: claims_sol.cycle_id,
         asset_address: claims_sol.asset.to_string(),
         timestamp: claims_sol.timestamp,
         version,
@@ -224,11 +222,9 @@ fn decode_v2_claims(
         domain: claims_sol.domain.into(),
         user_address: claims_sol.client.to_string(),
         recipient_address: claims_sol.recipient.to_string(),
-        tab_id: U256::ZERO,
         cycle_id: claims_sol.cycle_id,
         req_id: claims_sol.req_id,
         amount: claims_sol.amount,
-        total_amount: claims_sol.cycle_id,
         asset_address: claims_sol.asset.to_string(),
         timestamp: claims_sol.timestamp,
         version,
@@ -268,11 +264,9 @@ mod tests {
             domain: [1u8; 32],
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id: U256::ZERO,
             cycle_id: U256::from(100),
             req_id: U256::from(200),
             amount: U256::from(1000),
-            total_amount: U256::from(100),
             asset_address: asset_addr.to_string(),
             timestamp: 1234567890,
             version: GUARANTEE_CLAIMS_VERSION,
@@ -325,11 +319,9 @@ mod tests {
             domain: [2u8; 32],
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id: U256::ZERO,
             cycle_id: U256::from(101),
             req_id: U256::from(201),
             amount: U256::from(1001),
-            total_amount: U256::from(101),
             asset_address: asset_addr.to_string(),
             timestamp: 1_700_000_000,
             version: 2,
