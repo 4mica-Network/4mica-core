@@ -52,7 +52,7 @@ fn guarantee_intent(
     guarantee_version: u64,
     user_address: String,
     recipient_address: String,
-    tab_id: U256,
+    _tab_id: U256,
     req_id: U256,
     amount: U256,
     timestamp: u64,
@@ -61,7 +61,6 @@ fn guarantee_intent(
         guarantee_version,
         user_address,
         recipient_address,
-        tab_id,
         req_id,
         amount,
         asset_address: ETH_ASSET_ADDRESS.to_string(),
@@ -183,7 +182,7 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
     let verified_claims = recipient.verify_payment_guarantee(&bls_cert)?;
     assert_eq!(verified_claims.user_address, user_address);
     assert_eq!(verified_claims.recipient_address, recipient_address);
-    assert_eq!(verified_claims.tab_id, tab_id);
+    assert_ne!(verified_claims.cycle_id, U256::ZERO);
     assert_eq!(
         verified_claims.amount,
         U256::from(1_000_000_000_000_000_000u128)

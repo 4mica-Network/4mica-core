@@ -138,7 +138,9 @@ impl CoreService {
         Ok(finalized)
     }
 
-    async fn supported_settlement_assets(&self) -> crate::error::ServiceResult<Vec<String>> {
+    pub(crate) async fn supported_settlement_assets(
+        &self,
+    ) -> crate::error::ServiceResult<Vec<String>> {
         let mut assets = BTreeSet::new();
         assets.insert(DEFAULT_ASSET_ADDRESS.to_string());
         for token in self

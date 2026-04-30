@@ -11,7 +11,6 @@ pub struct PaymentGuaranteeIntent {
     pub guarantee_version: u64,
     pub user_address: String,
     pub recipient_address: String,
-    pub tab_id: U256,
     pub req_id: U256,
     pub amount: U256,
     pub asset_address: String,
@@ -84,7 +83,6 @@ fn build_v1_claims(intent: PaymentGuaranteeIntent) -> PaymentGuaranteeRequestCla
     PaymentGuaranteeRequestClaimsV1 {
         user_address: intent.user_address,
         recipient_address: intent.recipient_address,
-        tab_id: intent.tab_id,
         req_id: intent.req_id,
         amount: intent.amount,
         asset_address: intent.asset_address,
@@ -134,7 +132,6 @@ fn build_v2_claims(
     PaymentGuaranteeRequestClaimsV2::builder(
         intent.user_address,
         intent.recipient_address,
-        intent.tab_id,
         intent.req_id,
         intent.amount,
         intent.timestamp,
@@ -177,7 +174,6 @@ mod tests {
             guarantee_version: 1,
             user_address: Address::repeat_byte(0x11).to_string(),
             recipient_address: Address::repeat_byte(0x22).to_string(),
-            tab_id: U256::from(1u64),
             req_id: U256::ZERO,
             amount: U256::from(3u64),
             asset_address: Address::ZERO.to_string(),

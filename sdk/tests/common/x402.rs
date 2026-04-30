@@ -173,7 +173,7 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
                         match envelope.payload.claims {
                             PaymentGuaranteeRequestClaims::V1(claims) => {
                                 assert_eq!(claims.recipient_address, requirements.pay_to);
-                                assert_eq!(claims.tab_id, U256::from(0x1234));
+                                assert_eq!(claims.req_id, U256::from(0));
                             }
                             #[allow(unused)]
                             _ => panic!("legacy claims version found!"),

@@ -189,7 +189,6 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
     let user = "0x1234567890123456789012345678901234567890";
     let recipient = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
     let asset = "0x0000000000000000000000000000000000000000";
-    let tab_id = U256::from(7u64);
     let req_id = U256::from(3u64);
     let amount = U256::from(100u64);
     let timestamp = 1_736_000_000u64;
@@ -218,7 +217,6 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
     let claims = PaymentGuaranteeRequestClaims::V2(Box::new(PaymentGuaranteeRequestClaimsV2 {
         user_address: user.to_string(),
         recipient_address: recipient.to_string(),
-        tab_id,
         req_id,
         amount,
         asset_address: asset.to_string(),
@@ -251,8 +249,8 @@ async fn rpc_proxy_issue_guarantee_round_trip_v2_request() {
                             else {
                                 panic!("expected v2 claims");
                             };
-                            assert_eq!(claims.tab_id, expected_claims.tab_id);
                             assert_eq!(claims.req_id, expected_claims.req_id);
+                            assert_eq!(claims.amount, expected_claims.amount);
                             assert_eq!(
                                 claims.validation_policy.validation_request_hash,
                                 expected_claims.validation_policy.validation_request_hash

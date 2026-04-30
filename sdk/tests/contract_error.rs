@@ -172,7 +172,6 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         1 => IssuedClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user_address.clone(),
             recipient_address: recipient_address.clone(),
-            tab_id,
             req_id,
             amount: claim_amount,
             timestamp: claim_timestamp,
@@ -212,7 +211,6 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
                 PaymentGuaranteeRequestClaimsV2::builder(
                     user_address.clone(),
                     recipient_address.clone(),
-                    tab_id,
                     req_id,
                     claim_amount,
                     claim_timestamp,

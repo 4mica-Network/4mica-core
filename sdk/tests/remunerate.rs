@@ -226,7 +226,6 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id,
         amount: guarantee_amount,
         timestamp: start_timestamp,
@@ -287,7 +286,7 @@ async fn test_recipient_remuneration() -> anyhow::Result<()> {
     let user_info_after = user_client.user.get_user().await?;
     let eth_asset = common::extract_asset_info(&user_info_after, ETH_ASSET_ADDRESS)
         .expect("ETH asset not found");
-    let remaining = guarantee.total_amount.saturating_sub(status_before.paid);
+    let remaining = guarantee.amount.saturating_sub(status_before.paid);
     assert_eq!(
         eth_asset.collateral,
         eth_asset_before.collateral + deposit_amount - remaining
@@ -361,7 +360,6 @@ async fn test_double_remuneration_fails() -> anyhow::Result<()> {
     let claims = PaymentGuaranteeRequestClaims {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id,
         amount: guarantee_amount,
         timestamp: start_timestamp,

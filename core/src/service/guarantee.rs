@@ -8,13 +8,12 @@ use crate::{
     },
     error::{ServiceError, ServiceResult},
     persist::repo,
-    util::u256_to_string,
 };
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256, U256, keccak256};
 use anyhow::anyhow;
-use chrono::TimeZone;
+use chrono::Utc;
 use crypto::bls::{BLSCert, BlsClaims};
-use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
+use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use log::info;
 use rpc::{
     GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
@@ -25,41 +24,11 @@ use sea_orm::{ConnectionTrait, TransactionTrait};
 use std::str::FromStr;
 
 impl CoreService {
-    fn verify_tab_guarantee_version(
-        tab: &entities::tabs::Model,
-        request_version: u64,
-    ) -> ServiceResult<()> {
-        if let Some(accepted_version) = tab.accepted_guarantee_version {
-            let accepted_version = accepted_version as u64;
-            if accepted_version != request_version {
-                return Err(ServiceError::InvalidParams(format!(
-                    "tab {} only accepts guarantee version {}, got {}",
-                    tab.id, accepted_version, request_version
-                )));
-            }
-        } else {
-            return Err(ServiceError::InvalidParams(format!(
-                "tab {} is missing an accepted guarantee version",
-                tab.id
-            )));
-        }
-
-        Ok(())
-    }
-
     pub async fn verify_guarantee_request_claims_v1(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV1,
-        claims_version: u64,
+        _claims_version: u64,
     ) -> ServiceResult<()> {
-        let existing_guarantee =
-            repo::get_guarantee(&self.inner.persist_ctx, claims.tab_id, claims.req_id).await?;
-        if existing_guarantee.is_some() {
-            return Err(ServiceError::DuplicateGuarantee {
-                req_id: claims.req_id,
-            });
-        }
-
         let now_i64 = chrono::Utc::now().timestamp();
         if now_i64 < 0 {
             return Err(ServiceError::Other(anyhow!("System time before epoch")));
@@ -70,80 +39,13 @@ impl CoreService {
             return Err(ServiceError::FutureTimestamp);
         }
 
-        let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, claims.tab_id).await? else {
-            return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
-        };
-        Self::verify_tab_guarantee_version(&tab, claims_version)?;
-
-        if tab.status == TabStatus::Closed || tab.settlement_status != SettlementStatus::Pending {
-            return Err(ServiceError::TabClosed);
-        }
-
-        let tab_user = Address::from_str(&tab.user_address)
-            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab user address")))?;
         let claim_user = Address::from_str(&claims.user_address)
             .map_err(|_| ServiceError::InvalidParams("Invalid user address".into()))?;
-        if tab_user != claim_user {
-            return Err(ServiceError::InvalidParams(
-                "User address does not match tab".into(),
-            ));
-        }
-        let tab_recipient = Address::from_str(&tab.server_address)
-            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab recipient address")))?;
         let claim_recipient = Address::from_str(&claims.recipient_address)
             .map_err(|_| ServiceError::InvalidParams("Invalid recipient address".into()))?;
-        if tab_recipient != claim_recipient {
-            return Err(ServiceError::InvalidParams(
-                "Recipient address does not match tab".into(),
-            ));
-        }
-
-        let tab_asset = Address::from_str(&tab.asset_address)
-            .map_err(|_| ServiceError::Other(anyhow!("Invalid tab asset address")))?;
         let claim_asset = Address::from_str(&claims.asset_address)
             .map_err(|_| ServiceError::InvalidParams("Invalid asset address".into()))?;
-        if tab_asset != claim_asset {
-            return Err(ServiceError::InvalidParams("Invalid asset address".into()));
-        }
-
-        if tab.ttl <= 0 {
-            return Err(ServiceError::InvalidParams("Invalid tab TTL".into()));
-        }
-        let max_ttl = self.tab_expiration_time();
-        if tab.ttl as u64 > max_ttl {
-            return Err(ServiceError::InvalidParams(format!(
-                "tab ttl exceeds tab expiration time (ttl={}, max={})",
-                tab.ttl, max_ttl
-            )));
-        }
-
-        let (tab_start_ts_i64, tab_ttl) = if tab.status == TabStatus::Pending {
-            let start_ts = chrono::Utc
-                .timestamp_opt(claims.timestamp as i64, 0)
-                .single()
-                .ok_or_else(|| ServiceError::InvalidParams("Invalid timestamp".into()))?
-                .naive_utc();
-
-            (start_ts.and_utc().timestamp(), tab.ttl)
-        } else {
-            (tab.start_ts.and_utc().timestamp(), tab.ttl)
-        };
-
-        if tab_start_ts_i64 < 0 {
-            return Err(ServiceError::Other(anyhow!("Negative tab start_ts")));
-        }
-
-        let tab_start_ts = tab_start_ts_i64 as u64;
-        let tab_expiry = tab_start_ts.saturating_add(tab_ttl as u64);
-
-        // Always validate the claimed timestamp against the stored tab window.
-        if claims.timestamp < tab_start_ts || claims.timestamp > tab_expiry {
-            return Err(ServiceError::ModifiedStartTs);
-        }
-
-        if tab_expiry < now_secs {
-            return Err(ServiceError::TabClosed);
-        }
+        let _ = (claim_user, claim_recipient, claim_asset);
 
         Ok(())
     }
@@ -187,7 +89,6 @@ impl CoreService {
         PaymentGuaranteeRequestClaimsV1 {
             user_address: claims.user_address.clone(),
             recipient_address: claims.recipient_address.clone(),
-            tab_id: claims.tab_id,
             req_id: claims.req_id,
             amount: claims.amount,
             asset_address: claims.asset_address.clone(),
@@ -216,28 +117,31 @@ impl CoreService {
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 
-    async fn process_guarantee_request_claims_on<C: ConnectionTrait>(
+    pub async fn verify_guarantee_request_claims(
         &self,
-        conn: &C,
         claims: &PaymentGuaranteeRequestClaims,
-    ) -> ServiceResult<alloy::primitives::U256> {
+    ) -> ServiceResult<()> {
         let version = claims.version();
         match claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
                 self.verify_guarantee_request_claims_v1(claims, version)
-                    .await?;
-                repo::update_user_balance_and_tab_for_guarantee_on(conn, claims, version)
                     .await
-                    .map_err(Into::into)
             }
             PaymentGuaranteeRequestClaims::V2(claims) => {
-                self.verify_guarantee_request_claims_v2(claims).await?;
-                let base_claims = Self::v2_to_v1_claims(claims);
-                repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims, version)
-                    .await
-                    .map_err(Into::into)
+                self.verify_guarantee_request_claims_v2(claims).await
             }
         }
+    }
+
+    async fn process_guarantee_request_claims_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        claims: &PaymentGuaranteeRequestClaims,
+    ) -> ServiceResult<()> {
+        self.verify_guarantee_request_claims(claims).await?;
+        repo::lock_user_balance_for_guarantee_on(conn, claims)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn issue_payment_guarantee(
@@ -248,7 +152,6 @@ impl CoreService {
         access::require_scope(auth, SCOPE_GUARANTEE_ISSUE)?;
         access::require_recipient_match_or_facilitator(auth, req.claims.recipient_address())?;
 
-        let tab_id = req.claims.tab_id();
         let amount = req.claims.amount();
         let request_version = req.claims.version();
         if !self
@@ -275,8 +178,8 @@ impl CoreService {
         }
 
         info!(
-            "Received guarantee request {}; tab_id={}, amount={}",
-            request_version, tab_id, amount
+            "Received cycle-native guarantee request {}; amount={}",
+            request_version, amount
         );
 
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
@@ -287,6 +190,21 @@ impl CoreService {
             req.claims.recipient_address(),
         )
         .await?;
+        let active_cycle = self
+            .get_or_create_active_cycle(req.claims.asset_address(), Utc::now())
+            .await?;
+        let signed_cycle_id = cycle_claim_id(&active_cycle.id);
+        let guarantee_id = guarantee_id_for(&active_cycle.id, &req.claims);
+        let legacy_storage_id = legacy_storage_id_for(&guarantee_id);
+
+        if repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), &guarantee_id)
+            .await?
+            .is_some()
+        {
+            return Err(ServiceError::DuplicateGuarantee {
+                req_id: req.claims.req_id(),
+            });
+        }
 
         let cert = self
             .inner
@@ -294,8 +212,18 @@ impl CoreService {
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let self_clone = self.clone();
+                let cycle_id = active_cycle.id.clone();
+                let guarantee_id = guarantee_id.clone();
                 Box::pin(async move {
-                    let total_amount = self_clone
+                    if repo::get_guarantee_by_id_on(txn, &guarantee_id)
+                        .await?
+                        .is_some()
+                    {
+                        return Err(ServiceError::DuplicateGuarantee {
+                            req_id: req.claims.req_id(),
+                        });
+                    }
+                    self_clone
                         .process_guarantee_request_claims_on(txn, &req.claims)
                         .await?;
                     let guarantee_domain =
@@ -304,10 +232,22 @@ impl CoreService {
                     let claims = PaymentGuaranteeClaims::from_request(
                         &req.claims,
                         guarantee_domain,
-                        total_amount,
+                        signed_cycle_id,
                     );
                     let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;
-                    repo::prepare_and_store_guarantee_on(txn, &claims, &cert, &req).await?;
+                    repo::prepare_and_store_cycle_guarantee_on(
+                        txn,
+                        repo::PrepareCycleGuaranteeInput {
+                            claims: &claims,
+                            cert: &cert,
+                            request: &req,
+                            cycle_id,
+                            guarantee_id,
+                            legacy_storage_id,
+                            settlement_status: settlement_status_for_request(&req.claims),
+                        },
+                    )
+                    .await?;
 
                     Ok(cert)
                 })
@@ -321,5 +261,125 @@ impl CoreService {
             })?;
 
         Ok(cert)
+    }
+}
+
+fn cycle_claim_id(cycle_id: &str) -> U256 {
+    U256::from_be_bytes(keccak256(cycle_id.as_bytes()).into())
+}
+
+fn legacy_storage_id_for(guarantee_id: &str) -> U256 {
+    U256::from_be_bytes(keccak256(guarantee_id.as_bytes()).into())
+}
+
+fn guarantee_id_for(cycle_id: &str, claims: &PaymentGuaranteeRequestClaims) -> String {
+    let digest = guarantee_digest(cycle_id, claims);
+    format!("0x{}", hex::encode(digest.as_slice()))
+}
+
+fn guarantee_digest(cycle_id: &str, claims: &PaymentGuaranteeRequestClaims) -> B256 {
+    let mut encoded = Vec::new();
+    for part in [
+        b"4MICA_CYCLE_GUARANTEE_V1".as_slice(),
+        cycle_id.as_bytes(),
+        claims.user_address().as_bytes(),
+        claims.recipient_address().as_bytes(),
+        claims.asset_address().as_bytes(),
+        claims.req_id().to_string().as_bytes(),
+        claims.version().to_string().as_bytes(),
+    ] {
+        encoded.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        encoded.extend_from_slice(part);
+    }
+    keccak256(encoded)
+}
+
+fn settlement_status_for_request(
+    claims: &PaymentGuaranteeRequestClaims,
+) -> GuaranteeSettlementStatus {
+    if claims.validation_policy().is_some() {
+        GuaranteeSettlementStatus::PendingValidation
+    } else {
+        GuaranteeSettlementStatus::FinalizedPayable
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::B256;
+    use rpc::{GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeValidationPolicyV2};
+
+    fn v1_claims(req_id: u64) -> PaymentGuaranteeRequestClaims {
+        PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
+            user_address: Address::repeat_byte(0x11).to_string(),
+            recipient_address: Address::repeat_byte(0x22).to_string(),
+            req_id: U256::from(req_id),
+            amount: U256::from(7u64),
+            asset_address: Address::ZERO.to_string(),
+            timestamp: 1_700_000_000,
+        })
+    }
+
+    fn v2_claims() -> PaymentGuaranteeRequestClaims {
+        PaymentGuaranteeRequestClaims::V2(Box::new(PaymentGuaranteeRequestClaimsV2 {
+            user_address: Address::repeat_byte(0x11).to_string(),
+            recipient_address: Address::repeat_byte(0x22).to_string(),
+            req_id: U256::from(1u64),
+            amount: U256::from(7u64),
+            asset_address: Address::ZERO.to_string(),
+            timestamp: 1_700_000_000,
+            validation_policy: PaymentGuaranteeValidationPolicyV2 {
+                validation_registry_address: Address::repeat_byte(0x33),
+                validation_request_hash: B256::repeat_byte(0x44),
+                validation_chain_id: 84532,
+                validator_address: Address::repeat_byte(0x55),
+                validator_agent_id: U256::from(1u64),
+                min_validation_score: 80,
+                validation_subject_hash: B256::repeat_byte(0x66),
+                job_hash: B256::repeat_byte(0x77),
+                required_validation_tag: "hard-finality".to_string(),
+            },
+        }))
+    }
+
+    #[test]
+    fn cycle_claim_id_is_stable_and_cycle_scoped() {
+        let first = cycle_claim_id("0x0000000000000000000000000000000000000000:1777248000");
+        let second = cycle_claim_id("0x0000000000000000000000000000000000000000:1777248000");
+        let other = cycle_claim_id("0x0000000000000000000000000000000000000000:1777334400");
+
+        assert_eq!(first, second);
+        assert_ne!(first, U256::ZERO);
+        assert_ne!(first, other);
+    }
+
+    #[test]
+    fn guarantee_id_is_stable_and_microtransaction_scoped() {
+        let cycle_id = "0x0000000000000000000000000000000000000000:1777248000";
+        let first = guarantee_id_for(cycle_id, &v1_claims(1));
+        let second = guarantee_id_for(cycle_id, &v1_claims(1));
+        let other = guarantee_id_for(cycle_id, &v1_claims(2));
+
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+        assert!(first.starts_with("0x"));
+    }
+
+    #[test]
+    fn immediate_claims_are_payable_and_validation_claims_wait() {
+        assert_eq!(
+            v1_claims(1).version(),
+            GUARANTEE_CLAIMS_VERSION,
+            "test fixture should exercise the immediate-finality version"
+        );
+        assert_eq!(
+            settlement_status_for_request(&v1_claims(1)),
+            GuaranteeSettlementStatus::FinalizedPayable
+        );
+        assert_eq!(
+            settlement_status_for_request(&v2_claims()),
+            GuaranteeSettlementStatus::PendingValidation
+        );
     }
 }
