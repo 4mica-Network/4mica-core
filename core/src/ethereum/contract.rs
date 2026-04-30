@@ -162,6 +162,8 @@ pub fn is_known_event_topic(topic0: &B256) -> bool {
 // function in `contracts/src/Core4Mica.sol`.
 
 pub mod contract_abi {
+    #![allow(clippy::too_many_arguments)]
+
     use alloy::sol;
     sol! {
         struct G1Point {
