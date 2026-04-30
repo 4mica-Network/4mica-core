@@ -24,6 +24,7 @@ mod m20260404_000005_active_tab_identity_unique;
 mod m20260423_000006_settlement_cycle_core;
 mod m20260423_000007_guarantee_cycle_and_finality;
 mod m20260423_000008_add_cycle_guarantee_identity;
+mod m20260423_000009_cycle_native_guarantee_storage;
 
 pub struct Migrator;
 
@@ -55,6 +56,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260423_000006_settlement_cycle_core::Migration),
             Box::new(m20260423_000007_guarantee_cycle_and_finality::Migration),
             Box::new(m20260423_000008_add_cycle_guarantee_identity::Migration),
+            Box::new(m20260423_000009_cycle_native_guarantee_storage::Migration),
         ]
     }
 }

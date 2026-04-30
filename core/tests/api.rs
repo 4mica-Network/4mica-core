@@ -22,7 +22,7 @@ use rpc::{
     TabInfo, UpdateUserSuspensionRequest, compute_validation_request_hash,
     compute_validation_subject_hash,
 };
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::Deserialize;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -216,7 +216,7 @@ async fn build_signed_req(
     public_params: &CorePublicParameters,
     user_addr: &str,
     recipient_addr: &str,
-    tab_id: U256,
+    _tab_id: U256,
     req_id: U256,
     amount: U256,
     wallet: &alloy::signers::local::PrivateKeySigner,
@@ -265,7 +265,6 @@ async fn build_signed_req(
         let claims = PaymentGuaranteeRequestClaimsV2 {
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id,
             req_id,
             amount,
             timestamp: ts,
@@ -323,7 +322,6 @@ async fn build_signed_req(
         PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id,
             req_id,
             amount,
             timestamp: ts,
@@ -1385,6 +1383,18 @@ async fn insert_user_with_asset_collateral(
     Ok(())
 }
 
+async fn list_cycle_guarantees_for_recipient(
+    ctx: &PersistCtx,
+    recipient_addr: &str,
+) -> anyhow::Result<Vec<guarantee_entity::Model>> {
+    let rows = guarantee_entity::Entity::find()
+        .filter(guarantee_entity::Column::ToAddress.eq(normalize_address(recipient_addr)))
+        .order_by_asc(guarantee_entity::Column::ReqId)
+        .all(ctx.db.as_ref())
+        .await?;
+    Ok(rows)
+}
+
 sol! {
     struct SolGuaranteeRequestClaimsV2 {
         address user;
@@ -1446,7 +1456,6 @@ async fn build_eip712_signed_request(
         PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: wallet.address().to_string(),
             recipient_address: recipient.to_string(),
-            tab_id: U256::from(0x7461622d6f6b32u128),
             req_id: U256::from(0u64),
             amount: U256::from(42u64),
             timestamp,
@@ -1464,7 +1473,6 @@ fn sample_v2_claims(
     let user_address = wallet.address().to_string();
     let recipient_address = Address::from(random::<[u8; 20]>()).to_string();
     let asset_address = DEFAULT_ASSET_ADDRESS.to_string();
-    let tab_id = U256::from(0x7461622d7632u128);
     let req_id = U256::from(0u64);
     let amount = U256::from(42u64);
     let timestamp = Utc::now().timestamp() as u64;
@@ -1501,7 +1509,6 @@ fn sample_v2_claims(
     PaymentGuaranteeRequestClaimsV2 {
         user_address,
         recipient_address,
-        tab_id,
         req_id,
         amount,
         asset_address,
@@ -1648,13 +1655,10 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
     let result = core_client.issue_guarantee(req_replay).await;
     assert!(result.is_err(), "must reject replayed req_id");
 
-    let guarantees = core_client
-        .get_tab_guarantees(tab.id)
-        .await
-        .expect("list guarantees");
+    let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 2);
-    assert_eq!(guarantees[0].req_id, U256::ZERO);
-    assert_eq!(guarantees[1].req_id, U256::from(1u64));
+    assert_eq!(guarantees[0].req_id, u256_to_string(U256::ZERO));
+    assert_eq!(guarantees[1].req_id, u256_to_string(U256::from(1u64)));
 
     Ok(())
 }
@@ -1701,28 +1705,13 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
         .await
         .expect("issue guarantee");
 
-    let guarantees = core_client
-        .get_tab_guarantees(tab_id)
-        .await
-        .expect("get tab guarantees");
+    let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 1);
     let guarantee = &guarantees[0];
-    assert_eq!(guarantee.tab_id, tab_id);
-    assert!(guarantee.certificate.is_some());
-
-    let latest = core_client
-        .get_latest_guarantee(tab_id)
-        .await
-        .expect("latest guarantee")
-        .expect("exists");
-    assert_eq!(latest.req_id, guarantee.req_id);
-
-    let specific = core_client
-        .get_guarantee(tab_id, guarantee.req_id)
-        .await
-        .expect("specific guarantee")
-        .expect("found");
-    assert_eq!(specific.amount, guarantee.amount);
+    assert_eq!(guarantee.req_id, u256_to_string(U256::ZERO));
+    assert_eq!(guarantee.value, U256::from(5u64).to_string());
+    assert!(guarantee.cycle_id.is_some());
+    assert!(guarantee.guarantee_id.is_some());
 
     Ok(())
 }
@@ -1786,21 +1775,11 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         .await
         .expect("issue second guarantee");
 
-    let guarantees = core_client
-        .get_tab_guarantees(tab_id)
-        .await
-        .expect("get guarantees");
+    let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 2);
-    assert_eq!(guarantees[0].req_id, U256::ZERO);
-    assert_eq!(guarantees[1].req_id, U256::from(1u64));
-
-    let latest = core_client
-        .get_latest_guarantee(tab_id)
-        .await
-        .expect("latest guarantee")
-        .expect("exists");
-    assert_eq!(latest.req_id, U256::from(1u64));
-    assert_eq!(latest.amount, U256::from(7u64));
+    assert_eq!(guarantees[0].req_id, u256_to_string(U256::ZERO));
+    assert_eq!(guarantees[1].req_id, u256_to_string(U256::from(1u64)));
+    assert_eq!(guarantees[1].value, U256::from(7u64).to_string());
 
     Ok(())
 }
@@ -1891,13 +1870,10 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         .await
         .expect("first guarantee ok");
 
-    // Decode first certificate and verify total_amount equals amount1
+    // Decode first certificate and verify cycle-native amount and cycle id.
     let claims1 = PaymentGuaranteeClaims::try_from(cert1.claims().as_bytes())?;
     assert_eq!(claims1.amount, amount1);
-    assert_eq!(
-        claims1.total_amount, amount1,
-        "First guarantee: total_amount should equal amount"
-    );
+    assert_ne!(claims1.cycle_id, U256::ZERO);
 
     // Issue second guarantee with amount = 27
     let amount2 = U256::from(27u64);
@@ -1918,14 +1894,10 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         .await
         .expect("second guarantee ok");
 
-    // Decode second certificate and verify total_amount equals amount1 + amount2
+    // Decode second certificate and verify it belongs to the same active cycle.
     let claims2 = PaymentGuaranteeClaims::try_from(cert2.claims().as_bytes())?;
     assert_eq!(claims2.amount, amount2);
-    let expected_total = amount1.checked_add(amount2).unwrap();
-    assert_eq!(
-        claims2.total_amount, expected_total,
-        "Second guarantee: total_amount should equal sum of all amounts (15 + 27 = 42)"
-    );
+    assert_eq!(claims2.cycle_id, claims1.cycle_id);
 
     // Verify certificate is valid
     let pk = BlsPublicKey::from_bytes(&public_params.public_key)?;
@@ -1936,7 +1908,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial]
-async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
+async fn issue_guarantee_does_not_require_tab() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -1959,15 +1931,20 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
     )
     .await;
 
-    let result = core_client.issue_guarantee(req).await;
-    assert!(result.is_err(), "must reject when tab not found");
+    let cert = core_client
+        .issue_guarantee(req)
+        .await
+        .expect("cycle-native guarantee should not require a tab");
+    let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())?;
+    assert_eq!(claims.req_id, U256::ZERO);
+    assert_ne!(claims.cycle_id, U256::ZERO);
 
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial]
-async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
+async fn issue_guarantee_does_not_open_tab() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -2009,7 +1986,10 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
         .await
         .expect("get tab")
         .expect("tab exists");
-    assert_eq!(tab.status, entities::sea_orm_active_enums::TabStatus::Open);
+    assert_eq!(
+        tab.status,
+        entities::sea_orm_active_enums::TabStatus::Pending
+    );
 
     Ok(())
 }
@@ -2119,7 +2099,8 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
     assert!(cert.verify(&pk).is_ok());
 
     let stored = guarantee_entity::Entity::find()
-        .filter(guarantee_entity::Column::TabId.eq(u256_to_string(tab.id)))
+        .filter(guarantee_entity::Column::ToAddress.eq(normalize_address(&recipient_addr)))
+        .filter(guarantee_entity::Column::AssetAddress.eq(normalize_address(STABLE_ASSET_ADDRESS)))
         .one(&*ctx.db)
         .await
         .expect("query guarantee");
@@ -2173,7 +2154,7 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial]
-async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()> {
+async fn issue_guarantee_uses_signed_user_without_tab_match() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let tab_user_addr = alloy::signers::local::PrivateKeySigner::random()
@@ -2211,8 +2192,15 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
     )
     .await;
 
-    let result = core_client.issue_guarantee(req).await;
-    assert!(result.is_err(), "must reject mismatched user address");
+    let cert = core_client
+        .issue_guarantee(req)
+        .await
+        .expect("cycle-native issuance should not validate against tab user");
+    let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())?;
+    assert_eq!(
+        Address::from_str(&claims.user_address)?,
+        Address::from_str(&other_user_addr)?
+    );
 
     Ok(())
 }
@@ -2440,8 +2428,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
     let user = wallet.address();
     let recipient = Address::from(rand::random::<[u8; 20]>());
     let timestamp = Utc::now().timestamp() as u64;
-    let tab_id = U256::from(0x7461622d7473u128);
-
     let msg = SolGuaranteeRequestClaimsV1 {
         user,
         recipient,
@@ -2461,7 +2447,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user.to_string(),
             recipient_address: recipient.to_string(),
-            tab_id,
             req_id: U256::ZERO,
             amount: U256::from(1u64),
             timestamp,

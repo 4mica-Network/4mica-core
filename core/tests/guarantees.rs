@@ -34,7 +34,7 @@ use rpc::{
     PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2, SigningScheme,
     compute_validation_request_hash, compute_validation_subject_hash,
 };
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait};
 use test_log::test;
 
 mod common;
@@ -225,6 +225,17 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
         .expect("seed user");
 }
 
+async fn guarantees_for_recipient(
+    ctx: &PersistCtx,
+    recipient_address: &str,
+) -> anyhow::Result<Vec<guarantee::Model>> {
+    Ok(guarantee::Entity::find()
+        .filter(guarantee::Column::ToAddress.eq(normalize_address(recipient_address)))
+        .order_by_asc(guarantee::Column::CreatedAt)
+        .all(ctx.db.as_ref())
+        .await?)
+}
+
 struct TestTabSpec {
     tab_id: U256,
     user_address: String,
@@ -310,14 +321,13 @@ async fn insert_pending_tab_with_version(
 }
 
 fn build_claims(
-    tab_id: U256,
+    _tab_id: U256,
     user_address: String,
     recipient_address: String,
     req_id: U256,
     timestamp: u64,
 ) -> PaymentGuaranteeRequestClaimsV1 {
     PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address,
         recipient_address,
         req_id,
@@ -361,7 +371,7 @@ fn build_v2_claims(
     chain_id: u64,
     user_address: String,
     recipient_address: String,
-    tab_id: U256,
+    _tab_id: U256,
     req_id: U256,
     amount: U256,
     asset_address: String,
@@ -397,7 +407,6 @@ fn build_v2_claims(
     Ok(PaymentGuaranteeRequestClaimsV2 {
         user_address,
         recipient_address,
-        tab_id,
         req_id,
         amount,
         asset_address,
@@ -782,7 +791,6 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
 
     // build a minimal PaymentGuaranteeClaims and dummy cert
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: U256::ZERO,
@@ -792,7 +800,8 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     };
 
     let txn = ctx.db.begin().await?;
-    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims, 1).await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, tab_id, &claims, 1).await?;
 
     assert_eq!(total_amount, U256::from(40u64));
 
@@ -812,7 +821,7 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
         SigningScheme::Eip712,
     );
 
-    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
+    repo::prepare_and_store_guarantee_on(&txn, tab_id, &promise, &cert, &req).await?;
     txn.commit().await?;
 
     // check locked collateral updated
@@ -861,7 +870,6 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: U256::ZERO,
@@ -870,7 +878,9 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
         timestamp: Utc::now().timestamp() as u64,
     };
 
-    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims, 1).await;
+    let res =
+        repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), tab_id, &claims, 1)
+            .await;
     assert!(matches!(res, Err(PersistDbError::InsufficientCollateral)));
 
     assert_eq!(
@@ -921,7 +931,6 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
     )?;
 
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: U256::ZERO,
@@ -931,7 +940,8 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
     };
 
     let txn = ctx.db.begin().await?;
-    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims, 1).await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, tab_id, &claims, 1).await?;
 
     assert_eq!(total_amount, U256::from(30u64));
 
@@ -952,7 +962,7 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
         SigningScheme::Eip712,
     );
 
-    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
+    repo::prepare_and_store_guarantee_on(&txn, tab_id, &promise, &cert, &req).await?;
     txn.commit().await?;
 
     assert_eq!(
@@ -983,7 +993,6 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: random_u256(),
@@ -992,7 +1001,9 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
         timestamp: i64::MAX as u64,
     };
 
-    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims, 1).await;
+    let res =
+        repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), tab_id, &claims, 1)
+            .await;
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));
 
     // locked collateral unchanged
@@ -1069,19 +1080,19 @@ async fn accepts_timestamp_within_tab_window_without_opening_tab() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_recipient_mismatch_on_guarantee_claims() {
+async fn guarantee_claim_validation_is_not_bound_to_tab_recipient() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_recipient_mismatch_on_guarantee_claims: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_recipient: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_recipient_mismatch_on_guarantee_claims: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_recipient: {err}");
             return;
         }
     };
@@ -1111,32 +1122,27 @@ async fn rejects_recipient_mismatch_on_guarantee_claims() {
     let claims_ts = (start_ts + Duration::seconds(60)).and_utc().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, wrong_recipient, U256::ZERO, claims_ts);
 
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("recipient mismatch should be rejected");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::InvalidParams(msg)
-            if msg.contains("Recipient address does not match tab")
-    ));
+        .expect("cycle-native claims should not be validated against tab recipient");
 }
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_timestamp_outside_tab_window() {
+async fn guarantee_claim_validation_is_not_bound_to_tab_window() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_timestamp_outside_tab_window: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_window: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_timestamp_outside_tab_window: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_window: {err}");
             return;
         }
     };
@@ -1189,14 +1195,10 @@ async fn rejects_timestamp_outside_tab_window() {
         U256::from(1u64),
         before_start,
     );
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("timestamp before start should fail");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::ModifiedStartTs
-    ));
+        .expect("cycle-native claims should not be validated against tab start");
 
     let after_expiry = (start_ts + Duration::seconds(ttl + 1))
         .and_utc()
@@ -1208,14 +1210,10 @@ async fn rejects_timestamp_outside_tab_window() {
         U256::from(1u64),
         after_expiry,
     );
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("timestamp after expiry should fail");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::ModifiedStartTs
-    ));
+        .expect("cycle-native claims should not be validated against tab expiry");
 
     let tab = repo::get_tab_by_id(&ctx, tab_id)
         .await
@@ -1230,19 +1228,19 @@ async fn rejects_timestamp_outside_tab_window() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_guarantee_when_tab_settlement_finalized() {
+async fn guarantee_claim_validation_ignores_tab_settlement_status() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_settlement_status: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_settlement_status: {err}");
             return;
         }
     };
@@ -1298,29 +1296,28 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
             claims_ts,
         );
 
-        let err = core_service
+        core_service
             .verify_guarantee_request_claims_v1(&claims, 1)
             .await
-            .expect_err("finalized settlement should reject guarantees");
-        assert!(matches!(err, core_service::error::ServiceError::TabClosed));
+            .expect("cycle-native claims should not be validated against tab settlement status");
     }
 }
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_guarantee_when_tab_closed() {
+async fn guarantee_claim_validation_ignores_tab_closed_status() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_closed: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_closed_status: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_closed: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_closed_status: {err}");
             return;
         }
     };
@@ -1351,11 +1348,10 @@ async fn rejects_guarantee_when_tab_closed() {
     let claims_ts = (start_ts + Duration::seconds(120)).and_utc().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("closed tab should reject guarantees");
-    assert!(matches!(err, core_service::error::ServiceError::TabClosed));
+        .expect("cycle-native claims should not be validated against tab closed status");
 }
 
 #[tokio::test]
@@ -1417,19 +1413,19 @@ async fn pending_tab_expired_accepts_first_claim_without_reopening() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
+async fn guarantee_claim_validation_ignores_legacy_tab_ttl_limit() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_legacy_tab_ttl_limit: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_legacy_tab_ttl_limit: {err}");
             return;
         }
     };
@@ -1455,15 +1451,10 @@ async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
     let claims_ts = Utc::now().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("ttl exceeding tab expiration should be rejected");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::InvalidParams(msg)
-            if msg.contains("tab expiration time")
-    ));
+        .expect("cycle-native claims should not be validated against tab ttl");
 }
 
 fn recipient_issue_auth(recipient_address: &str) -> AccessContext {
@@ -1524,8 +1515,12 @@ async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Resu
         .await?;
     assert!(!serde_json::to_string(&cert)?.is_empty());
 
-    let stored = repo::get_guarantee(&ctx, tab_id, U256::ZERO).await?;
-    assert!(stored.is_some(), "v2 guarantee should be persisted");
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    assert_eq!(stored.len(), 1, "v2 guarantee should be persisted");
+    assert_eq!(stored[0].version, 2);
+    assert_eq!(stored[0].req_id, u256_to_string(U256::ZERO));
+    assert!(stored[0].cycle_id.is_some());
+    assert!(stored[0].guarantee_id.is_some());
     Ok(())
 }
 
@@ -1628,7 +1623,6 @@ async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepte
     let claims = PaymentGuaranteeRequestClaimsV1 {
         user_address,
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id: U256::ZERO,
         amount: U256::from(5u64),
         asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1686,7 +1680,6 @@ async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> 
     let claims = PaymentGuaranteeRequestClaimsV1 {
         user_address,
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id: U256::ZERO,
         amount: U256::from(5u64),
         asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1707,7 +1700,7 @@ async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> 
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Result<()> {
+async fn issue_mixed_guarantee_versions_are_cycle_scoped() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
     let core_service = build_core_service_with_guarantee_config(
@@ -1747,7 +1740,6 @@ async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Resu
     let first_claims = PaymentGuaranteeRequestClaimsV1 {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id: U256::ZERO,
         amount: U256::from(5u64),
         asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1772,19 +1764,19 @@ async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Resu
     let second_req =
         sign_v2_request(&core_service.public_params(), &user_wallet, second_claims).await?;
 
-    let err = core_service
+    core_service
         .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), second_req)
         .await
-        .expect_err("tab should reject switching guarantee versions");
-    assert!(matches!(
-        err,
-        ServiceError::InvalidParams(msg)
-            if msg.contains("only accepts guarantee version 1") && msg.contains("got 2")
-    ));
+        .expect("cycle-native guarantees should not inherit tab version pinning");
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0].version, 1);
+    assert_eq!(stored[1].version, 2);
 
     let tab = repo::get_tab_by_id(&ctx, tab_id)
         .await?
-        .expect("tab should exist after rejection");
+        .expect("tab should still exist");
     assert_eq!(tab.accepted_guarantee_version, Some(1));
     Ok(())
 }

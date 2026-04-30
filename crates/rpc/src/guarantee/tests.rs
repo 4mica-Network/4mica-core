@@ -54,7 +54,6 @@ fn sample_v2_claims() -> PaymentGuaranteeRequestClaimsV2 {
     PaymentGuaranteeRequestClaimsV2::builder(
         user.to_string(),
         recipient.to_string(),
-        U256::ZERO,
         req_id,
         amount,
         timestamp,
