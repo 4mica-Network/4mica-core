@@ -82,12 +82,39 @@ pub mod abi {
 
         #[derive(Debug)]
         event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
+
+        #[derive(Debug)]
+        event CycleCommitted(
+            bytes32 indexed cycleId,
+            address indexed asset,
+            bytes32 merkleRoot,
+            uint256 totalNetDebit,
+            uint256 totalNetCredit,
+            uint64 paymentSubmissionDeadline,
+            uint64 paymentFinalityDeadline
+        );
+
+        #[derive(Debug)]
+        event DebtorPaid(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+
+        #[derive(Debug)]
+        event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, uint256 amount);
+
+        #[derive(Debug)]
+        event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+
+        #[derive(Debug)]
+        event DefaultCovered(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+
+        #[derive(Debug)]
+        event CycleFinalized(bytes32 indexed cycleId);
     }
 }
 
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
-    AaveConfigured, CollateralDeposited, CollateralWithdrawn, GuaranteeVersionUpdated,
+    AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
+    CycleFinalized, DebtorDefaulted, DebtorPaid, DefaultCovered, GuaranteeVersionUpdated,
     PaymentRecorded, ProtocolYieldClaimed, RecipientRemunerated, RemunerationGracePeriodUpdated,
     StablecoinAssetUpdated, SurplusATokensClaimed, SynchronizationDelayUpdated,
     TabExpirationTimeUpdated, TabPaid, VerificationKeyUpdated, WithdrawalCanceled,
@@ -95,7 +122,7 @@ pub use abi::{
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 18] = [
+pub const EVENT_SIGNATURES: [&str; 24] = [
     CollateralDeposited::SIGNATURE,
     RecipientRemunerated::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
@@ -114,10 +141,16 @@ pub const EVENT_SIGNATURES: [&str; 18] = [
     YieldFeeBpsUpdated::SIGNATURE,
     ProtocolYieldClaimed::SIGNATURE,
     SurplusATokensClaimed::SIGNATURE,
+    CycleCommitted::SIGNATURE,
+    DebtorPaid::SIGNATURE,
+    CreditorClaimed::SIGNATURE,
+    DebtorDefaulted::SIGNATURE,
+    DefaultCovered::SIGNATURE,
+    CycleFinalized::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 24] = [
     CollateralDeposited::SIGNATURE_HASH,
     RecipientRemunerated::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
@@ -136,6 +169,12 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     YieldFeeBpsUpdated::SIGNATURE_HASH,
     ProtocolYieldClaimed::SIGNATURE_HASH,
     SurplusATokensClaimed::SIGNATURE_HASH,
+    CycleCommitted::SIGNATURE_HASH,
+    DebtorPaid::SIGNATURE_HASH,
+    CreditorClaimed::SIGNATURE_HASH,
+    DebtorDefaulted::SIGNATURE_HASH,
+    DefaultCovered::SIGNATURE_HASH,
+    CycleFinalized::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -238,7 +277,7 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
-    const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
+    const EXPECTED_EVENT_SIGNATURES: [&str; 24] = [
         "CollateralDeposited(address,address,uint256)",
         "RecipientRemunerated(uint256,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
@@ -257,6 +296,12 @@ mod tests {
         "YieldFeeBpsUpdated(uint256,uint256)",
         "ProtocolYieldClaimed(address,address,uint256)",
         "SurplusATokensClaimed(address,address,uint256,uint256)",
+        "CycleCommitted(bytes32,address,bytes32,uint256,uint256,uint64,uint64)",
+        "DebtorPaid(bytes32,address,uint256)",
+        "CreditorClaimed(bytes32,address,uint256)",
+        "DebtorDefaulted(bytes32,address,uint256)",
+        "DefaultCovered(bytes32,address,uint256)",
+        "CycleFinalized(bytes32)",
     ];
 
     #[test]
@@ -279,5 +324,7 @@ mod tests {
             EVENT_SIGNATURE_HASHES[17],
             SurplusATokensClaimed::SIGNATURE_HASH
         );
+        assert_eq!(EVENT_SIGNATURES[18], CycleCommitted::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURE_HASHES[23], CycleFinalized::SIGNATURE_HASH);
     }
 }

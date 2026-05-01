@@ -189,6 +189,22 @@ pub async fn list_payment_window_cycles_finality_due_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
+pub async fn list_cycles_for_onchain_resolution_on<C: ConnectionTrait>(
+    conn: &C,
+) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
+    let rows = settlement_cycle::Entity::find()
+        .filter(settlement_cycle::Column::Status.is_in([
+            SettlementCycleStatus::NettingComputed,
+            SettlementCycleStatus::PaymentWindowOpen,
+            SettlementCycleStatus::Defaulted,
+            SettlementCycleStatus::Finalized,
+        ]))
+        .all(conn)
+        .await?;
+    Ok(rows)
+}
+
+#[measure(record_db_time)]
 pub async fn freeze_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
@@ -229,6 +245,27 @@ pub async fn mark_cycle_netting_computed_on<C: ConnectionTrait>(
 
 #[measure(record_db_time)]
 pub async fn mark_cycle_payment_window_open_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    commit_tx_hash: Option<String>,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = settlement_cycle::Entity::update_many()
+        .filter(settlement_cycle::Column::Id.eq(cycle_id))
+        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::NettingComputed))
+        .set(settlement_cycle::ActiveModel {
+            status: Set(SettlementCycleStatus::PaymentWindowOpen),
+            commit_tx_hash: Set(commit_tx_hash),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+#[measure(record_db_time)]
+pub async fn mark_cycle_payment_window_open_by_id_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
     commit_tx_hash: Option<String>,
@@ -533,4 +570,29 @@ pub async fn list_participant_positions_for_cycle_on<C: ConnectionTrait>(
         .all(conn)
         .await?;
     Ok(rows)
+}
+
+#[measure(record_db_time)]
+pub async fn mark_participant_position_status_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    participant: &str,
+    from_status: ParticipantCycleStatus,
+    to_status: ParticipantCycleStatus,
+    settlement_tx_hash: Option<String>,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = cycle_participant_position::Entity::update_many()
+        .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
+        .filter(cycle_participant_position::Column::Participant.eq(participant))
+        .filter(cycle_participant_position::Column::Status.eq(from_status))
+        .set(cycle_participant_position::ActiveModel {
+            status: Set(to_status),
+            settlement_tx_hash: Set(settlement_tx_hash),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
 }
