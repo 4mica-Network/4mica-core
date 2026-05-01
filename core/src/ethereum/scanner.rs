@@ -86,13 +86,22 @@ impl EthereumEventScanner {
         } = args;
         let max_log_block_range = config.max_log_block_range;
 
-        let address: Address = config
+        let core_address: Address = config
             .contract_address
             .parse()
             .map_err(|e: FromHexError| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+        let clearing_house_address: Address = config
+            .clearing_house_address
+            .parse()
+            .map_err(|e: FromHexError| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+        let addresses = if clearing_house_address == Address::ZERO {
+            vec![core_address]
+        } else {
+            vec![core_address, clearing_house_address]
+        };
 
         let base_filter = Filter::new()
-            .address(address)
+            .address(addresses.clone())
             .events(all_event_signatures());
 
         let confirmed_head = match Self::confirmed_head(&provider, &config).await {
@@ -131,7 +140,7 @@ impl EthereumEventScanner {
         }
 
         info!(
-            "Fetching confirmed logs from block {start_block} to {confirmed_head} for address {address:?}"
+            "Fetching confirmed logs from block {start_block} to {confirmed_head} for addresses {addresses:?}"
         );
 
         let logs = Self::fetch_logs_chunked(
@@ -139,7 +148,7 @@ impl EthereumEventScanner {
             &base_filter,
             start_block,
             confirmed_head,
-            &address,
+            &addresses,
             max_log_block_range,
         )
         .await?;
@@ -188,7 +197,7 @@ impl EthereumEventScanner {
         base_filter: &Filter,
         start_block: u64,
         end_block: u64,
-        address: &Address,
+        addresses: &[Address],
         max_log_block_range: u64,
     ) -> Result<Vec<Log>, BlockchainListenerError> {
         let mut all_logs = Vec::new();
@@ -203,7 +212,7 @@ impl EthereumEventScanner {
                 .to_block(BlockNumberOrTag::Number(chunk_end));
 
             info!(
-                "Fetching confirmed logs chunk from block {chunk_start} to {chunk_end} for address {address:?}"
+                "Fetching confirmed logs chunk from block {chunk_start} to {chunk_end} for addresses {addresses:?}"
             );
 
             let chunk_logs = provider.get_logs(&filter).await.map_err(|e| {
@@ -372,6 +381,24 @@ impl EthereumEventScanner {
                         handler.handle_payment_recorded(log.clone()).await
                     }
                     Some(&TabPaid::SIGNATURE_HASH) => handler.handle_tab_paid(log.clone()).await,
+                    Some(&CycleCommitted::SIGNATURE_HASH) => {
+                        handler.handle_cycle_committed(log.clone()).await
+                    }
+                    Some(&DebtorPaid::SIGNATURE_HASH) => {
+                        handler.handle_debtor_paid(log.clone()).await
+                    }
+                    Some(&CreditorClaimed::SIGNATURE_HASH) => {
+                        handler.handle_creditor_claimed(log.clone()).await
+                    }
+                    Some(&DebtorDefaulted::SIGNATURE_HASH) => {
+                        handler.handle_debtor_defaulted(log.clone()).await
+                    }
+                    Some(&DefaultCovered::SIGNATURE_HASH) => {
+                        handler.handle_default_covered(log.clone()).await
+                    }
+                    Some(&CycleFinalized::SIGNATURE_HASH) => {
+                        handler.handle_cycle_finalized(log.clone()).await
+                    }
                     Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
                         handler
                             .handle_admin_event(log.clone(), "WithdrawalGracePeriodUpdated")

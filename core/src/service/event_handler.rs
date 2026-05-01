@@ -264,6 +264,65 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
+    #[measure(record_event_handler_time, name = "cycle_committed")]
+    async fn handle_cycle_committed(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let CycleCommitted { cycleId, .. } = *log.log_decode()?.data();
+        let tx_hash = tx_hash_from_log(&log)?;
+        self.process_cycle_committed(cycleId, &tx_hash)
+            .await
+            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
+    #[measure(record_event_handler_time, name = "debtor_paid")]
+    async fn handle_debtor_paid(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let DebtorPaid {
+            cycleId, debtor, ..
+        } = *log.log_decode()?.data();
+        let tx_hash = tx_hash_from_log(&log)?;
+        self.process_paid_debtor(cycleId, &debtor.to_string(), &tx_hash)
+            .await
+            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
+    #[measure(record_event_handler_time, name = "creditor_claimed")]
+    async fn handle_creditor_claimed(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let CreditorClaimed {
+            cycleId, creditor, ..
+        } = *log.log_decode()?.data();
+        let tx_hash = tx_hash_from_log(&log)?;
+        self.process_credit_claim(cycleId, &creditor.to_string(), &tx_hash)
+            .await
+            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
+    #[measure(record_event_handler_time, name = "debtor_defaulted")]
+    async fn handle_debtor_defaulted(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let DebtorDefaulted {
+            cycleId, debtor, ..
+        } = *log.log_decode()?.data();
+        self.process_defaulted_debtor(cycleId, &debtor.to_string())
+            .await
+            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
+    #[measure(record_event_handler_time, name = "default_covered")]
+    async fn handle_default_covered(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let DefaultCovered {
+            cycleId, debtor, ..
+        } = *log.log_decode()?.data();
+        self.process_default_covered(cycleId, &debtor.to_string())
+            .await
+            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
+    #[measure(record_event_handler_time, name = "cycle_finalized")]
+    async fn handle_cycle_finalized(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let CycleFinalized { cycleId, .. } = *log.log_decode()?.data();
+        self.process_cycle_finalized(cycleId)
+            .await
+            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
     #[measure(record_event_handler_time, name = "admin_event")]
     async fn handle_admin_event(
         &self,
@@ -312,6 +371,14 @@ impl EthereumEventHandler for CoreService {
         info!("Unknown event: {:?}", log);
         Ok(())
     }
+}
+
+fn tx_hash_from_log(log: &Log) -> Result<String, BlockchainListenerError> {
+    log.transaction_hash
+        .map(|hash| format!("{hash:#x}"))
+        .ok_or_else(|| {
+            BlockchainListenerError::EventHandlerError("log missing tx_hash".to_string())
+        })
 }
 
 impl CoreService {
