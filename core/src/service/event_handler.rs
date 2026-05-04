@@ -1,7 +1,6 @@
 use alloy::rpc::types::Log;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use async_trait::async_trait;
-use blockchain::txtools::PaymentTx;
 use log::{info, warn};
 use metrics_4mica::measure;
 
@@ -48,30 +47,8 @@ impl EthereumEventHandler for CoreService {
         } = *log.log_decode()?.data();
         info!("Recipient remunerated: tab={tab_id}, amount={amount}");
 
-        let meta = event_meta_from_log(self, &log)?;
-        repo::remunerate_recipient_with_event(
-            &self.inner.persist_ctx,
-            tab_id,
-            asset.to_string(),
-            amount,
-            Some(&meta),
-        )
-        .await?;
-        if let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? {
-            let user = match tab.user_address.parse::<Address>() {
-                Ok(user) => user,
-                Err(err) => {
-                    warn!(
-                        "Invalid user address {} for remunerated tab {} (err: {}). Skipping stablecoin sync.",
-                        tab.user_address,
-                        crate::util::u256_to_string(tab_id),
-                        err
-                    );
-                    return Ok(());
-                }
-            };
-            self.sync_stablecoin_balance_from_chain(user, asset).await?;
-        }
+        // Tab-bound Core4Mica remuneration is legacy; cycle settlement events now drive
+        // runtime settlement accounting through the clearing handlers below.
         Ok(())
     }
 
@@ -179,87 +156,10 @@ impl EthereumEventHandler for CoreService {
             ..
         } = *log.log_decode()?.data();
 
-        let tab_id_str = crate::util::u256_to_string(tab_id);
         info!(
-            "Tab paid: tab={tab_id_str}, user={user}, recipient={recipient}, amount={amount}, asset={asset}"
+            "Ignoring legacy TabPaid event: tab={}, user={user}, recipient={recipient}, amount={amount}, asset={asset}",
+            crate::util::u256_to_string(tab_id)
         );
-
-        let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, tab_id).await? else {
-            warn!("Tab not found for TabPaid: {}. Skipping.", tab_id_str);
-            return Ok(());
-        };
-
-        let tab_user_address: Address = match tab.user_address.parse() {
-            Ok(address) => address,
-            Err(err) => {
-                warn!(
-                    "Invalid tab user address {} for tab {} (err: {}). Skipping.",
-                    &tab.user_address, tab_id_str, err
-                );
-                return Ok(());
-            }
-        };
-
-        if tab_user_address != user {
-            warn!(
-                "User address does not match tab user address for tab {}. Skipping.",
-                tab_id_str
-            );
-            return Ok(());
-        }
-
-        let tab_asset_address: Address = match tab.asset_address.parse() {
-            Ok(address) => address,
-            Err(err) => {
-                warn!(
-                    "Invalid tab asset address {} for tab {} (err: {}). Skipping.",
-                    &tab.asset_address, tab_id_str, err
-                );
-                return Ok(());
-            }
-        };
-
-        if tab_asset_address != asset {
-            warn!(
-                "Asset does not match tab asset for tab {}. Skipping.",
-                tab_id_str
-            );
-            return Ok(());
-        }
-
-        let recipient_address: Address = tab.server_address.parse().map_err(|e| {
-            BlockchainListenerError::EventHandlerError(format!(
-                "Failed to parse recipient address: {e}"
-            ))
-        })?;
-
-        if recipient_address != recipient {
-            warn!(
-                "Recipient does not match tab recipient for tab {}. Skipping.",
-                tab_id_str
-            );
-            return Ok(());
-        }
-
-        let payment = PaymentTx {
-            block_number: log.block_number.unwrap_or_default(),
-            block_hash: log.block_hash,
-            block_timestamp: log.block_timestamp,
-            tx_hash: log.transaction_hash.unwrap_or_default(),
-            from: user,
-            to: recipient,
-            amount,
-            tab_id,
-            req_id: U256::from(1),
-            erc20_token: Some(asset),
-        };
-        self.handle_discovered_payments(vec![payment])
-            .await
-            .map_err(|e| {
-                BlockchainListenerError::EventHandlerError(format!(
-                    "Failed to handle discovered payments: {e}"
-                ))
-            })?;
 
         Ok(())
     }
