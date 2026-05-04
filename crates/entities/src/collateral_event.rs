@@ -15,8 +15,6 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub amount: String,
     pub event_type: CollateralEventType,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub tab_id: Option<String>,
     pub req_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub tx_id: Option<String>,

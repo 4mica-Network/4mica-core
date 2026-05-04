@@ -68,11 +68,11 @@ async fn rpc_proxy_get_public_params_round_trip() {
 #[serial_test::file_serial]
 async fn rpc_proxy_surfaces_api_errors() {
     let router = Router::new().route(
-        "/core/recipients/{recipient}/tabs",
+        "/core/public-params",
         get(|| async {
             (
                 axum::http::StatusCode::BAD_REQUEST,
-                Json(json!({"error": "invalid settlement status: unknown"})),
+                Json(json!({"error": "invalid request"})),
             )
         }),
     );
@@ -83,14 +83,14 @@ async fn rpc_proxy_surfaces_api_errors() {
 
     let proxy = RpcProxy::new(&base).expect("create proxy");
     let err = proxy
-        .list_recipient_tabs("0xdeadbeef".into(), Some(vec!["unknown".into()]))
+        .get_public_params()
         .await
         .expect_err("expected API error");
     match err {
         rpc::ApiClientError::Api { status, message } => {
             assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
             assert!(
-                message.contains("invalid settlement status"),
+                message.contains("invalid request"),
                 "unexpected message: {message}"
             );
         }
@@ -189,13 +189,12 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
     let user = "0x1234567890123456789012345678901234567890";
     let recipient = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
     let asset = "0x0000000000000000000000000000000000000000";
-    let tab_id = U256::from(7u64);
     let req_id = U256::from(3u64);
     let amount = U256::from(100u64);
     let timestamp = 1_736_000_000u64;
 
     let validation_subject_hash =
-        compute_validation_subject_hash(user, recipient, tab_id, req_id, amount, asset, timestamp)
+        compute_validation_subject_hash(user, recipient, req_id, amount, asset, timestamp)
             .expect("subject hash");
     let mut policy = PaymentGuaranteeValidationPolicyV2 {
         validation_registry_address: Address::from_str(
@@ -218,7 +217,6 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
     let claims = PaymentGuaranteeRequestClaims::V2(Box::new(PaymentGuaranteeRequestClaimsV2 {
         user_address: user.to_string(),
         recipient_address: recipient.to_string(),
-        tab_id,
         req_id,
         amount,
         asset_address: asset.to_string(),
@@ -251,8 +249,8 @@ async fn rpc_proxy_issue_guarantee_round_trip_v2_request() {
                             else {
                                 panic!("expected v2 claims");
                             };
-                            assert_eq!(claims.tab_id, expected_claims.tab_id);
                             assert_eq!(claims.req_id, expected_claims.req_id);
+                            assert_eq!(claims.amount, expected_claims.amount);
                             assert_eq!(
                                 claims.validation_policy.validation_request_hash,
                                 expected_claims.validation_policy.validation_request_hash

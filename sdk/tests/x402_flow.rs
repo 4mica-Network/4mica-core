@@ -88,7 +88,6 @@ async fn sign_payment_v2_respects_payment_requirements() {
     let expected_subject_hash = compute_validation_subject_hash(
         &claims.user_address,
         &claims.recipient_address,
-        claims.tab_id,
         claims.req_id,
         claims.amount,
         &claims.asset_address,
@@ -126,7 +125,7 @@ async fn sign_payment_requests_tab_correctly() {
         .await
         .expect("sign payment v2");
 
-    assert_eq!(payment.payload.claims.tab_id(), U256::from(0x1234));
+    assert_eq!(payment.payload.claims.req_id(), U256::ZERO);
 
     handle.abort();
 }
@@ -154,7 +153,7 @@ async fn sign_payment_v2_requests_tab_correctly() {
         .await
         .expect("sign payment v2");
 
-    assert_eq!(payment.payload.claims.tab_id(), U256::from(0x1234));
+    assert_eq!(payment.payload.claims.req_id(), U256::ZERO);
     assert!(matches!(
         payment.payload.claims,
         PaymentGuaranteeRequestClaims::V2(_)

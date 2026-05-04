@@ -8,10 +8,7 @@ use core_service::{
     ethereum::EthereumEventScanner,
     persist::PersistCtx,
     scheduler::TaskScheduler,
-    service::{
-        CoreService,
-        payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask},
-    },
+    service::CoreService,
 };
 use log::debug;
 
@@ -208,6 +205,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     cfg.ethereum_config = EthereumConfig {
         chain_id: provider.get_chain_id().await?,
         contract_address: contract.address().to_string(),
+        clearing_house_address: alloy::primitives::Address::ZERO.to_string(),
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         cron_job_settings: "* * * * * *".to_string(),
@@ -239,15 +237,6 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
 
     let mut scheduler = TaskScheduler::new().await?;
     scheduler.add_task(ethereum_scanner).await?;
-    scheduler
-        .add_task(Arc::new(ScanPaymentsTask::new(core_service.clone())))
-        .await?;
-    scheduler
-        .add_task(Arc::new(ConfirmPaymentsTask::new(core_service.clone())))
-        .await?;
-    scheduler
-        .add_task(Arc::new(FinalizePaymentsTask::new(core_service.clone())))
-        .await?;
     scheduler.start().await?;
 
     Ok(E2eEnvironment {

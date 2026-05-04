@@ -34,7 +34,6 @@ fn create_test_claims(user_addr: &str, recipient_addr: &str) -> PaymentGuarantee
     PaymentGuaranteeRequestClaimsV1 {
         user_address: user_addr.to_string(),
         recipient_address: recipient_addr.to_string(),
-        tab_id: U256::from(12345u64),
         req_id: U256::ZERO,
         amount: U256::from(100u64),
         timestamp: Utc::now().timestamp() as u64,
@@ -46,7 +45,6 @@ fn create_test_claims_v2(
     user_addr: &str,
     recipient_addr: &str,
 ) -> anyhow::Result<PaymentGuaranteeRequestClaimsV2> {
-    let tab_id = U256::from(12345u64);
     let req_id = U256::ZERO;
     let amount = U256::from(100u64);
     let timestamp = Utc::now().timestamp() as u64;
@@ -55,7 +53,6 @@ fn create_test_claims_v2(
     let validation_subject_hash = compute_validation_subject_hash(
         user_addr,
         recipient_addr,
-        tab_id,
         req_id,
         amount,
         &asset_address,
@@ -82,7 +79,6 @@ fn create_test_claims_v2(
     Ok(PaymentGuaranteeRequestClaimsV2 {
         user_address: user_addr.to_string(),
         recipient_address: recipient_addr.to_string(),
-        tab_id,
         req_id,
         amount,
         asset_address,

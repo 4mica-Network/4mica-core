@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::primitives::{B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};
@@ -7,7 +9,7 @@ use core_service::{
         constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
     },
     config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
-    ethereum::{CoreContractApi, GuaranteeVersionConfig, RecordPaymentTx},
+    ethereum::{CoreContractApi, GuaranteeVersionConfig},
     persist::{PersistCtx, repo},
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -588,13 +590,12 @@ impl CoreContractApi for MockContractApi {
         Ok(self.tab_expiration_time)
     }
 
-    async fn record_payment(
+    async fn commit_clearing_cycle(
         &self,
-        _tab_id: U256,
-        _asset: alloy::primitives::Address,
-        _amount: U256,
-    ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
-        Ok(RecordPaymentTx {
+        _input: core_service::ethereum::ClearingCommitInput,
+    ) -> Result<core_service::ethereum::ClearingCommitTx, core_service::error::CoreContractApiError>
+    {
+        Ok(core_service::ethereum::ClearingCommitTx {
             tx_hash: B256::ZERO,
             block_number: None,
             block_hash: None,

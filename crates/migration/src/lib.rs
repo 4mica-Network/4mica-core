@@ -21,6 +21,12 @@ mod m20260305_000002_unlock_and_tab_amount_guardrails;
 mod m20260403_000003_tab_accepted_guarantee_version;
 mod m20260403_000004_guarantee_version;
 mod m20260404_000005_active_tab_identity_unique;
+mod m20260423_000006_settlement_cycle_core;
+mod m20260423_000007_guarantee_cycle_and_finality;
+mod m20260423_000008_add_cycle_guarantee_identity;
+mod m20260423_000009_cycle_native_guarantee_storage;
+mod m20260423_000010_make_guarantee_cycle_native;
+mod m20260423_000011_drop_tabs;
 
 pub struct Migrator;
 
@@ -49,6 +55,12 @@ impl MigratorTrait for Migrator {
             Box::new(m20260403_000003_tab_accepted_guarantee_version::Migration),
             Box::new(m20260403_000004_guarantee_version::Migration),
             Box::new(m20260404_000005_active_tab_identity_unique::Migration),
+            Box::new(m20260423_000006_settlement_cycle_core::Migration),
+            Box::new(m20260423_000007_guarantee_cycle_and_finality::Migration),
+            Box::new(m20260423_000008_add_cycle_guarantee_identity::Migration),
+            Box::new(m20260423_000009_cycle_native_guarantee_storage::Migration),
+            Box::new(m20260423_000010_make_guarantee_cycle_native::Migration),
+            Box::new(m20260423_000011_drop_tabs::Migration),
         ]
     }
 }

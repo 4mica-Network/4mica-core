@@ -16,7 +16,6 @@ static VALIDATION_REQUEST_BINDING_DOMAIN_HASH: LazyLock<B256> =
 sol! {
     struct ValidationSubjectPayloadV1 {
         bytes32 bindingDomain;
-        uint256 tabId;
         uint256 reqId;
         address user;
         address recipient;
@@ -41,7 +40,6 @@ sol! {
 pub fn compute_validation_subject_hash(
     user_address: &str,
     recipient_address: &str,
-    tab_id: U256,
     req_id: U256,
     amount: U256,
     asset_address: &str,
@@ -49,7 +47,6 @@ pub fn compute_validation_subject_hash(
 ) -> anyhow::Result<[u8; 32]> {
     let payload = ValidationSubjectPayloadV1 {
         bindingDomain: *VALIDATION_SUBJECT_BINDING_DOMAIN_HASH,
-        tabId: tab_id,
         reqId: req_id,
         user: parse_address("user_address", user_address)?,
         recipient: parse_address("recipient_address", recipient_address)?,

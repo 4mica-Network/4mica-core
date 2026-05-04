@@ -1,6 +1,9 @@
-use crate::auth::access::{self, AccessContext};
-use crate::{error::ServiceError, persist::mapper, service::CoreService};
-use alloy_primitives::U256;
+use crate::auth::{
+    access::{self, AccessContext},
+    constants::SCOPE_TAB_READ,
+};
+use crate::{error::ServiceError, service::CoreService};
+use alloy_primitives::B256;
 use axum::extract::FromRef;
 use axum::{
     Json, Router,
@@ -11,7 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use crypto::bls::BLSCert;
-use entities::sea_orm_active_enums::SettlementStatus;
+use entities::sea_orm_active_enums::ParticipantCycleRole;
 use http::{StatusCode, header::AUTHORIZATION};
 use log::{debug, warn};
 use metrics_4mica::http::HttpMetricsMiddleware;
@@ -19,11 +22,12 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
-    CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest, CreatePaymentTabResult,
-    GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, SupportedTokensResponse,
-    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
+    ClearingParticipantProofResponse, ClearingParticipantRole, ClearingSettlementAction,
+    ClearingSettlementActionResponse, CorePublicParameters, PaymentGuaranteeRequest,
+    SupportedTokensResponse, UpdateUserSuspensionRequest, UserSuspensionStatus,
+    UserTransactionInfo,
 };
-use std::str::FromStr;
+use serde::Deserialize;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -58,37 +62,18 @@ pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Route
         .route("/core/health", get(get_health))
         .route("/core/public-params", get(get_public_params))
         .route("/core/tokens", get(get_supported_tokens))
-        .route("/core/payment-tabs", post(create_payment_tab))
         .route("/core/guarantees", post(issue_guarantee))
         .route(
-            "/core/recipients/{recipient_address}/settled-tabs",
-            get(list_settled_tabs),
+            "/core/cycles/{cycle_id}/participants/{participant}/clearing-proof",
+            get(get_clearing_participant_proof),
         )
         .route(
-            "/core/recipients/{recipient_address}/pending-remunerations",
-            get(list_pending_remunerations),
-        )
-        .route("/core/tabs/{tab_id}", get(get_tab))
-        .route(
-            "/core/recipients/{recipient_address}/tabs",
-            get(list_recipient_tabs),
-        )
-        .route("/core/tabs/{tab_id}/guarantees", get(get_tab_guarantees))
-        .route(
-            "/core/tabs/{tab_id}/guarantees/latest",
-            get(get_latest_guarantee),
-        )
-        .route(
-            "/core/tabs/{tab_id}/guarantees/{req_id}",
-            get(get_specific_guarantee),
+            "/core/cycles/{cycle_id}/participants/{participant}/clearing-action",
+            get(get_clearing_participant_action),
         )
         .route(
             "/core/recipients/{recipient_address}/payments",
             get(list_recipient_payments),
-        )
-        .route(
-            "/core/tabs/{tab_id}/collateral-events",
-            get(get_collateral_events_for_tab),
         )
         .route(
             "/core/users/{user_address}/assets/{asset_address}",
@@ -167,13 +152,26 @@ impl From<ServiceError> for ApiError {
     }
 }
 
-fn parse_u256(value: &str) -> Result<U256, ApiError> {
-    U256::from_str(value).map_err(|e| {
-        ApiError::new(
+fn bytes32_hex(value: B256) -> String {
+    format!("{value:#x}")
+}
+
+fn participant_role_to_response(
+    role: ParticipantCycleRole,
+) -> Result<ClearingParticipantRole, ApiError> {
+    match role {
+        ParticipantCycleRole::NetDebtor => Ok(ClearingParticipantRole::NetDebtor),
+        ParticipantCycleRole::NetCreditor => Ok(ClearingParticipantRole::NetCreditor),
+        ParticipantCycleRole::Flat => Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            format!("invalid 256-bit value {value}: {e}"),
-        )
-    })
+            "flat participants do not have a clearing proof",
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClearingActionQuery {
+    action: ClearingSettlementAction,
 }
 
 async fn auth_middleware(
@@ -255,6 +253,123 @@ async fn get_supported_tokens(
     Ok(Json(tokens))
 }
 
+async fn get_clearing_participant_proof(
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
+    Path((cycle_id, participant)): Path<(String, String)>,
+) -> Result<Json<ClearingParticipantProofResponse>, ApiError> {
+    access::require_scope(&auth, SCOPE_TAB_READ)?;
+    if !access::addresses_match(&auth.wallet_address, &participant)
+        && access::require_admin_role(&auth).is_err()
+        && access::require_facilitator_role(&auth).is_err()
+    {
+        return Err(ApiError::from(ServiceError::Unauthorized(
+            "participant proof access denied".to_string(),
+        )));
+    }
+
+    let proof = service
+        .get_participant_clearing_proof(&cycle_id, &participant)
+        .await?;
+    Ok(Json(clearing_proof_response(proof)?))
+}
+
+async fn get_clearing_participant_action(
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
+    Path((cycle_id, participant)): Path<(String, String)>,
+    Query(query): Query<ClearingActionQuery>,
+) -> Result<Json<ClearingSettlementActionResponse>, ApiError> {
+    access::require_scope(&auth, SCOPE_TAB_READ)?;
+    if query.action != ClearingSettlementAction::MarkDefaulted
+        && !access::addresses_match(&auth.wallet_address, &participant)
+        && access::require_admin_role(&auth).is_err()
+        && access::require_facilitator_role(&auth).is_err()
+    {
+        return Err(ApiError::from(ServiceError::Unauthorized(
+            "participant clearing action access denied".to_string(),
+        )));
+    }
+
+    let proof = service
+        .get_participant_clearing_proof(&cycle_id, &participant)
+        .await?;
+    let contract_address = service.clearing_house_address();
+    Ok(Json(clearing_action_response(
+        contract_address,
+        query.action,
+        proof,
+    )?))
+}
+
+fn clearing_proof_response(
+    proof: crate::service::netting::ClearingParticipantProof,
+) -> Result<ClearingParticipantProofResponse, ApiError> {
+    let role = participant_role_to_response(proof.role.clone())?;
+    Ok(ClearingParticipantProofResponse {
+        cycle_id: bytes32_hex(proof.cycle_id),
+        cycle_id_text: proof.cycle_id_text,
+        asset_address: proof.asset_address.to_string(),
+        participant: proof.participant.to_string(),
+        role,
+        amount: proof.amount.to_string(),
+        net_debit: proof.net_debit.to_string(),
+        net_credit: proof.net_credit.to_string(),
+        leaf: bytes32_hex(proof.leaf),
+        merkle_root: bytes32_hex(proof.merkle_root),
+        proof: proof.proof.into_iter().map(bytes32_hex).collect(),
+    })
+}
+
+fn clearing_action_response(
+    contract_address: String,
+    action: ClearingSettlementAction,
+    proof: crate::service::netting::ClearingParticipantProof,
+) -> Result<ClearingSettlementActionResponse, ApiError> {
+    let role = participant_role_to_response(proof.role)?;
+    let (required_role, function_name, debtor) = match action {
+        ClearingSettlementAction::PayNetDebit => {
+            (ClearingParticipantRole::NetDebtor, "payNetDebit", None)
+        }
+        ClearingSettlementAction::ClaimNetCredit => {
+            (ClearingParticipantRole::NetCreditor, "claimNetCredit", None)
+        }
+        ClearingSettlementAction::MarkDefaulted => (
+            ClearingParticipantRole::NetDebtor,
+            "markDefaulted",
+            Some(proof.participant.to_string()),
+        ),
+    };
+    if role != required_role {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("{function_name} requires participant role {required_role:?}"),
+        ));
+    }
+
+    let payable_value = if action == ClearingSettlementAction::PayNetDebit
+        && proof.asset_address == alloy_primitives::Address::ZERO
+    {
+        proof.amount.to_string()
+    } else {
+        "0".to_string()
+    };
+
+    Ok(ClearingSettlementActionResponse {
+        contract_address,
+        function_name: function_name.to_string(),
+        action,
+        cycle_id: bytes32_hex(proof.cycle_id),
+        cycle_id_text: proof.cycle_id_text,
+        asset_address: proof.asset_address.to_string(),
+        participant: proof.participant.to_string(),
+        debtor,
+        amount: proof.amount.to_string(),
+        payable_value,
+        proof: proof.proof.into_iter().map(bytes32_hex).collect(),
+    })
+}
+
 async fn post_auth_nonce(
     State(service): State<CoreService>,
     Json(req): Json<AuthNonceRequest>,
@@ -309,125 +424,6 @@ async fn issue_guarantee(
     Ok(Json(cert))
 }
 
-async fn create_payment_tab(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Json(req): Json<CreatePaymentTabRequest>,
-) -> Result<Json<CreatePaymentTabResult>, ApiError> {
-    let result = service
-        .create_payment_tab(&auth, req)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(result))
-}
-
-async fn list_settled_tabs(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(recipient): Path<String>,
-) -> Result<Json<Vec<TabInfo>>, ApiError> {
-    // Treat Remunerated as a settled state for API consumers.
-    let tabs = service
-        .list_tabs_for_recipient(
-            &auth,
-            recipient,
-            &[SettlementStatus::Settled, SettlementStatus::Remunerated],
-        )
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(tabs))
-}
-
-async fn list_pending_remunerations(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(recipient): Path<String>,
-) -> Result<Json<Vec<PendingRemunerationInfo>>, ApiError> {
-    let items = service
-        .list_pending_remunerations(&auth, recipient)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(items))
-}
-
-async fn get_tab(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Option<TabInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let tab = service
-        .get_tab(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(tab))
-}
-
-async fn list_recipient_tabs(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(recipient): Path<String>,
-    Query(params): Query<Vec<(String, String)>>,
-) -> Result<Json<Vec<TabInfo>>, ApiError> {
-    let statuses: Vec<String> = params
-        .into_iter()
-        .filter_map(|(key, value)| {
-            if key == "settlement_status" {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let parsed = mapper::parse_settlement_statuses(&statuses).map_err(ApiError::from)?;
-    let tabs = service
-        .list_tabs_for_recipient(&auth, recipient, &parsed)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(tabs))
-}
-
-async fn get_tab_guarantees(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Vec<GuaranteeInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let guarantees = service
-        .get_tab_guarantees(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(guarantees))
-}
-
-async fn get_latest_guarantee(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let guarantee = service
-        .get_latest_guarantee(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(guarantee))
-}
-
-async fn get_specific_guarantee(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path((tab_id, req_id)): Path<(String, String)>,
-) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let req_id = parse_u256(&req_id)?;
-    let guarantee = service
-        .get_guarantee(&auth, tab_id, req_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(guarantee))
-}
-
 async fn list_recipient_payments(
     State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
@@ -438,19 +434,6 @@ async fn list_recipient_payments(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(payments))
-}
-
-async fn get_collateral_events_for_tab(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Vec<CollateralEventInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let events = service
-        .get_collateral_events_for_tab(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(events))
 }
 
 async fn get_user_asset_balance(

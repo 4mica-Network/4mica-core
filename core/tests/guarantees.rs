@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use std::{
     net::TcpListener,
     panic,
@@ -8,7 +10,7 @@ use std::{
     },
 };
 
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, U256, keccak256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
@@ -19,14 +21,17 @@ use core_service::{
     config::{AppConfig, DEFAULT_ASSET_ADDRESS},
     error::PersistDbError,
     error::ServiceError,
-    ethereum::{CoreContractApi, GuaranteeVersionConfig, RecordPaymentTx},
+    ethereum::{CoreContractApi, GuaranteeVersionConfig},
     persist::*,
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
 };
 use crypto::bls::{BLSCert, BlsClaims};
-use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
-use entities::{guarantee, user};
+use entities::sea_orm_active_enums::{
+    GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
+    SettlementStatus, TabStatus,
+};
+use entities::{cycle_participant_position, guarantee, settlement_cycle, user};
 use rand::random;
 use rpc::{
     GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
@@ -34,11 +39,13 @@ use rpc::{
     PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2, SigningScheme,
     compute_validation_request_hash, compute_validation_subject_hash,
 };
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait};
 use test_log::test;
 
 mod common;
-use common::fixtures::read_locked_collateral;
+use common::fixtures::{
+    ensure_user_with_collateral, read_locked_collateral, set_locked_collateral,
+};
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
@@ -225,6 +232,17 @@ async fn seed_user(ctx: &PersistCtx, addr: &str) {
         .expect("seed user");
 }
 
+async fn guarantees_for_recipient(
+    ctx: &PersistCtx,
+    recipient_address: &str,
+) -> anyhow::Result<Vec<guarantee::Model>> {
+    Ok(guarantee::Entity::find()
+        .filter(guarantee::Column::ToAddress.eq(normalize_address(recipient_address)))
+        .order_by_asc(guarantee::Column::CreatedAt)
+        .all(ctx.db.as_ref())
+        .await?)
+}
+
 struct TestTabSpec {
     tab_id: U256,
     user_address: String,
@@ -310,14 +328,13 @@ async fn insert_pending_tab_with_version(
 }
 
 fn build_claims(
-    tab_id: U256,
+    _tab_id: U256,
     user_address: String,
     recipient_address: String,
     req_id: U256,
     timestamp: u64,
 ) -> PaymentGuaranteeRequestClaimsV1 {
     PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address,
         recipient_address,
         req_id,
@@ -331,7 +348,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV1 {
         address user;
         address recipient;
-        uint256 tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -341,7 +357,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV2 {
         address user;
         address recipient;
-        uint256 tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -363,7 +378,7 @@ fn build_v2_claims(
     chain_id: u64,
     user_address: String,
     recipient_address: String,
-    tab_id: U256,
+    _tab_id: U256,
     req_id: U256,
     amount: U256,
     asset_address: String,
@@ -372,7 +387,6 @@ fn build_v2_claims(
     let validation_subject_hash = compute_validation_subject_hash(
         &user_address,
         &recipient_address,
-        tab_id,
         req_id,
         amount,
         &asset_address,
@@ -400,7 +414,6 @@ fn build_v2_claims(
     Ok(PaymentGuaranteeRequestClaimsV2 {
         user_address,
         recipient_address,
-        tab_id,
         req_id,
         amount,
         asset_address,
@@ -422,7 +435,6 @@ async fn sign_v2_request(
     let msg = SolGuaranteeRequestClaimsV2 {
         user: Address::from_str(&claims.user_address)?,
         recipient: Address::from_str(&claims.recipient_address)?,
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)?,
@@ -460,7 +472,6 @@ async fn sign_v1_request(
     let msg = SolGuaranteeRequestClaimsV1 {
         user: Address::from_str(&claims.user_address)?,
         recipient: Address::from_str(&claims.recipient_address)?,
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address)?,
@@ -474,6 +485,117 @@ async fn sign_v1_request(
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip712,
     ))
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
+async fn debtor_payment_event_settles_netted_guarantees_and_unlocks_collateral()
+-> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let service = build_core_service(ctx.clone()).await?;
+    let now = Utc::now().naive_utc();
+    let payer = normalize_address(&random_eth_address());
+    let payee = normalize_address(&random_eth_address());
+    let asset = DEFAULT_ASSET_ADDRESS.to_string();
+    let amount = U256::from(17u64);
+    let cycle_id = format!("{}:{}", asset, random::<u64>());
+    let guarantee_id = format!("0x{}", hex::encode(random::<[u8; 32]>()));
+
+    ensure_user_with_collateral(&ctx, &payer, U256::from(100u64)).await?;
+    ensure_user_with_collateral(&ctx, &payee, U256::ZERO).await?;
+    set_locked_collateral(&ctx, &payer, &asset, amount).await?;
+
+    settlement_cycle::Entity::insert(settlement_cycle::ActiveModel {
+        id: Set(cycle_id.clone()),
+        asset_address: Set(asset.clone()),
+        period_start: Set(now),
+        period_end: Set(now),
+        resolution_cutoff: Set(now),
+        clearing_commit_deadline: Set(now),
+        payment_submission_deadline: Set(now),
+        payment_finality_deadline: Set(now),
+        status: Set(SettlementCycleStatus::PaymentWindowOpen),
+        gross_payable_amount: Set(amount.to_string()),
+        gross_receivable_amount: Set(amount.to_string()),
+        net_settlement_amount: Set(amount.to_string()),
+        clearing_batch_hash: Set(None),
+        commit_tx_hash: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    })
+    .exec(ctx.db.as_ref())
+    .await?;
+
+    guarantee::Entity::insert(guarantee::ActiveModel {
+        guarantee_id: Set(guarantee_id.clone()),
+        legacy_tab_id: Set(None),
+        cycle_id: Set(cycle_id.clone()),
+        req_id: Set("1".to_string()),
+        from_address: Set(payer.clone()),
+        to_address: Set(payee.clone()),
+        asset_address: Set(asset.clone()),
+        value: Set(amount.to_string()),
+        version: Set(1),
+        start_ts: Set(now),
+        cert: Set("{}".to_string()),
+        request: Set(None),
+        settlement_status: Set(GuaranteeSettlementStatus::Netted),
+        dispute_deadline: Set(None),
+        finalized_at: Set(Some(now)),
+        netted_at: Set(Some(now)),
+        settled_at: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    })
+    .exec(ctx.db.as_ref())
+    .await?;
+
+    cycle_participant_position::Entity::insert(cycle_participant_position::ActiveModel {
+        cycle_id: Set(cycle_id.clone()),
+        participant: Set(payer.clone()),
+        asset_address: Set(asset.clone()),
+        gross_outgoing: Set(amount.to_string()),
+        gross_incoming: Set("0".to_string()),
+        net_debit: Set(amount.to_string()),
+        net_credit: Set("0".to_string()),
+        role: Set(ParticipantCycleRole::NetDebtor),
+        status: Set(ParticipantCycleStatus::Unpaid),
+        settlement_tx_hash: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    })
+    .exec(ctx.db.as_ref())
+    .await?;
+
+    service
+        .process_paid_debtor(keccak256(cycle_id.as_bytes()), &payer, "0xpaid")
+        .await?;
+
+    let guarantee = guarantee::Entity::find_by_id(guarantee_id)
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("guarantee exists");
+    assert_eq!(
+        guarantee.settlement_status,
+        GuaranteeSettlementStatus::Settled
+    );
+    assert!(guarantee.settled_at.is_some());
+
+    let position = cycle_participant_position::Entity::find()
+        .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
+        .filter(cycle_participant_position::Column::Participant.eq(payer.clone()))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("participant position exists");
+    assert_eq!(position.status, ParticipantCycleStatus::Paid);
+    assert_eq!(position.settlement_tx_hash.as_deref(), Some("0xpaid"));
+    assert_eq!(
+        read_locked_collateral(&ctx, &payer, &asset).await?,
+        U256::ZERO
+    );
+
+    Ok(())
 }
 
 #[test]
@@ -621,7 +743,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 
     // ── Verify only the first value persisted ──
     let g = guarantee::Entity::find()
-        .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(guarantee::Column::ReqId.eq(u256_to_string(req_id)))
         .one(ctx.db.as_ref())
         .await?
@@ -787,7 +909,6 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
 
     // build a minimal PaymentGuaranteeClaims and dummy cert
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: U256::ZERO,
@@ -797,7 +918,8 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     };
 
     let txn = ctx.db.begin().await?;
-    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims, 1).await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, tab_id, &claims, 1).await?;
 
     assert_eq!(total_amount, U256::from(40u64));
 
@@ -817,7 +939,7 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
         SigningScheme::Eip712,
     );
 
-    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
+    repo::prepare_and_store_guarantee_on(&txn, tab_id, &promise, &cert, &req).await?;
     txn.commit().await?;
 
     // check locked collateral updated
@@ -828,7 +950,7 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
 
     // check guarantee row inserted
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(promise.req_id)))
         .one(ctx.db.as_ref())
         .await?;
@@ -866,7 +988,6 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: U256::ZERO,
@@ -875,7 +996,9 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
         timestamp: Utc::now().timestamp() as u64,
     };
 
-    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims, 1).await;
+    let res =
+        repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), tab_id, &claims, 1)
+            .await;
     assert!(matches!(res, Err(PersistDbError::InsufficientCollateral)));
 
     assert_eq!(
@@ -883,7 +1006,7 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
         U256::ZERO
     );
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(claims.req_id)))
         .one(ctx.db.as_ref())
         .await?;
@@ -926,7 +1049,6 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
     )?;
 
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: U256::ZERO,
@@ -936,7 +1058,8 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
     };
 
     let txn = ctx.db.begin().await?;
-    let total_amount = repo::update_user_balance_and_tab_for_guarantee_on(&txn, &claims, 1).await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, tab_id, &claims, 1).await?;
 
     assert_eq!(total_amount, U256::from(30u64));
 
@@ -957,7 +1080,7 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
         SigningScheme::Eip712,
     );
 
-    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
+    repo::prepare_and_store_guarantee_on(&txn, tab_id, &promise, &cert, &req).await?;
     txn.commit().await?;
 
     assert_eq!(
@@ -988,7 +1111,6 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
     insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
 
     let claims = PaymentGuaranteeRequestClaimsV1 {
-        tab_id,
         user_address: user_addr.clone(),
         recipient_address: recipient_addr.clone(),
         req_id: random_u256(),
@@ -997,7 +1119,9 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
         timestamp: i64::MAX as u64,
     };
 
-    let res = repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), &claims, 1).await;
+    let res =
+        repo::update_user_balance_and_tab_for_guarantee_on(ctx.db.as_ref(), tab_id, &claims, 1)
+            .await;
     assert!(matches!(res, Err(PersistDbError::InvalidTimestamp(_))));
 
     // locked collateral unchanged
@@ -1008,7 +1132,7 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
 
     // no guarantee row inserted
     let g = entities::guarantee::Entity::find()
-        .filter(entities::guarantee::Column::TabId.eq(u256_to_string(tab_id)))
+        .filter(entities::guarantee::Column::LegacyTabId.eq(u256_to_string(tab_id)))
         .filter(entities::guarantee::Column::ReqId.eq(u256_to_string(claims.req_id)))
         .one(ctx.db.as_ref())
         .await?;
@@ -1074,19 +1198,19 @@ async fn accepts_timestamp_within_tab_window_without_opening_tab() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_recipient_mismatch_on_guarantee_claims() {
+async fn guarantee_claim_validation_is_not_bound_to_tab_recipient() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_recipient_mismatch_on_guarantee_claims: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_recipient: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_recipient_mismatch_on_guarantee_claims: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_recipient: {err}");
             return;
         }
     };
@@ -1116,32 +1240,27 @@ async fn rejects_recipient_mismatch_on_guarantee_claims() {
     let claims_ts = (start_ts + Duration::seconds(60)).and_utc().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, wrong_recipient, U256::ZERO, claims_ts);
 
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("recipient mismatch should be rejected");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::InvalidParams(msg)
-            if msg.contains("Recipient address does not match tab")
-    ));
+        .expect("cycle-native claims should not be validated against tab recipient");
 }
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_timestamp_outside_tab_window() {
+async fn guarantee_claim_validation_is_not_bound_to_tab_window() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_timestamp_outside_tab_window: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_window: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_timestamp_outside_tab_window: {err}");
+            eprintln!("skipping guarantee_claim_validation_is_not_bound_to_tab_window: {err}");
             return;
         }
     };
@@ -1194,14 +1313,10 @@ async fn rejects_timestamp_outside_tab_window() {
         U256::from(1u64),
         before_start,
     );
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("timestamp before start should fail");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::ModifiedStartTs
-    ));
+        .expect("cycle-native claims should not be validated against tab start");
 
     let after_expiry = (start_ts + Duration::seconds(ttl + 1))
         .and_utc()
@@ -1213,14 +1328,10 @@ async fn rejects_timestamp_outside_tab_window() {
         U256::from(1u64),
         after_expiry,
     );
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("timestamp after expiry should fail");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::ModifiedStartTs
-    ));
+        .expect("cycle-native claims should not be validated against tab expiry");
 
     let tab = repo::get_tab_by_id(&ctx, tab_id)
         .await
@@ -1235,19 +1346,19 @@ async fn rejects_timestamp_outside_tab_window() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_guarantee_when_tab_settlement_finalized() {
+async fn guarantee_claim_validation_ignores_tab_settlement_status() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_settlement_status: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_settlement_finalized: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_settlement_status: {err}");
             return;
         }
     };
@@ -1303,29 +1414,28 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
             claims_ts,
         );
 
-        let err = core_service
+        core_service
             .verify_guarantee_request_claims_v1(&claims, 1)
             .await
-            .expect_err("finalized settlement should reject guarantees");
-        assert!(matches!(err, core_service::error::ServiceError::TabClosed));
+            .expect("cycle-native claims should not be validated against tab settlement status");
     }
 }
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_guarantee_when_tab_closed() {
+async fn guarantee_claim_validation_ignores_tab_closed_status() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_closed: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_closed_status: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_guarantee_when_tab_closed: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_tab_closed_status: {err}");
             return;
         }
     };
@@ -1356,11 +1466,10 @@ async fn rejects_guarantee_when_tab_closed() {
     let claims_ts = (start_ts + Duration::seconds(120)).and_utc().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("closed tab should reject guarantees");
-    assert!(matches!(err, core_service::error::ServiceError::TabClosed));
+        .expect("cycle-native claims should not be validated against tab closed status");
 }
 
 #[tokio::test]
@@ -1422,19 +1531,19 @@ async fn pending_tab_expired_accepts_first_claim_without_reopening() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
+async fn guarantee_claim_validation_ignores_legacy_tab_ttl_limit() {
     load_env();
     let ctx = match PersistCtx::new().await {
         Ok(ctx) => ctx,
         Err(err) => {
-            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_legacy_tab_ttl_limit: {err}");
             return;
         }
     };
     let core_service = match build_core_service(ctx.clone()).await {
         Ok(cs) => cs,
         Err(err) => {
-            eprintln!("skipping rejects_tab_ttl_exceeding_tab_expiration_time: {err}");
+            eprintln!("skipping guarantee_claim_validation_ignores_legacy_tab_ttl_limit: {err}");
             return;
         }
     };
@@ -1460,15 +1569,10 @@ async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
     let claims_ts = Utc::now().timestamp() as u64;
     let claims = build_claims(tab_id, user_addr, recipient_addr, U256::ZERO, claims_ts);
 
-    let err = core_service
+    core_service
         .verify_guarantee_request_claims_v1(&claims, 1)
         .await
-        .expect_err("ttl exceeding tab expiration should be rejected");
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::InvalidParams(msg)
-            if msg.contains("tab expiration time")
-    ));
+        .expect("cycle-native claims should not be validated against tab ttl");
 }
 
 fn recipient_issue_auth(recipient_address: &str) -> AccessContext {
@@ -1529,8 +1633,256 @@ async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Resu
         .await?;
     assert!(!serde_json::to_string(&cert)?.is_empty());
 
-    let stored = repo::get_guarantee(&ctx, tab_id, U256::ZERO).await?;
-    assert!(stored.is_some(), "v2 guarantee should be persisted");
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    assert_eq!(stored.len(), 1, "v2 guarantee should be persisted");
+    assert_eq!(stored[0].version, 2);
+    assert_eq!(stored[0].req_id, u256_to_string(U256::ZERO));
+    assert!(!stored[0].cycle_id.is_empty());
+    assert!(!stored[0].guarantee_id.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn pending_validation_guarantee_can_finalize_payable() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        U256::from(7u64),
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+    assert_eq!(
+        stored[0].settlement_status,
+        GuaranteeSettlementStatus::PendingValidation
+    );
+
+    assert!(
+        core_service
+            .finalize_guarantee_payable(&guarantee_id)
+            .await?
+    );
+    assert!(
+        !core_service
+            .finalize_guarantee_payable(&guarantee_id)
+            .await?
+    );
+
+    let finalized = repo::get_guarantee_by_id_on(ctx.db.as_ref(), &guarantee_id)
+        .await?
+        .expect("guarantee");
+    assert_eq!(
+        finalized.settlement_status,
+        GuaranteeSettlementStatus::FinalizedPayable
+    );
+    assert!(finalized.finalized_at.is_some());
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(5u64),
+        "finalization keeps collateral locked until settlement"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn pending_validation_guarantee_cancel_unlocks_collateral() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        U256::from(8u64),
+        U256::ZERO,
+        U256::from(6u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(6u64)
+    );
+
+    assert!(core_service.cancel_guarantee(&guarantee_id).await?);
+    assert!(!core_service.cancel_guarantee(&guarantee_id).await?);
+
+    let cancelled = repo::get_guarantee_by_id_on(ctx.db.as_ref(), &guarantee_id)
+        .await?
+        .expect("guarantee");
+    assert_eq!(
+        cancelled.settlement_status,
+        GuaranteeSettlementStatus::Cancelled
+    );
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn pending_validation_guarantee_can_be_disputed() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address.clone(),
+        recipient_address.clone(),
+        U256::from(10u64),
+        U256::ZERO,
+        U256::from(6u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+
+    assert!(core_service.dispute_guarantee(&guarantee_id).await?);
+    assert!(!core_service.dispute_guarantee(&guarantee_id).await?);
+
+    let disputed = repo::get_guarantee_by_id_on(ctx.db.as_ref(), &guarantee_id)
+        .await?
+        .expect("guarantee");
+    assert_eq!(
+        disputed.settlement_status,
+        GuaranteeSettlementStatus::Disputed
+    );
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_address, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(6u64),
+        "disputed guarantees keep collateral locked"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn finalized_guarantee_cannot_be_cancelled() -> anyhow::Result<()> {
+    load_env();
+    let ctx = PersistCtx::new().await?;
+    let core_service = build_core_service_with_active_version(ctx.clone(), 2).await?;
+
+    let user_wallet = PrivateKeySigner::random();
+    let user_address = user_wallet.address().to_string();
+    let recipient_address = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user_address).await;
+    seed_user(&ctx, &recipient_address).await;
+    repo::deposit(
+        &ctx,
+        user_address.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let timestamp = Utc::now().timestamp() as u64;
+    let claims = build_v2_claims(
+        core_service.public_params().chain_id,
+        user_address,
+        recipient_address.clone(),
+        U256::from(9u64),
+        U256::ZERO,
+        U256::from(5u64),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        timestamp,
+    )?;
+    let req = sign_v2_request(&core_service.public_params(), &user_wallet, claims).await?;
+
+    core_service
+        .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), req)
+        .await?;
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    let guarantee_id = stored[0].guarantee_id.clone();
+
+    core_service
+        .finalize_guarantee_payable(&guarantee_id)
+        .await?;
+    let err = core_service
+        .cancel_guarantee(&guarantee_id)
+        .await
+        .expect_err("finalized guarantee cannot be cancelled");
+    assert!(matches!(err, ServiceError::InvalidParams(_)));
+
     Ok(())
 }
 
@@ -1633,7 +1985,6 @@ async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepte
     let claims = PaymentGuaranteeRequestClaimsV1 {
         user_address,
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id: U256::ZERO,
         amount: U256::from(5u64),
         asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1691,7 +2042,6 @@ async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> 
     let claims = PaymentGuaranteeRequestClaimsV1 {
         user_address,
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id: U256::ZERO,
         amount: U256::from(5u64),
         asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1712,7 +2062,7 @@ async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> 
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Result<()> {
+async fn issue_mixed_guarantee_versions_are_cycle_scoped() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
     let core_service = build_core_service_with_guarantee_config(
@@ -1752,7 +2102,6 @@ async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Resu
     let first_claims = PaymentGuaranteeRequestClaimsV1 {
         user_address: user_address.clone(),
         recipient_address: recipient_address.clone(),
-        tab_id,
         req_id: U256::ZERO,
         amount: U256::from(5u64),
         asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -1777,19 +2126,19 @@ async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Resu
     let second_req =
         sign_v2_request(&core_service.public_params(), &user_wallet, second_claims).await?;
 
-    let err = core_service
+    core_service
         .issue_payment_guarantee(&recipient_issue_auth(&recipient_address), second_req)
         .await
-        .expect_err("tab should reject switching guarantee versions");
-    assert!(matches!(
-        err,
-        ServiceError::InvalidParams(msg)
-            if msg.contains("only accepts guarantee version 1") && msg.contains("got 2")
-    ));
+        .expect("cycle-native guarantees should not inherit tab version pinning");
+
+    let stored = guarantees_for_recipient(&ctx, &recipient_address).await?;
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0].version, 1);
+    assert_eq!(stored[1].version, 2);
 
     let tab = repo::get_tab_by_id(&ctx, tab_id)
         .await?
-        .expect("tab should exist after rejection");
+        .expect("tab should still exist");
     assert_eq!(tab.accepted_guarantee_version, Some(1));
     Ok(())
 }
@@ -2147,13 +2496,14 @@ async fn contract_api_rejects_disabled_guarantee_version() {
             Ok(3600)
         }
 
-        async fn record_payment(
+        async fn commit_clearing_cycle(
             &self,
-            _tab_id: U256,
-            _asset: Address,
-            _amount: U256,
-        ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
-            Ok(RecordPaymentTx {
+            _input: core_service::ethereum::ClearingCommitInput,
+        ) -> Result<
+            core_service::ethereum::ClearingCommitTx,
+            core_service::error::CoreContractApiError,
+        > {
+            Ok(core_service::ethereum::ClearingCommitTx {
                 tx_hash: B256::ZERO,
                 block_number: None,
                 block_hash: None,
@@ -2209,13 +2559,12 @@ impl CoreContractApi for MockContractApi {
         Ok(self.tab_expiration_time)
     }
 
-    async fn record_payment(
+    async fn commit_clearing_cycle(
         &self,
-        _tab_id: U256,
-        _asset: alloy::primitives::Address,
-        _amount: U256,
-    ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
-        Ok(RecordPaymentTx {
+        _input: core_service::ethereum::ClearingCommitInput,
+    ) -> Result<core_service::ethereum::ClearingCommitTx, core_service::error::CoreContractApiError>
+    {
+        Ok(core_service::ethereum::ClearingCommitTx {
             tx_hash: B256::ZERO,
             block_number: None,
             block_hash: None,

@@ -157,15 +157,6 @@ pub async fn assert_core_contract_deployed<S>(config: &Config<S>) -> anyhow::Res
     Ok(())
 }
 
-pub async fn close_tab(tab_id: U256) -> anyhow::Result<()> {
-    load_core_env();
-    let ctx = PersistCtx::new()
-        .await
-        .context("connect to core database")?;
-    repo::close_tab(&ctx, tab_id).await.context("close tab")?;
-    Ok(())
-}
-
 pub fn extract_asset_info(assets: &[UserInfo], asset_address: Address) -> Option<&UserInfo> {
     assets
         .iter()

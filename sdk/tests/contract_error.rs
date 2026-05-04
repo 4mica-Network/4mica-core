@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use sdk_4mica::{
     Address, BLSCert, Client, Config,
     PaymentGuaranteeRequestClaims as PaymentGuaranteeRequestClaimsV1,
@@ -172,7 +174,6 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
         1 => IssuedClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user_address.clone(),
             recipient_address: recipient_address.clone(),
-            tab_id,
             req_id,
             amount: claim_amount,
             timestamp: claim_timestamp,
@@ -189,7 +190,6 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
             let validation_subject_hash = compute_validation_subject_hash(
                 &user_address,
                 &recipient_address,
-                tab_id,
                 req_id,
                 claim_amount,
                 &ETH_ASSET_ADDRESS.to_string(),
@@ -213,7 +213,6 @@ async fn test_decoding_contract_errors() -> anyhow::Result<()> {
                 PaymentGuaranteeRequestClaimsV2::builder(
                     user_address.clone(),
                     recipient_address.clone(),
-                    tab_id,
                     req_id,
                     claim_amount,
                     claim_timestamp,

@@ -19,12 +19,13 @@ use log::{error, info};
 use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
 
 pub mod auth;
+pub mod clearing;
+pub mod cycle;
 pub mod event_handler;
 mod guarantee;
 pub mod health;
-pub mod payment;
+pub mod netting;
 mod query;
-mod tab;
 
 pub struct Inner {
     config: AppConfig,
@@ -202,8 +203,12 @@ impl CoreService {
         self.inner.public_params.clone()
     }
 
-    fn tab_expiration_time(&self) -> u64 {
-        self.inner.tab_expiration_time.load(Ordering::Relaxed)
+    pub fn clearing_house_address(&self) -> String {
+        self.inner
+            .config
+            .ethereum_config
+            .clearing_house_address
+            .clone()
     }
 
     fn set_tab_expiration_time(&self, tab_expiration_time: u64) {

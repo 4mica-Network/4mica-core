@@ -17,8 +17,6 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::collateral_event::Entity")]
     CollateralEvent,
-    #[sea_orm(has_many = "super::tabs::Entity")]
-    Tabs,
     #[sea_orm(has_many = "super::user_transaction::Entity")]
     UserTransaction,
     #[sea_orm(has_many = "super::withdrawal::Entity")]
@@ -28,12 +26,6 @@ pub enum Relation {
 impl Related<super::collateral_event::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::CollateralEvent.def()
-    }
-}
-
-impl Related<super::tabs::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Tabs.def()
     }
 }
 

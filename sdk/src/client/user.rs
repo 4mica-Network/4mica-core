@@ -1,21 +1,23 @@
 use alloy::{
-    network::{TransactionBuilder, TxSigner},
-    primitives::{Address, U256},
-    providers::Provider,
-    rpc::types::{TransactionReceipt, TransactionRequest},
+    network::TxSigner,
+    primitives::{Address, B256, U256},
+    rpc::types::TransactionReceipt,
     signers::{Signature, Signer},
 };
-use rpc::{PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2, SigningScheme};
+use rpc::{
+    ClearingSettlementActionResponse, PaymentGuaranteeRequestClaimsV1,
+    PaymentGuaranteeRequestClaimsV2, SigningScheme,
+};
 
 use crate::{
     PaymentSignature,
     client::{
         ClientCtx,
-        model::{StablecoinPosition, TabPaymentStatus, UserInfo},
+        model::{StablecoinPosition, UserInfo},
     },
     error::{
-        ApproveErc20Error, CancelWithdrawalError, DepositError, FinalizeWithdrawalError,
-        GetUserError, PayTabError, RequestWithdrawalError, SignPaymentError, TabPaymentStatusError,
+        ApproveErc20Error, CancelWithdrawalError, ClearingSettlementError, DepositError,
+        FinalizeWithdrawalError, GetUserError, RequestWithdrawalError, SignPaymentError,
     },
     guarantee::{
         PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
@@ -24,6 +26,7 @@ use crate::{
     sig::PaymentSigner,
     validators::validate_address,
 };
+use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct UserClient<S> {
@@ -71,6 +74,145 @@ impl<S> UserClient<S> {
             .await
             .map_err(alloy::contract::Error::from)
             .map_err(ApproveErc20Error::from)?;
+
+        Ok(receipt)
+    }
+
+    /// Allows the ClearingHouse contract for `cycle_id` to spend ERC20 tokens on behalf of the user.
+    pub async fn approve_clearing_house_erc20(
+        &self,
+        cycle_id: String,
+        token: String,
+        amount: U256,
+    ) -> Result<TransactionReceipt, ApproveErc20Error>
+    where
+        S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let action = self
+            .get_clearing_pay_net_debit_action(cycle_id)
+            .await
+            .map_err(|err| ApproveErc20Error::InvalidParams(err.to_string()))?;
+        let spender = validate_address(&action.contract_address).map_err(|_| {
+            ApproveErc20Error::InvalidParams(format!(
+                "invalid ClearingHouse address: {}",
+                action.contract_address
+            ))
+        })?;
+        let token = validate_address(&token).map_err(|_| {
+            ApproveErc20Error::InvalidParams(format!("invalid ERC20 token address: {token}"))
+        })?;
+        let contract = self.ctx.get_erc20_write_contract(token).await?;
+
+        let send_result = contract
+            .approve(spender, amount)
+            .send()
+            .await
+            .map_err(ApproveErc20Error::from)?;
+
+        let receipt = send_result
+            .get_receipt()
+            .await
+            .map_err(alloy::contract::Error::from)
+            .map_err(ApproveErc20Error::from)?;
+
+        Ok(receipt)
+    }
+
+    pub async fn get_clearing_pay_net_debit_action(
+        &self,
+        cycle_id: String,
+    ) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>
+    where
+        S: Signer + Sync,
+    {
+        let debtor = self.ctx.signer_address().to_string();
+        let proxy = self.ctx.rpc_proxy().await?;
+        Ok(proxy
+            .get_clearing_pay_net_debit_action(cycle_id, debtor)
+            .await?)
+    }
+
+    pub async fn get_clearing_mark_defaulted_action(
+        &self,
+        cycle_id: String,
+        debtor: String,
+    ) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>
+    where
+        S: Signer + Sync,
+    {
+        let proxy = self.ctx.rpc_proxy().await?;
+        Ok(proxy
+            .get_clearing_mark_defaulted_action(cycle_id, debtor)
+            .await?)
+    }
+
+    /// Pays the caller's committed net debit for a clearing cycle.
+    ///
+    /// For ERC20 cycles, approve the returned ClearingHouse address before calling this method.
+    pub async fn pay_net_debit(
+        &self,
+        cycle_id: String,
+    ) -> Result<TransactionReceipt, ClearingSettlementError>
+    where
+        S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let action = self.get_clearing_pay_net_debit_action(cycle_id).await?;
+        let call = parse_clearing_action_call(&action)?;
+        let contract = self
+            .ctx
+            .get_clearing_house_write_contract(call.contract_address)
+            .await?;
+
+        let send_result = contract
+            .payNetDebit(call.cycle_id, call.amount, call.proof)
+            .value(call.payable_value)
+            .send()
+            .await
+            .map_err(ClearingSettlementError::from)?;
+        let receipt = send_result
+            .get_receipt()
+            .await
+            .map_err(alloy::contract::Error::from)
+            .map_err(ClearingSettlementError::from)?;
+
+        Ok(receipt)
+    }
+
+    /// Marks a debtor defaulted after the clearing payment finality deadline.
+    pub async fn mark_defaulted(
+        &self,
+        cycle_id: String,
+        debtor: String,
+    ) -> Result<TransactionReceipt, ClearingSettlementError>
+    where
+        S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let action = self
+            .get_clearing_mark_defaulted_action(cycle_id, debtor)
+            .await?;
+        let call = parse_clearing_action_call(&action)?;
+        let debtor = validate_address(
+            action
+                .debtor
+                .as_deref()
+                .unwrap_or(action.participant.as_str()),
+        )
+        .map_err(|err| ClearingSettlementError::InvalidParams(err.to_string()))?;
+        let contract = self
+            .ctx
+            .get_clearing_house_write_contract(call.contract_address)
+            .await?;
+
+        let send_result = contract
+            .markDefaulted(call.cycle_id, debtor, call.amount, call.proof)
+            .send()
+            .await
+            .map_err(ClearingSettlementError::from)?;
+        let receipt = send_result
+            .get_receipt()
+            .await
+            .map_err(alloy::contract::Error::from)
+            .map_err(ClearingSettlementError::from)?;
 
         Ok(receipt)
     }
@@ -136,25 +278,6 @@ impl<S> UserClient<S> {
             .map_err(GetUserError::from)?;
 
         Ok(assets.into_iter().map(|asset| asset.into()).collect())
-    }
-
-    pub async fn get_tab_payment_status(
-        &self,
-        tab_id: U256,
-    ) -> Result<TabPaymentStatus, TabPaymentStatusError> {
-        let status = self
-            .ctx
-            .get_contract()
-            .getPaymentStatus(tab_id)
-            .call()
-            .await
-            .map_err(TabPaymentStatusError::from)?;
-
-        Ok(TabPaymentStatus {
-            paid: status.paid,
-            remunerated: status.remunerated,
-            asset: status.asset.to_string(),
-        })
     }
 
     pub async fn get_principal_balance(&self, asset: String) -> Result<U256, GetUserError>
@@ -351,88 +474,6 @@ impl<S> UserClient<S> {
         })
     }
 
-    async fn pay_tab_in_erc20_token(
-        &self,
-        tab_id: U256,
-        amount: U256,
-        erc20_token: String,
-        recipient: Address,
-    ) -> Result<TransactionReceipt, PayTabError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let token = validate_address(&erc20_token).map_err(|_| {
-            PayTabError::InvalidParams(format!("invalid ERC20 token address: {erc20_token}"))
-        })?;
-
-        let send_result = self
-            .ctx
-            .get_write_contract()
-            .await?
-            .payTabInERC20Token(tab_id, token, amount, recipient)
-            .send()
-            .await
-            .map_err(PayTabError::from)?;
-
-        let receipt = send_result
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(PayTabError::from)?;
-
-        Ok(receipt)
-    }
-
-    /// Pay a tab in ETH or an ERC20 token
-    ///
-    /// If `erc20_token` is provided, the tab will be paid in the specified ERC20 token.
-    /// Otherwise, the tab will be paid in ETH.
-    ///
-    /// NOTE: You can only pay with the same asset as the one that the tab was created with.
-    ///
-    /// IMPORTANT: If paying with an ERC20 token, you MUST first approve the 4Mica contract to spend the ERC20 token using the `approve_erc20` method.
-    pub async fn pay_tab(
-        &self,
-        tab_id: U256,
-        req_id: U256,
-        amount: U256,
-        recipient_address: String,
-        erc20_token: Option<String>,
-    ) -> Result<TransactionReceipt, PayTabError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let recipient = validate_address(&recipient_address)
-            .map_err(|e| PayTabError::InvalidParams(e.to_string()))?;
-
-        if let Some(token) = erc20_token {
-            return self
-                .pay_tab_in_erc20_token(tab_id, amount, token, recipient)
-                .await;
-        }
-
-        let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, req_id);
-        let tx = TransactionRequest::default()
-            .with_to(recipient)
-            .with_value(amount)
-            .with_input(input.into_bytes())
-            .with_gas_limit(120_000u64);
-
-        let pending_tx = self
-            .ctx
-            .get_wallet_provider()
-            .await?
-            .send_transaction(tx)
-            .await
-            .map_err(|e| PayTabError::Transport(e.to_string()))?;
-        let receipt = pending_tx
-            .get_receipt()
-            .await
-            .map_err(|e| PayTabError::Transport(e.to_string()))?;
-
-        Ok(receipt)
-    }
-
     /// Requests a withdrawal of collateral from the user's account
     ///
     /// ### Arguments
@@ -535,4 +576,47 @@ fn parse_erc20_token<E>(
             .map_err(|_| make_err(format!("invalid ERC20 token address: {t}"))),
         None => Ok(None),
     }
+}
+
+pub(super) struct ClearingActionCall {
+    pub contract_address: Address,
+    pub cycle_id: B256,
+    pub amount: U256,
+    pub payable_value: U256,
+    pub proof: Vec<B256>,
+}
+
+pub(super) fn parse_clearing_action_call(
+    action: &ClearingSettlementActionResponse,
+) -> Result<ClearingActionCall, ClearingSettlementError> {
+    let contract_address = validate_address(&action.contract_address)
+        .map_err(|err| ClearingSettlementError::InvalidParams(err.to_string()))?;
+    let cycle_id = B256::from_str(&action.cycle_id).map_err(|err| {
+        ClearingSettlementError::InvalidParams(format!("invalid clearing cycle id: {err}"))
+    })?;
+    let amount = U256::from_str(&action.amount).map_err(|err| {
+        ClearingSettlementError::InvalidParams(format!("invalid clearing amount: {err}"))
+    })?;
+    let payable_value = U256::from_str(&action.payable_value).map_err(|err| {
+        ClearingSettlementError::InvalidParams(format!("invalid payable value: {err}"))
+    })?;
+    let proof = action
+        .proof
+        .iter()
+        .map(|item| {
+            B256::from_str(item).map_err(|err| {
+                ClearingSettlementError::InvalidParams(format!(
+                    "invalid clearing proof element: {err}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(ClearingActionCall {
+        contract_address,
+        cycle_id,
+        amount,
+        payable_value,
+        proof,
+    })
 }
