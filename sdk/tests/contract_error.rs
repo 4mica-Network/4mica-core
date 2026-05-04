@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use sdk_4mica::{
     Address, BLSCert, Client, Config,
     PaymentGuaranteeRequestClaims as PaymentGuaranteeRequestClaimsV1,

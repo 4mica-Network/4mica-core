@@ -1,8 +1,7 @@
 use alloy::{
-    network::{TransactionBuilder, TxSigner},
+    network::TxSigner,
     primitives::{Address, B256, U256},
-    providers::Provider,
-    rpc::types::{TransactionReceipt, TransactionRequest},
+    rpc::types::TransactionReceipt,
     signers::{Signature, Signer},
 };
 use rpc::{
@@ -14,12 +13,11 @@ use crate::{
     PaymentSignature,
     client::{
         ClientCtx,
-        model::{StablecoinPosition, TabPaymentStatus, UserInfo},
+        model::{StablecoinPosition, UserInfo},
     },
     error::{
         ApproveErc20Error, CancelWithdrawalError, ClearingSettlementError, DepositError,
-        FinalizeWithdrawalError, GetUserError, PayTabError, RequestWithdrawalError,
-        SignPaymentError, TabPaymentStatusError,
+        FinalizeWithdrawalError, GetUserError, RequestWithdrawalError, SignPaymentError,
     },
     guarantee::{
         PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
@@ -282,25 +280,6 @@ impl<S> UserClient<S> {
         Ok(assets.into_iter().map(|asset| asset.into()).collect())
     }
 
-    pub async fn get_tab_payment_status(
-        &self,
-        tab_id: U256,
-    ) -> Result<TabPaymentStatus, TabPaymentStatusError> {
-        let status = self
-            .ctx
-            .get_contract()
-            .getPaymentStatus(tab_id)
-            .call()
-            .await
-            .map_err(TabPaymentStatusError::from)?;
-
-        Ok(TabPaymentStatus {
-            paid: status.paid,
-            remunerated: status.remunerated,
-            asset: status.asset.to_string(),
-        })
-    }
-
     pub async fn get_principal_balance(&self, asset: String) -> Result<U256, GetUserError>
     where
         S: Signer,
@@ -493,88 +472,6 @@ impl<S> UserClient<S> {
             signature: signature.signature,
             scheme: signature.scheme,
         })
-    }
-
-    async fn pay_tab_in_erc20_token(
-        &self,
-        tab_id: U256,
-        amount: U256,
-        erc20_token: String,
-        recipient: Address,
-    ) -> Result<TransactionReceipt, PayTabError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let token = validate_address(&erc20_token).map_err(|_| {
-            PayTabError::InvalidParams(format!("invalid ERC20 token address: {erc20_token}"))
-        })?;
-
-        let send_result = self
-            .ctx
-            .get_write_contract()
-            .await?
-            .payTabInERC20Token(tab_id, token, amount, recipient)
-            .send()
-            .await
-            .map_err(PayTabError::from)?;
-
-        let receipt = send_result
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(PayTabError::from)?;
-
-        Ok(receipt)
-    }
-
-    /// Pay a tab in ETH or an ERC20 token
-    ///
-    /// If `erc20_token` is provided, the tab will be paid in the specified ERC20 token.
-    /// Otherwise, the tab will be paid in ETH.
-    ///
-    /// NOTE: You can only pay with the same asset as the one that the tab was created with.
-    ///
-    /// IMPORTANT: If paying with an ERC20 token, you MUST first approve the 4Mica contract to spend the ERC20 token using the `approve_erc20` method.
-    pub async fn pay_tab(
-        &self,
-        tab_id: U256,
-        req_id: U256,
-        amount: U256,
-        recipient_address: String,
-        erc20_token: Option<String>,
-    ) -> Result<TransactionReceipt, PayTabError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let recipient = validate_address(&recipient_address)
-            .map_err(|e| PayTabError::InvalidParams(e.to_string()))?;
-
-        if let Some(token) = erc20_token {
-            return self
-                .pay_tab_in_erc20_token(tab_id, amount, token, recipient)
-                .await;
-        }
-
-        let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, req_id);
-        let tx = TransactionRequest::default()
-            .with_to(recipient)
-            .with_value(amount)
-            .with_input(input.into_bytes())
-            .with_gas_limit(120_000u64);
-
-        let pending_tx = self
-            .ctx
-            .get_wallet_provider()
-            .await?
-            .send_transaction(tx)
-            .await
-            .map_err(|e| PayTabError::Transport(e.to_string()))?;
-        let receipt = pending_tx
-            .get_receipt()
-            .await
-            .map_err(|e| PayTabError::Transport(e.to_string()))?;
-
-        Ok(receipt)
     }
 
     /// Requests a withdrawal of collateral from the user's account

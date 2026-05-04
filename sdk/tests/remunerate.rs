@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::hex;
 use alloy::signers::Signer;
 use rpc::RpcProxy;

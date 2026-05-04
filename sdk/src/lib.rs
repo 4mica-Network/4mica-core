@@ -19,10 +19,7 @@ pub use rpc::{
 pub use crate::error::RecipientQueryError;
 pub use auth::{AuthClient, AuthSession, AuthTokens};
 pub use client::Client;
-pub use client::model::{
-    AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo, PendingRemunerationInfo,
-    RecipientPaymentInfo, StablecoinPosition, TabInfo, TabPaymentStatus, UserInfo,
-};
+pub use client::model::{AssetBalanceInfo, RecipientPaymentInfo, StablecoinPosition, UserInfo};
 pub use config::AuthConfig;
 pub use config::{Config, ConfigBuilder};
 pub use crypto::bls::BLSCert;
