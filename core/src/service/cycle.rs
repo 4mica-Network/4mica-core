@@ -129,13 +129,35 @@ impl CoreService {
             now,
         )
         .await?;
-        let mut finalized = Vec::new();
+        let mut defaulted = Vec::new();
         for cycle in due {
             let cycle_id = cycle.id.clone();
-            self.finalize_cycle(&cycle_id).await?;
-            finalized.push(cycle_id);
+            let unpaid = repo::list_unpaid_debtors_for_cycle_on(
+                self.inner.persist_ctx.db.as_ref(),
+                &cycle_id,
+            )
+            .await?;
+            if unpaid.is_empty() {
+                info!(
+                    "settlement cycle {} passed finality with no unpaid debtors; waiting for ClearingHouse finalization event",
+                    cycle_id
+                );
+                continue;
+            }
+
+            let changed =
+                repo::mark_cycle_defaulted_on(self.inner.persist_ctx.db.as_ref(), &cycle_id, now)
+                    .await?;
+            if changed {
+                info!(
+                    "settlement cycle {} entered default handling with {} unpaid debtors",
+                    cycle_id,
+                    unpaid.len()
+                );
+                defaulted.push(cycle_id);
+            }
         }
-        Ok(finalized)
+        Ok(defaulted)
     }
 
     pub(crate) async fn supported_settlement_assets(

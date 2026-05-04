@@ -8,6 +8,7 @@ use entities::{
     clearing_batch, cycle_participant_position,
     sea_orm_active_enums::{ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus},
 };
+use sea_orm::TransactionTrait;
 
 use crate::{
     error::{ServiceError, ServiceResult},
@@ -356,13 +357,28 @@ impl CoreService {
     }
 
     pub async fn mark_cycle_netting_computed(&self, cycle_id: &str) -> ServiceResult<bool> {
-        let changed = repo::mark_cycle_netting_computed_on(
-            self.inner.persist_ctx.db.as_ref(),
-            cycle_id,
-            Utc::now().naive_utc(),
-        )
-        .await?;
-        Ok(changed)
+        let now = Utc::now().naive_utc();
+        let cycle_id = cycle_id.to_string();
+        self.inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let cycle_id = cycle_id.clone();
+                Box::pin(async move {
+                    let changed = repo::mark_cycle_netting_computed_on(txn, &cycle_id, now).await?;
+                    if changed {
+                        repo::mark_cycle_guarantees_netted_on(txn, &cycle_id, now).await?;
+                    }
+                    Ok(changed)
+                })
+            })
+            .await
+            .map_err(|e| match e {
+                sea_orm::TransactionError::Transaction(inner) => inner,
+                sea_orm::TransactionError::Connection(err) => {
+                    crate::error::PersistDbError::DatabaseFailure(err).into()
+                }
+            })
     }
 
     async fn require_cycle_status(

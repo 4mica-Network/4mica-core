@@ -3,8 +3,11 @@ use std::str::FromStr;
 use alloy::primitives::{Address, B256, U256, keccak256};
 use anyhow::anyhow;
 use chrono::{NaiveDateTime, Utc};
-use entities::sea_orm_active_enums::{ParticipantCycleStatus, SettlementCycleStatus};
+use entities::sea_orm_active_enums::{
+    GuaranteeSettlementStatus, ParticipantCycleStatus, SettlementCycleStatus,
+};
 use log::{info, warn};
+use sea_orm::TransactionTrait;
 
 use crate::{
     error::{ServiceError, ServiceResult},
@@ -142,16 +145,42 @@ impl CoreService {
             warn!("debtor payment event for unknown on-chain cycle id {onchain_cycle_id:#x}");
             return Ok(());
         };
-        let changed = repo::mark_participant_position_status_on(
-            self.inner.persist_ctx.db.as_ref(),
-            &cycle_id,
-            debtor,
-            ParticipantCycleStatus::Unpaid,
-            ParticipantCycleStatus::Paid,
-            Some(tx_hash.to_string()),
-            Utc::now().naive_utc(),
-        )
-        .await?;
+        let now = Utc::now().naive_utc();
+        let changed = self
+            .inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let cycle_id = cycle_id.clone();
+                let debtor = debtor.to_string();
+                let tx_hash = tx_hash.to_string();
+                Box::pin(async move {
+                    let changed = repo::mark_participant_position_status_on(
+                        txn,
+                        &cycle_id,
+                        &debtor,
+                        ParticipantCycleStatus::Unpaid,
+                        ParticipantCycleStatus::Paid,
+                        Some(tx_hash),
+                        now,
+                    )
+                    .await?;
+                    if changed {
+                        settle_netted_guarantees_for_payer(
+                            txn,
+                            &cycle_id,
+                            &debtor,
+                            GuaranteeSettlementStatus::Settled,
+                            now,
+                            true,
+                        )
+                        .await?;
+                    }
+                    Ok(changed)
+                })
+            })
+            .await
+            .map_err(map_transaction_error)?;
         if changed {
             info!("mirrored DebtorPaid: cycle={cycle_id}, debtor={debtor}, tx={tx_hash}");
         }
@@ -168,16 +197,41 @@ impl CoreService {
             warn!("credit claim event for unknown on-chain cycle id {onchain_cycle_id:#x}");
             return Ok(());
         };
-        let changed = repo::mark_participant_position_status_on(
-            self.inner.persist_ctx.db.as_ref(),
-            &cycle_id,
-            creditor,
-            ParticipantCycleStatus::Claimable,
-            ParticipantCycleStatus::Claimed,
-            Some(tx_hash.to_string()),
-            Utc::now().naive_utc(),
-        )
-        .await?;
+        let now = Utc::now().naive_utc();
+        let changed = self
+            .inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let cycle_id = cycle_id.clone();
+                let creditor = creditor.to_string();
+                let tx_hash = tx_hash.to_string();
+                Box::pin(async move {
+                    let changed = repo::mark_participant_position_status_on(
+                        txn,
+                        &cycle_id,
+                        &creditor,
+                        ParticipantCycleStatus::Claimable,
+                        ParticipantCycleStatus::Claimed,
+                        Some(tx_hash),
+                        now,
+                    )
+                    .await?;
+                    if changed {
+                        repo::transition_netted_guarantees_for_cycle_payee_on(
+                            txn,
+                            &cycle_id,
+                            &creditor,
+                            GuaranteeSettlementStatus::Settled,
+                            now,
+                        )
+                        .await?;
+                    }
+                    Ok(changed)
+                })
+            })
+            .await
+            .map_err(map_transaction_error)?;
         if changed {
             info!("mirrored CreditorClaimed: cycle={cycle_id}, creditor={creditor}, tx={tx_hash}");
         }
@@ -227,7 +281,32 @@ impl CoreService {
             warn!("default covered event for unknown on-chain cycle id {onchain_cycle_id:#x}");
             return Ok(());
         };
-        info!("mirrored DefaultCovered: cycle={cycle_id}, debtor={debtor}");
+        let now = Utc::now().naive_utc();
+        let changed = self
+            .inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let cycle_id = cycle_id.clone();
+                let debtor = debtor.to_string();
+                Box::pin(async move {
+                    settle_netted_guarantees_for_payer(
+                        txn,
+                        &cycle_id,
+                        &debtor,
+                        GuaranteeSettlementStatus::DefaultRemunerated,
+                        now,
+                        true,
+                    )
+                    .await
+                })
+            })
+            .await
+            .map_err(map_transaction_error)?;
+        info!(
+            "mirrored DefaultCovered: cycle={}, debtor={}, guarantees={}",
+            cycle_id, debtor, changed
+        );
         Ok(())
     }
 
@@ -262,6 +341,41 @@ impl CoreService {
             .into_iter()
             .find(|cycle| clearing_cycle_id(&cycle.id) == onchain_cycle_id)
             .map(|cycle| cycle.id))
+    }
+}
+
+async fn settle_netted_guarantees_for_payer<C: sea_orm::ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    payer: &str,
+    target: GuaranteeSettlementStatus,
+    now: NaiveDateTime,
+    release_locked_collateral: bool,
+) -> ServiceResult<u64> {
+    let guarantees = if release_locked_collateral {
+        repo::list_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer).await?
+    } else {
+        Vec::new()
+    };
+    let changed =
+        repo::transition_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer, target, now)
+            .await?;
+
+    if changed > 0 && release_locked_collateral {
+        for guarantee in guarantees {
+            repo::release_locked_collateral_for_guarantee_on(conn, &guarantee).await?;
+        }
+    }
+
+    Ok(changed)
+}
+
+fn map_transaction_error(err: sea_orm::TransactionError<ServiceError>) -> ServiceError {
+    match err {
+        sea_orm::TransactionError::Transaction(inner) => inner,
+        sea_orm::TransactionError::Connection(err) => {
+            crate::error::PersistDbError::DatabaseFailure(err).into()
+        }
     }
 }
 
