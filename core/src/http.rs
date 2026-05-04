@@ -1,6 +1,9 @@
-use crate::auth::access::{self, AccessContext};
+use crate::auth::{
+    access::{self, AccessContext},
+    constants::SCOPE_TAB_READ,
+};
 use crate::{error::ServiceError, persist::mapper, service::CoreService};
-use alloy_primitives::U256;
+use alloy_primitives::{B256, U256};
 use axum::extract::FromRef;
 use axum::{
     Json, Router,
@@ -11,6 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use crypto::bls::BLSCert;
+use entities::sea_orm_active_enums::ParticipantCycleRole;
 use entities::sea_orm_active_enums::SettlementStatus;
 use http::{StatusCode, header::AUTHORIZATION};
 use log::{debug, warn};
@@ -19,10 +23,13 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
-    CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest, CreatePaymentTabResult,
-    GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, SupportedTokensResponse,
-    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
+    ClearingParticipantProofResponse, ClearingParticipantRole, ClearingSettlementAction,
+    ClearingSettlementActionResponse, CollateralEventInfo, CorePublicParameters,
+    CreatePaymentTabRequest, CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest,
+    PendingRemunerationInfo, SupportedTokensResponse, TabInfo, UpdateUserSuspensionRequest,
+    UserSuspensionStatus, UserTransactionInfo,
 };
+use serde::Deserialize;
 use std::str::FromStr;
 
 #[derive(Clone)]
@@ -60,6 +67,14 @@ pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Route
         .route("/core/tokens", get(get_supported_tokens))
         .route("/core/payment-tabs", post(create_payment_tab))
         .route("/core/guarantees", post(issue_guarantee))
+        .route(
+            "/core/cycles/{cycle_id}/participants/{participant}/clearing-proof",
+            get(get_clearing_participant_proof),
+        )
+        .route(
+            "/core/cycles/{cycle_id}/participants/{participant}/clearing-action",
+            get(get_clearing_participant_action),
+        )
         .route(
             "/core/recipients/{recipient_address}/settled-tabs",
             get(list_settled_tabs),
@@ -176,6 +191,28 @@ fn parse_u256(value: &str) -> Result<U256, ApiError> {
     })
 }
 
+fn bytes32_hex(value: B256) -> String {
+    format!("{value:#x}")
+}
+
+fn participant_role_to_response(
+    role: ParticipantCycleRole,
+) -> Result<ClearingParticipantRole, ApiError> {
+    match role {
+        ParticipantCycleRole::NetDebtor => Ok(ClearingParticipantRole::NetDebtor),
+        ParticipantCycleRole::NetCreditor => Ok(ClearingParticipantRole::NetCreditor),
+        ParticipantCycleRole::Flat => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "flat participants do not have a clearing proof",
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClearingActionQuery {
+    action: ClearingSettlementAction,
+}
+
 async fn auth_middleware(
     State(service): State<CoreService>,
     mut req: Request,
@@ -253,6 +290,123 @@ async fn get_supported_tokens(
 ) -> Result<Json<SupportedTokensResponse>, ApiError> {
     let tokens = service.get_supported_tokens().await?;
     Ok(Json(tokens))
+}
+
+async fn get_clearing_participant_proof(
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
+    Path((cycle_id, participant)): Path<(String, String)>,
+) -> Result<Json<ClearingParticipantProofResponse>, ApiError> {
+    access::require_scope(&auth, SCOPE_TAB_READ)?;
+    if !access::addresses_match(&auth.wallet_address, &participant)
+        && access::require_admin_role(&auth).is_err()
+        && access::require_facilitator_role(&auth).is_err()
+    {
+        return Err(ApiError::from(ServiceError::Unauthorized(
+            "participant proof access denied".to_string(),
+        )));
+    }
+
+    let proof = service
+        .get_participant_clearing_proof(&cycle_id, &participant)
+        .await?;
+    Ok(Json(clearing_proof_response(proof)?))
+}
+
+async fn get_clearing_participant_action(
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
+    Path((cycle_id, participant)): Path<(String, String)>,
+    Query(query): Query<ClearingActionQuery>,
+) -> Result<Json<ClearingSettlementActionResponse>, ApiError> {
+    access::require_scope(&auth, SCOPE_TAB_READ)?;
+    if query.action != ClearingSettlementAction::MarkDefaulted
+        && !access::addresses_match(&auth.wallet_address, &participant)
+        && access::require_admin_role(&auth).is_err()
+        && access::require_facilitator_role(&auth).is_err()
+    {
+        return Err(ApiError::from(ServiceError::Unauthorized(
+            "participant clearing action access denied".to_string(),
+        )));
+    }
+
+    let proof = service
+        .get_participant_clearing_proof(&cycle_id, &participant)
+        .await?;
+    let contract_address = service.clearing_house_address();
+    Ok(Json(clearing_action_response(
+        contract_address,
+        query.action,
+        proof,
+    )?))
+}
+
+fn clearing_proof_response(
+    proof: crate::service::netting::ClearingParticipantProof,
+) -> Result<ClearingParticipantProofResponse, ApiError> {
+    let role = participant_role_to_response(proof.role.clone())?;
+    Ok(ClearingParticipantProofResponse {
+        cycle_id: bytes32_hex(proof.cycle_id),
+        cycle_id_text: proof.cycle_id_text,
+        asset_address: proof.asset_address.to_string(),
+        participant: proof.participant.to_string(),
+        role,
+        amount: proof.amount.to_string(),
+        net_debit: proof.net_debit.to_string(),
+        net_credit: proof.net_credit.to_string(),
+        leaf: bytes32_hex(proof.leaf),
+        merkle_root: bytes32_hex(proof.merkle_root),
+        proof: proof.proof.into_iter().map(bytes32_hex).collect(),
+    })
+}
+
+fn clearing_action_response(
+    contract_address: String,
+    action: ClearingSettlementAction,
+    proof: crate::service::netting::ClearingParticipantProof,
+) -> Result<ClearingSettlementActionResponse, ApiError> {
+    let role = participant_role_to_response(proof.role)?;
+    let (required_role, function_name, debtor) = match action {
+        ClearingSettlementAction::PayNetDebit => {
+            (ClearingParticipantRole::NetDebtor, "payNetDebit", None)
+        }
+        ClearingSettlementAction::ClaimNetCredit => {
+            (ClearingParticipantRole::NetCreditor, "claimNetCredit", None)
+        }
+        ClearingSettlementAction::MarkDefaulted => (
+            ClearingParticipantRole::NetDebtor,
+            "markDefaulted",
+            Some(proof.participant.to_string()),
+        ),
+    };
+    if role != required_role {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("{function_name} requires participant role {required_role:?}"),
+        ));
+    }
+
+    let payable_value = if action == ClearingSettlementAction::PayNetDebit
+        && proof.asset_address == alloy_primitives::Address::ZERO
+    {
+        proof.amount.to_string()
+    } else {
+        "0".to_string()
+    };
+
+    Ok(ClearingSettlementActionResponse {
+        contract_address,
+        function_name: function_name.to_string(),
+        action,
+        cycle_id: bytes32_hex(proof.cycle_id),
+        cycle_id_text: proof.cycle_id_text,
+        asset_address: proof.asset_address.to_string(),
+        participant: proof.participant.to_string(),
+        debtor,
+        amount: proof.amount.to_string(),
+        payable_value,
+        proof: proof.proof.into_iter().map(bytes32_hex).collect(),
+    })
 }
 
 async fn post_auth_nonce(
