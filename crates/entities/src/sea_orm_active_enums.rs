@@ -24,30 +24,6 @@ pub enum CollateralEventType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "settlement_status")]
-pub enum SettlementStatus {
-    #[sea_orm(string_value = "PENDING")]
-    Pending,
-    #[sea_orm(string_value = "SETTLED")]
-    Settled,
-    #[sea_orm(string_value = "FAILED")]
-    Failed,
-    #[sea_orm(string_value = "REMUNERATED")]
-    Remunerated,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "tab_status")]
-pub enum TabStatus {
-    #[sea_orm(string_value = "PENDING")]
-    Pending,
-    #[sea_orm(string_value = "OPEN")]
-    Open,
-    #[sea_orm(string_value = "CLOSED")]
-    Closed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "withdrawal_status")]
 pub enum WithdrawalStatus {
     #[sea_orm(string_value = "PENDING")]

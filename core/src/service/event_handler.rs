@@ -1,7 +1,7 @@
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
-use log::{info, warn};
+use log::info;
 use metrics_4mica::measure;
 
 use crate::metrics::misc::record_event_handler_time;
@@ -42,7 +42,7 @@ impl EthereumEventHandler for CoreService {
         let RecipientRemunerated {
             tab_id,
             amount,
-            asset,
+            asset: _,
             ..
         } = *log.log_decode()?.data();
         info!("Recipient remunerated: tab={tab_id}, amount={amount}");

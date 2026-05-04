@@ -12,7 +12,6 @@ pub use super::cycle_exposure_edge::Entity as CycleExposureEdge;
 pub use super::cycle_participant_position::Entity as CycleParticipantPosition;
 pub use super::guarantee::Entity as Guarantee;
 pub use super::settlement_cycle::Entity as SettlementCycle;
-pub use super::tabs::Entity as Tabs;
 pub use super::user::Entity as User;
 pub use super::user_asset_balance::Entity as UserAssetBalance;
 pub use super::user_transaction::Entity as UserTransaction;
