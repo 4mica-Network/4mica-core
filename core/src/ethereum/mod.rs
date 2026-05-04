@@ -7,6 +7,6 @@ pub mod scanner;
 pub use contract::contract_abi;
 pub use proxy::{
     ClearingCommitInput, ClearingCommitTx, CoreContractApi, CoreContractProxy,
-    GuaranteeVersionConfig, RecordPaymentTx,
+    GuaranteeVersionConfig,
 };
 pub use scanner::EthereumEventScanner;

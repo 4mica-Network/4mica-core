@@ -26,13 +26,6 @@ pub struct GuaranteeVersionConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct RecordPaymentTx {
-    pub tx_hash: B256,
-    pub block_number: Option<u64>,
-    pub block_hash: Option<B256>,
-}
-
-#[derive(Debug, Clone)]
 pub struct ClearingCommitInput {
     pub cycle_id: B256,
     pub asset: Address,
@@ -76,13 +69,6 @@ pub trait CoreContractApi: Send + Sync {
     async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError>;
 
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError>;
-
-    async fn record_payment(
-        &self,
-        tab_id: U256,
-        asset: Address,
-        amount: U256,
-    ) -> Result<RecordPaymentTx, CoreContractApiError>;
 
     async fn commit_clearing_cycle(
         &self,
@@ -185,31 +171,6 @@ impl CoreContractApi for CoreContractProxy {
             });
         }
         Ok(tokens)
-    }
-
-    async fn record_payment(
-        &self,
-        tab_id: U256,
-        asset: Address,
-        amount: U256,
-    ) -> Result<RecordPaymentTx, CoreContractApiError> {
-        // Serialize contract writes for the shared signer to avoid nonce races between
-        // overlapping payment-confirmation tasks.
-        let _guard = self.tx_write_lock.lock().await;
-        let contract = self.build_contract();
-        let tx = contract.recordPayment(tab_id, asset, amount);
-
-        let receipt = tx.send().await?.get_receipt().await?;
-
-        info!(
-            "recordPayment confirmed in tx {:?}",
-            receipt.transaction_hash
-        );
-        Ok(RecordPaymentTx {
-            tx_hash: receipt.transaction_hash,
-            block_number: receipt.block_number,
-            block_hash: receipt.block_hash,
-        })
     }
 
     async fn commit_clearing_cycle(
