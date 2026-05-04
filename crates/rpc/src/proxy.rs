@@ -1,4 +1,3 @@
-use alloy_primitives::U256;
 use reqwest::header::AUTHORIZATION;
 use reqwest::{Client, Url};
 use serde::Serialize;
@@ -7,9 +6,7 @@ use serde::de::DeserializeOwned;
 use crate::{
     ApiClientError,
     common::{
-        AssetBalanceInfo, CollateralEventInfo, CreatePaymentTabRequest, CreatePaymentTabResult,
-        GuaranteeInfo, PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest,
-        UserSuspensionStatus, UserTransactionInfo,
+        AssetBalanceInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
     },
     core::{
         ClearingParticipantProofResponse, ClearingSettlementAction,
@@ -18,10 +15,6 @@ use crate::{
     guarantee::PaymentGuaranteeRequest,
 };
 use crypto::bls::BLSCert;
-
-fn serialize_tab_id(val: U256) -> String {
-    format!("{:#x}", val)
-}
 
 #[derive(Debug, Clone)]
 pub struct RpcProxy {
@@ -173,102 +166,11 @@ impl RpcProxy {
         self.post(url, &req).await
     }
 
-    pub async fn create_payment_tab(
-        &self,
-        req: CreatePaymentTabRequest,
-    ) -> Result<CreatePaymentTabResult, ApiClientError> {
-        let url = self.url("/core/payment-tabs")?;
-        self.post(url, &req).await
-    }
-
-    pub async fn list_settled_tabs(
-        &self,
-        recipient_address: String,
-    ) -> Result<Vec<TabInfo>, ApiClientError> {
-        let path = format!("/core/recipients/{recipient_address}/settled-tabs");
-        let url = self.url(&path)?;
-        self.get(url).await
-    }
-
-    pub async fn list_pending_remunerations(
-        &self,
-        recipient_address: String,
-    ) -> Result<Vec<PendingRemunerationInfo>, ApiClientError> {
-        let path = format!("/core/recipients/{recipient_address}/pending-remunerations");
-        let url = self.url(&path)?;
-        self.get(url).await
-    }
-
-    pub async fn get_tab(&self, tab_id: U256) -> Result<Option<TabInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}", serialize_tab_id(tab_id));
-        let url = self.url(&path)?;
-        self.get(url).await
-    }
-
-    pub async fn list_recipient_tabs(
-        &self,
-        recipient_address: String,
-        settlement_statuses: Option<Vec<String>>,
-    ) -> Result<Vec<TabInfo>, ApiClientError> {
-        let path = format!("/core/recipients/{recipient_address}/tabs");
-        let mut url = self.url(&path)?;
-        if let Some(statuses) = settlement_statuses {
-            {
-                let mut pairs = url.query_pairs_mut();
-                for status in statuses {
-                    pairs.append_pair("settlement_status", &status);
-                }
-            }
-        }
-        self.get(url).await
-    }
-
-    pub async fn get_tab_guarantees(
-        &self,
-        tab_id: U256,
-    ) -> Result<Vec<GuaranteeInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}/guarantees", serialize_tab_id(tab_id));
-        let url = self.url(&path)?;
-        self.get(url).await
-    }
-
-    pub async fn get_latest_guarantee(
-        &self,
-        tab_id: U256,
-    ) -> Result<Option<GuaranteeInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}/guarantees/latest", serialize_tab_id(tab_id));
-        let url = self.url(&path)?;
-        self.get(url).await
-    }
-
-    pub async fn get_guarantee(
-        &self,
-        tab_id: U256,
-        req_id: U256,
-    ) -> Result<Option<GuaranteeInfo>, ApiClientError> {
-        let path = format!(
-            "/core/tabs/{}/guarantees/{}",
-            serialize_tab_id(tab_id),
-            req_id
-        );
-        let url = self.url(&path)?;
-        self.get(url).await
-    }
-
     pub async fn list_recipient_payments(
         &self,
         recipient_address: String,
     ) -> Result<Vec<UserTransactionInfo>, ApiClientError> {
         let path = format!("/core/recipients/{recipient_address}/payments");
-        let url = self.url(&path)?;
-        self.get(url).await
-    }
-
-    pub async fn get_collateral_events_for_tab(
-        &self,
-        tab_id: U256,
-    ) -> Result<Vec<CollateralEventInfo>, ApiClientError> {
-        let path = format!("/core/tabs/{}/collateral-events", serialize_tab_id(tab_id));
         let url = self.url(&path)?;
         self.get(url).await
     }

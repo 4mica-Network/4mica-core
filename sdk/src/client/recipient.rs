@@ -1,25 +1,21 @@
 use alloy::{
     network::TxSigner,
-    primitives::U256,
     rpc::types::TransactionReceipt,
     signers::{Signature, Signer},
 };
 use crypto::bls::{BLSCert, BlsError};
 use rpc::{
-    ClearingSettlementActionResponse, CreatePaymentTabRequest, PaymentGuaranteeClaims,
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    ClearingSettlementActionResponse, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
     PaymentGuaranteeRequestClaimsV2, SigningScheme,
 };
 
 use crate::{
-    client::model::{
-        AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo,
-        PendingRemunerationInfo, RecipientPaymentInfo, TabInfo,
-    },
-    client::{ClientCtx, model::TabPaymentStatus},
+    client::ClientCtx,
+    client::model::{AssetBalanceInfo, RecipientPaymentInfo},
     error::{
-        ClearingSettlementError, CreateTabError, IssuePaymentGuaranteeError, RecipientQueryError,
-        RemunerateError, TabPaymentStatusError, VerifyGuaranteeError,
+        ClearingSettlementError, IssuePaymentGuaranteeError, RecipientQueryError,
+        VerifyGuaranteeError,
     },
     guarantee::{PreparedPaymentGuaranteeClaims, PreparedPaymentGuaranteeRequest},
 };
@@ -101,65 +97,6 @@ impl<S> RecipientClient<S> {
         }
 
         Ok(())
-    }
-
-    /// Creates or reuses a payment tab for a specific guarantee version.
-    ///
-    /// Active tab identity is version-scoped:
-    /// `(user_address, recipient_address, asset_address, guarantee_version)`.
-    /// The core may therefore return different active tabs for V1 and V2
-    /// even when the user, recipient, and asset are the same.
-    ///
-    /// ### Arguments
-    ///
-    /// * `user_address` - The address of the user who is creating the tab
-    /// * `recipient_address` - The address of the recipient who will receive the payment
-    /// * `erc20_token` - The address of the ERC20 token to use for the payment, leave as `None` for ETH
-    /// * `ttl` - The time to live for the tab in seconds
-    /// * `guarantee_version` - The guarantee version that this tab will accept
-    pub async fn create_tab(
-        &self,
-        user_address: String,
-        recipient_address: String,
-        erc20_token: Option<String>,
-        ttl: Option<u64>,
-        guarantee_version: u64,
-    ) -> Result<CreateTabResult, CreateTabError>
-    where
-        S: Signer + Sync,
-    {
-        let result = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .create_payment_tab(CreatePaymentTabRequest {
-                user_address,
-                recipient_address,
-                erc20_token,
-                ttl,
-                guarantee_version,
-            })
-            .await?;
-        Ok(result.into())
-    }
-
-    pub async fn get_tab_payment_status(
-        &self,
-        tab_id: U256,
-    ) -> Result<TabPaymentStatus, TabPaymentStatusError> {
-        let status = self
-            .ctx
-            .get_contract()
-            .getPaymentStatus(tab_id)
-            .call()
-            .await
-            .map_err(TabPaymentStatusError::from)?;
-
-        Ok(TabPaymentStatus {
-            paid: status.paid,
-            remunerated: status.remunerated,
-            asset: status.asset.to_string(),
-        })
     }
 
     async fn issue_inner(
@@ -254,179 +191,6 @@ impl<S> RecipientClient<S> {
         Ok(claims)
     }
 
-    pub async fn remunerate(&self, cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        self.verify_payment_guarantee(&cert)
-            .map_err(|err| match err {
-                VerifyGuaranteeError::InvalidCertificate(source) => {
-                    RemunerateError::CertificateInvalid(source)
-                }
-                VerifyGuaranteeError::CertificateMismatch => RemunerateError::CertificateMismatch,
-                VerifyGuaranteeError::GuaranteeVersionMismatch { expected, actual } => {
-                    RemunerateError::GuaranteeVersionMismatch { expected, actual }
-                }
-                VerifyGuaranteeError::GuaranteeDomainMismatch => {
-                    RemunerateError::GuaranteeDomainMismatch
-                }
-                VerifyGuaranteeError::UnsupportedGuaranteeVersion(version) => {
-                    RemunerateError::UnsupportedGuaranteeVersion(version)
-                }
-            })?;
-
-        let sig_words = cert
-            .signature()
-            .to_solidity_words()
-            .map_err(|e| RemunerateError::SignatureDecode(anyhow::Error::new(e)))?;
-
-        let claims_bytes = cert.claims().to_vec();
-
-        // Static call first to surface a revert without submitting a transaction
-        self.ctx
-            .get_write_contract()
-            .await?
-            .remunerate(claims_bytes.clone().into(), sig_words.into())
-            .call()
-            .await
-            .map_err(RemunerateError::from)?;
-
-        let send_result = self
-            .ctx
-            .get_write_contract()
-            .await?
-            .remunerate(claims_bytes.into(), sig_words.into())
-            .send()
-            .await
-            .map_err(RemunerateError::from)?;
-
-        let receipt = send_result
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(RemunerateError::from)?;
-
-        Ok(receipt)
-    }
-
-    pub async fn list_settled_tabs(&self) -> Result<Vec<TabInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let address = self.ctx.signer_address().to_string();
-        let tabs = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .list_settled_tabs(address)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        Ok(tabs)
-    }
-
-    pub async fn list_pending_remunerations(
-        &self,
-    ) -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let address = self.ctx.signer_address().to_string();
-        let items = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .list_pending_remunerations(address)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        Ok(items)
-    }
-
-    pub async fn get_tab(&self, tab_id: U256) -> Result<Option<TabInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let result = self.ctx.rpc_proxy().await?.get_tab(tab_id).await?;
-        Ok(result.map(Into::into))
-    }
-
-    pub async fn list_recipient_tabs(
-        &self,
-        settlement_statuses: Option<Vec<String>>,
-    ) -> Result<Vec<TabInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let address = self.ctx.signer_address().to_string();
-        let tabs = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .list_recipient_tabs(address, settlement_statuses)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        Ok(tabs)
-    }
-
-    pub async fn get_tab_guarantees(
-        &self,
-        tab_id: U256,
-    ) -> Result<Vec<GuaranteeInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let guarantees = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .get_tab_guarantees(tab_id)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        Ok(guarantees)
-    }
-
-    pub async fn get_latest_guarantee(
-        &self,
-        tab_id: U256,
-    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let result = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .get_latest_guarantee(tab_id)
-            .await?
-            .map(Into::into);
-        Ok(result)
-    }
-
-    pub async fn get_guarantee(
-        &self,
-        tab_id: U256,
-        req_id: U256,
-    ) -> Result<Option<GuaranteeInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let result = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .get_guarantee(tab_id, req_id)
-            .await?
-            .map(Into::into);
-        Ok(result)
-    }
-
     pub async fn list_recipient_payments(
         &self,
     ) -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>
@@ -444,25 +208,6 @@ impl<S> RecipientClient<S> {
             .map(Into::into)
             .collect();
         Ok(payments)
-    }
-
-    pub async fn get_collateral_events_for_tab(
-        &self,
-        tab_id: U256,
-    ) -> Result<Vec<CollateralEventInfo>, RecipientQueryError>
-    where
-        S: Signer + Sync,
-    {
-        let events = self
-            .ctx
-            .rpc_proxy()
-            .await?
-            .get_collateral_events_for_tab(tab_id)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        Ok(events)
     }
 
     pub async fn get_user_asset_balance(

@@ -68,11 +68,11 @@ async fn rpc_proxy_get_public_params_round_trip() {
 #[serial_test::file_serial]
 async fn rpc_proxy_surfaces_api_errors() {
     let router = Router::new().route(
-        "/core/recipients/{recipient}/tabs",
+        "/core/public-params",
         get(|| async {
             (
                 axum::http::StatusCode::BAD_REQUEST,
-                Json(json!({"error": "invalid settlement status: unknown"})),
+                Json(json!({"error": "invalid request"})),
             )
         }),
     );
@@ -83,14 +83,14 @@ async fn rpc_proxy_surfaces_api_errors() {
 
     let proxy = RpcProxy::new(&base).expect("create proxy");
     let err = proxy
-        .list_recipient_tabs("0xdeadbeef".into(), Some(vec!["unknown".into()]))
+        .get_public_params()
         .await
         .expect_err("expected API error");
     match err {
         rpc::ApiClientError::Api { status, message } => {
             assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
             assert!(
-                message.contains("invalid settlement status"),
+                message.contains("invalid request"),
                 "unexpected message: {message}"
             );
         }
