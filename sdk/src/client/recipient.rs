@@ -6,8 +6,8 @@ use alloy::{
 };
 use crypto::bls::{BLSCert, BlsError};
 use rpc::{
-    CreatePaymentTabRequest, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
-    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    ClearingSettlementActionResponse, CreatePaymentTabRequest, PaymentGuaranteeClaims,
+    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
     PaymentGuaranteeRequestClaimsV2, SigningScheme,
 };
 
@@ -18,8 +18,8 @@ use crate::{
     },
     client::{ClientCtx, model::TabPaymentStatus},
     error::{
-        CreateTabError, IssuePaymentGuaranteeError, RecipientQueryError, RemunerateError,
-        TabPaymentStatusError, VerifyGuaranteeError,
+        ClearingSettlementError, CreateTabError, IssuePaymentGuaranteeError, RecipientQueryError,
+        RemunerateError, TabPaymentStatusError, VerifyGuaranteeError,
     },
     guarantee::{PreparedPaymentGuaranteeClaims, PreparedPaymentGuaranteeRequest},
 };
@@ -41,6 +41,49 @@ impl<S> RecipientClient<S> {
 
     pub fn active_guarantee_domain(&self) -> &[u8; 32] {
         self.ctx.active_guarantee_domain()
+    }
+
+    pub async fn get_clearing_claim_net_credit_action(
+        &self,
+        cycle_id: String,
+    ) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>
+    where
+        S: Signer + Sync,
+    {
+        let creditor = self.ctx.signer_address().to_string();
+        let proxy = self.ctx.rpc_proxy().await?;
+        Ok(proxy
+            .get_clearing_claim_net_credit_action(cycle_id, creditor)
+            .await?)
+    }
+
+    /// Claims the caller's committed net credit for a clearing cycle.
+    pub async fn claim_net_credit(
+        &self,
+        cycle_id: String,
+    ) -> Result<TransactionReceipt, ClearingSettlementError>
+    where
+        S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let action = self.get_clearing_claim_net_credit_action(cycle_id).await?;
+        let call = super::user::parse_clearing_action_call(&action)?;
+        let contract = self
+            .ctx
+            .get_clearing_house_write_contract(call.contract_address)
+            .await?;
+
+        let send_result = contract
+            .claimNetCredit(call.cycle_id, call.amount, call.proof)
+            .send()
+            .await
+            .map_err(ClearingSettlementError::from)?;
+        let receipt = send_result
+            .get_receipt()
+            .await
+            .map_err(alloy::contract::Error::from)
+            .map_err(ClearingSettlementError::from)?;
+
+        Ok(receipt)
     }
 
     fn verify_guarantee_metadata(

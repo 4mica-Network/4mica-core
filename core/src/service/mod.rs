@@ -205,6 +205,14 @@ impl CoreService {
         self.inner.public_params.clone()
     }
 
+    pub fn clearing_house_address(&self) -> String {
+        self.inner
+            .config
+            .ethereum_config
+            .clearing_house_address
+            .clone()
+    }
+
     fn tab_expiration_time(&self) -> u64 {
         self.inner.tab_expiration_time.load(Ordering::Relaxed)
     }

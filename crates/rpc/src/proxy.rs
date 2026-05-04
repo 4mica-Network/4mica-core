@@ -11,7 +11,10 @@ use crate::{
         GuaranteeInfo, PendingRemunerationInfo, TabInfo, UpdateUserSuspensionRequest,
         UserSuspensionStatus, UserTransactionInfo,
     },
-    core::{CorePublicParameters, SupportedTokensResponse},
+    core::{
+        ClearingParticipantProofResponse, ClearingSettlementAction,
+        ClearingSettlementActionResponse, CorePublicParameters, SupportedTokensResponse,
+    },
     guarantee::PaymentGuaranteeRequest,
 };
 use crypto::bls::BLSCert;
@@ -102,6 +105,64 @@ impl RpcProxy {
     pub async fn get_supported_tokens(&self) -> Result<SupportedTokensResponse, ApiClientError> {
         let url = self.url("/core/tokens")?;
         self.get(url).await
+    }
+
+    pub async fn get_clearing_participant_proof(
+        &self,
+        cycle_id: String,
+        participant: String,
+    ) -> Result<ClearingParticipantProofResponse, ApiClientError> {
+        let path = format!("/core/cycles/{cycle_id}/participants/{participant}/clearing-proof");
+        let url = self.url(&path)?;
+        self.get(url).await
+    }
+
+    pub async fn get_clearing_settlement_action(
+        &self,
+        cycle_id: String,
+        participant: String,
+        action: ClearingSettlementAction,
+    ) -> Result<ClearingSettlementActionResponse, ApiClientError> {
+        let path = format!("/core/cycles/{cycle_id}/participants/{participant}/clearing-action");
+        let mut url = self.url(&path)?;
+        url.query_pairs_mut()
+            .append_pair("action", clearing_action_query_value(&action));
+        self.get(url).await
+    }
+
+    pub async fn get_clearing_pay_net_debit_action(
+        &self,
+        cycle_id: String,
+        debtor: String,
+    ) -> Result<ClearingSettlementActionResponse, ApiClientError> {
+        self.get_clearing_settlement_action(cycle_id, debtor, ClearingSettlementAction::PayNetDebit)
+            .await
+    }
+
+    pub async fn get_clearing_claim_net_credit_action(
+        &self,
+        cycle_id: String,
+        creditor: String,
+    ) -> Result<ClearingSettlementActionResponse, ApiClientError> {
+        self.get_clearing_settlement_action(
+            cycle_id,
+            creditor,
+            ClearingSettlementAction::ClaimNetCredit,
+        )
+        .await
+    }
+
+    pub async fn get_clearing_mark_defaulted_action(
+        &self,
+        cycle_id: String,
+        debtor: String,
+    ) -> Result<ClearingSettlementActionResponse, ApiClientError> {
+        self.get_clearing_settlement_action(
+            cycle_id,
+            debtor,
+            ClearingSettlementAction::MarkDefaulted,
+        )
+        .await
     }
 
     pub async fn issue_guarantee(
@@ -231,6 +292,14 @@ impl RpcProxy {
         let url = self.url(&path)?;
         let body = UpdateUserSuspensionRequest { suspended };
         self.post(url, &body).await
+    }
+}
+
+fn clearing_action_query_value(action: &ClearingSettlementAction) -> &'static str {
+    match action {
+        ClearingSettlementAction::PayNetDebit => "pay_net_debit",
+        ClearingSettlementAction::ClaimNetCredit => "claim_net_credit",
+        ClearingSettlementAction::MarkDefaulted => "mark_defaulted",
     }
 }
 

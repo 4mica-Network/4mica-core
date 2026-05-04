@@ -284,6 +284,23 @@ pub enum PayTabError {
 }
 
 #[derive(Debug, Error)]
+pub enum ClearingSettlementError {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+
+    #[error(transparent)]
+    Rpc(#[from] ApiClientError),
+
+    #[error(transparent)]
+    Client(#[from] ClientError),
+
+    #[error("unknown revert (selector {selector:#x})")]
+    UnknownRevert { selector: u32, data: Vec<u8> },
+    #[error("provider/transport error: {0}")]
+    Transport(String),
+}
+
+#[derive(Debug, Error)]
 pub enum GetUserError {
     #[error("unsupported asset: {0}")]
     UnsupportedAsset(Address),
@@ -469,6 +486,7 @@ impl_contract_error_target!(CancelWithdrawalError);
 impl_contract_error_target!(DepositError);
 impl_contract_error_target!(ApproveErc20Error);
 impl_contract_error_target!(PayTabError);
+impl_contract_error_target!(ClearingSettlementError);
 impl_contract_error_target!(GetUserError);
 impl_contract_error_target!(TabPaymentStatusError);
 
@@ -571,6 +589,8 @@ impl_from_alloy_error!(PayTabError, {
     Core4Mica::Core4MicaErrors::InvalidAsset(_) => Self::InvalidAsset,
     Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
 });
+
+impl_from_alloy_error!(ClearingSettlementError);
 
 impl_from_alloy_error!(ApproveErc20Error);
 

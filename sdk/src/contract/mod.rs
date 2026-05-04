@@ -253,3 +253,12 @@ sol! {
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
     }
 }
+
+sol! {
+    #[sol(rpc)]
+    contract ClearingHouse {
+        function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable;
+        function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
+        function markDefaulted(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof) external;
+    }
+}
