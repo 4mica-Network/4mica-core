@@ -180,7 +180,6 @@ impl CoreService {
         let cfg = &self.inner.config.ethereum_config;
         let mut reverted_count = 0u64;
         let mut recorded_count = 0u64;
-        let mut record_failed_count = 0u64;
         if let Some(cursor) = repo::get_chain_cursor(&self.inner.persist_ctx, cfg.chain_id).await? {
             let cursor_block_number = cursor.last_confirmed_block_number as u64;
             let cursor_block = self
@@ -321,52 +320,12 @@ impl CoreService {
                 }
             }
 
-            let Some(tab_id) = tx.tab_id.as_deref() else {
-                warn!("Pending tx {} missing tab_id; marking reverted", tx.tx_id);
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration_pending)
-                    .await?;
-                reverted_count += 1;
-                continue;
-            };
-            let tab_id = U256::from_str(tab_id).map_err(|e| {
-                ServiceError::InvalidParams(format!("invalid tab_id {tab_id}: {e}"))
-            })?;
-            let asset_address = Address::from_str(&tx.asset_address).map_err(|e| {
-                ServiceError::InvalidParams(format!(
-                    "invalid asset address {}: {e}",
-                    tx.asset_address
-                ))
-            })?;
-            let amount = U256::from_str(&tx.amount).map_err(|e| {
-                ServiceError::InvalidParams(format!("invalid amount {}: {e}", tx.amount))
-            })?;
-
-            let record_tx = match self
-                .inner
-                .contract_api
-                .record_payment(tab_id, asset_address, amount)
-                .await
-            {
-                Ok(tx) => tx,
-                Err(err) => {
-                    error!(
-                        "record_payment failed for tx {} (tab {}): {err}",
-                        tx.tx_id, tab_id
-                    );
-                    record_failed_count += 1;
-                    continue;
-                }
-            };
-
-            let record_hash = format!("{:#x}", record_tx.tx_hash);
-            let record_block_hash = record_tx.block_hash.map(|hash| format!("{:#x}", hash));
-
             repo::mark_payment_transaction_recorded(
                 &self.inner.persist_ctx,
                 &tx.tx_id,
-                record_hash,
-                record_tx.block_number,
-                record_block_hash,
+                tx.tx_id.clone(),
+                tx.block_number.map(|n| n as u64),
+                tx.block_hash.clone(),
             )
             .await?;
             crate::metrics::record_processed_payment_tx(
@@ -385,15 +344,10 @@ impl CoreService {
         )
         .await?;
 
-        if pending_total > 0 || recorded_count > 0 || reverted_count > 0 || record_failed_count > 0
-        {
+        if pending_total > 0 || recorded_count > 0 || reverted_count > 0 {
             info!(
-                "Confirmed pending payments: safe_head={} pending={} recorded={} reverted={} record_failed={}",
-                safe_head.number,
-                pending_total,
-                recorded_count,
-                reverted_count,
-                record_failed_count
+                "Confirmed pending payments: safe_head={} pending={} recorded={} reverted={}",
+                safe_head.number, pending_total, recorded_count, reverted_count
             );
         }
 

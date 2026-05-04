@@ -19,7 +19,7 @@ use core_service::{
     config::{AppConfig, DEFAULT_ASSET_ADDRESS},
     error::PersistDbError,
     error::ServiceError,
-    ethereum::{CoreContractApi, GuaranteeVersionConfig, RecordPaymentTx},
+    ethereum::{CoreContractApi, GuaranteeVersionConfig},
     persist::*,
     service::{CoreService, CoreServiceDeps},
     util::u256_to_string,
@@ -2494,19 +2494,6 @@ async fn contract_api_rejects_disabled_guarantee_version() {
             Ok(3600)
         }
 
-        async fn record_payment(
-            &self,
-            _tab_id: U256,
-            _asset: Address,
-            _amount: U256,
-        ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
-            Ok(RecordPaymentTx {
-                tx_hash: B256::ZERO,
-                block_number: None,
-                block_hash: None,
-            })
-        }
-
         async fn commit_clearing_cycle(
             &self,
             _input: core_service::ethereum::ClearingCommitInput,
@@ -2568,19 +2555,6 @@ impl CoreContractApi for MockContractApi {
         &self,
     ) -> Result<u64, core_service::error::CoreContractApiError> {
         Ok(self.tab_expiration_time)
-    }
-
-    async fn record_payment(
-        &self,
-        _tab_id: U256,
-        _asset: alloy::primitives::Address,
-        _amount: U256,
-    ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
-        Ok(RecordPaymentTx {
-            tx_hash: B256::ZERO,
-            block_number: None,
-            block_hash: None,
-        })
     }
 
     async fn commit_clearing_cycle(

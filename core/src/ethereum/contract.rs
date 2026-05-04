@@ -214,14 +214,6 @@ pub mod contract_abi {
 
         #[sol(rpc)]
         contract Core4Mica {
-            /// Records a successful off-chain payment for a given tab.
-            /// Only callable by an AccessManager-restricted operator.
-            function recordPayment(
-                uint256 tab_id,
-                address asset,
-                uint256 amount
-            ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant;
-
             function getGuaranteeVersionConfig(
                 uint64 version
             )
