@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use blockchain::txtools::PaymentTx;

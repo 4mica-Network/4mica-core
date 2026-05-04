@@ -7,8 +7,6 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
     pub guarantee_id: String,
-    #[sea_orm(column_name = "tab_id", column_type = "Text", nullable)]
-    pub legacy_tab_id: Option<String>,
     #[sea_orm(column_type = "Text")]
     pub cycle_id: String,
     #[sea_orm(column_type = "Text")]

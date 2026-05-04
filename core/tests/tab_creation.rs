@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::primitives::{B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};

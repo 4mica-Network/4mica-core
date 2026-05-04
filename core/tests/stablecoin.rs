@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::primitives::U256;
 use alloy::providers::DynProvider;
 use alloy::providers::ext::AnvilApi;

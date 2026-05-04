@@ -1,8 +1,6 @@
 use alloy_primitives::U256;
 use serde::{Deserialize, Serialize};
 
-use crate::guarantee::PaymentGuaranteeClaims;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserTransactionInfo {
     pub user_address: String,
@@ -16,77 +14,12 @@ pub struct UserTransactionInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatePaymentTabRequest {
-    pub user_address: String,
-    pub recipient_address: String,
-    /// Address of ERC20-Token
-    pub erc20_token: Option<String>,
-    /// Tab TTL in seconds
-    pub ttl: Option<u64>,
-    pub guarantee_version: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatePaymentTabResult {
-    pub id: U256,
-    pub user_address: String,
-    pub recipient_address: String,
-    pub erc20_token: Option<String>,
-    pub asset_address: String,
-    pub guarantee_version: u64,
-    pub next_req_id: U256,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInfo {
-    pub collateral: U256,
-    pub available_collateral: U256,
-    pub guarantees: Vec<PaymentGuaranteeClaims>,
-    pub transactions: Vec<UserTransactionInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TabInfo {
-    pub tab_id: U256,
-    pub user_address: String,
-    pub recipient_address: String,
-    pub asset_address: String,
-    pub accepted_guarantee_version: u64,
-    pub start_timestamp: i64,
-    pub ttl_seconds: i64,
-    pub status: String,
-    pub settlement_status: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GuaranteeInfo {
-    pub tab_id: U256,
-    pub req_id: U256,
-    pub version: u64,
-    pub from_address: String,
-    pub to_address: String,
-    pub asset_address: String,
-    pub amount: U256,
-    pub start_timestamp: i64,
-    pub certificate: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingRemunerationInfo {
-    pub tab: TabInfo,
-    pub latest_guarantee: Option<GuaranteeInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollateralEventInfo {
     pub id: String,
     pub user_address: String,
     pub asset_address: String,
     pub amount: U256,
     pub event_type: String,
-    pub tab_id: Option<U256>,
     pub req_id: Option<U256>,
     pub tx_id: Option<String>,
     pub created_at: i64,

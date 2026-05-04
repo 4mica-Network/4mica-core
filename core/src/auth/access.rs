@@ -1,6 +1,5 @@
 use super::constants::{ROLE_ADMIN, ROLE_FACILITATOR};
 use crate::error::{ServiceError, ServiceResult};
-use entities::tabs;
 use log::warn;
 use subtle::{Choice, ConstantTimeEq};
 
@@ -74,21 +73,6 @@ pub fn require_user_match(auth: &AccessContext, user_address: &str) -> ServiceRe
         ));
     }
     Ok(())
-}
-
-pub fn require_tab_owner_or_facilitator(
-    auth: &AccessContext,
-    tab: &tabs::Model,
-) -> ServiceResult<()> {
-    if addresses_match(&auth.wallet_address, &tab.user_address)
-        || addresses_match(&auth.wallet_address, &tab.server_address)
-        || require_facilitator_role(auth).is_ok()
-    {
-        return Ok(());
-    }
-    Err(ServiceError::Unauthorized(
-        "tab access denied, must be owner or facilitator".into(),
-    ))
 }
 
 pub fn require_admin_role(auth: &AccessContext) -> ServiceResult<()> {

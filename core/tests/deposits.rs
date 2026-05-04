@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;

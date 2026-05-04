@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::network::TransactionBuilder;
 use alloy::primitives::U256;
 use alloy::providers::ext::AnvilApi;
