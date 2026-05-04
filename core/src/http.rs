@@ -2,8 +2,8 @@ use crate::auth::{
     access::{self, AccessContext},
     constants::SCOPE_TAB_READ,
 };
-use crate::{error::ServiceError, persist::mapper, service::CoreService};
-use alloy_primitives::{B256, U256};
+use crate::{error::ServiceError, service::CoreService};
+use alloy_primitives::B256;
 use axum::extract::FromRef;
 use axum::{
     Json, Router,
@@ -15,7 +15,6 @@ use axum::{
 };
 use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::ParticipantCycleRole;
-use entities::sea_orm_active_enums::SettlementStatus;
 use http::{StatusCode, header::AUTHORIZATION};
 use log::{debug, warn};
 use metrics_4mica::http::HttpMetricsMiddleware;
@@ -24,13 +23,11 @@ use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
     ClearingParticipantProofResponse, ClearingParticipantRole, ClearingSettlementAction,
-    ClearingSettlementActionResponse, CollateralEventInfo, CorePublicParameters,
-    CreatePaymentTabRequest, CreatePaymentTabResult, GuaranteeInfo, PaymentGuaranteeRequest,
-    PendingRemunerationInfo, SupportedTokensResponse, TabInfo, UpdateUserSuspensionRequest,
-    UserSuspensionStatus, UserTransactionInfo,
+    ClearingSettlementActionResponse, CorePublicParameters, PaymentGuaranteeRequest,
+    SupportedTokensResponse, UpdateUserSuspensionRequest, UserSuspensionStatus,
+    UserTransactionInfo,
 };
 use serde::Deserialize;
-use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -65,7 +62,6 @@ pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Route
         .route("/core/health", get(get_health))
         .route("/core/public-params", get(get_public_params))
         .route("/core/tokens", get(get_supported_tokens))
-        .route("/core/payment-tabs", post(create_payment_tab))
         .route("/core/guarantees", post(issue_guarantee))
         .route(
             "/core/cycles/{cycle_id}/participants/{participant}/clearing-proof",
@@ -76,34 +72,8 @@ pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Route
             get(get_clearing_participant_action),
         )
         .route(
-            "/core/recipients/{recipient_address}/settled-tabs",
-            get(list_settled_tabs),
-        )
-        .route(
-            "/core/recipients/{recipient_address}/pending-remunerations",
-            get(list_pending_remunerations),
-        )
-        .route("/core/tabs/{tab_id}", get(get_tab))
-        .route(
-            "/core/recipients/{recipient_address}/tabs",
-            get(list_recipient_tabs),
-        )
-        .route("/core/tabs/{tab_id}/guarantees", get(get_tab_guarantees))
-        .route(
-            "/core/tabs/{tab_id}/guarantees/latest",
-            get(get_latest_guarantee),
-        )
-        .route(
-            "/core/tabs/{tab_id}/guarantees/{req_id}",
-            get(get_specific_guarantee),
-        )
-        .route(
             "/core/recipients/{recipient_address}/payments",
             get(list_recipient_payments),
-        )
-        .route(
-            "/core/tabs/{tab_id}/collateral-events",
-            get(get_collateral_events_for_tab),
         )
         .route(
             "/core/users/{user_address}/assets/{asset_address}",
@@ -180,15 +150,6 @@ impl From<ServiceError> for ApiError {
             }
         }
     }
-}
-
-fn parse_u256(value: &str) -> Result<U256, ApiError> {
-    U256::from_str(value).map_err(|e| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!("invalid 256-bit value {value}: {e}"),
-        )
-    })
 }
 
 fn bytes32_hex(value: B256) -> String {
@@ -463,125 +424,6 @@ async fn issue_guarantee(
     Ok(Json(cert))
 }
 
-async fn create_payment_tab(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Json(req): Json<CreatePaymentTabRequest>,
-) -> Result<Json<CreatePaymentTabResult>, ApiError> {
-    let result = service
-        .create_payment_tab(&auth, req)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(result))
-}
-
-async fn list_settled_tabs(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(recipient): Path<String>,
-) -> Result<Json<Vec<TabInfo>>, ApiError> {
-    // Treat Remunerated as a settled state for API consumers.
-    let tabs = service
-        .list_tabs_for_recipient(
-            &auth,
-            recipient,
-            &[SettlementStatus::Settled, SettlementStatus::Remunerated],
-        )
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(tabs))
-}
-
-async fn list_pending_remunerations(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(recipient): Path<String>,
-) -> Result<Json<Vec<PendingRemunerationInfo>>, ApiError> {
-    let items = service
-        .list_pending_remunerations(&auth, recipient)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(items))
-}
-
-async fn get_tab(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Option<TabInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let tab = service
-        .get_tab(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(tab))
-}
-
-async fn list_recipient_tabs(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(recipient): Path<String>,
-    Query(params): Query<Vec<(String, String)>>,
-) -> Result<Json<Vec<TabInfo>>, ApiError> {
-    let statuses: Vec<String> = params
-        .into_iter()
-        .filter_map(|(key, value)| {
-            if key == "settlement_status" {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let parsed = mapper::parse_settlement_statuses(&statuses).map_err(ApiError::from)?;
-    let tabs = service
-        .list_tabs_for_recipient(&auth, recipient, &parsed)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(tabs))
-}
-
-async fn get_tab_guarantees(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Vec<GuaranteeInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let guarantees = service
-        .get_tab_guarantees(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(guarantees))
-}
-
-async fn get_latest_guarantee(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let guarantee = service
-        .get_latest_guarantee(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(guarantee))
-}
-
-async fn get_specific_guarantee(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path((tab_id, req_id)): Path<(String, String)>,
-) -> Result<Json<Option<GuaranteeInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let req_id = parse_u256(&req_id)?;
-    let guarantee = service
-        .get_guarantee(&auth, tab_id, req_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(guarantee))
-}
-
 async fn list_recipient_payments(
     State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
@@ -592,19 +434,6 @@ async fn list_recipient_payments(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(payments))
-}
-
-async fn get_collateral_events_for_tab(
-    State(service): State<CoreService>,
-    Extension(auth): Extension<AccessContext>,
-    Path(tab_id): Path<String>,
-) -> Result<Json<Vec<CollateralEventInfo>>, ApiError> {
-    let tab_id = parse_u256(&tab_id)?;
-    let events = service
-        .get_collateral_events_for_tab(&auth, tab_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(events))
 }
 
 async fn get_user_asset_balance(

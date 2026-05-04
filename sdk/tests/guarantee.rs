@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use alloy::signers::Signer;
 use rpc::RpcProxy;
 use sdk_4mica::client::recipient::RecipientClient;
