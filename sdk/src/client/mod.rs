@@ -4,6 +4,7 @@ use crate::{
     auth::{AuthSession, AuthTokens},
     config::Config,
     contract::{
+        ClearingHouse::{self, ClearingHouseInstance},
         Core4Mica::{self, Core4MicaInstance},
         ERC20::{self, ERC20Instance},
     },
@@ -301,6 +302,17 @@ impl<S> ClientCtx<S> {
     {
         let provider = self.get_wallet_provider().await?;
         Ok(ERC20::new(token_address, provider))
+    }
+
+    async fn get_clearing_house_write_contract(
+        &self,
+        clearing_house_address: Address,
+    ) -> Result<ClearingHouseInstance<DynProvider>, ClientError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let provider = self.get_wallet_provider().await?;
+        Ok(ClearingHouse::new(clearing_house_address, provider))
     }
 }
 
