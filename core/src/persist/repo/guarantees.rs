@@ -392,6 +392,116 @@ pub async fn transition_guarantee_settlement_status_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
+pub async fn mark_cycle_guarantees_netted_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> Result<u64, PersistDbError> {
+    let result = guarantee::Entity::update_many()
+        .filter(guarantee::Column::CycleId.eq(cycle_id))
+        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::FinalizedPayable))
+        .set(guarantee::ActiveModel {
+            settlement_status: Set(GuaranteeSettlementStatus::Netted),
+            netted_at: Set(Some(now)),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected)
+}
+
+#[measure(record_db_time)]
+pub async fn list_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    payer: &str,
+) -> Result<Vec<guarantee::Model>, PersistDbError> {
+    let rows = guarantee::Entity::find()
+        .filter(guarantee::Column::CycleId.eq(cycle_id))
+        .filter(guarantee::Column::FromAddress.eq(payer))
+        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
+        .all(conn)
+        .await?;
+    Ok(rows)
+}
+
+#[measure(record_db_time)]
+pub async fn list_netted_guarantees_for_cycle_payee_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    payee: &str,
+) -> Result<Vec<guarantee::Model>, PersistDbError> {
+    let rows = guarantee::Entity::find()
+        .filter(guarantee::Column::CycleId.eq(cycle_id))
+        .filter(guarantee::Column::ToAddress.eq(payee))
+        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
+        .all(conn)
+        .await?;
+    Ok(rows)
+}
+
+#[measure(record_db_time)]
+pub async fn transition_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    payer: &str,
+    target: GuaranteeSettlementStatus,
+    now: NaiveDateTime,
+) -> Result<u64, PersistDbError> {
+    let mut update = guarantee::ActiveModel {
+        settlement_status: Set(target.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    if matches!(
+        target,
+        GuaranteeSettlementStatus::Settled | GuaranteeSettlementStatus::DefaultRemunerated
+    ) {
+        update.settled_at = Set(Some(now));
+    }
+
+    let result = guarantee::Entity::update_many()
+        .filter(guarantee::Column::CycleId.eq(cycle_id))
+        .filter(guarantee::Column::FromAddress.eq(payer))
+        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
+        .set(update)
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected)
+}
+
+#[measure(record_db_time)]
+pub async fn transition_netted_guarantees_for_cycle_payee_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    payee: &str,
+    target: GuaranteeSettlementStatus,
+    now: NaiveDateTime,
+) -> Result<u64, PersistDbError> {
+    let mut update = guarantee::ActiveModel {
+        settlement_status: Set(target.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    if matches!(
+        target,
+        GuaranteeSettlementStatus::Settled | GuaranteeSettlementStatus::DefaultRemunerated
+    ) {
+        update.settled_at = Set(Some(now));
+    }
+
+    let result = guarantee::Entity::update_many()
+        .filter(guarantee::Column::CycleId.eq(cycle_id))
+        .filter(guarantee::Column::ToAddress.eq(payee))
+        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
+        .set(update)
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected)
+}
+
+#[measure(record_db_time)]
 pub async fn release_locked_collateral_for_guarantee_on<C: ConnectionTrait>(
     conn: &C,
     guarantee: &guarantee::Model,

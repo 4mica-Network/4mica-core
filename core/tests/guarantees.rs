@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, U256, keccak256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
@@ -25,8 +25,11 @@ use core_service::{
     util::u256_to_string,
 };
 use crypto::bls::{BLSCert, BlsClaims};
-use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementStatus, TabStatus};
-use entities::{guarantee, user};
+use entities::sea_orm_active_enums::{
+    GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
+    SettlementStatus, TabStatus,
+};
+use entities::{cycle_participant_position, guarantee, settlement_cycle, user};
 use rand::random;
 use rpc::{
     GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
@@ -38,7 +41,9 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, Transactio
 use test_log::test;
 
 mod common;
-use common::fixtures::read_locked_collateral;
+use common::fixtures::{
+    ensure_user_with_collateral, read_locked_collateral, set_locked_collateral,
+};
 
 fn init() -> anyhow::Result<AppConfig> {
     dotenv::dotenv().ok();
@@ -478,6 +483,117 @@ async fn sign_v1_request(
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip712,
     ))
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
+async fn debtor_payment_event_settles_netted_guarantees_and_unlocks_collateral()
+-> anyhow::Result<()> {
+    let _ = init()?;
+    let ctx = PersistCtx::new().await?;
+    let service = build_core_service(ctx.clone()).await?;
+    let now = Utc::now().naive_utc();
+    let payer = normalize_address(&random_eth_address());
+    let payee = normalize_address(&random_eth_address());
+    let asset = DEFAULT_ASSET_ADDRESS.to_string();
+    let amount = U256::from(17u64);
+    let cycle_id = format!("{}:{}", asset, random::<u64>());
+    let guarantee_id = format!("0x{}", hex::encode(random::<[u8; 32]>()));
+
+    ensure_user_with_collateral(&ctx, &payer, U256::from(100u64)).await?;
+    ensure_user_with_collateral(&ctx, &payee, U256::ZERO).await?;
+    set_locked_collateral(&ctx, &payer, &asset, amount).await?;
+
+    settlement_cycle::Entity::insert(settlement_cycle::ActiveModel {
+        id: Set(cycle_id.clone()),
+        asset_address: Set(asset.clone()),
+        period_start: Set(now),
+        period_end: Set(now),
+        resolution_cutoff: Set(now),
+        clearing_commit_deadline: Set(now),
+        payment_submission_deadline: Set(now),
+        payment_finality_deadline: Set(now),
+        status: Set(SettlementCycleStatus::PaymentWindowOpen),
+        gross_payable_amount: Set(amount.to_string()),
+        gross_receivable_amount: Set(amount.to_string()),
+        net_settlement_amount: Set(amount.to_string()),
+        clearing_batch_hash: Set(None),
+        commit_tx_hash: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    })
+    .exec(ctx.db.as_ref())
+    .await?;
+
+    guarantee::Entity::insert(guarantee::ActiveModel {
+        guarantee_id: Set(guarantee_id.clone()),
+        legacy_tab_id: Set(None),
+        cycle_id: Set(cycle_id.clone()),
+        req_id: Set("1".to_string()),
+        from_address: Set(payer.clone()),
+        to_address: Set(payee.clone()),
+        asset_address: Set(asset.clone()),
+        value: Set(amount.to_string()),
+        version: Set(1),
+        start_ts: Set(now),
+        cert: Set("{}".to_string()),
+        request: Set(None),
+        settlement_status: Set(GuaranteeSettlementStatus::Netted),
+        dispute_deadline: Set(None),
+        finalized_at: Set(Some(now)),
+        netted_at: Set(Some(now)),
+        settled_at: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    })
+    .exec(ctx.db.as_ref())
+    .await?;
+
+    cycle_participant_position::Entity::insert(cycle_participant_position::ActiveModel {
+        cycle_id: Set(cycle_id.clone()),
+        participant: Set(payer.clone()),
+        asset_address: Set(asset.clone()),
+        gross_outgoing: Set(amount.to_string()),
+        gross_incoming: Set("0".to_string()),
+        net_debit: Set(amount.to_string()),
+        net_credit: Set("0".to_string()),
+        role: Set(ParticipantCycleRole::NetDebtor),
+        status: Set(ParticipantCycleStatus::Unpaid),
+        settlement_tx_hash: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    })
+    .exec(ctx.db.as_ref())
+    .await?;
+
+    service
+        .process_paid_debtor(keccak256(cycle_id.as_bytes()), &payer, "0xpaid")
+        .await?;
+
+    let guarantee = guarantee::Entity::find_by_id(guarantee_id)
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("guarantee exists");
+    assert_eq!(
+        guarantee.settlement_status,
+        GuaranteeSettlementStatus::Settled
+    );
+    assert!(guarantee.settled_at.is_some());
+
+    let position = cycle_participant_position::Entity::find()
+        .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
+        .filter(cycle_participant_position::Column::Participant.eq(payer.clone()))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("participant position exists");
+    assert_eq!(position.status, ParticipantCycleStatus::Paid);
+    assert_eq!(position.settlement_tx_hash.as_deref(), Some("0xpaid"));
+    assert_eq!(
+        read_locked_collateral(&ctx, &payer, &asset).await?,
+        U256::ZERO
+    );
+
+    Ok(())
 }
 
 #[test]
