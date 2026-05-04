@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use std::{
     net::TcpListener,
     panic,

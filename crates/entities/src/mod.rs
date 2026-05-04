@@ -15,7 +15,6 @@ pub mod cycle_participant_position;
 pub mod guarantee;
 pub mod sea_orm_active_enums;
 pub mod settlement_cycle;
-pub mod tabs;
 pub mod user;
 pub mod user_asset_balance;
 pub mod user_transaction;

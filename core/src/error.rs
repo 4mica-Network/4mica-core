@@ -52,9 +52,6 @@ pub enum BlockchainListenerError {
     #[error("Event handler error: {0}")]
     EventHandlerError(String),
 
-    #[error("Tab not found: {0}")]
-    TabNotFound(String),
-
     #[error("User not found: {0}")]
     UserNotFound(String),
 
@@ -100,12 +97,6 @@ pub enum PersistDbError {
     #[error("User suspended: {0}")]
     UserSuspended(String),
 
-    #[error("Tab not found: {0}")]
-    TabNotFound(String),
-
-    #[error("No remunerate event found for tab {0}")]
-    RemunerateEventNotFound(String),
-
     #[error("Transaction not found: {0}")]
     TransactionNotFound(String),
 
@@ -141,19 +132,6 @@ pub enum PersistDbError {
         user: String,
         asset_address: String,
         expected_version: i32,
-    },
-
-    #[error("tab lock conflict for tab {tab_id}, expected version {expected_version}")]
-    TabLockConflict {
-        tab_id: String,
-        expected_version: i32,
-    },
-
-    #[error("tab {tab_id} only accepts guarantee version {expected_version}, got {actual_version}")]
-    TabGuaranteeVersionMismatch {
-        tab_id: String,
-        expected_version: u64,
-        actual_version: u64,
     },
 
     #[error("invariant violation: {0}")]
@@ -217,12 +195,6 @@ impl From<PersistDbError> for ServiceError {
         match e {
             PersistDbError::UserNotFound(_) => ServiceError::UserNotRegistered,
             PersistDbError::UserSuspended(_) => ServiceError::UserSuspended,
-            PersistDbError::TabNotFound(tab) => {
-                ServiceError::NotFound(format!("Tab {tab} not found"))
-            }
-            PersistDbError::RemunerateEventNotFound(tab) => {
-                ServiceError::NotFound(format!("No remunerate event found for tab {tab}"))
-            }
             PersistDbError::TransactionNotFound(tx) => {
                 ServiceError::NotFound(format!("Transaction {tx} not found"))
             }
@@ -244,14 +216,6 @@ impl From<PersistDbError> for ServiceError {
             }
             PersistDbError::AuthTokenInvalid(msg) => ServiceError::Unauthorized(msg),
             PersistDbError::UserBalanceLockConflict { .. } => ServiceError::OptimisticLockConflict,
-            PersistDbError::TabLockConflict { .. } => ServiceError::OptimisticLockConflict,
-            PersistDbError::TabGuaranteeVersionMismatch {
-                tab_id,
-                expected_version,
-                actual_version,
-            } => ServiceError::InvalidParams(format!(
-                "tab {tab_id} only accepts guarantee version {expected_version}, got {actual_version}"
-            )),
             PersistDbError::InvariantViolation(msg) => ServiceError::Other(anyhow!(msg)),
             PersistDbError::DatabaseFailure(e) => {
                 ServiceError::Db(PersistDbError::DatabaseFailure(e))

@@ -8,10 +8,7 @@ use core_service::{
     ethereum::EthereumEventScanner,
     persist::PersistCtx,
     scheduler::TaskScheduler,
-    service::{
-        CoreService,
-        payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask},
-    },
+    service::CoreService,
 };
 use log::debug;
 
@@ -240,15 +237,6 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
 
     let mut scheduler = TaskScheduler::new().await?;
     scheduler.add_task(ethereum_scanner).await?;
-    scheduler
-        .add_task(Arc::new(ScanPaymentsTask::new(core_service.clone())))
-        .await?;
-    scheduler
-        .add_task(Arc::new(ConfirmPaymentsTask::new(core_service.clone())))
-        .await?;
-    scheduler
-        .add_task(Arc::new(FinalizePaymentsTask::new(core_service.clone())))
-        .await?;
     scheduler.start().await?;
 
     Ok(E2eEnvironment {
