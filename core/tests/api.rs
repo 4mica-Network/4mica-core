@@ -33,6 +33,7 @@ use tokio::net::TcpListener;
 mod common;
 use common::fixtures::{
     clear_all_tables, ensure_user_with_collateral, init_test_env, random_address,
+    read_locked_collateral,
 };
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
 const ADMIN_WALLET_ROLE: &str = "admin";
@@ -1795,6 +1796,75 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
         }
         other => panic!("unexpected error: {:?}", other),
     }
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial(db)]
+async fn issued_guarantee_increases_locked_collateral() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = auth.address.clone();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
+
+    let locked_before = read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        U256::ZERO,
+        U256::ZERO,
+        U256::from(7u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+    core_client
+        .issue_guarantee(req)
+        .await
+        .expect("issue guarantee");
+
+    let locked_after = read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(locked_after - locked_before, U256::from(7u64));
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial(db)]
+async fn issue_guarantee_rejected_when_collateral_insufficient() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = auth.address.clone();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(3u64)).await?;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        U256::ZERO,
+        U256::ZERO,
+        U256::from(10u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let result = core_client.issue_guarantee(req).await;
+    assert!(
+        result.is_err(),
+        "must reject guarantee that exceeds available collateral"
+    );
 
     Ok(())
 }

@@ -4,8 +4,8 @@ use alloy::primitives::U256;
 mod common;
 
 use common::cycle_fixtures::{create_frozen_cycle, setup_cycle_service};
-use common::fixtures::random_address;
-use core_service::{config::DEFAULT_ASSET_ADDRESS, persist::repo};
+use common::fixtures::{ensure_user, init_test_env, random_address};
+use core_service::{config::DEFAULT_ASSET_ADDRESS, error::PersistDbError, persist::repo};
 use entities::sea_orm_active_enums::{ParticipantCycleRole, ParticipantCycleStatus};
 
 #[tokio::test]
@@ -99,6 +99,79 @@ async fn replacing_participant_positions_removes_stale_rows() -> anyhow::Result<
         repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), &cycle_id).await?;
     assert_eq!(positions.len(), 1);
     assert_eq!(positions[0].net_credit, "3");
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let addr = random_address();
+
+    let err = repo::get_user_balance_on(ctx.db.as_ref(), &addr, DEFAULT_ASSET_ADDRESS)
+        .await
+        .expect_err("must fail for unknown user");
+
+    assert!(
+        matches!(err, PersistDbError::UserNotFound(_)),
+        "expected UserNotFound, got: {err:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn update_user_suspension_increments_version() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let addr = random_address();
+    ensure_user(&ctx, &addr).await?;
+
+    let after_suspend = repo::update_user_suspension(&ctx, &addr, true).await?;
+    assert!(after_suspend.is_suspended);
+    assert_eq!(after_suspend.version, 1);
+
+    let after_unsuspend = repo::update_user_suspension(&ctx, &addr, false).await?;
+    assert!(!after_unsuspend.is_suspended);
+    assert_eq!(after_unsuspend.version, 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+
+    let first = repo::store_blockchain_event(
+        &ctx,
+        1,
+        "Transfer(address,address,uint256)",
+        100,
+        "0xblock",
+        "0xtx",
+        0,
+        "0x0000000000000000000000000000000000000001",
+        "{}",
+    )
+    .await?;
+
+    let second = repo::store_blockchain_event(
+        &ctx,
+        1,
+        "Transfer(address,address,uint256)",
+        100,
+        "0xblock",
+        "0xtx",
+        0,
+        "0x0000000000000000000000000000000000000001",
+        "{}",
+    )
+    .await?;
+
+    assert!(first, "first insert must return true");
+    assert!(!second, "duplicate insert must return false");
 
     Ok(())
 }
