@@ -50,7 +50,11 @@ async fn pending_validation_guarantee_excluded_from_cycle_netting() -> anyhow::R
     service.compute_cycle_exposure_edges(&cycle_id).await?;
 
     let edges = repo::list_exposure_edges_for_cycle_on(ctx.db.as_ref(), &cycle_id).await?;
-    assert_eq!(edges.len(), 1, "only FinalizedPayable guarantees produce edges");
+    assert_eq!(
+        edges.len(),
+        1,
+        "only FinalizedPayable guarantees produce edges"
+    );
     assert_eq!(edges[0].finalized_payable_amount, "10");
 
     Ok(())
