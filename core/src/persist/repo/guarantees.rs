@@ -203,10 +203,19 @@ pub async fn get_guarantee(
     tab_id: U256,
     req_id: U256,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
+    get_guarantee_on(ctx.db.as_ref(), tab_id, req_id).await
+}
+
+#[measure(record_db_time)]
+pub async fn get_guarantee_on<C: ConnectionTrait>(
+    conn: &C,
+    tab_id: U256,
+    req_id: U256,
+) -> Result<Option<guarantee::Model>, PersistDbError> {
     let res = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
         .filter(guarantee::Column::ReqId.eq(u256_to_string(req_id)))
-        .one(ctx.db.as_ref())
+        .one(conn)
         .await?;
     Ok(res)
 }
