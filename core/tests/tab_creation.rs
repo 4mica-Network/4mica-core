@@ -18,7 +18,7 @@ use migration::{Migrator, MigratorTrait};
 use rand::random;
 use rpc::CreatePaymentTabRequest;
 use sea_orm::{EntityTrait, Set};
-use std::{panic, sync::Arc, sync::Once};
+use std::{collections::BTreeSet, panic, sync::Arc, sync::Once};
 
 const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
 const DEFAULT_ROLE: &str = "user";
@@ -558,6 +558,72 @@ async fn facilitator_can_create_tab_for_recipient() {
     assert_eq!(tab.recipient_address, recipient);
     assert_eq!(tab.next_req_id, U256::ZERO);
 }
+
+#[tokio::test]
+#[serial_test::file_serial]
+async fn allocates_req_ids_under_concurrent_load() {
+    load_test_env();
+    let ctx = PersistCtx::new().await.expect("persist ctx");
+
+    let user = format!("0x{:040x}", rand::random::<u128>());
+    let recipient = format!("0x{:040x}", rand::random::<u128>());
+    seed_user(&ctx, &user).await;
+    seed_user(&ctx, &recipient).await;
+
+    let tab_id = U256::from(random::<u128>());
+    let now = Utc::now().naive_utc();
+    let tab = tabs::ActiveModel {
+        id: Set(u256_to_string(tab_id)),
+        user_address: Set(user),
+        server_address: Set(recipient),
+        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
+        start_ts: Set(now),
+        ttl: Set(DEFAULT_TTL_SECS as i64),
+        status: Set(TabStatus::Pending),
+        settlement_status: Set(SettlementStatus::Pending),
+        total_amount: Set("0".to_string()),
+        paid_amount: Set("0".to_string()),
+        last_req_id: Set("0x0".to_string()),
+        accepted_guarantee_version: Set(Some(1)),
+        version: Set(0),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    tabs::Entity::insert(tab)
+        .exec(ctx.db.as_ref())
+        .await
+        .expect("insert tab");
+
+    let count = 32usize;
+    let mut tasks = Vec::with_capacity(count);
+    for _ in 0..count {
+        let ctx = ctx.clone();
+        tasks.push(tokio::spawn(async move {
+            repo::increment_and_get_last_req_id(&ctx, tab_id, 1).await
+        }));
+    }
+
+    let mut allocated = BTreeSet::new();
+    for task in tasks {
+        let req_id = task.await.expect("task join").expect("allocated req_id");
+        assert!(allocated.insert(req_id), "duplicate req_id {req_id}");
+    }
+
+    assert_eq!(allocated.len(), count);
+    for expected in 1..=count {
+        assert!(
+            allocated.contains(&U256::from(expected)),
+            "missing req_id {expected}"
+        );
+    }
+
+    let stored = repo::get_tab_by_id(&ctx, tab_id)
+        .await
+        .expect("tab fetch")
+        .expect("tab present");
+    assert_eq!(stored.last_req_id, u256_to_string(U256::from(count)));
+}
+
 struct MockContractApi {
     chain_id: u64,
     domain: [u8; 32],

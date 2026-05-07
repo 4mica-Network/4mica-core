@@ -7,10 +7,10 @@ use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 use entities::tabs;
 use log::info;
 use metrics_4mica::measure;
-use sea_orm::sea_query::OnConflict;
+use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
-    ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set,
-    TransactionTrait,
+    ColumnTrait, Condition, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+    Set, TransactionTrait,
 };
 use std::str::FromStr;
 
@@ -369,49 +369,53 @@ pub async fn get_tab_ttl_seconds(
 pub async fn increment_and_get_last_req_id(
     ctx: &PersistCtx,
     tab_id: alloy::primitives::U256,
-    retries: usize,
+    _retries: usize,
 ) -> Result<U256, PersistDbError> {
     let tab_id_str = u256_to_string(tab_id);
 
-    for attempt in 0..retries {
-        let tab = tabs::Entity::find_by_id(&tab_id_str)
-            .one(ctx.db.as_ref())
-            .await?
-            .ok_or_else(|| PersistDbError::TabNotFound(tab_id_str.clone()))?;
+    ctx.db
+        .transaction(|txn| {
+            let tab_id_str = tab_id_str.clone();
+            Box::pin(async move {
+                let tab = tabs::Entity::find_by_id(&tab_id_str)
+                    .lock_exclusive()
+                    .one(txn)
+                    .await?
+                    .ok_or_else(|| PersistDbError::TabNotFound(tab_id_str.clone()))?;
 
-        let current_req_id = U256::from_str(&tab.last_req_id).map_err(|e| {
-            PersistDbError::InvariantViolation(format!("Invalid last_req_id: {}", e))
-        })?;
+                let current_req_id = U256::from_str(&tab.last_req_id).map_err(|e| {
+                    PersistDbError::InvariantViolation(format!("Invalid last_req_id: {}", e))
+                })?;
 
-        let next_req_id = current_req_id
-            .checked_add(U256::from(1u8))
-            .ok_or_else(|| PersistDbError::InvariantViolation("req_id overflow".into()))?;
+                let next_req_id = current_req_id
+                    .checked_add(U256::from(1u8))
+                    .ok_or_else(|| PersistDbError::InvariantViolation("req_id overflow".into()))?;
 
-        match lock_and_update_tab_on(
-            ctx.db.as_ref(),
-            tab_id,
-            tab.version,
-            tabs::ActiveModel {
-                last_req_id: Set(u256_to_string(next_req_id)),
-                ..Default::default()
-            },
-        )
-        .await
-        {
-            Ok(()) => return Ok(next_req_id),
-            Err(PersistDbError::TabLockConflict { .. }) => {
-                if attempt == retries - 1 {
-                    return Err(PersistDbError::InvariantViolation(
-                        "Failed to increment req_id after maximum retries (version conflict)"
-                            .into(),
-                    ));
+                let result = tabs::Entity::update_many()
+                    .filter(tabs::Column::Id.eq(&tab_id_str))
+                    .col_expr(
+                        tabs::Column::LastReqId,
+                        Expr::value(u256_to_string(next_req_id)),
+                    )
+                    .col_expr(
+                        tabs::Column::Version,
+                        Expr::col(tabs::Column::Version).add(1),
+                    )
+                    .col_expr(tabs::Column::UpdatedAt, Expr::value(now()))
+                    .exec(txn)
+                    .await?;
+
+                match result.rows_affected {
+                    1 => Ok(next_req_id),
+                    n => Err(PersistDbError::InvariantViolation(format!(
+                        "increment_and_get_last_req_id updated {} rows for tab {}",
+                        n, tab_id_str
+                    ))),
                 }
-            }
-            Err(e) => return Err(e),
-        };
-    }
-
-    unreachable!()
+            })
+        })
+        .await
+        .map_err(Into::into)
 }
 
 #[measure(record_db_time)]
