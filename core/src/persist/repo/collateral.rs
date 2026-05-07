@@ -7,6 +7,7 @@ use entities::{collateral_event, tabs};
 use log::info;
 use metrics_4mica::measure;
 use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, TransactionTrait};
 use std::str::FromStr;
 
@@ -52,6 +53,53 @@ pub async fn deposit_with_event(
             Box::pin(async move {
                 ensure_user_exists_on(txn, &user_address).await?;
 
+                if amount > U256::ZERO {
+                    let ev = collateral_event::ActiveModel {
+                        id: Set(new_uuid()),
+                        user_address: Set(user_address.clone()),
+                        asset_address: Set(asset_address.clone()),
+                        amount: Set(amount.to_string()),
+                        event_type: Set(CollateralEventType::Deposit),
+                        tab_id: Set(None),
+                        req_id: Set(None),
+                        tx_id: Set(None),
+                        event_chain_id: Set(event.as_ref().map(|e| e.chain_id as i64)),
+                        event_block_hash: Set(event.as_ref().map(|e| e.block_hash.clone())),
+                        event_tx_hash: Set(event.as_ref().map(|e| e.tx_hash.clone())),
+                        event_log_index: Set(event.as_ref().map(|e| e.log_index as i64)),
+                        created_at: Set(now),
+                    };
+
+                    let insert = collateral_event::Entity::insert(ev);
+                    let rows_affected = if event.is_some() {
+                        insert
+                            .on_conflict(
+                                OnConflict::columns([
+                                    collateral_event::Column::EventChainId,
+                                    collateral_event::Column::EventBlockHash,
+                                    collateral_event::Column::EventTxHash,
+                                    collateral_event::Column::EventLogIndex,
+                                ])
+                                .target_and_where(Expr::cust(
+                                    r#""CollateralEvent"."event_chain_id" IS NOT NULL
+                                    AND "CollateralEvent"."event_block_hash" IS NOT NULL
+                                    AND "CollateralEvent"."event_tx_hash" IS NOT NULL
+                                    AND "CollateralEvent"."event_log_index" IS NOT NULL"#,
+                                ))
+                                .do_nothing()
+                                .to_owned(),
+                            )
+                            .exec_without_returning(txn)
+                            .await?
+                    } else {
+                        insert.exec_without_returning(txn).await?
+                    };
+
+                    if event.is_some() && rows_affected == 0 {
+                        return Ok::<_, PersistDbError>(());
+                    }
+                }
+
                 let asset_balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
 
                 let total = U256::from_str(&asset_balance.total)
@@ -72,25 +120,6 @@ pub async fn deposit_with_event(
                     locked,
                 )
                 .await?;
-
-                if amount > U256::ZERO {
-                    let ev = collateral_event::ActiveModel {
-                        id: Set(new_uuid()),
-                        user_address: Set(user_address),
-                        asset_address: Set(asset_address),
-                        amount: Set(amount.to_string()),
-                        event_type: Set(CollateralEventType::Deposit),
-                        tab_id: Set(None),
-                        req_id: Set(None),
-                        tx_id: Set(None),
-                        event_chain_id: Set(event.as_ref().map(|e| e.chain_id as i64)),
-                        event_block_hash: Set(event.as_ref().map(|e| e.block_hash.clone())),
-                        event_tx_hash: Set(event.as_ref().map(|e| e.tx_hash.clone())),
-                        event_log_index: Set(event.as_ref().map(|e| e.log_index as i64)),
-                        created_at: Set(now),
-                    };
-                    collateral_event::Entity::insert(ev).exec(txn).await?;
-                }
 
                 Ok::<_, PersistDbError>(())
             })

@@ -2,6 +2,7 @@ use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::error::PersistDbError;
+use core_service::ethereum::event_data::EventMeta;
 use core_service::persist::{PersistCtx, repo};
 use core_service::util::u256_to_string;
 use entities::{collateral_event, sea_orm_active_enums::*, tabs};
@@ -96,6 +97,56 @@ async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
             .iter()
             .all(|e| e.event_type == CollateralEventType::Deposit)
     );
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
+async fn deposit_with_same_chain_event_is_idempotent() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let amount = U256::from(10u64);
+    let event = EventMeta {
+        chain_id: 84532,
+        block_hash: format!("0x{:064x}", rand::random::<u128>()),
+        tx_hash: format!("0x{:064x}", rand::random::<u128>()),
+        log_index: 3,
+    };
+
+    repo::deposit_with_event(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        amount,
+        Some(&event),
+    )
+    .await?;
+    repo::deposit_with_event(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        amount,
+        Some(&event),
+    )
+    .await?;
+
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        amount
+    );
+
+    let events = collateral_event::Entity::find()
+        .filter(collateral_event::Column::UserAddress.eq(user_addr))
+        .filter(collateral_event::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .filter(collateral_event::Column::EventType.eq(CollateralEventType::Deposit))
+        .filter(collateral_event::Column::EventChainId.eq(event.chain_id as i64))
+        .filter(collateral_event::Column::EventBlockHash.eq(event.block_hash))
+        .filter(collateral_event::Column::EventTxHash.eq(event.tx_hash))
+        .filter(collateral_event::Column::EventLogIndex.eq(event.log_index as i64))
+        .all(ctx.db.as_ref())
+        .await?;
+    assert_eq!(events.len(), 1);
+
     Ok(())
 }
 
