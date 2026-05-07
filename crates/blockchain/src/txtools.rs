@@ -94,7 +94,7 @@ pub async fn scan_tab_payments<P: Provider>(
         // iterate over tx hashes
         for tx in block.transactions.into_transactions() {
             // look for tab_id / req_id
-            let Some((tab_id, req_id)) = extract_tab_req(&tx)? else {
+            let Some((tab_id, req_id)) = extract_tab_req(&tx) else {
                 continue;
             };
 
@@ -145,25 +145,25 @@ fn extract_to_value(env: &TxEnvelope) -> Option<(Address, U256)> {
     }
 }
 
-fn extract_tab_req(tx: &Transaction) -> Result<Option<(U256, U256)>> {
-    // Skip if input is not valid UTF-8 instead of failing the whole scan.
-    let s = match std::str::from_utf8(tx.inner.input()) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
+fn extract_tab_req(tx: &Transaction) -> Option<(U256, U256)> {
+    extract_tab_req_from_input(tx.inner.input())
+}
 
-    let tab = s.split(';').find_map(|p| p.strip_prefix("tab_id:"));
-    let req = s.split(';').find_map(|p| p.strip_prefix("req_id:"));
+fn extract_tab_req_from_input(input: &[u8]) -> Option<(U256, U256)> {
+    let s = std::str::from_utf8(input).ok()?;
 
-    Ok(match (tab, req) {
-        (Some(t), Some(r)) => {
-            // parse both as 256-bit integers
-            let t_u256 = U256::from_str(t).map_err(|_| anyhow::anyhow!("invalid tab_id: {t}"))?;
-            let r_u256 = U256::from_str(r).map_err(|_| anyhow::anyhow!("invalid req_id: {r}"))?;
-            Some((t_u256, r_u256))
+    let (mut tab, mut req) = (None, None);
+    for part in s.split(';') {
+        if let Some(v) = part.strip_prefix("tab_id:") {
+            tab = Some(v);
+        } else if let Some(v) = part.strip_prefix("req_id:") {
+            req = Some(v);
         }
-        _ => None,
-    })
+    }
+
+    let t = tab.filter(|s| !s.is_empty())?;
+    let r = req.filter(|s| !s.is_empty())?;
+    Some((U256::from_str(t).ok()?, U256::from_str(r).ok()?))
 }
 
 fn parse_eth_transfer(
@@ -193,4 +193,28 @@ fn parse_eth_transfer(
         req_id,
         erc20_token: None,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_tab_req_parses_valid_markers() {
+        let parsed = extract_tab_req_from_input(b"tab_id:42;req_id:7");
+
+        assert_eq!(parsed, Some((U256::from(42), U256::from(7))));
+    }
+
+    #[test]
+    fn extract_tab_req_skips_malformed_numeric_markers() {
+        assert_eq!(extract_tab_req_from_input(b"tab_id:a;req_id:0"), None);
+        assert_eq!(extract_tab_req_from_input(b"tab_id:0;req_id:a"), None);
+        assert_eq!(extract_tab_req_from_input(b"tab_id:;req_id:"), None);
+    }
+
+    #[test]
+    fn extract_tab_req_skips_non_utf8_input() {
+        assert_eq!(extract_tab_req_from_input(&[0xff, 0xfe]), None);
+    }
 }
