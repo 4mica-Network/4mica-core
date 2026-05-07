@@ -4,12 +4,62 @@ use crate::auth::jwt::AccessTokenClaims;
 use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
 use crate::service::CoreService;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use log::{debug, warn};
 use rpc::{
     AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse, AuthRefreshRequest,
     AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse, SiweTemplate,
 };
+
+const SIWE_CLOCK_SKEW_SECS: i64 = 30;
+
+fn validate_siwe_issued_at(
+    issued_at: &str,
+    now: DateTime<Utc>,
+    max_age: Duration,
+) -> ServiceResult<()> {
+    let issued_at = auth::utils::parse_rfc3339_date("issued_at", issued_at)?;
+
+    if issued_at > now + Duration::seconds(SIWE_CLOCK_SKEW_SECS) {
+        return Err(ServiceError::Unauthorized(
+            "siwe issued_at is too far in the future".into(),
+        ));
+    }
+
+    if now.signed_duration_since(issued_at) > max_age {
+        return Err(ServiceError::Unauthorized(
+            "siwe issued_at is too old".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_optional_expiration(expiration: Option<&str>, now: DateTime<Utc>) -> ServiceResult<()> {
+    let Some(expiration) = expiration else {
+        return Ok(());
+    };
+
+    let expiration = auth::utils::parse_rfc3339_date("expiration", expiration)?;
+    if expiration < now {
+        return Err(ServiceError::Unauthorized("message expired".into()));
+    }
+
+    Ok(())
+}
+
+fn validate_optional_not_before(not_before: Option<&str>, now: DateTime<Utc>) -> ServiceResult<()> {
+    let Some(not_before) = not_before else {
+        return Ok(());
+    };
+
+    let not_before = auth::utils::parse_rfc3339_date("not_before", not_before)?;
+    if not_before > now {
+        return Err(ServiceError::Unauthorized("message not valid yet".into()));
+    }
+
+    Ok(())
+}
 
 impl CoreService {
     fn build_siwe_context(&self) -> (String, String, String) {
@@ -151,25 +201,20 @@ impl CoreService {
             return Err(ServiceError::Unauthorized("siwe statement mismatch".into()));
         }
 
-        auth::utils::parse_rfc3339_date("issued_at", &parsed.issued_at)?;
-
-        if let Some(expiration) = parsed.expiration_time.as_deref()
-            && auth::utils::parse_rfc3339_date("expiration", expiration)? < Utc::now()
-        {
-            return Err(ServiceError::Unauthorized("message expired".into()));
-        }
-
-        if let Some(not_before) = parsed.not_before.as_deref()
-            && auth::utils::parse_rfc3339_date("not_before", not_before)? > Utc::now()
-        {
-            return Err(ServiceError::Unauthorized("message not valid yet".into()));
-        }
+        let now = Utc::now();
+        validate_siwe_issued_at(
+            &parsed.issued_at,
+            now,
+            Duration::seconds(auth_cfg.nonce_ttl_secs),
+        )?;
+        validate_optional_expiration(parsed.expiration_time.as_deref(), now)?;
+        validate_optional_not_before(parsed.not_before.as_deref(), now)?;
 
         let nonce_row =
             repo::get_auth_nonce(&self.inner.persist_ctx, &address, &parsed.nonce).await?;
         let nonce_row = nonce_row
             .ok_or_else(|| ServiceError::Unauthorized("nonce not found or expired".into()))?;
-        if nonce_row.used_at.is_some() || nonce_row.expires_at < Utc::now().naive_utc() {
+        if nonce_row.used_at.is_some() || nonce_row.expires_at < now.naive_utc() {
             return Err(ServiceError::Unauthorized("nonce not valid".into()));
         }
 
