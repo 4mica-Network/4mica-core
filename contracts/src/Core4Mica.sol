@@ -1026,6 +1026,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         if (ethRequest.timestamp != 0 && g.timestamp < ethRequest.timestamp + synchronizationDelay) {
             uint256 deduction = Math.min(ethRequest.amount, remaining);
             ethRequest.amount -= deduction;
+            if (ethRequest.amount == 0) {
+                delete withdrawalRequests[g.client][ETH_ASSET];
+            }
         }
 
         (bool ok,) = payable(g.recipient).call{value: remaining}("");

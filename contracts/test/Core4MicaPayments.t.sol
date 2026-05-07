@@ -49,7 +49,6 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
         assertTrue(a != d);
     }
 
-
     function test_RecordPayment() public {
         (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 0);

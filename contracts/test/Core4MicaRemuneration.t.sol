@@ -211,6 +211,33 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         assertEq(collateral, 0.25 ether);
     }
 
+    function test_Remunerate_ClearsFullyDeductedEthWithdrawalRequest() public {
+        vm.prank(USER1);
+        core4Mica.deposit{value: 1 ether}();
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(USER1);
+        core4Mica.requestWithdrawal(0.75 ether);
+
+        vm.warp(block.timestamp + core4Mica.synchronizationDelay() - 1);
+        Guarantee memory g = _ethGuarantee(0x1234, block.timestamp, USER1, USER2, 17, 0.75 ether);
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
+
+        vm.warp(block.timestamp + 15 days);
+        vm.prank(USER2);
+        core4Mica.remunerate(guaranteeData, signature);
+
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
+        assertEq(collateral, 0.25 ether);
+        assertEq(withdrawalTimestamp, 0);
+        assertEq(withdrawalAmount, 0);
+
+        (uint256 requestTimestamp, uint256 requestAmount) = core4Mica.withdrawalRequests(USER1, ETH_ASSET);
+        assertEq(requestTimestamp, 0);
+        assertEq(requestAmount, 0);
+    }
+
     function test_Remunerate_GuaranteeIssuedAfterWithdrawalRequestSynchronization() public {
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
