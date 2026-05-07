@@ -544,7 +544,8 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
 
 #[test(tokio::test)]
 #[serial_test::file_serial]
-async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
+async fn duplicate_guarantee_insert_returns_error_and_preserves_existing_row() -> anyhow::Result<()>
+{
     use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 
     let _ = init()?;
@@ -604,7 +605,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     };
     repo::store_guarantee_on(ctx.db.as_ref(), data1).await?;
 
-    // ── Second insert with same (tab_id, req_id) must be a no-op ──
+    // ── Second insert with same (tab_id, req_id) must fail ──
     let data2 = GuaranteeData {
         tab_id,
         req_id,
@@ -617,7 +618,12 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         cert: "cert2".into(),
         request: None,
     };
-    repo::store_guarantee_on(ctx.db.as_ref(), data2).await?;
+    let duplicate = repo::store_guarantee_on(ctx.db.as_ref(), data2).await;
+    assert!(matches!(
+        duplicate,
+        Err(PersistDbError::DuplicateGuarantee { req_id: duplicate_req_id })
+            if duplicate_req_id == req_id
+    ));
 
     // ── Verify only the first value persisted ──
     let g = guarantee::Entity::find()
@@ -833,6 +839,139 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
         .one(ctx.db.as_ref())
         .await?;
     assert!(g.is_some());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
+async fn duplicate_guarantee_conflict_rolls_back_balance_and_tab_updates() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = random_u256();
+    let req_id = U256::from(7u64);
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
+
+    let initial_claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id,
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(20u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
+
+    let txn = ctx.db.begin().await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, &initial_claims, 1).await?;
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(initial_claims.clone()),
+        domain,
+        total_amount,
+    );
+    let claims_bytes: Vec<u8> = promise.clone().try_into()?;
+    let cert = BLSCert::sign(
+        &config.secrets.bls_secret_key,
+        BlsClaims::from_bytes(claims_bytes),
+    )?;
+    let req = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(initial_claims),
+        "0x".to_string() + &"0".repeat(130),
+        SigningScheme::Eip712,
+    );
+    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
+    txn.commit().await?;
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(20u64)
+    );
+
+    let duplicate_claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id,
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(30u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
+
+    let txn = ctx.db.begin().await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, &duplicate_claims, 1).await?;
+    let duplicate_promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(duplicate_claims.clone()),
+        domain,
+        total_amount,
+    );
+    let claims_bytes: Vec<u8> = duplicate_promise.clone().try_into()?;
+    let duplicate_cert = BLSCert::sign(
+        &config.secrets.bls_secret_key,
+        BlsClaims::from_bytes(claims_bytes),
+    )?;
+    let duplicate_req = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(duplicate_claims),
+        "0x".to_string() + &"0".repeat(130),
+        SigningScheme::Eip712,
+    );
+
+    let duplicate_insert = repo::prepare_and_store_guarantee_on(
+        &txn,
+        &duplicate_promise,
+        &duplicate_cert,
+        &duplicate_req,
+    )
+    .await;
+    let duplicate_insert_succeeded = match duplicate_insert {
+        Err(PersistDbError::DuplicateGuarantee {
+            req_id: duplicate_req_id,
+        }) => {
+            assert_eq!(duplicate_req_id, req_id);
+            false
+        }
+        Err(err) => return Err(err.into()),
+        Ok(()) => true,
+    };
+    if duplicate_insert_succeeded {
+        txn.commit().await?;
+    } else {
+        txn.rollback().await?;
+    }
+
+    assert!(
+        !duplicate_insert_succeeded,
+        "duplicate guarantee insert must fail so prior balance and tab updates roll back"
+    );
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(20u64)
+    );
+
+    let tab = entities::tabs::Entity::find_by_id(u256_to_string(tab_id))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("tab exists");
+    assert_eq!(tab.total_amount, U256::from(20u64).to_string());
 
     Ok(())
 }
