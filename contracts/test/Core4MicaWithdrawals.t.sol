@@ -276,6 +276,8 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.requestWithdrawal(2 ether);
 
+        (, uint256 requestTimestamp,) = core4Mica.getUser(USER1);
+        tabTimestamp = requestTimestamp + core4Mica.synchronizationDelay() + 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
         Guarantee memory g = _ethGuarantee(0x1234, tabTimestamp, USER1, USER2, 17, 5 ether);
