@@ -181,6 +181,13 @@ pub mod contract_abi {
                 uint256 amount
             ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant;
 
+            function recordPaymentById(
+                bytes32 payment_id,
+                uint256 tab_id,
+                address asset,
+                uint256 amount
+            ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant;
+
             function getGuaranteeVersionConfig(
                 uint64 version
             )

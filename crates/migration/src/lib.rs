@@ -21,6 +21,7 @@ mod m20260305_000002_unlock_and_tab_amount_guardrails;
 mod m20260403_000003_tab_accepted_guarantee_version;
 mod m20260403_000004_guarantee_version;
 mod m20260404_000005_active_tab_identity_unique;
+mod m20260405_000006_user_transaction_recording_status;
 
 pub struct Migrator;
 
@@ -49,6 +50,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260403_000003_tab_accepted_guarantee_version::Migration),
             Box::new(m20260403_000004_guarantee_version::Migration),
             Box::new(m20260404_000005_active_tab_identity_unique::Migration),
+            Box::new(m20260405_000006_user_transaction_recording_status::Migration),
         ]
     }
 }

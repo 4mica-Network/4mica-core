@@ -70,6 +70,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error InvalidAToken(address asset, address aToken);
     error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
     error SurplusClaimExceedsAvailable();
+    error PaymentRecordConflict(bytes32 paymentId);
 
     // ========= Storage =========
     uint256 public remunerationGracePeriod = 14 days;
@@ -135,6 +136,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     mapping(address => mapping(address => WithdrawalRequest)) public withdrawalRequests;
     mapping(uint256 => PaymentStatus) public payments;
+    mapping(bytes32 => bytes32) public paymentRecordDigests;
 
     // ========= Events =========
     event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
@@ -148,6 +150,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
     event PaymentRecorded(uint256 indexed tabId, address indexed asset, uint256 amount);
+    event PaymentRecordedById(bytes32 indexed paymentId, uint256 indexed tabId, address indexed asset, uint256 amount);
+    event PaymentRecordReplayed(
+        bytes32 indexed paymentId, uint256 indexed tabId, address indexed asset, uint256 amount
+    );
     event TabPaid(
         uint256 indexed tabId, address indexed asset, address indexed user, address recipient, uint256 amount
     );
@@ -575,12 +581,43 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         nonZero(amount)
         nonReentrant
     {
+        _recordPayment(tabId, asset, amount);
+        emit PaymentRecorded(tabId, asset, amount);
+    }
+
+    function recordPaymentById(bytes32 paymentId, uint256 tabId, address asset, uint256 amount)
+        external
+        restricted
+        supportedAsset(asset)
+        nonZero(amount)
+        nonReentrant
+    {
+        bytes32 digest;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, tabId)
+            mstore(add(ptr, 0x20), asset)
+            mstore(add(ptr, 0x40), amount)
+            digest := keccak256(ptr, 0x60)
+        }
+        bytes32 existingDigest = paymentRecordDigests[paymentId];
+        if (existingDigest != bytes32(0)) {
+            if (existingDigest != digest) revert PaymentRecordConflict(paymentId);
+            emit PaymentRecordReplayed(paymentId, tabId, asset, amount);
+            return;
+        }
+
+        paymentRecordDigests[paymentId] = digest;
+        _recordPayment(tabId, asset, amount);
+        emit PaymentRecordedById(paymentId, tabId, asset, amount);
+    }
+
+    function _recordPayment(uint256 tabId, address asset, uint256 amount) internal {
         PaymentStatus storage status = payments[tabId];
 
         _setOrValidatePaymentAsset(status, asset);
 
         status.paid += amount;
-        emit PaymentRecorded(tabId, asset, amount);
     }
 
     // ========= Views / Helpers =========

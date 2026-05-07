@@ -39,6 +39,8 @@ contract Core4MicaFullStackScript is Script {
     error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
 
     bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
+    bytes4 private constant RECORD_PAYMENT_BY_ID_SELECTOR =
+        bytes4(keccak256("recordPaymentById(bytes32,uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
         bytes4(keccak256("setTimingParameters(uint256,uint256,uint256,uint256)"));
 
@@ -124,13 +126,10 @@ contract Core4MicaFullStackScript is Script {
 
         bytes32 v2Domain =
             keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(deployment.core4Mica)));
-        deployment.core4Mica.configureGuaranteeVersion(
-            GUARANTEE_V2,
-            config.guaranteeVerificationKey,
-            v2Domain,
-            address(deployment.validationDecoder),
-            true
-        );
+        deployment.core4Mica
+            .configureGuaranteeVersion(
+                GUARANTEE_V2, config.guaranteeVerificationKey, v2Domain, address(deployment.validationDecoder), true
+            );
         _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
         _configureRouterRoles(deployment.manager, deployment.router);
     }
@@ -149,8 +148,7 @@ contract Core4MicaFullStackScript is Script {
         address core4MicaAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CORE4MICA"),
             abi.encodePacked(
-                type(Core4Mica).creationCode,
-                abi.encode(managerAddress, guaranteeVerificationKey, stablecoins)
+                type(Core4Mica).creationCode, abi.encode(managerAddress, guaranteeVerificationKey, stablecoins)
             )
         );
         address routerAddress = DeterministicCreate2.deploy(
@@ -181,7 +179,9 @@ contract Core4MicaFullStackScript is Script {
         governanceSelectors[8] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
-            manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(governanceSelectors[i]), GOVERNANCE_ROLE);
+            manager.setTargetFunctionRole(
+                address(core4Mica), _asSingletonArray(governanceSelectors[i]), GOVERNANCE_ROLE
+            );
         }
 
         manager.setTargetFunctionRole(
@@ -195,6 +195,9 @@ contract Core4MicaFullStackScript is Script {
             address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), FOURMICA_OPERATOR_ROLE
         );
         manager.setTargetFunctionRole(
+            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), FOURMICA_OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
             address(core4Mica), _asSingletonArray(Core4Mica.unpause.selector), GOVERNANCE_ROLE
         );
 
@@ -202,9 +205,7 @@ contract Core4MicaFullStackScript is Script {
         manager.grantRole(TREASURY_ROLE, _roleHolder("TREASURY_ROLE_HOLDER", deployer), _treasuryDelay());
         manager.grantRole(GUARDIAN_ROLE, _roleHolder("GUARDIAN_ROLE_HOLDER", deployer), _guardianDelay());
         manager.grantRole(
-            FOURMICA_OPERATOR_ROLE,
-            _roleHolder("FOURMICA_OPERATOR_ROLE_HOLDER", deployer),
-            _fourmicaOperatorDelay()
+            FOURMICA_OPERATOR_ROLE, _roleHolder("FOURMICA_OPERATOR_ROLE_HOLDER", deployer), _fourmicaOperatorDelay()
         );
     }
 
@@ -274,10 +275,10 @@ contract Core4MicaFullStackScript is Script {
 
         if (
             (provider != address(0) || stablecoinAToken0 != address(0) || stablecoinAToken1 != address(0))
-                && (
-                    !configureAave || provider == address(0) || stablecoinAToken0 == address(0)
-                        || stablecoinAToken1 == address(0)
-                )
+                && (!configureAave
+                    || provider == address(0)
+                    || stablecoinAToken0 == address(0)
+                    || stablecoinAToken1 == address(0))
         ) {
             revert PartialAaveConfiguration();
         }
@@ -326,8 +327,6 @@ contract Core4MicaFullStackScript is Script {
     }
 
     function _fourmicaOperatorDelay() internal view returns (uint32) {
-        return uint32(
-            vm.envOr("FOURMICA_OPERATOR_EXECUTION_DELAY", uint256(DEFAULT_FOURMICA_OPERATOR_EXECUTION_DELAY))
-        );
+        return uint32(vm.envOr("FOURMICA_OPERATOR_EXECUTION_DELAY", uint256(DEFAULT_FOURMICA_OPERATOR_EXECUTION_DELAY)));
     }
 }

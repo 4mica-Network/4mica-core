@@ -590,6 +590,7 @@ impl CoreContractApi for MockContractApi {
 
     async fn record_payment(
         &self,
+        _payment_id: B256,
         _tab_id: U256,
         _asset: alloy::primitives::Address,
         _amount: U256,

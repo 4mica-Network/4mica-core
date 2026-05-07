@@ -17,6 +17,25 @@ use super::common::{now, parse_address};
 use super::users::ensure_user_exists_on;
 use crate::metrics::misc::record_db_time;
 
+const RECORDING_CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
+
+fn stale_recording_cutoff() -> chrono::NaiveDateTime {
+    now() - chrono::Duration::seconds(RECORDING_CLAIM_TIMEOUT_SECS)
+}
+
+fn claimable_condition() -> Condition {
+    Condition::any()
+        .add(user_transaction::Column::Status.is_in([
+            UserTransactionStatus::Pending,
+            UserTransactionStatus::Confirmed,
+        ]))
+        .add(
+            user_transaction::Column::Status
+                .eq(UserTransactionStatus::Recording)
+                .and(user_transaction::Column::UpdatedAt.lte(stale_recording_cutoff())),
+        )
+}
+
 #[measure(record_db_time)]
 pub async fn submit_payment_transaction(
     ctx: &PersistCtx,
@@ -127,10 +146,7 @@ pub async fn get_pending_transactions_upto(
     max_block_number: u64,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
     let rows = user_transaction::Entity::find()
-        .filter(user_transaction::Column::Status.is_in([
-            UserTransactionStatus::Pending,
-            UserTransactionStatus::Confirmed,
-        ]))
+        .filter(claimable_condition())
         .filter(user_transaction::Column::BlockNumber.lte(max_block_number as i64))
         .order_by_asc(user_transaction::Column::BlockNumber)
         .all(ctx.db.as_ref())
@@ -153,6 +169,54 @@ pub async fn get_recorded_transactions_upto(
 }
 
 #[measure(record_db_time)]
+pub async fn claim_payment_transaction_for_recording(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<bool, PersistDbError> {
+    let claim = user_transaction::Entity::update_many()
+        .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .filter(claimable_condition())
+        .col_expr(
+            user_transaction::Column::Status,
+            user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                UserTransactionStatus::Recording,
+            )),
+        )
+        .col_expr(
+            user_transaction::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    Ok(claim.rows_affected == 1)
+}
+
+#[measure(record_db_time)]
+pub async fn release_payment_transaction_recording_claim(
+    ctx: &PersistCtx,
+    transaction_id: &str,
+) -> Result<bool, PersistDbError> {
+    let released = user_transaction::Entity::update_many()
+        .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .filter(user_transaction::Column::Status.eq(UserTransactionStatus::Recording))
+        .col_expr(
+            user_transaction::Column::Status,
+            user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
+                UserTransactionStatus::Confirmed,
+            )),
+        )
+        .col_expr(
+            user_transaction::Column::UpdatedAt,
+            sea_orm::sea_query::Expr::value(now()),
+        )
+        .exec(ctx.db.as_ref())
+        .await?;
+
+    Ok(released.rows_affected == 1)
+}
+
+#[measure(record_db_time)]
 pub async fn mark_payment_transaction_confirmed(
     ctx: &PersistCtx,
     transaction_id: &str,
@@ -162,6 +226,7 @@ pub async fn mark_payment_transaction_confirmed(
         .filter(user_transaction::Column::Status.is_in([
             UserTransactionStatus::Pending,
             UserTransactionStatus::Confirmed,
+            UserTransactionStatus::Recording,
         ]))
         .col_expr(
             user_transaction::Column::Status,
@@ -195,6 +260,7 @@ pub async fn mark_payment_transaction_recorded(
         .filter(user_transaction::Column::Status.is_in([
             UserTransactionStatus::Pending,
             UserTransactionStatus::Confirmed,
+            UserTransactionStatus::Recording,
         ]))
         .col_expr(
             user_transaction::Column::Status,
@@ -375,6 +441,7 @@ pub async fn mark_payment_transactions_reverted_in_block_range(
         .filter(user_transaction::Column::Status.is_in([
             UserTransactionStatus::Pending,
             UserTransactionStatus::Confirmed,
+            UserTransactionStatus::Recording,
             UserTransactionStatus::Recorded,
         ]))
         .filter(range_condition)

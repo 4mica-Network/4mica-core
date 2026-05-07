@@ -222,3 +222,39 @@ async fn mark_recorded_accepts_confirmed_status() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
+async fn payment_recording_claim_is_atomic() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let recipient = random_address();
+    ensure_user(&ctx, &user_addr).await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+    repo::submit_pending_payment_transaction(
+        &ctx,
+        repo::PendingPaymentInput {
+            user_address: user_addr,
+            recipient_address: recipient,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            transaction_id: tx_id.clone(),
+            amount: U256::from(3u64),
+            tab_id: "0x1".to_string(),
+            block_number: 1,
+            block_hash: None,
+        },
+    )
+    .await?;
+
+    assert!(repo::claim_payment_transaction_for_recording(&ctx, &tx_id).await?);
+    assert!(!repo::claim_payment_transaction_for_recording(&ctx, &tx_id).await?);
+
+    let row = user_transaction::Entity::find_by_id(tx_id)
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+    assert_eq!(row.status, UserTransactionStatus::Recording);
+
+    Ok(())
+}
