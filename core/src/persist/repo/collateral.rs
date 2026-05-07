@@ -42,9 +42,7 @@ pub async fn deposit_with_event(
     let now = now();
     let user_address = parse_address(&user_address)?.into_inner();
     let asset_address = parse_address(&asset_address)?.into_inner();
-    let user_for_log = user_address.clone();
-    let asset_for_log = asset_address.clone();
-    info!("persist.deposit start user={user_for_log} asset={asset_for_log} amount={amount}");
+    info!("persist.deposit start user={user_address} asset={asset_address} amount={amount}");
 
     ctx.db
         .transaction(|txn| {
@@ -126,7 +124,7 @@ pub async fn deposit_with_event(
         })
         .await?;
 
-    info!("persist.deposit done user={}", user_for_log);
+    info!("persist.deposit done user={user_address}");
     Ok(())
 }
 
