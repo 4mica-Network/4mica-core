@@ -41,7 +41,7 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
         updated_at: sea_orm::ActiveValue::Set(now),
     };
 
-    user_asset_balance::Entity::insert(new_balance.clone())
+    user_asset_balance::Entity::insert(new_balance)
         .on_conflict(
             OnConflict::columns([
                 user_asset_balance::Column::UserAddress,
@@ -61,8 +61,8 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
         })?;
 
     user_asset_balance::Entity::find()
-        .filter(user_asset_balance::Column::UserAddress.eq(new_balance.user_address.unwrap()))
-        .filter(user_asset_balance::Column::AssetAddress.eq(new_balance.asset_address.unwrap()))
+        .filter(user_asset_balance::Column::UserAddress.eq(user_str))
+        .filter(user_asset_balance::Column::AssetAddress.eq(asset_str))
         .one(conn)
         .await?
         .ok_or_else(|| {
