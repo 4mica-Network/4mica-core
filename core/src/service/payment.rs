@@ -167,14 +167,49 @@ impl CoreService {
         tx_id: &str,
         asset_address: &str,
         duration_secs: f64,
-    ) -> ServiceResult<()> {
-        repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, tx_id).await?;
-        crate::metrics::record_processed_payment_tx(
-            PaymentTxStatus::Reverted,
-            asset_address,
-            duration_secs,
-        );
-        Ok(())
+    ) -> ServiceResult<bool> {
+        let reverted =
+            repo::mark_payment_transaction_reverted(&self.inner.persist_ctx, tx_id).await?;
+        if reverted {
+            crate::metrics::record_processed_payment_tx(
+                PaymentTxStatus::Reverted,
+                asset_address,
+                duration_secs,
+            );
+        }
+        Ok(reverted)
+    }
+
+    async fn revert_confirm_payment(
+        &self,
+        tx_id: &str,
+        asset_address: &str,
+        duration_secs: f64,
+    ) -> ServiceResult<ConfirmOutcome> {
+        if self
+            .revert_payment(tx_id, asset_address, duration_secs)
+            .await?
+        {
+            Ok(ConfirmOutcome::Reverted)
+        } else {
+            Ok(ConfirmOutcome::Skipped)
+        }
+    }
+
+    async fn revert_recorded_payment(
+        &self,
+        tx_id: &str,
+        asset_address: &str,
+        duration_secs: f64,
+    ) -> ServiceResult<FinalizeOutcome> {
+        if self
+            .revert_payment(tx_id, asset_address, duration_secs)
+            .await?
+        {
+            Ok(FinalizeOutcome::Reverted)
+        } else {
+            Ok(FinalizeOutcome::Skipped)
+        }
     }
 
     /// Submit user transactions and record payments on-chain for each discovered on-chain payment.
@@ -195,9 +230,9 @@ impl CoreService {
                     "Invalid tx hash {} (err: {err}); marking reverted",
                     tx.tx_id
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(ConfirmOutcome::Reverted);
+                return self
+                    .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         };
 
@@ -208,9 +243,9 @@ impl CoreService {
                     "Pending tx {} missing block_number; marking reverted",
                     tx.tx_id
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(ConfirmOutcome::Reverted);
+                return self
+                    .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         };
 
@@ -227,9 +262,9 @@ impl CoreService {
                 "Block {} not found for tx {}; marking reverted",
                 block_number, tx.tx_id
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(ConfirmOutcome::Reverted);
+            return self
+                .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         };
 
         if let Some(expected_hash) = tx.block_hash.as_deref() {
@@ -239,9 +274,9 @@ impl CoreService {
                     "Block hash mismatch for tx {} (expected {}, got {}); marking reverted",
                     tx.tx_id, expected_hash, actual_hash
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(ConfirmOutcome::Reverted);
+                return self
+                    .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         }
 
@@ -254,9 +289,9 @@ impl CoreService {
 
         let Some(receipt) = receipt else {
             warn!("Receipt missing for tx {}; marking reverted", tx.tx_id);
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(ConfirmOutcome::Reverted);
+            return self
+                .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         };
 
         if receipt.block_number != Some(block_number) {
@@ -264,9 +299,9 @@ impl CoreService {
                 "Receipt block mismatch for tx {} (expected {}, got {:?}); marking reverted",
                 tx.tx_id, block_number, receipt.block_number
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(ConfirmOutcome::Reverted);
+            return self
+                .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         }
 
         if let Some(expected_hash) = tx.block_hash.as_deref()
@@ -278,9 +313,9 @@ impl CoreService {
                     "Receipt hash mismatch for tx {} (expected {}, got {}); marking reverted",
                     tx.tx_id, expected_hash, actual_hash
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(ConfirmOutcome::Reverted);
+                return self
+                    .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         }
 
@@ -289,16 +324,16 @@ impl CoreService {
                 "Payment tx {} execution reverted; marking reverted",
                 tx.tx_id
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(ConfirmOutcome::Reverted);
+            return self
+                .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         }
 
         let Some(tab_id) = tx.tab_id.as_deref() else {
             warn!("Pending tx {} missing tab_id; marking reverted", tx.tx_id);
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(ConfirmOutcome::Reverted);
+            return self
+                .revert_confirm_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         };
         let tab_id = U256::from_str(tab_id)
             .map_err(|e| ServiceError::InvalidParams(format!("invalid tab_id {tab_id}: {e}")))?;
@@ -455,9 +490,9 @@ impl CoreService {
                     "Recorded tx {} missing record_tx_hash; marking reverted",
                     tx.tx_id
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(FinalizeOutcome::Reverted);
+                return self
+                    .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         };
 
@@ -468,9 +503,9 @@ impl CoreService {
                     "Invalid record_tx_hash {} (err: {err}); marking reverted",
                     record_tx_hash
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(FinalizeOutcome::Reverted);
+                return self
+                    .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         };
 
@@ -481,9 +516,9 @@ impl CoreService {
                     "Recorded tx {} missing record_tx_block_number; marking reverted",
                     tx.tx_id
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(FinalizeOutcome::Reverted);
+                return self
+                    .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         };
 
@@ -499,9 +534,9 @@ impl CoreService {
                 "Receipt missing for record tx {}; marking reverted",
                 record_tx_hash
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(FinalizeOutcome::Reverted);
+            return self
+                .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         };
 
         if receipt.block_number != Some(record_block_number) {
@@ -509,9 +544,9 @@ impl CoreService {
                 "Record receipt block mismatch for tx {} (expected {}, got {:?}); marking reverted",
                 record_tx_hash, record_block_number, receipt.block_number
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(FinalizeOutcome::Reverted);
+            return self
+                .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         }
 
         if let Some(expected_hash) = tx.record_tx_block_hash.as_deref()
@@ -523,9 +558,9 @@ impl CoreService {
                     "Record receipt hash mismatch for tx {} (expected {}, got {}); marking reverted",
                     record_tx_hash, expected_hash, actual_hash
                 );
-                self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                    .await?;
-                return Ok(FinalizeOutcome::Reverted);
+                return self
+                    .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                    .await;
             }
         }
 
@@ -534,25 +569,25 @@ impl CoreService {
                 "recordPayment tx {} execution reverted; marking payment {} reverted",
                 record_tx_hash, tx.tx_id
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(FinalizeOutcome::Reverted);
+            return self
+                .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         }
 
         let Some(tab_id) = tx.tab_id.as_deref() else {
             warn!("Recorded tx {} missing tab_id; marking reverted", tx.tx_id);
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(FinalizeOutcome::Reverted);
+            return self
+                .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         };
         if let Err(err) = U256::from_str(tab_id) {
             warn!(
                 "Invalid tab_id {} for tx {} (err: {err}); marking reverted",
                 tab_id, tx.tx_id
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(FinalizeOutcome::Reverted);
+            return self
+                .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         }
 
         if let Err(err) = U256::from_str(&tx.amount) {
@@ -560,9 +595,9 @@ impl CoreService {
                 "Invalid amount {} for tx {} (err: {err}); marking reverted",
                 tx.amount, tx.tx_id
             );
-            self.revert_payment(&tx.tx_id, &tx.asset_address, duration)
-                .await?;
-            return Ok(FinalizeOutcome::Reverted);
+            return self
+                .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)
+                .await;
         }
 
         match repo::finalize_recorded_payment_transaction(&self.inner.persist_ctx, &tx.tx_id).await

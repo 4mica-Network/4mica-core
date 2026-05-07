@@ -396,9 +396,16 @@ pub async fn finalize_recorded_payment_transaction(
 pub async fn mark_payment_transaction_reverted(
     ctx: &PersistCtx,
     transaction_id: &str,
-) -> Result<(), PersistDbError> {
-    user_transaction::Entity::update_many()
+) -> Result<bool, PersistDbError> {
+    let result = user_transaction::Entity::update_many()
         .filter(user_transaction::Column::TxId.eq(transaction_id))
+        .filter(user_transaction::Column::Finalized.eq(false))
+        .filter(user_transaction::Column::Status.is_in([
+            UserTransactionStatus::Pending,
+            UserTransactionStatus::Confirmed,
+            UserTransactionStatus::Recording,
+            UserTransactionStatus::Recorded,
+        ]))
         .col_expr(
             user_transaction::Column::Status,
             user_transaction::Column::Status.save_as(sea_orm::sea_query::Expr::val(
@@ -411,7 +418,7 @@ pub async fn mark_payment_transaction_reverted(
         )
         .exec(ctx.db.as_ref())
         .await?;
-    Ok(())
+    Ok(result.rows_affected == 1)
 }
 
 #[measure(record_db_time)]
