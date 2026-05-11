@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract RevertingRecipient {
     receive() external payable {
@@ -207,6 +209,33 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         assertEq(USER1.balance, 4.25 ether);
         (collateral,,) = core4Mica.getUser(USER1);
         assertEq(collateral, 0.25 ether);
+    }
+
+    function test_Remunerate_ClearsFullyDeductedEthWithdrawalRequest() public {
+        vm.prank(USER1);
+        core4Mica.deposit{value: 1 ether}();
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(USER1);
+        core4Mica.requestWithdrawal(0.75 ether);
+
+        vm.warp(block.timestamp + core4Mica.synchronizationDelay() - 1);
+        Guarantee memory g = _ethGuarantee(0x1234, block.timestamp, USER1, USER2, 17, 0.75 ether);
+        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
+        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
+
+        vm.warp(block.timestamp + 15 days);
+        vm.prank(USER2);
+        core4Mica.remunerate(guaranteeData, signature);
+
+        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
+        assertEq(collateral, 0.25 ether);
+        assertEq(withdrawalTimestamp, 0);
+        assertEq(withdrawalAmount, 0);
+
+        (uint256 requestTimestamp, uint256 requestAmount) = core4Mica.withdrawalRequests(USER1, ETH_ASSET);
+        assertEq(requestTimestamp, 0);
+        assertEq(requestAmount, 0);
     }
 
     function test_Remunerate_GuaranteeIssuedAfterWithdrawalRequestSynchronization() public {
@@ -570,13 +599,14 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         // Create a guarantee where amount differs from total_amount
         Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: tabId,
-            req_id: reqId,
+            tabId: tabId,
+            reqId: reqId,
             client: USER1,
             recipient: USER2,
             amount: 0.3 ether,
-            total_amount: 0.7 ether,
+            totalAmount: 0.7 ether,
             asset: ETH_ASSET,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });
@@ -609,13 +639,14 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         // User has enough for amount (0.3 ether) but not for total_amount (0.8 ether)
         Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: 0x8888,
-            req_id: 55,
+            tabId: 0x8888,
+            reqId: 55,
             client: USER1,
             recipient: USER2,
             amount: 0.3 ether,
-            total_amount: 0.8 ether,
+            totalAmount: 0.8 ether,
             asset: ETH_ASSET,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });
@@ -637,13 +668,14 @@ contract Core4MicaRemunerationTest is Core4MicaTestBase {
         // amount is non-zero but total_amount is zero
         Guarantee memory g = Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tab_id: 0x7777,
-            req_id: 66,
+            tabId: 0x7777,
+            reqId: 66,
             client: USER1,
             recipient: USER2,
             amount: 0.5 ether,
-            total_amount: 0,
+            totalAmount: 0,
             asset: ETH_ASSET,
+            // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),
             version: 1
         });

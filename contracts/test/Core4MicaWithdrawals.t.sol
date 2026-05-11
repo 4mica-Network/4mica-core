@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract RevertingWithdrawalUser {
-    Core4Mica internal immutable core;
+    Core4Mica internal immutable CORE;
 
     constructor(Core4Mica core_) {
-        core = core_;
+        CORE = core_;
     }
 
     function depositAndRequest() external payable {
-        core.deposit{value: msg.value}();
-        core.requestWithdrawal(msg.value);
+        CORE.deposit{value: msg.value}();
+        CORE.requestWithdrawal(msg.value);
     }
 
     receive() external payable {
@@ -20,7 +22,7 @@ contract RevertingWithdrawalUser {
     }
 
     function finalize() external {
-        core.finalizeWithdrawal();
+        CORE.finalizeWithdrawal();
     }
 }
 
@@ -274,6 +276,8 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.requestWithdrawal(2 ether);
 
+        (, uint256 requestTimestamp,) = core4Mica.getUser(USER1);
+        tabTimestamp = requestTimestamp + core4Mica.synchronizationDelay() + 1;
         vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
 
         Guarantee memory g = _ethGuarantee(0x1234, tabTimestamp, USER1, USER2, 17, 5 ether);

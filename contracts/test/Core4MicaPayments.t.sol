@@ -1,9 +1,54 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
 
 contract Core4MicaPaymentsTest is Core4MicaTestBase {
+    function _digestReference(uint256 tabId, address asset, uint256 amount) internal pure returns (bytes32) {
+        return keccak256(abi.encode(tabId, asset, amount));
+    }
+
+    function _digestAssembly(uint256 tabId, address asset, uint256 amount) internal pure returns (bytes32 digest) {
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, tabId)
+            mstore(add(ptr, 0x20), asset)
+            mstore(add(ptr, 0x40), amount)
+            digest := keccak256(ptr, 0x60)
+        }
+    }
+
+    function testFuzz_PaymentDigest_AssemblyMatchesAbiEncode(uint256 tabId, address asset, uint256 amount) public pure {
+        assertEq(_digestAssembly(tabId, asset, amount), _digestReference(tabId, asset, amount));
+    }
+
+    function test_PaymentDigest_Zeros() public pure {
+        assertEq(_digestAssembly(0, address(0), 0), _digestReference(0, address(0), 0));
+    }
+
+    function test_PaymentDigest_MaxValues() public pure {
+        assertEq(
+            _digestAssembly(type(uint256).max, address(type(uint160).max), type(uint256).max),
+            _digestReference(type(uint256).max, address(type(uint160).max), type(uint256).max)
+        );
+    }
+
+    function test_PaymentDigest_AddressPaddingIsCorrect() public pure {
+        address addr = address(0xdEaDbEeF);
+        assertEq(_digestAssembly(1, addr, 1), _digestReference(1, addr, 1));
+    }
+
+    function test_PaymentDigest_DifferentInputsProduceDifferentDigests() public pure {
+        bytes32 a = _digestAssembly(1, address(0xAA), 100);
+        bytes32 b = _digestAssembly(2, address(0xAA), 100);
+        bytes32 c = _digestAssembly(1, address(0xBB), 100);
+        bytes32 d = _digestAssembly(1, address(0xAA), 101);
+        assertTrue(a != b);
+        assertTrue(a != c);
+        assertTrue(a != d);
+    }
+
     function test_RecordPayment() public {
         (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(0x1234);
         assertEq(paid, 0);
@@ -31,6 +76,44 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
         assertEq(paid, 3 ether);
         assertFalse(remunerated);
         assertEq(asset, ETH_ASSET);
+    }
+
+    function test_RecordPaymentById_IsIdempotent() public {
+        bytes32 paymentId = keccak256("payment-1");
+
+        vm.expectEmit(true, true, true, true);
+        emit Core4Mica.PaymentRecordedById(paymentId, 0x1234, ETH_ASSET, 1 ether);
+        vm.prank(OPERATOR);
+        core4Mica.recordPaymentById(paymentId, 0x1234, ETH_ASSET, 1 ether);
+
+        (uint256 paid, bool remunerated, address asset) = core4Mica.getPaymentStatus(0x1234);
+        assertEq(paid, 1 ether);
+        assertFalse(remunerated);
+        assertEq(asset, ETH_ASSET);
+
+        vm.expectEmit(true, true, true, true);
+        emit Core4Mica.PaymentRecordReplayed(paymentId, 0x1234, ETH_ASSET, 1 ether);
+        vm.prank(OPERATOR);
+        core4Mica.recordPaymentById(paymentId, 0x1234, ETH_ASSET, 1 ether);
+
+        (paid, remunerated, asset) = core4Mica.getPaymentStatus(0x1234);
+        assertEq(paid, 1 ether);
+        assertFalse(remunerated);
+        assertEq(asset, ETH_ASSET);
+    }
+
+    function test_RecordPaymentById_RevertConflictingReplay() public {
+        bytes32 paymentId = keccak256("payment-1");
+
+        vm.prank(OPERATOR);
+        core4Mica.recordPaymentById(paymentId, 0x1234, ETH_ASSET, 1 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.PaymentRecordConflict.selector, paymentId));
+        vm.prank(OPERATOR);
+        core4Mica.recordPaymentById(paymentId, 0x1234, ETH_ASSET, 2 ether);
+
+        (uint256 paid,,) = core4Mica.getPaymentStatus(0x1234);
+        assertEq(paid, 1 ether);
     }
 
     function test_RecordPayment_Stablecoin() public {
@@ -95,7 +178,7 @@ contract Core4MicaPaymentsTest is Core4MicaTestBase {
 
     function test_RecordPayment_Revert_Unauthorized() public {
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.recordPayment(0x1234, ETH_ASSET, 0);
     }
 

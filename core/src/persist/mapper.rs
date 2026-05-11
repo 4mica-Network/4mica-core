@@ -170,17 +170,12 @@ pub fn parse_settlement_statuses(statuses: &[String]) -> ServiceResult<Vec<Settl
         }
     }
 
-    let mut parsed = Vec::with_capacity(statuses.len());
-    for value in statuses {
-        match parse_one(value) {
-            Some(status) => parsed.push(status),
-            None => {
-                return Err(ServiceError::InvalidParams(format!(
-                    "invalid settlement status: {}",
-                    value
-                )));
-            }
-        }
-    }
-    Ok(parsed)
+    statuses
+        .iter()
+        .map(|value| {
+            parse_one(value).ok_or_else(|| {
+                ServiceError::InvalidParams(format!("invalid settlement status: {value}"))
+            })
+        })
+        .collect()
 }

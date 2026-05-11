@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase, MockERC20} from "./Core4MicaTestBase.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
 
 contract Core4MicaDepositsTest is Core4MicaTestBase {
     function test_Deposit() public {
@@ -45,7 +46,8 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         assertEq(withdrawTimestamp, 0);
         assertEq(withdrawAmount, 0);
         assertEq(usdc.balanceOf(USER1), starting - amount);
-        assertEq(usdc.balanceOf(address(core4Mica)), amount);
+        assertEq(usdc.balanceOf(address(core4Mica)), 0);
+        assertEq(usdc.balanceOf(address(mockPool)), amount);
     }
 
     function test_Deposit_RevertZeroEther() public {
@@ -97,6 +99,7 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         assertEq(withdrawTimestamp, 0);
         assertEq(withdrawAmount, 0);
         assertEq(usdt.balanceOf(USER1), starting - amount);
-        assertEq(usdt.balanceOf(address(core4Mica)), amount);
+        assertEq(usdt.balanceOf(address(core4Mica)), 0);
+        assertEq(usdt.balanceOf(address(mockPool)), amount);
     }
 }

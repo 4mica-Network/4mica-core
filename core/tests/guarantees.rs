@@ -477,7 +477,7 @@ async fn sign_v1_request(
 }
 
 #[test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 fn domain_separator_matches_contract_logic() {
     let addr = Address::from_str("0xA15BB66138824a1c7167f5E85b957d04Dd34E468").unwrap();
     let domain = common::fixtures::compute_guarantee_domain_separator(31337, addr).unwrap();
@@ -488,7 +488,7 @@ fn domain_separator_matches_contract_logic() {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -543,8 +543,9 @@ async fn store_guarantee_autocreates_users() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
-async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
+#[serial_test::file_serial]
+async fn duplicate_guarantee_insert_returns_error_and_preserves_existing_row() -> anyhow::Result<()>
+{
     use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
 
     let _ = init()?;
@@ -604,7 +605,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
     };
     repo::store_guarantee_on(ctx.db.as_ref(), data1).await?;
 
-    // ── Second insert with same (tab_id, req_id) must be a no-op ──
+    // ── Second insert with same (tab_id, req_id) must fail ──
     let data2 = GuaranteeData {
         tab_id,
         req_id,
@@ -617,7 +618,12 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
         cert: "cert2".into(),
         request: None,
     };
-    repo::store_guarantee_on(ctx.db.as_ref(), data2).await?;
+    let duplicate = repo::store_guarantee_on(ctx.db.as_ref(), data2).await;
+    assert!(matches!(
+        duplicate,
+        Err(PersistDbError::DuplicateGuarantee { req_id: duplicate_req_id })
+            if duplicate_req_id == req_id
+    ));
 
     // ── Verify only the first value persisted ──
     let g = guarantee::Entity::find()
@@ -632,7 +638,7 @@ async fn duplicate_guarantee_insert_is_noop() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -642,7 +648,7 @@ async fn get_missing_guarantee_returns_none() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -697,7 +703,7 @@ async fn get_tab_ttl_seconds_ok_and_missing_errors() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()> {
     let _ = init()?;
     let ctx = PersistCtx::new().await?;
@@ -759,7 +765,7 @@ async fn get_last_guarantee_for_tab_orders_by_created_at() -> anyhow::Result<()>
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -838,7 +844,140 @@ async fn issue_guarantee_locks_and_inserts_atomically() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
+async fn duplicate_guarantee_conflict_rolls_back_balance_and_tab_updates() -> anyhow::Result<()> {
+    let config = init()?;
+    let ctx = PersistCtx::new().await?;
+
+    let user_addr = format!("0x{:040x}", rand::random::<u128>());
+    repo::ensure_user_exists_on(ctx.db.as_ref(), &user_addr).await?;
+    repo::deposit(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        U256::from(100u64),
+    )
+    .await?;
+
+    let domain = common::fixtures::compute_guarantee_domain_separator(
+        config.ethereum_config.chain_id,
+        config.ethereum_config.contract_address.parse()?,
+    )?;
+
+    let recipient_addr = format!("0x{:040x}", rand::random::<u128>());
+    let tab_id = random_u256();
+    let req_id = U256::from(7u64);
+    insert_test_tab(&ctx, tab_id, user_addr.clone(), recipient_addr.clone()).await?;
+
+    let initial_claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id,
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(20u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
+
+    let txn = ctx.db.begin().await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, &initial_claims, 1).await?;
+    let promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(initial_claims.clone()),
+        domain,
+        total_amount,
+    );
+    let claims_bytes: Vec<u8> = promise.clone().try_into()?;
+    let cert = BLSCert::sign(
+        &config.secrets.bls_secret_key,
+        BlsClaims::from_bytes(claims_bytes),
+    )?;
+    let req = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(initial_claims),
+        "0x".to_string() + &"0".repeat(130),
+        SigningScheme::Eip712,
+    );
+    repo::prepare_and_store_guarantee_on(&txn, &promise, &cert, &req).await?;
+    txn.commit().await?;
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(20u64)
+    );
+
+    let duplicate_claims = PaymentGuaranteeRequestClaimsV1 {
+        tab_id,
+        user_address: user_addr.clone(),
+        recipient_address: recipient_addr.clone(),
+        req_id,
+        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        amount: U256::from(30u64),
+        timestamp: Utc::now().timestamp() as u64,
+    };
+
+    let txn = ctx.db.begin().await?;
+    let total_amount =
+        repo::update_user_balance_and_tab_for_guarantee_on(&txn, &duplicate_claims, 1).await?;
+    let duplicate_promise = PaymentGuaranteeClaims::from_request(
+        &PaymentGuaranteeRequestClaims::V1(duplicate_claims.clone()),
+        domain,
+        total_amount,
+    );
+    let claims_bytes: Vec<u8> = duplicate_promise.clone().try_into()?;
+    let duplicate_cert = BLSCert::sign(
+        &config.secrets.bls_secret_key,
+        BlsClaims::from_bytes(claims_bytes),
+    )?;
+    let duplicate_req = PaymentGuaranteeRequest::new(
+        PaymentGuaranteeRequestClaims::V1(duplicate_claims),
+        "0x".to_string() + &"0".repeat(130),
+        SigningScheme::Eip712,
+    );
+
+    let duplicate_insert = repo::prepare_and_store_guarantee_on(
+        &txn,
+        &duplicate_promise,
+        &duplicate_cert,
+        &duplicate_req,
+    )
+    .await;
+    let duplicate_insert_succeeded = match duplicate_insert {
+        Err(PersistDbError::DuplicateGuarantee {
+            req_id: duplicate_req_id,
+        }) => {
+            assert_eq!(duplicate_req_id, req_id);
+            false
+        }
+        Err(err) => return Err(err.into()),
+        Ok(()) => true,
+    };
+    if duplicate_insert_succeeded {
+        txn.commit().await?;
+    } else {
+        txn.rollback().await?;
+    }
+
+    assert!(
+        !duplicate_insert_succeeded,
+        "duplicate guarantee insert must fail so prior balance and tab updates roll back"
+    );
+
+    assert_eq!(
+        read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(20u64)
+    );
+
+    let tab = entities::tabs::Entity::find_by_id(u256_to_string(tab_id))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("tab exists");
+    assert_eq!(tab.total_amount, U256::from(20u64).to_string());
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
 async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
     let _config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -893,7 +1032,7 @@ async fn issue_guarantee_respects_pending_withdrawal() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Result<()> {
     let config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -969,7 +1108,7 @@ async fn issue_guarantee_allows_with_pending_withdrawal_headroom() -> anyhow::Re
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
     let _config = init()?;
     let ctx = PersistCtx::new().await?;
@@ -1017,7 +1156,7 @@ async fn issue_guarantee_invalid_timestamp_errors() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn accepts_timestamp_within_tab_window_without_opening_tab() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1073,7 +1212,7 @@ async fn accepts_timestamp_within_tab_window_without_opening_tab() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_recipient_mismatch_on_guarantee_claims() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1128,7 +1267,7 @@ async fn rejects_recipient_mismatch_on_guarantee_claims() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_timestamp_outside_tab_window() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1234,7 +1373,7 @@ async fn rejects_timestamp_outside_tab_window() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_guarantee_when_tab_settlement_finalized() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1312,7 +1451,7 @@ async fn rejects_guarantee_when_tab_settlement_finalized() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_guarantee_when_tab_closed() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1364,7 +1503,7 @@ async fn rejects_guarantee_when_tab_closed() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn pending_tab_expired_accepts_first_claim_without_reopening() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1421,7 +1560,7 @@ async fn pending_tab_expired_accepts_first_claim_without_reopening() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rejects_tab_ttl_exceeding_tab_expiration_time() {
     load_env();
     let ctx = match PersistCtx::new().await {
@@ -1480,7 +1619,7 @@ fn recipient_issue_auth(recipient_address: &str) -> AccessContext {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1535,7 +1674,7 @@ async fn issue_v2_guarantee_succeeds_when_active_version_is_v2() -> anyhow::Resu
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_when_active_version_is_v1() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1591,7 +1730,7 @@ async fn issue_v2_guarantee_rejects_when_active_version_is_v1() -> anyhow::Resul
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepted()
 -> anyhow::Result<()> {
     load_env();
@@ -1650,7 +1789,7 @@ async fn issue_v1_guarantee_succeeds_when_active_version_is_v2_and_v1_is_accepte
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1711,7 +1850,7 @@ async fn issue_first_guarantee_pins_tab_to_that_version() -> anyhow::Result<()> 
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1795,7 +1934,7 @@ async fn issue_mixed_guarantee_version_on_same_tab_is_rejected() -> anyhow::Resu
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_subject_hash_mismatch() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1852,7 +1991,7 @@ async fn issue_v2_guarantee_rejects_subject_hash_mismatch() -> anyhow::Result<()
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_request_hash_mismatch() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1909,7 +2048,7 @@ async fn issue_v2_guarantee_rejects_request_hash_mismatch() -> anyhow::Result<()
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_min_validation_score_zero() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -1966,7 +2105,7 @@ async fn issue_v2_guarantee_rejects_min_validation_score_zero() -> anyhow::Resul
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_rejects_untrusted_validation_registry() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -2029,7 +2168,7 @@ async fn issue_v2_guarantee_rejects_untrusted_validation_registry() -> anyhow::R
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_v2_guarantee_accepts_trusted_validation_registry() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -2087,7 +2226,7 @@ async fn issue_v2_guarantee_accepts_trusted_validation_registry() -> anyhow::Res
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Result<()> {
     load_env();
     let ctx = PersistCtx::new().await?;
@@ -2107,7 +2246,7 @@ async fn core_service_public_params_include_guarantee_metadata() -> anyhow::Resu
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_service_public_params_support_max_accepted_guarantee_version_v1() -> anyhow::Result<()>
 {
     load_env();
@@ -2119,7 +2258,7 @@ async fn core_service_public_params_support_max_accepted_guarantee_version_v1() 
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn contract_api_rejects_disabled_guarantee_version() {
     struct DisabledGuaranteeVersionApi;
 
@@ -2149,6 +2288,7 @@ async fn contract_api_rejects_disabled_guarantee_version() {
 
         async fn record_payment(
             &self,
+            _payment_id: B256,
             _tab_id: U256,
             _asset: Address,
             _amount: U256,
@@ -2211,6 +2351,7 @@ impl CoreContractApi for MockContractApi {
 
     async fn record_payment(
         &self,
+        _payment_id: B256,
         _tab_id: U256,
         _asset: alloy::primitives::Address,
         _amount: U256,

@@ -60,6 +60,7 @@ pub trait CoreContractApi: Send + Sync {
 
     async fn record_payment(
         &self,
+        payment_id: B256,
         tab_id: U256,
         asset: Address,
         amount: U256,
@@ -148,6 +149,7 @@ impl CoreContractApi for CoreContractProxy {
 
     async fn record_payment(
         &self,
+        payment_id: B256,
         tab_id: U256,
         asset: Address,
         amount: U256,
@@ -156,9 +158,15 @@ impl CoreContractApi for CoreContractProxy {
         // overlapping payment-confirmation tasks.
         let _guard = self.tx_write_lock.lock().await;
         let contract = self.build_contract();
-        let tx = contract.recordPayment(tab_id, asset, amount);
+        let tx = contract.recordPaymentById(payment_id, tab_id, asset, amount);
 
         let receipt = tx.send().await?.get_receipt().await?;
+        if !receipt.status() {
+            return Err(CoreContractApiError::Other(anyhow!(
+                "recordPayment tx reverted: {:?}",
+                receipt.transaction_hash
+            )));
+        }
 
         info!(
             "recordPayment confirmed in tx {:?}",

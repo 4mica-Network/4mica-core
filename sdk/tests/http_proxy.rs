@@ -24,7 +24,7 @@ async fn spawn_router(
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rpc_proxy_get_public_params_round_trip() {
     let params = CorePublicParameters {
         public_key: vec![1, 2, 3],
@@ -65,7 +65,7 @@ async fn rpc_proxy_get_public_params_round_trip() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rpc_proxy_surfaces_api_errors() {
     let router = Router::new().route(
         "/core/recipients/{recipient}/tabs",
@@ -101,7 +101,7 @@ async fn rpc_proxy_surfaces_api_errors() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rpc_proxy_returns_decode_error_on_invalid_json() {
     let router = Router::new().route(
         "/core/public-params",
@@ -124,7 +124,7 @@ async fn rpc_proxy_returns_decode_error_on_invalid_json() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
     let params = CorePublicParameters {
         public_key: vec![7, 8, 9],
@@ -230,7 +230,7 @@ fn build_v2_request() -> PaymentGuaranteeRequest {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn rpc_proxy_issue_guarantee_round_trip_v2_request() {
     let expected = build_v2_request();
     let cert = build_test_bls_cert();

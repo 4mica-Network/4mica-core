@@ -1,11 +1,22 @@
-pub const WALLET_STATUS_ACTIVE: &str = "active";
-pub const WALLET_STATUS_SUSPENDED: &str = "suspended";
-pub const WALLET_STATUS_REVOKED: &str = "revoked";
-pub const WALLET_STATUS_ALLOWED: [&str; 3] = [
-    WALLET_STATUS_ACTIVE,
-    WALLET_STATUS_SUSPENDED,
-    WALLET_STATUS_REVOKED,
-];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletStatus {
+    Active,
+    Suspended,
+    Revoked,
+}
+
+impl std::str::FromStr for WalletStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "suspended" => Ok(Self::Suspended),
+            "revoked" => Ok(Self::Revoked),
+            _ => Err(()),
+        }
+    }
+}
 
 pub const SCOPE_TAB_CREATE: &str = "tab:create";
 pub const SCOPE_TAB_READ: &str = "tab:read";

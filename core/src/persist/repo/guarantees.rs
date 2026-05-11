@@ -10,11 +10,10 @@ use entities::guarantee;
 use entities::sea_orm_active_enums::TabStatus;
 use metrics_4mica::measure;
 use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaimsV1};
-use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::parse_address;
+use super::common::{is_unique_violation, parse_address};
 use super::tabs::{get_tab_by_id_on, lock_and_update_tab_on, open_tab_on};
 use super::users::ensure_user_exists_on;
 use super::withdrawals::get_pending_withdrawal_on;
@@ -183,13 +182,17 @@ pub async fn store_guarantee_on<C: ConnectionTrait>(
     };
 
     guarantee::Entity::insert(active_model)
-        .on_conflict(
-            OnConflict::columns([guarantee::Column::TabId, guarantee::Column::ReqId])
-                .do_nothing()
-                .to_owned(),
-        )
         .exec_without_returning(conn)
-        .await?;
+        .await
+        .map_err(|err| {
+            if is_unique_violation(&err) {
+                PersistDbError::DuplicateGuarantee {
+                    req_id: data.req_id,
+                }
+            } else {
+                PersistDbError::DatabaseFailure(err)
+            }
+        })?;
 
     Ok(())
 }
@@ -200,10 +203,19 @@ pub async fn get_guarantee(
     tab_id: U256,
     req_id: U256,
 ) -> Result<Option<guarantee::Model>, PersistDbError> {
+    get_guarantee_on(ctx.db.as_ref(), tab_id, req_id).await
+}
+
+#[measure(record_db_time)]
+pub async fn get_guarantee_on<C: ConnectionTrait>(
+    conn: &C,
+    tab_id: U256,
+    req_id: U256,
+) -> Result<Option<guarantee::Model>, PersistDbError> {
     let res = guarantee::Entity::find()
         .filter(guarantee::Column::TabId.eq(u256_to_string(tab_id)))
         .filter(guarantee::Column::ReqId.eq(u256_to_string(req_id)))
-        .one(ctx.db.as_ref())
+        .one(conn)
         .await?;
     Ok(res)
 }

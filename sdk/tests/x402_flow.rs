@@ -11,7 +11,7 @@ mod common;
 use common::x402::MockSigner;
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn sign_payment_respects_payment_requirements() {
     let user_address = "0x0000000000000000000000000000000000000001";
     let (server_url, handle) = common::x402::spawn_mock_server().await;
@@ -46,7 +46,7 @@ async fn sign_payment_respects_payment_requirements() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn sign_payment_v2_respects_payment_requirements() {
     let user_address = "0x0000000000000000000000000000000000000001";
     let (server_url, handle) = common::x402::spawn_mock_server().await;
@@ -110,7 +110,7 @@ async fn sign_payment_v2_respects_payment_requirements() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn sign_payment_requests_tab_correctly() {
     let user_address = "0x0000000000000000000000000000000000000002";
     let (server_url, handle) = common::x402::spawn_mock_server().await;
@@ -132,7 +132,7 @@ async fn sign_payment_requests_tab_correctly() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn sign_payment_v2_requests_tab_correctly() {
     let user_address = "0x0000000000000000000000000000000000000002";
     let (server_url, handle) = common::x402::spawn_mock_server().await;
@@ -164,7 +164,7 @@ async fn sign_payment_v2_requests_tab_correctly() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn complete_payment_flow_through_facilitator() {
     let user_address = "0x0000000000000000000000000000000000000003";
     let (server_url, handle) = common::x402::spawn_mock_server().await;

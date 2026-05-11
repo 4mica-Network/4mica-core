@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
+import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 contract Core4MicaMiscTest is Core4MicaTestBase {
     function test_VerifyAndDecodeGuarantee() public view {
@@ -39,7 +41,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         Guarantee memory g = _guarantee(0x1234, block.timestamp, USER1, USER2, 17, 3 ether, address(usdc));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
 
-        Guarantee memory tampered = _ethGuarantee(g.tab_id, g.timestamp, g.client, g.recipient, g.req_id, g.amount);
+        Guarantee memory tampered = _ethGuarantee(g.tabId, g.timestamp, g.client, g.recipient, g.reqId, g.amount);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(tampered);
 
         vm.expectRevert(Core4Mica.InvalidSignature.selector);
@@ -115,5 +117,24 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         assertEq(tokens.length, 2);
         assertEq(tokens[0], address(usdc));
         assertEq(tokens[1], address(usdt));
+    }
+
+    function test_GetUserAllAssets_DoesNotRequireAaveConfiguration() public {
+        address[] memory stablecoins = new address[](2);
+        stablecoins[0] = address(usdc);
+        stablecoins[1] = address(usdt);
+        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
+
+        vm.prank(USER1);
+        bareCore.deposit{value: 1 ether}();
+
+        Core4Mica.UserAssetInfo[] memory infos = bareCore.getUserAllAssets(USER1);
+        assertEq(infos.length, 3);
+        assertEq(infos[0].asset, ETH_ASSET);
+        assertEq(infos[0].collateral, 1 ether);
+        assertEq(infos[1].asset, address(usdc));
+        assertEq(infos[1].collateral, 0);
+        assertEq(infos[2].asset, address(usdt));
+        assertEq(infos[2].collateral, 0);
     }
 }

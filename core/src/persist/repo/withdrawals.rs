@@ -258,6 +258,70 @@ pub async fn finalize_withdrawal_with_event(
 }
 
 #[measure(record_db_time)]
+pub async fn mark_withdrawal_executed_with_event(
+    ctx: &PersistCtx,
+    user_address: String,
+    asset_address: String,
+    executed_amount: U256,
+    event: Option<&EventMeta>,
+) -> Result<(), PersistDbError> {
+    let event = event.cloned();
+    let user_address = parse_address(&user_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
+
+    ctx.db
+        .transaction(|txn| {
+            let user_address = user_address.clone();
+            let asset_address = asset_address.clone();
+            Box::pin(async move {
+                let now = Utc::now().naive_utc();
+
+                let pending = withdrawal::Entity::find()
+                    .filter(withdrawal::Column::UserAddress.eq(&user_address))
+                    .filter(withdrawal::Column::AssetAddress.eq(&asset_address))
+                    .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
+                    .order_by_desc(withdrawal::Column::CreatedAt)
+                    .all(txn)
+                    .await?;
+
+                if pending.is_empty() {
+                    return Err(PersistDbError::WithdrawalNotFound {
+                        user: user_address.clone(),
+                        asset: asset_address.clone(),
+                    });
+                }
+                if pending.len() > 1 {
+                    return Err(PersistDbError::MultiplePendingWithdrawals {
+                        user: user_address.clone(),
+                        asset: asset_address.clone(),
+                        count: pending.len(),
+                    });
+                }
+
+                let withdrawal = pending.into_iter().next().unwrap();
+                let requested = U256::from_str(&withdrawal.requested_amount)
+                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+                let executed_amount = std::cmp::min(executed_amount, requested);
+
+                let mut am_w = withdrawal.into_active_model();
+                am_w.status = Set(WithdrawalStatus::Executed);
+                am_w.executed_amount = Set(executed_amount.to_string());
+                am_w.execute_event_chain_id = Set(event.as_ref().map(|e| e.chain_id as i64));
+                am_w.execute_event_block_hash = Set(event.as_ref().map(|e| e.block_hash.clone()));
+                am_w.execute_event_tx_hash = Set(event.as_ref().map(|e| e.tx_hash.clone()));
+                am_w.execute_event_log_index = Set(event.as_ref().map(|e| e.log_index as i64));
+                am_w.updated_at = Set(now);
+                am_w.update(txn).await?;
+
+                Ok::<_, PersistDbError>(())
+            })
+        })
+        .await?;
+
+    Ok(())
+}
+
+#[measure(record_db_time)]
 pub async fn revert_withdrawal_request(
     ctx: &PersistCtx,
     event: EventMeta,

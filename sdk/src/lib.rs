@@ -21,7 +21,7 @@ pub use auth::{AuthClient, AuthSession, AuthTokens};
 pub use client::Client;
 pub use client::model::{
     AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo, PendingRemunerationInfo,
-    RecipientPaymentInfo, TabInfo, TabPaymentStatus, UserInfo,
+    RecipientPaymentInfo, StablecoinPosition, TabInfo, TabPaymentStatus, UserInfo,
 };
 pub use config::AuthConfig;
 pub use config::{Config, ConfigBuilder};

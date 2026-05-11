@@ -2,6 +2,7 @@ use alloy::primitives::U256;
 use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::error::PersistDbError;
+use core_service::ethereum::event_data::EventMeta;
 use core_service::persist::{PersistCtx, repo};
 use core_service::util::u256_to_string;
 use entities::{collateral_event, sea_orm_active_enums::*, tabs};
@@ -16,7 +17,7 @@ use common::fixtures::{ensure_user, fetch_user, init_test_env, random_address};
 use crate::common::fixtures::{read_collateral, read_locked_collateral};
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn deposit_zero_does_not_crash() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -38,7 +39,7 @@ async fn deposit_zero_does_not_crash() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn deposit_large_value() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -60,7 +61,7 @@ async fn deposit_large_value() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -100,7 +101,57 @@ async fn multiple_deposits_accumulate_and_log_events() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
+async fn deposit_with_same_chain_event_is_idempotent() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let amount = U256::from(10u64);
+    let event = EventMeta {
+        chain_id: 84532,
+        block_hash: format!("0x{:064x}", rand::random::<u128>()),
+        tx_hash: format!("0x{:064x}", rand::random::<u128>()),
+        log_index: 3,
+    };
+
+    repo::deposit_with_event(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        amount,
+        Some(&event),
+    )
+    .await?;
+    repo::deposit_with_event(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        amount,
+        Some(&event),
+    )
+    .await?;
+
+    assert_eq!(
+        read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        amount
+    );
+
+    let events = collateral_event::Entity::find()
+        .filter(collateral_event::Column::UserAddress.eq(user_addr))
+        .filter(collateral_event::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .filter(collateral_event::Column::EventType.eq(CollateralEventType::Deposit))
+        .filter(collateral_event::Column::EventChainId.eq(event.chain_id as i64))
+        .filter(collateral_event::Column::EventBlockHash.eq(event.block_hash))
+        .filter(collateral_event::Column::EventTxHash.eq(event.tx_hash))
+        .filter(collateral_event::Column::EventLogIndex.eq(event.log_index as i64))
+        .all(ctx.db.as_ref())
+        .await?;
+    assert_eq!(events.len(), 1);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
 async fn deposit_overflow_protection() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -131,7 +182,7 @@ async fn deposit_overflow_protection() -> anyhow::Result<()> {
     Ok(())
 }
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -169,7 +220,7 @@ async fn lock_successfully_updates_locked_collateral_and_version() -> anyhow::Re
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -220,7 +271,7 @@ async fn lock_fails_with_stale_version() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn multiple_locks_accumulate_locked_collateral() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -266,7 +317,7 @@ async fn multiple_locks_accumulate_locked_collateral() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn lock_fails_on_u256_overflow() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -295,7 +346,7 @@ async fn lock_fails_on_u256_overflow() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn db_check_rejects_inserting_locked_gt_total() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -319,7 +370,7 @@ async fn db_check_rejects_inserting_locked_gt_total() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn db_check_rejects_lowering_total_below_locked() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -437,7 +488,7 @@ async fn make_tab(
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -484,7 +535,7 @@ async fn unlock_user_collateral_for_tab_reduces_locked_and_marks_settled() -> an
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -526,7 +577,7 @@ async fn unlock_user_collateral_is_idempotent_when_already_settled() -> anyhow::
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -557,7 +608,7 @@ async fn unlock_user_collateral_fails_if_unlock_amount_exceeds_locked() -> anyho
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn unlock_user_collateral_fails_if_asset_mismatched() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -592,7 +643,7 @@ async fn unlock_user_collateral_fails_if_asset_mismatched() -> anyhow::Result<()
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn deposit_creates_user_if_missing() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 

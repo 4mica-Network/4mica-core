@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
-import {IGuaranteeDecoder, Guarantee} from "../src/Core4Mica.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica, IGuaranteeDecoder, Guarantee} from "../src/Core4Mica.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
 
 contract MockGuaranteeDecoder is IGuaranteeDecoder {
     struct GuaranteeV2 {
         bytes32 domain;
-        uint256 tab_id;
-        uint256 req_id;
+        uint256 tabId;
+        uint256 reqId;
         address client;
         address recipient;
         uint256 amount;
-        uint256 total_amount;
+        uint256 totalAmount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -29,12 +29,12 @@ contract MockGuaranteeDecoder is IGuaranteeDecoder {
         GuaranteeV2 memory g = abi.decode(data, (GuaranteeV2));
         return Guarantee({
             domain: g.domain,
-            tab_id: g.tab_id,
-            req_id: g.req_id,
+            tabId: g.tabId,
+            reqId: g.reqId,
             client: g.client,
             recipient: g.recipient,
             amount: g.amount,
-            total_amount: g.total_amount,
+            totalAmount: g.totalAmount,
             asset: g.asset,
             timestamp: g.timestamp,
             version: g.version
@@ -81,12 +81,12 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
 
         assertEq(decoded.version, 2);
         assertEq(decoded.domain, domainV2);
-        assertEq(decoded.tab_id, g2.tab_id);
-        assertEq(decoded.req_id, g2.req_id);
+        assertEq(decoded.tabId, g2.tabId);
+        assertEq(decoded.reqId, g2.reqId);
         assertEq(decoded.client, g2.client);
         assertEq(decoded.recipient, g2.recipient);
         assertEq(decoded.amount, g2.amount);
-        assertEq(decoded.total_amount, g2.total_amount);
+        assertEq(decoded.totalAmount, g2.totalAmount);
         assertEq(decoded.asset, g2.asset);
         assertEq(decoded.timestamp, g2.timestamp);
     }
@@ -104,7 +104,7 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
         BLS.G1Point memory publicKeyV2 = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
 
         vm.prank(USER1);
-        vm.expectRevert(AccessUnauthorizedError(USER1));
+        vm.expectRevert(accessUnauthorizedError(USER1));
         core4Mica.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
     }
 
@@ -208,12 +208,12 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
     ) internal pure returns (MockGuaranteeDecoder.GuaranteeV2 memory) {
         return MockGuaranteeDecoder.GuaranteeV2({
             domain: domain,
-            tab_id: tabId,
-            req_id: reqId,
+            tabId: tabId,
+            reqId: reqId,
             client: client,
             recipient: recipient,
             amount: amount,
-            total_amount: amount,
+            totalAmount: amount,
             asset: asset,
             timestamp: timestamp,
             version: version,

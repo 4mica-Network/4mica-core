@@ -339,7 +339,7 @@ async fn build_signed_req(
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
     let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let base_addr = core_base_url(&config);
@@ -393,7 +393,7 @@ async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
     let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let base_addr = core_base_url(&config);
@@ -438,7 +438,7 @@ async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
     let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let base_addr = core_base_url(&config);
@@ -496,7 +496,7 @@ async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
     let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let base_addr = core_base_url(&config);
@@ -539,7 +539,7 @@ async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Result<()> {
     let (_config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let signer = PrivateKeySigner::random();
@@ -566,7 +566,7 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -632,7 +632,7 @@ async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Resu
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_get_tab_and_list_recipient_tabs() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -678,7 +678,7 @@ async fn core_api_get_tab_and_list_recipient_tabs() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_get_tab_returns_none_for_missing() -> anyhow::Result<()> {
     let (_, core_client, _, _auth) = setup_clean_db().await?;
 
@@ -692,7 +692,7 @@ async fn core_api_get_tab_returns_none_for_missing() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_list_recipient_tabs_invalid_status_errors() -> anyhow::Result<()> {
     let (_, core_client, _, auth) = setup_clean_db().await?;
 
@@ -709,7 +709,7 @@ async fn core_api_list_recipient_tabs_invalid_status_errors() -> anyhow::Result<
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_list_recipient_tabs_case_insensitive_filter() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -748,7 +748,7 @@ async fn core_api_list_recipient_tabs_case_insensitive_filter() -> anyhow::Resul
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()> {
     let (config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -852,7 +852,7 @@ async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn create_tab_rejects_unregistered_user() -> anyhow::Result<()> {
     let (_, core_client, _, auth) = setup_clean_db().await?;
 
@@ -875,7 +875,7 @@ async fn create_tab_rejects_unregistered_user() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_recipient_payments_and_events() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -938,7 +938,7 @@ async fn core_api_recipient_payments_and_events() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_recipient_payments_flags() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -977,7 +977,7 @@ async fn core_api_recipient_payments_flags() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_list_recipient_payments_empty() -> anyhow::Result<()> {
     let (_, core_client, _, auth) = setup_clean_db().await?;
 
@@ -990,7 +990,7 @@ async fn core_api_list_recipient_payments_empty() -> anyhow::Result<()> {
     Ok(())
 }
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1070,7 +1070,7 @@ async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_collateral_events_empty_for_tab_without_events() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1100,7 +1100,7 @@ async fn core_api_collateral_events_empty_for_tab_without_events() -> anyhow::Re
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
     let (_, core_client, ctx, _auth) = setup_clean_db().await?;
 
@@ -1132,7 +1132,7 @@ async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1184,7 +1184,7 @@ async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn list_settled_tabs_returns_only_settled_entries() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1235,7 +1235,7 @@ async fn list_settled_tabs_returns_only_settled_entries() -> anyhow::Result<()> 
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn list_settled_tabs_empty_when_none() -> anyhow::Result<()> {
     let (_, core_client, _, auth) = setup_clean_db().await?;
 
@@ -1250,7 +1250,7 @@ async fn list_settled_tabs_empty_when_none() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn list_settled_tabs_ignores_pending_tabs() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1286,7 +1286,7 @@ async fn list_settled_tabs_ignores_pending_tabs() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1342,7 +1342,7 @@ async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn suspension_endpoint_accepts_admin_role() -> anyhow::Result<()> {
     let (config, _core_client, ctx, auth) = setup_clean_db().await?;
     let user_addr = random_address();
@@ -1590,7 +1590,7 @@ async fn build_eip191_signed_request_v2(
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1669,7 +1669,7 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_guarantee_queries() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1737,7 +1737,7 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1815,7 +1815,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn core_api_guarantee_queries_empty_state() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1857,7 +1857,7 @@ async fn core_api_guarantee_queries_empty_state() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1944,7 +1944,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1975,7 +1975,7 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2024,7 +2024,7 @@ async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2085,7 +2085,7 @@ async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyho
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2139,7 +2139,7 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2181,7 +2181,7 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2227,7 +2227,7 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2269,7 +2269,7 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2353,7 +2353,7 @@ async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2378,7 +2378,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2416,7 +2416,7 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
     use alloy::{primitives::keccak256, sol_types::sol};
     sol! {
@@ -2488,7 +2488,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2519,7 +2519,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2542,7 +2542,7 @@ async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2565,7 +2565,7 @@ async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2595,7 +2595,7 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2625,7 +2625,7 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2655,7 +2655,7 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2685,7 +2685,7 @@ async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyh
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> {
     let (config, core_client, ctx, _) = setup_clean_db().await?;
 
@@ -2753,7 +2753,7 @@ async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> 
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
     let recipient_addr = auth.address.clone();

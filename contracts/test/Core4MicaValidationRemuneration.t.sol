@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ValidationBindingConstants} from "../src/ValidationBindingConstants.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -42,7 +43,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ValidationRegistryGuaranteeDecoder.ValidationPending.selector, g.validation_request_hash
+                ValidationRegistryGuaranteeDecoder.ValidationPending.selector, g.validationRequestHash
             )
         );
         vm.prank(USER2);
@@ -60,7 +61,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g =
             _canonicalGuaranteeV2(tabId, 18, 0.5 ether, tabTimestamp);
         registry.setStatus(
-            g.validation_request_hash, g.validator_address, g.validator_agent_id, 79, bytes32(0), "hard-finality", 1
+            g.validationRequestHash, g.validatorAddress, g.validatorAgentId, 79, bytes32(0), "hard-finality", 1
         );
 
         bytes memory guaranteeData = _encodeGuaranteeV2WithVersion(g);
@@ -68,7 +69,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ValidationRegistryGuaranteeDecoder.ValidationScoreTooLow.selector, uint8(79), g.min_validation_score
+                ValidationRegistryGuaranteeDecoder.ValidationScoreTooLow.selector, uint8(79), g.minValidationScore
             )
         );
         vm.prank(USER2);
@@ -93,8 +94,8 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationLookupFailed.selector,
-                g.validation_registry_address,
-                g.validation_request_hash
+                g.validationRegistryAddress,
+                g.validationRequestHash
             )
         );
         vm.prank(USER2);
@@ -111,8 +112,8 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
 
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g =
             _canonicalGuaranteeV2(tabId, 21, 0.5 ether, tabTimestamp);
-        g.validation_subject_hash = bytes32(uint256(0xAAAA));
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationSubjectHash = bytes32(uint256(0xAAAA));
+        g.validationRequestHash = _computeValidationRequestHash(g);
 
         bytes memory guaranteeData = _encodeGuaranteeV2WithVersion(g);
         BLS.G2Point memory signature = BlsHelper.blsSign(guaranteeData, TEST_PRIVATE_KEY);
@@ -121,7 +122,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationSubjectHashMismatch.selector,
                 _computeValidationSubjectHash(g),
-                g.validation_subject_hash
+                g.validationSubjectHash
             )
         );
         vm.prank(USER2);
@@ -138,7 +139,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
 
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g =
             _canonicalGuaranteeV2(tabId, 22, 0.5 ether, tabTimestamp);
-        g.validation_request_hash = bytes32(uint256(0xBBBB));
+        g.validationRequestHash = bytes32(uint256(0xBBBB));
 
         bytes memory guaranteeData = _encodeGuaranteeV2WithVersion(g);
         BLS.G2Point memory signature = BlsHelper.blsSign(guaranteeData, TEST_PRIVATE_KEY);
@@ -147,7 +148,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationRequestHashMismatch.selector,
                 _computeValidationRequestHash(g),
-                g.validation_request_hash
+                g.validationRequestHash
             )
         );
         vm.prank(USER2);
@@ -164,15 +165,15 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
 
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g =
             _canonicalGuaranteeV2(tabId, 23, 0.5 ether, tabTimestamp);
-        g.validation_registry_address = address(0xCAFE);
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationRegistryAddress = address(0xCAFE);
+        g.validationRequestHash = _computeValidationRequestHash(g);
 
         bytes memory guaranteeData = _encodeGuaranteeV2WithVersion(g);
         BLS.G2Point memory signature = BlsHelper.blsSign(guaranteeData, TEST_PRIVATE_KEY);
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ValidationRegistryGuaranteeDecoder.UntrustedValidationRegistry.selector, g.validation_registry_address
+                ValidationRegistryGuaranteeDecoder.UntrustedValidationRegistry.selector, g.validationRegistryAddress
             )
         );
         vm.prank(USER2);
@@ -190,7 +191,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g =
             _canonicalGuaranteeV2(tabId, 24, 0.5 ether, tabTimestamp);
         registry.setStatus(
-            g.validation_request_hash, g.validator_address, g.validator_agent_id, 100, bytes32(0), "soft-finality", 1
+            g.validationRequestHash, g.validatorAddress, g.validatorAgentId, 100, bytes32(0), "soft-finality", 1
         );
 
         bytes memory guaranteeData = _encodeGuaranteeV2WithVersion(g);
@@ -199,7 +200,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         vm.expectRevert(
             abi.encodeWithSelector(
                 ValidationRegistryGuaranteeDecoder.ValidationTagMismatch.selector,
-                keccak256(bytes(g.required_validation_tag)),
+                keccak256(bytes(g.requiredValidationTag)),
                 keccak256(bytes("soft-finality"))
             )
         );
@@ -218,7 +219,7 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g =
             _canonicalGuaranteeV2(tabId, 25, 0.5 ether, tabTimestamp);
         registry.setStatus(
-            g.validation_request_hash, g.validator_address, g.validator_agent_id, 100, bytes32(0), "hard-finality", 1
+            g.validationRequestHash, g.validatorAddress, g.validatorAgentId, 100, bytes32(0), "hard-finality", 1
         );
 
         bytes memory guaranteeData = _encodeGuaranteeV2WithVersion(g);
@@ -246,24 +247,25 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         returns (ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g)
     {
         g.domain = v2Domain;
-        g.tab_id = tabId;
-        g.req_id = reqId;
+        g.tabId = tabId;
+        g.reqId = reqId;
         g.client = USER1;
         g.recipient = USER2;
         g.amount = amount;
-        g.total_amount = amount;
+        g.totalAmount = amount;
         g.asset = ETH_ASSET;
+        // forge-lint: disable-next-line(unsafe-typecast)
         g.timestamp = uint64(timestamp);
         g.version = GUARANTEE_CLAIMS_VERSION_V2;
-        g.validation_registry_address = address(registry);
-        g.validation_chain_id = uint64(block.chainid);
-        g.validator_address = address(0x4444);
-        g.validator_agent_id = 77;
-        g.min_validation_score = 80;
-        g.required_validation_tag = "hard-finality";
-        g.job_hash = keccak256("JOB");
-        g.validation_subject_hash = _computeValidationSubjectHash(g);
-        g.validation_request_hash = _computeValidationRequestHash(g);
+        g.validationRegistryAddress = address(registry);
+        g.validationChainId = uint64(block.chainid);
+        g.validatorAddress = address(0x4444);
+        g.validatorAgentId = 77;
+        g.minValidationScore = 80;
+        g.requiredValidationTag = "hard-finality";
+        g.jobHash = keccak256("JOB");
+        g.validationSubjectHash = _computeValidationSubjectHash(g);
+        g.validationRequestHash = _computeValidationRequestHash(g);
     }
 
     function _encodeGuaranteeV2WithVersion(ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g)
@@ -282,8 +284,8 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         return keccak256(
             abi.encode(
                 VALIDATION_SUBJECT_BINDING_DOMAIN_HASH,
-                g.tab_id,
-                g.req_id,
+                g.tabId,
+                g.reqId,
                 g.client,
                 g.recipient,
                 g.amount,
@@ -301,14 +303,14 @@ contract Core4MicaValidationRemunerationTest is Core4MicaTestBase, ValidationBin
         return keccak256(
             abi.encode(
                 VALIDATION_REQUEST_BINDING_DOMAIN_HASH,
-                uint256(g.validation_chain_id),
-                g.validation_registry_address,
-                g.validator_address,
-                g.validator_agent_id,
-                g.validation_subject_hash,
-                g.min_validation_score,
-                keccak256(bytes(g.required_validation_tag)),
-                g.job_hash
+                uint256(g.validationChainId),
+                g.validationRegistryAddress,
+                g.validatorAddress,
+                g.validatorAgentId,
+                g.validationSubjectHash,
+                g.minValidationScore,
+                keccak256(bytes(g.requiredValidationTag)),
+                g.jobHash
             )
         );
     }

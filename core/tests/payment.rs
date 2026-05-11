@@ -1,5 +1,8 @@
-use alloy::primitives::{Address, B256, U256};
+use alloy::network::TransactionBuilder;
+use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::providers::Provider;
+use alloy::providers::ext::AnvilApi;
+use alloy::rpc::types::TransactionRequest;
 use blockchain::txtools::PaymentTx;
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS, persist::repo, service::payment::process_discovered_payment,
@@ -15,7 +18,7 @@ use common::fixtures::{clear_all_tables, ensure_user, init_test_env, random_addr
 use common::setup::setup_e2e_environment;
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
@@ -91,7 +94,7 @@ async fn process_discovered_payment_creates_pending_transaction() -> anyhow::Res
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
@@ -162,7 +165,7 @@ async fn process_discovered_payment_is_idempotent() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
     let (_config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
@@ -228,7 +231,7 @@ async fn record_payment_skips_when_asset_mismatched() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn reorg_does_not_mutate_without_finality() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -272,6 +275,76 @@ async fn reorg_does_not_mutate_without_finality() -> anyhow::Result<()> {
         .expect("transaction should exist");
 
     assert_eq!(tx_row.status, UserTransactionStatus::Pending);
+
+    clear_all_tables(persist_ctx).await?;
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial]
+async fn confirm_pending_payment_rejects_reverted_receipt() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let core_service = env.core_service.clone();
+    let contract = env.contract.clone();
+    let persist_ctx = core_service.persist_ctx();
+
+    let user_address = format!("{:#x}", env.signer_addr);
+    repo::ensure_user_exists_on(persist_ctx.db.as_ref(), &user_address).await?;
+
+    let recipient_address = Address::random();
+    // Runtime bytecode: PUSH1 0x00 PUSH1 0x00 REVERT.
+    provider
+        .anvil_set_code(
+            recipient_address,
+            Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]),
+        )
+        .await?;
+
+    let tab_id = U256::from(9_001u64);
+    let amount = U256::from(1_000u64);
+    let input = format!("tab_id:{:#x};req_id:{:#x}", tab_id, U256::from(1u64));
+    let tx = TransactionRequest::default()
+        .with_to(recipient_address)
+        .with_value(amount)
+        .with_input(input.into_bytes())
+        .with_gas_limit(50_000);
+
+    let pending_tx = provider.send_transaction(tx).await?;
+    let tx_hash = *pending_tx.tx_hash();
+    let receipt = pending_tx.get_receipt().await?;
+    assert!(!receipt.status(), "test transaction must be reverted");
+
+    provider.anvil_mine(Some(2), None).await?;
+
+    repo::submit_pending_payment_transaction(
+        persist_ctx,
+        repo::PendingPaymentInput {
+            user_address,
+            recipient_address: recipient_address.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            transaction_id: format!("{:#x}", tx_hash),
+            amount,
+            tab_id: format!("{:#x}", tab_id),
+            block_number: receipt
+                .block_number
+                .expect("reverted transaction should have a block number"),
+            block_hash: receipt.block_hash.map(|hash| format!("{:#x}", hash)),
+        },
+    )
+    .await?;
+
+    core_service.confirm_pending_payments().await?;
+
+    let tx_row = user_transaction::Entity::find()
+        .filter(user_transaction::Column::TxId.eq(format!("{:#x}", tx_hash)))
+        .one(persist_ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+    assert_eq!(tx_row.status, UserTransactionStatus::Reverted);
+
+    let payment_status = contract.getPaymentStatus(tab_id).call().await?;
+    assert_eq!(payment_status.paid, U256::ZERO);
 
     clear_all_tables(persist_ctx).await?;
     Ok(())

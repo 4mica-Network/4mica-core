@@ -52,8 +52,21 @@ impl CoreService {
         claims: &PaymentGuaranteeRequestClaimsV1,
         claims_version: u64,
     ) -> ServiceResult<()> {
-        let existing_guarantee =
-            repo::get_guarantee(&self.inner.persist_ctx, claims.tab_id, claims.req_id).await?;
+        self.verify_guarantee_request_claims_v1_on(
+            self.inner.persist_ctx.db.as_ref(),
+            claims,
+            claims_version,
+        )
+        .await
+    }
+
+    async fn verify_guarantee_request_claims_v1_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        claims: &PaymentGuaranteeRequestClaimsV1,
+        claims_version: u64,
+    ) -> ServiceResult<()> {
+        let existing_guarantee = repo::get_guarantee_on(conn, claims.tab_id, claims.req_id).await?;
         if existing_guarantee.is_some() {
             return Err(ServiceError::DuplicateGuarantee {
                 req_id: claims.req_id,
@@ -70,8 +83,12 @@ impl CoreService {
             return Err(ServiceError::FutureTimestamp);
         }
 
-        let Some(tab) = repo::get_tab_by_id(&self.inner.persist_ctx, claims.tab_id).await? else {
-            return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
+        let tab = match repo::get_tab_by_id_on(conn, claims.tab_id).await {
+            Ok(tab) => tab,
+            Err(PersistDbError::TabNotFound(_)) => {
+                return Err(ServiceError::NotFound(u256_to_string(claims.tab_id)));
+            }
+            Err(err) => return Err(err.into()),
         };
         Self::verify_tab_guarantee_version(&tab, claims_version)?;
 
@@ -152,8 +169,17 @@ impl CoreService {
         &self,
         claims: &PaymentGuaranteeRequestClaimsV2,
     ) -> ServiceResult<()> {
+        self.verify_guarantee_request_claims_v2_on(self.inner.persist_ctx.db.as_ref(), claims)
+            .await
+    }
+
+    async fn verify_guarantee_request_claims_v2_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        claims: &PaymentGuaranteeRequestClaimsV2,
+    ) -> ServiceResult<()> {
         let base_claims = Self::v2_to_v1_claims(claims);
-        self.verify_guarantee_request_claims_v1(&base_claims, GUARANTEE_CLAIMS_VERSION_V2)
+        self.verify_guarantee_request_claims_v1_on(conn, &base_claims, GUARANTEE_CLAIMS_VERSION_V2)
             .await?;
 
         claims
@@ -224,14 +250,15 @@ impl CoreService {
         let version = claims.version();
         match claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
-                self.verify_guarantee_request_claims_v1(claims, version)
+                self.verify_guarantee_request_claims_v1_on(conn, claims, version)
                     .await?;
                 repo::update_user_balance_and_tab_for_guarantee_on(conn, claims, version)
                     .await
                     .map_err(Into::into)
             }
             PaymentGuaranteeRequestClaims::V2(claims) => {
-                self.verify_guarantee_request_claims_v2(claims).await?;
+                self.verify_guarantee_request_claims_v2_on(conn, claims)
+                    .await?;
                 let base_claims = Self::v2_to_v1_claims(claims);
                 repo::update_user_balance_and_tab_for_guarantee_on(conn, &base_claims, version)
                     .await

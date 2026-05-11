@@ -86,8 +86,12 @@ where
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
@@ -271,8 +275,12 @@ async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn create_tab_returns_distinct_ids_for_v1_and_v2() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     let recipient_config = build_authed_recipient_config(
         "http://localhost:3000",
         "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
@@ -315,8 +323,12 @@ async fn create_tab_returns_distinct_ids_for_v1_and_v2() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     let user_config = build_authed_user_config(
         "http://localhost:3000",
         "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",

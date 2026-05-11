@@ -62,8 +62,12 @@ fn is_expected_v2_remuneration_precondition_error(err: &RemunerateError) -> bool
 }
 
 #[tokio::test]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn test_decoding_contract_errors() -> anyhow::Result<()> {
+    if common::skip_without_local_core_stack() {
+        return Ok(());
+    }
+
     // These wallet keys are picked from the default accounts in anvil test node
 
     let user_config = build_authed_user_config(

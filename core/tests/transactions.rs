@@ -13,7 +13,7 @@ use common::fixtures::{ensure_user, ensure_user_with_collateral, init_test_env, 
 use crate::common::fixtures::read_collateral;
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -51,7 +51,7 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -81,7 +81,7 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -112,7 +112,7 @@ async fn duplicate_tx_id_is_stable_and_idempotent() -> anyhow::Result<()> {
 
 /// NEW: failing a non-existent transaction should error with TransactionNotFound.
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn fail_transaction_missing_tx_returns_err() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -133,7 +133,7 @@ async fn fail_transaction_missing_tx_returns_err() -> anyhow::Result<()> {
 
 /// NEW: failing a transaction with the wrong user must error and cause no side effects.
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
 
@@ -185,7 +185,7 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
 }
 
 #[test(tokio::test)]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn mark_recorded_accepts_confirmed_status() -> anyhow::Result<()> {
     let (_cfg, ctx) = init_test_env().await?;
     let user_addr = random_address();
@@ -219,6 +219,83 @@ async fn mark_recorded_accepts_confirmed_status() -> anyhow::Result<()> {
     assert_eq!(row.status, UserTransactionStatus::Recorded);
     assert_eq!(row.record_tx_hash.as_deref(), Some("0xrecordtx"));
     assert_eq!(row.record_tx_block_number, Some(42));
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
+async fn payment_recording_claim_is_atomic() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let recipient = random_address();
+    ensure_user(&ctx, &user_addr).await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+    repo::submit_pending_payment_transaction(
+        &ctx,
+        repo::PendingPaymentInput {
+            user_address: user_addr,
+            recipient_address: recipient,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            transaction_id: tx_id.clone(),
+            amount: U256::from(3u64),
+            tab_id: "0x1".to_string(),
+            block_number: 1,
+            block_hash: None,
+        },
+    )
+    .await?;
+
+    assert!(repo::claim_payment_transaction_for_recording(&ctx, &tx_id).await?);
+    assert!(!repo::claim_payment_transaction_for_recording(&ctx, &tx_id).await?);
+
+    let row = user_transaction::Entity::find_by_id(tx_id)
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+    assert_eq!(row.status, UserTransactionStatus::Recording);
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial]
+async fn finalized_transaction_cannot_be_marked_reverted() -> anyhow::Result<()> {
+    let (_cfg, ctx) = init_test_env().await?;
+    let user_addr = random_address();
+    let recipient = random_address();
+    ensure_user(&ctx, &user_addr).await?;
+
+    let tx_id = Uuid::new_v4().to_string();
+    repo::submit_pending_payment_transaction(
+        &ctx,
+        repo::PendingPaymentInput {
+            user_address: user_addr,
+            recipient_address: recipient,
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            transaction_id: tx_id.clone(),
+            amount: U256::from(3u64),
+            tab_id: "0x1".to_string(),
+            block_number: 1,
+            block_hash: None,
+        },
+    )
+    .await?;
+    repo::mark_payment_transaction_finalized(&ctx, &tx_id).await?;
+
+    assert!(
+        !repo::mark_payment_transaction_reverted(&ctx, &tx_id).await?,
+        "finalized rows must not be reverted by a stale worker"
+    );
+
+    let row = user_transaction::Entity::find_by_id(tx_id)
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("transaction should exist");
+    assert!(row.finalized);
+    assert!(row.verified);
+    assert_eq!(row.status, UserTransactionStatus::Finalized);
 
     Ok(())
 }

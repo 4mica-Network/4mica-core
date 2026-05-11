@@ -93,7 +93,7 @@ async fn insert_tab(
 
 /// `PaymentRecorded` → user transaction created.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -167,7 +167,7 @@ async fn payment_transaction_creates_user_transaction() -> anyhow::Result<()> {
 
 /// Same event twice → only one DB row (idempotent).
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -259,7 +259,7 @@ async fn record_payment_event_is_idempotent() -> anyhow::Result<()> {
 
 /// Payments originating from a non-tab user must be ignored by the scanner.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let core_service = env.core_service.clone();
@@ -312,7 +312,7 @@ async fn payments_from_wrong_user_are_ignored() -> anyhow::Result<()> {
 
 /// PaymentRecorded does NOT reduce collateral (record only).
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
@@ -382,7 +382,7 @@ async fn payment_transaction_does_not_reduce_collateral() -> anyhow::Result<()> 
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn payment_transaction_does_not_unlock_collateral_before_confirmation() -> anyhow::Result<()>
 {
     let env = setup_e2e_environment().await?;
@@ -455,7 +455,7 @@ async fn payment_transaction_does_not_unlock_collateral_before_confirmation() ->
 
 /// Unlocking happens only after record tx finalizes.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
-#[serial_test::serial]
+#[serial_test::file_serial]
 async fn payment_transaction_unlocks_after_finalization() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
