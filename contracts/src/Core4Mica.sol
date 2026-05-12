@@ -355,18 +355,27 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         for (uint256 i = 0; i < stablecoinAssetList.length; i++) {
             address asset = stablecoinAssetList[i];
             address aToken = aTokens[i];
-            if (aToken == address(0)) revert ZeroAddress();
-
-            address underlyingAsset = IAToken(aToken).UNDERLYING_ASSET_ADDRESS();
-            if (underlyingAsset != asset) revert InvalidAToken(asset, aToken);
-
-            (address configuredAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(asset);
-            if (configuredAToken != aToken) revert InvalidAToken(asset, aToken);
+            _validateAToken(dataProvider, asset, aToken);
 
             stablecoinATokens[asset] = aToken;
             approvedPoolForAsset[asset] = address(0);
         }
         emit AaveConfigured(poolAddressesProvider, pool);
+    }
+
+    function addStablecoinAsset(address asset, address aToken) external restricted {
+        _requireNewStablecoinAsset(asset);
+
+        IPoolAddressesProvider provider = aaveAddressesProvider;
+        if (address(provider) == address(0)) revert AaveNotConfigured();
+
+        address dataProvider = provider.getPoolDataProvider();
+        if (provider.getPool() == address(0) || dataProvider == address(0)) revert AaveNotConfigured();
+
+        _validateAToken(dataProvider, asset, aToken);
+        _addStablecoinAsset(asset);
+        stablecoinATokens[asset] = aToken;
+        approvedPoolForAsset[asset] = address(0);
     }
 
     function setYieldFeeBps(uint256 feeBps) external restricted {
@@ -807,10 +816,14 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         return stablecoinAssets[asset];
     }
 
-    function _addStablecoinAsset(address asset) internal {
+    function _requireNewStablecoinAsset(address asset) internal view {
         if (asset == ETH_ASSET) revert InvalidAsset(asset);
         if (asset == address(0)) revert ZeroAddress();
         if (stablecoinAssets[asset]) revert InvalidAsset(asset);
+    }
+
+    function _addStablecoinAsset(address asset) internal {
+        _requireNewStablecoinAsset(asset);
 
         stablecoinAssets[asset] = true;
         stablecoinAssetIndexPlusOne[asset] = stablecoinAssetList.length + 1;
@@ -842,6 +855,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
 
         return IAavePool(poolAddress).getReserveNormalizedIncome(asset);
+    }
+
+    function _validateAToken(address dataProvider, address asset, address aToken) internal view {
+        if (aToken == address(0)) revert ZeroAddress();
+
+        address underlyingAsset = IAToken(aToken).UNDERLYING_ASSET_ADDRESS();
+        if (underlyingAsset != asset) revert InvalidAToken(asset, aToken);
+
+        (address configuredAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(asset);
+        if (configuredAToken != aToken) revert InvalidAToken(asset, aToken);
     }
 
     function _toUnderlyingRoundDown(uint256 scaled, uint256 index) internal pure returns (uint256) {

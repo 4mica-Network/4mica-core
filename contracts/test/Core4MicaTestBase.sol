@@ -130,14 +130,15 @@ abstract contract Core4MicaTestBase is Test {
             address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), OPERATOR_ROLE
         );
 
-        bytes4[] memory adminSelectors = new bytes4[](7);
+        bytes4[] memory adminSelectors = new bytes4[](8);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
         adminSelectors[3] = Core4Mica.unpause.selector;
         adminSelectors[4] = Core4Mica.configureAave.selector;
-        adminSelectors[5] = Core4Mica.setYieldFeeBps.selector;
-        adminSelectors[6] = Core4Mica.claimProtocolYield.selector;
+        adminSelectors[5] = Core4Mica.addStablecoinAsset.selector;
+        adminSelectors[6] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[7] = Core4Mica.claimProtocolYield.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
