@@ -178,6 +178,7 @@ sol! {
         function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
         function configureAave(address poolAddressesProvider, address[] calldata aTokens) external;
+        function addStablecoinAsset(address asset, address aToken) external;
         function setYieldFeeBps(uint256 feeBps) external;
         function claimProtocolYield(address asset, address to, uint256 amount) external;
         function claimSurplusATokens(address asset, address to, uint256 scaledAmount) external;
