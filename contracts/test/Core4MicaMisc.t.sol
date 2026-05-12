@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
+import {Core4MicaTestBase, MockERC20} from "./Core4MicaTestBase.sol";
 import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
+import {MockAToken} from "./helpers/MockAave.sol";
 
 contract Core4MicaMiscTest is Core4MicaTestBase {
     function test_VerifyAndDecodeGuarantee() public view {
@@ -117,6 +118,59 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         assertEq(tokens.length, 2);
         assertEq(tokens[0], address(usdc));
         assertEq(tokens[1], address(usdt));
+    }
+
+    function test_Constructor_SupportsOneStablecoin() public {
+        address[] memory stablecoins = new address[](1);
+        stablecoins[0] = address(usdc);
+        Core4Mica singleAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
+
+        address[] memory tokens = singleAssetCore.getERC20Tokens();
+        assertEq(tokens.length, 1);
+        assertEq(tokens[0], address(usdc));
+
+        manager.setTargetFunctionRole(
+            address(singleAssetCore), _asSingletonArray(Core4Mica.configureAave.selector), USER_ADMIN_ROLE
+        );
+
+        address[] memory aTokens = new address[](1);
+        aTokens[0] = address(mockUsdcAToken);
+        singleAssetCore.configureAave(address(mockProvider), aTokens);
+
+        assertEq(singleAssetCore.stablecoinAToken(address(usdc)), address(mockUsdcAToken));
+    }
+
+    function test_Constructor_SupportsThreeStablecoins() public {
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockAToken mockEurcAToken = new MockAToken(address(eurc), address(mockPool), "Aave EURC", "aEURC");
+        mockPool.setReserve(address(eurc), address(mockEurcAToken), 1e27);
+        mockDataProvider.setReserveAToken(address(eurc), address(mockEurcAToken));
+
+        address[] memory stablecoins = new address[](3);
+        stablecoins[0] = address(usdc);
+        stablecoins[1] = address(usdt);
+        stablecoins[2] = address(eurc);
+        Core4Mica threeAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
+
+        address[] memory tokens = threeAssetCore.getERC20Tokens();
+        assertEq(tokens.length, 3);
+        assertEq(tokens[0], address(usdc));
+        assertEq(tokens[1], address(usdt));
+        assertEq(tokens[2], address(eurc));
+
+        manager.setTargetFunctionRole(
+            address(threeAssetCore), _asSingletonArray(Core4Mica.configureAave.selector), USER_ADMIN_ROLE
+        );
+
+        address[] memory aTokens = new address[](3);
+        aTokens[0] = address(mockUsdcAToken);
+        aTokens[1] = address(mockUsdtAToken);
+        aTokens[2] = address(mockEurcAToken);
+        threeAssetCore.configureAave(address(mockProvider), aTokens);
+
+        assertEq(threeAssetCore.stablecoinAToken(address(usdc)), address(mockUsdcAToken));
+        assertEq(threeAssetCore.stablecoinAToken(address(usdt)), address(mockUsdtAToken));
+        assertEq(threeAssetCore.stablecoinAToken(address(eurc)), address(mockEurcAToken));
     }
 
     function test_GetUserAllAssets_DoesNotRequireAaveConfiguration() public {

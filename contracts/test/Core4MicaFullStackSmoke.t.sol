@@ -81,6 +81,9 @@ contract Core4MicaFullStackSmokeTest is Test {
         _configureRouterRoles(manager, router);
 
         assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.configureAave.selector), GOVERNANCE_ROLE);
+        assertEq(
+            manager.getTargetFunctionRole(address(core4Mica), Core4Mica.addStablecoinAsset.selector), GOVERNANCE_ROLE
+        );
         assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.setYieldFeeBps.selector), GOVERNANCE_ROLE);
         assertEq(
             manager.getTargetFunctionRole(address(core4Mica), Core4Mica.claimProtocolYield.selector), TREASURY_ROLE
@@ -109,7 +112,7 @@ contract Core4MicaFullStackSmokeTest is Test {
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
-        bytes4[] memory governanceSelectors = new bytes4[](9);
+        bytes4[] memory governanceSelectors = new bytes4[](10);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         governanceSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         governanceSelectors[2] = Core4Mica.setTabExpirationTime.selector;
@@ -118,7 +121,8 @@ contract Core4MicaFullStackSmokeTest is Test {
         governanceSelectors[5] = Core4Mica.setSynchronizationDelay.selector;
         governanceSelectors[6] = Core4Mica.configureGuaranteeVersion.selector;
         governanceSelectors[7] = Core4Mica.configureAave.selector;
-        governanceSelectors[8] = Core4Mica.setYieldFeeBps.selector;
+        governanceSelectors[8] = Core4Mica.addStablecoinAsset.selector;
+        governanceSelectors[9] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(

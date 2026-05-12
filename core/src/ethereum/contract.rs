@@ -211,6 +211,9 @@ pub mod contract_abi {
             /// View: cached aToken for a configured stablecoin asset.
             function stablecoinAToken(address asset) external view returns (address);
 
+            /// Governance: add a new stablecoin asset and its configured Aave aToken.
+            function addStablecoinAsset(address asset, address aToken) external;
+
             /// View: guaranteeable collateral for a user/asset pair.
             function guaranteeCapacity(address user, address asset) external view returns (uint256);
         }
