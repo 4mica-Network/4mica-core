@@ -41,6 +41,8 @@ pub struct EthereumConfig {
     pub ws_rpc_url: String,
     #[envconfig(from = "ETHEREUM_HTTP_RPC_URL")]
     pub http_rpc_url: String,
+    #[envconfig(from = "PUBLIC_ETHEREUM_HTTP_RPC_URL", default = "")]
+    pub public_http_rpc_url: String,
     #[envconfig(from = "ETHEREUM_CONTRACT_ADDRESS")]
     pub contract_address: String,
     #[envconfig(from = "CRON_JOB_SETTINGS", default = "0 */1 * * * *")]

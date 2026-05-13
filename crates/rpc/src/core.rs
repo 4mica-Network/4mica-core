@@ -35,6 +35,7 @@ pub struct CorePublicParameters {
     /// Address of the on-chain core contract.
     pub contract_address: String,
     /// Ethereum RPC endpoint URL.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ethereum_http_rpc_url: String,
     /// EIP-712 domain name.
     pub eip712_name: String,
@@ -73,5 +74,47 @@ impl CorePublicParameters {
         } else {
             self.accepted_guarantee_versions.clone()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CorePublicParameters;
+
+    fn public_params(ethereum_http_rpc_url: &str) -> CorePublicParameters {
+        CorePublicParameters {
+            public_key: vec![1, 2, 3],
+            contract_address: "0x0000000000000000000000000000000000000001".to_string(),
+            ethereum_http_rpc_url: ethereum_http_rpc_url.to_string(),
+            eip712_name: "4Mica".to_string(),
+            eip712_version: "1".to_string(),
+            chain_id: 1,
+            max_accepted_guarantee_version: 1,
+            accepted_guarantee_versions: vec![1],
+            active_guarantee_domain_separator: String::new(),
+            trusted_validation_registries: Vec::new(),
+            validation_hash_canonicalization_version:
+                crate::guarantee::VALIDATION_REQUEST_BINDING_DOMAIN_V2.to_string(),
+        }
+    }
+
+    #[test]
+    fn public_params_omit_empty_ethereum_http_rpc_url() {
+        let value = serde_json::to_value(public_params("")).expect("serialize public params");
+
+        assert!(value.get("ethereum_http_rpc_url").is_none());
+    }
+
+    #[test]
+    fn public_params_include_non_empty_ethereum_http_rpc_url() {
+        let value =
+            serde_json::to_value(public_params("https://public-rpc.example")).expect("serialize");
+
+        assert_eq!(
+            value
+                .get("ethereum_http_rpc_url")
+                .and_then(|value| value.as_str()),
+            Some("https://public-rpc.example")
+        );
     }
 }

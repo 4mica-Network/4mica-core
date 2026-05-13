@@ -162,7 +162,7 @@ impl CoreService {
             public_params: CorePublicParameters {
                 public_key: public_key_bytes,
                 contract_address: eth_config.contract_address,
-                ethereum_http_rpc_url: eth_config.http_rpc_url,
+                ethereum_http_rpc_url: eth_config.public_http_rpc_url,
                 eip712_name,
                 eip712_version,
                 chain_id: deps.chain_id,
