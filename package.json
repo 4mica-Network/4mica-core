@@ -17,11 +17,12 @@
   },
   "homepage": "https://github.com/mahzoun/TPIN-Core#readme",
   "devDependencies": {
-    "hardhat": "^2.22.19"
+    "hardhat": "^3.4.5"
   },
   "dependencies": {
-    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@coinbase/cdp-sdk": "^1.46.0",
+    "@nomiclabs/hardhat-ethers": "^1.0.0",
     "dotenv": "^16.4.7",
-    "ethers": "^5.8.0"
+    "ethers": "^6.16.0"
   }
 }
