@@ -24,7 +24,7 @@ pub use client::model::{
     RecipientPaymentInfo, StablecoinPosition, TabInfo, TabPaymentStatus, UserInfo,
 };
 pub use config::AuthConfig;
-pub use config::{Config, ConfigBuilder};
+pub use config::{Config, ConfigBuilder, NETWORKS, NetworkInfo, resolve_network_rpc_url};
 pub use crypto::bls::BLSCert;
 pub use guarantee::{
     PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
