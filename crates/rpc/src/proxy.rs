@@ -1,5 +1,5 @@
 use alloy_primitives::U256;
-use reqwest::header::AUTHORIZATION;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use reqwest::{Client, Url};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -16,6 +16,16 @@ use crate::{
 };
 use crypto::bls::BLSCert;
 
+const SDK_CLIENT: &str = concat!("rust-sdk-4mica/", env!("CARGO_PKG_VERSION"));
+const SDK_CLIENT_HEADER: HeaderName = HeaderName::from_static("x-4mica-sdk");
+
+fn build_default_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(SDK_CLIENT_HEADER, HeaderValue::from_static(SDK_CLIENT));
+    headers.insert(USER_AGENT, HeaderValue::from_static(SDK_CLIENT));
+    headers
+}
+
 fn serialize_tab_id(val: U256) -> String {
     format!("{:#x}", val)
 }
@@ -29,7 +39,9 @@ pub struct RpcProxy {
 
 impl RpcProxy {
     pub fn new(endpoint: &str) -> anyhow::Result<Self> {
-        let client = Client::builder().build()?;
+        let client = Client::builder()
+            .default_headers(build_default_headers())
+            .build()?;
         let mut base_url = Url::parse(endpoint)?;
         if base_url.path().is_empty() {
             base_url.set_path("/");

@@ -407,6 +407,7 @@ pub trait PaymentGuaranteeRequestEssentials {
     fn user_address(&self) -> &str;
     fn recipient_address(&self) -> &str;
     fn tab_id(&self) -> U256;
+    fn req_id(&self) -> U256;
     fn amount(&self) -> U256;
 }
 
@@ -429,6 +430,13 @@ impl PaymentGuaranteeRequestEssentials for PaymentGuaranteeRequestClaims {
         match self {
             PaymentGuaranteeRequestClaims::V1(claims) => claims.tab_id,
             PaymentGuaranteeRequestClaims::V2(claims) => claims.tab_id,
+        }
+    }
+
+    fn req_id(&self) -> U256 {
+        match self {
+            PaymentGuaranteeRequestClaims::V1(claims) => claims.req_id,
+            PaymentGuaranteeRequestClaims::V2(claims) => claims.req_id,
         }
     }
 
