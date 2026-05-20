@@ -20,6 +20,13 @@ pub struct ActiveUsersWindowCounts {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AssetBalanceAggregate {
+    pub asset_address: String,
+    pub total_amount_sum: f64,
+    pub locked_amount_sum: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TabStatusAggregate {
     pub status: String,
     pub tabs_count: u64,
@@ -259,6 +266,54 @@ pub async fn fetch_tabs_status_aggregates(
     }
 
     Ok(aggregates)
+}
+
+pub async fn fetch_asset_balance_aggregates(
+    db: &DatabaseConnection,
+    timeout_ms: u64,
+) -> Result<Vec<AssetBalanceAggregate>, QueryExecutionError> {
+    let rows = query_all_with_timeout(
+        db,
+        r#"
+        SELECT
+            asset_address,
+            COALESCE(SUM(NULLIF(total, '')::numeric), 0)::double precision AS total_amount_sum,
+            COALESCE(SUM(NULLIF(locked, '')::numeric), 0)::double precision AS locked_amount_sum
+        FROM "UserAssetBalance"
+        GROUP BY asset_address
+        ORDER BY asset_address
+        "#,
+        timeout_ms,
+    )
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let asset_address: String = row
+                .try_get("", "asset_address")
+                .context("Failed to decode asset_address")
+                .map_err(QueryExecutionError::Query)?;
+            let total_amount_sum = parse_non_negative_amount(
+                row.try_get("", "total_amount_sum")
+                    .context("Failed to decode asset total_amount_sum")
+                    .map_err(QueryExecutionError::Query)?,
+                "asset total_amount_sum",
+            )
+            .map_err(QueryExecutionError::Query)?;
+            let locked_amount_sum = parse_non_negative_amount(
+                row.try_get("", "locked_amount_sum")
+                    .context("Failed to decode asset locked_amount_sum")
+                    .map_err(QueryExecutionError::Query)?,
+                "asset locked_amount_sum",
+            )
+            .map_err(QueryExecutionError::Query)?;
+            Ok(AssetBalanceAggregate {
+                asset_address,
+                total_amount_sum,
+                locked_amount_sum,
+            })
+        })
+        .collect()
 }
 
 pub async fn fetch_guarantee_status_aggregates(
