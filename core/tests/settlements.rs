@@ -24,14 +24,9 @@ use crate::common::setup::setup_e2e_environment;
 static NUMBER_OF_TRIALS: u32 = 60;
 
 async fn mine_finalized(provider: &DynProvider) -> anyhow::Result<()> {
-    let depth = std::env::var("FINALIZED_HEAD_DEPTH")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let total = depth.saturating_add(1);
-    if total > 0 {
-        provider.anvil_mine(Some(total), None).await?;
-    }
+    // setup_e2e_environment configures finalized_head_depth=1 for local
+    // Anvil tests, so mine two blocks to put the latest tx behind that head.
+    provider.anvil_mine(Some(2), None).await?;
     Ok(())
 }
 //
