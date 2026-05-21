@@ -51,6 +51,15 @@ The SDK requires a signer and can use sensible defaults for the rest:
 
 - `signer` (**required**): Any `alloy::signers::Signer` (typically `PrivateKeySigner` from a hex private key). On-chain methods require a signer that also implements `TxSigner<Signature>`.
 - `rpc_url` (optional): URL of the 4Mica RPC server. Defaults to `https://api.4mica.xyz/`; override for local development.
+- `network` (optional): select a hosted network by shorthand or CAIP-2 id.
+
+Hosted networks:
+
+| Shorthand | CAIP-2 | Core API URL |
+| --- | --- | --- |
+| `base` | `eip155:8453` | `https://base.api.4mica.xyz/` |
+| `base-sepolia` | `eip155:84532` | `https://base.sepolia.api.4mica.xyz/` |
+| `ethereum-sepolia` | `eip155:11155111` | `https://ethereum.sepolia.api.4mica.xyz/` |
 
 The following parameters are **optional** and will be automatically fetched from the server if not provided.
 
@@ -73,7 +82,10 @@ use std::str::FromStr;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = PrivateKeySigner::from_str("your_private_key")?;
-    let config = ConfigBuilder::default().signer(signer).build()?;
+    let config = ConfigBuilder::default()
+        .network("base")?
+        .signer(signer)
+        .build()?;
 
     let client = Client::new(config).await?;
     Ok(())
@@ -85,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `ConfigBuilder::from_env()` reads these keys:
 
 - `4MICA_WALLET_PRIVATE_KEY` (required)
+- `4MICA_NETWORK` (optional; shorthand or CAIP-2 id; takes precedence over `4MICA_RPC_URL`)
 - `4MICA_RPC_URL` (optional; defaults to `https://api.4mica.xyz/`)
 - `4MICA_ETHEREUM_HTTP_RPC_URL` (optional)
 - `4MICA_CONTRACT_ADDRESS` (optional)
@@ -98,7 +111,7 @@ Example `.env`:
 
 ```ini
 4MICA_WALLET_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-4MICA_RPC_URL=http://localhost:3000
+4MICA_NETWORK=base
 4MICA_ETHEREUM_HTTP_RPC_URL=http://localhost:8545
 4MICA_CONTRACT_ADDRESS=0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0
 ```

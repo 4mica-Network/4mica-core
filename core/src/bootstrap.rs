@@ -57,9 +57,11 @@ pub async fn bootstrap() -> anyhow::Result<()> {
     let mut scheduler = TaskScheduler::new().await?;
 
     scheduler.add_task(ethereum_scanner).await?;
-    scheduler
-        .add_task(Arc::new(ScanPaymentsTask::new(service.clone())))
-        .await?;
+    if app_config.ethereum_config.payment_legacy_scan_enabled {
+        scheduler
+            .add_task(Arc::new(ScanPaymentsTask::new(service.clone())))
+            .await?;
+    }
     scheduler
         .add_task(Arc::new(ConfirmPaymentsTask::new(service.clone())))
         .await?;

@@ -60,6 +60,12 @@ pub struct EthereumConfig {
     pub number_of_blocks_to_confirm: u64,
     #[envconfig(from = "PAYMENT_SCAN_LOOKBACK_BLOCKS", default = "5")]
     pub payment_scan_lookback_blocks: u64,
+    /// Legacy payment scanner that inspects full transaction bodies in recent blocks.
+    /// Contract events are the primary payment discovery path; keep this off unless
+    /// explicitly needed because some RPCs return transaction shapes older clients
+    /// cannot deserialize inside full blocks.
+    #[envconfig(from = "PAYMENT_LEGACY_SCAN_ENABLED", default = "false")]
+    pub payment_legacy_scan_enabled: bool,
     /// When scanning for events and cursor is not found in the database, scan back this many blocks.
     #[envconfig(from = "INITIAL_EVENT_SCAN_LOOKBACK_BLOCKS", default = "25")]
     pub initial_event_scan_lookback_blocks: u64,

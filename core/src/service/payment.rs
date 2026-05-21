@@ -253,7 +253,6 @@ impl CoreService {
             .inner
             .read_provider
             .get_block_by_number(BlockNumberOrTag::Number(block_number))
-            .full()
             .await
             .map_err(|e| ServiceError::Other(anyhow!(e)))?;
 
@@ -411,7 +410,6 @@ impl CoreService {
                 .inner
                 .read_provider
                 .get_block_by_number(BlockNumberOrTag::Number(cursor_block_number))
-                .full()
                 .await
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?;
 
@@ -696,7 +694,6 @@ impl CoreService {
                     .inner
                     .read_provider
                     .get_block_by_number(BlockNumberOrTag::Number(head))
-                    .full()
                     .await
                     .map_err(|e| ServiceError::Other(anyhow!(e)))?;
                 block.map(|b| SafeHead {
@@ -709,7 +706,6 @@ impl CoreService {
                     .inner
                     .read_provider
                     .get_block_by_number(BlockNumberOrTag::Safe)
-                    .full()
                     .await
                     .map_err(|e| ServiceError::Other(anyhow!(e)))?;
                 block.map(|b| SafeHead {
@@ -730,7 +726,6 @@ impl CoreService {
                         .inner
                         .read_provider
                         .get_block_by_number(BlockNumberOrTag::Number(head))
-                        .full()
                         .await
                         .map_err(|e| ServiceError::Other(anyhow!(e)))?;
                     block.map(|b| SafeHead {
@@ -742,7 +737,6 @@ impl CoreService {
                         .inner
                         .read_provider
                         .get_block_by_number(BlockNumberOrTag::Finalized)
-                        .full()
                         .await
                         .map_err(|e| ServiceError::Other(anyhow!(e)))?;
                     block.map(|b| SafeHead {

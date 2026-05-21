@@ -11,6 +11,8 @@ struct MetricNames {
     active_users_1h: String,
     active_users_24h: String,
     active_users_7d: String,
+    user_assets_total_amount: String,
+    user_assets_locked_amount: String,
     tabs_count: String,
     tabs_total_amount: String,
     tabs_paid_amount: String,
@@ -38,6 +40,8 @@ impl MetricNames {
             active_users_1h: format!("{namespace}_active_users_1h"),
             active_users_24h: format!("{namespace}_active_users_24h"),
             active_users_7d: format!("{namespace}_active_users_7d"),
+            user_assets_total_amount: format!("{namespace}_user_assets_total_amount"),
+            user_assets_locked_amount: format!("{namespace}_user_assets_locked_amount"),
             tabs_count: format!("{namespace}_tabs_count"),
             tabs_total_amount: format!("{namespace}_tabs_total_amount"),
             tabs_paid_amount: format!("{namespace}_tabs_paid_amount"),
@@ -140,6 +144,24 @@ pub fn set_active_users_24h(active_users_24h: u64) {
 
 pub fn set_active_users_7d(active_users_7d: u64) {
     metrics::gauge!(metric_names().active_users_7d.as_str()).set(active_users_7d as f64);
+}
+
+pub fn set_user_asset_balance_aggregate(
+    asset_address: &str,
+    total_amount: f64,
+    locked_amount: f64,
+) {
+    let asset = asset_address.to_owned();
+    metrics::gauge!(
+        metric_names().user_assets_total_amount.as_str(),
+        "asset" => asset.clone()
+    )
+    .set(total_amount);
+    metrics::gauge!(
+        metric_names().user_assets_locked_amount.as_str(),
+        "asset" => asset
+    )
+    .set(locked_amount);
 }
 
 pub fn set_tabs_status_aggregate(

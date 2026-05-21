@@ -12,18 +12,24 @@ use axum::{
 };
 use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::SettlementStatus;
-use http::{StatusCode, header::AUTHORIZATION};
-use log::{debug, warn};
+use http::{
+    HeaderName, StatusCode,
+    header::{AUTHORIZATION, USER_AGENT},
+};
+use log::{debug, info, warn};
 use metrics_4mica::http::HttpMetricsMiddleware;
 use metrics_exporter_prometheus::PrometheusHandle;
 use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,
     CollateralEventInfo, CorePublicParameters, CreatePaymentTabRequest, CreatePaymentTabResult,
-    GuaranteeInfo, PaymentGuaranteeRequest, PendingRemunerationInfo, SupportedTokensResponse,
-    TabInfo, UpdateUserSuspensionRequest, UserSuspensionStatus, UserTransactionInfo,
+    GuaranteeInfo, PaymentGuaranteeRequest, PaymentGuaranteeRequestEssentials,
+    PendingRemunerationInfo, SupportedTokensResponse, TabInfo, UpdateUserSuspensionRequest,
+    UserSuspensionStatus, UserTransactionInfo,
 };
 use std::str::FromStr;
+
+const SDK_CLIENT_HEADER: HeaderName = HeaderName::from_static("x-4mica-sdk");
 
 #[derive(Clone)]
 pub struct AppState {
@@ -300,24 +306,61 @@ async fn get_health(State(service): State<CoreService>) -> Result<impl IntoRespo
 async fn issue_guarantee(
     State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
+    headers: HeaderMap,
     Json(req): Json<PaymentGuaranteeRequest>,
 ) -> Result<Json<BLSCert>, ApiError> {
+    let sdk_client = sdk_client_from_headers(&headers);
+    info!(
+        "core.guarantees request sdk_client={} user={} recipient={} tab_id={} req_id={} guarantee_version={} amount={}",
+        sdk_client,
+        req.claims.user_address(),
+        req.claims.recipient_address(),
+        req.claims.tab_id(),
+        req.claims.req_id(),
+        req.claims.version(),
+        req.claims.amount(),
+    );
+
     let cert = service
         .issue_payment_guarantee(&auth, req)
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|err| {
+            warn!(
+                "core.guarantees rejected sdk_client={} error={}",
+                sdk_client, err
+            );
+            ApiError::from(err)
+        })?;
     Ok(Json(cert))
 }
 
 async fn create_payment_tab(
     State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
+    headers: HeaderMap,
     Json(req): Json<CreatePaymentTabRequest>,
 ) -> Result<Json<CreatePaymentTabResult>, ApiError> {
+    let sdk_client = sdk_client_from_headers(&headers);
+    info!(
+        "core.payment_tabs request sdk_client={} user={} recipient={} asset={:?} guarantee_version={} ttl={:?}",
+        sdk_client,
+        req.user_address,
+        req.recipient_address,
+        req.erc20_token,
+        req.guarantee_version,
+        req.ttl,
+    );
+
     let result = service
         .create_payment_tab(&auth, req)
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|err| {
+            warn!(
+                "core.payment_tabs rejected sdk_client={} error={}",
+                sdk_client, err
+            );
+            ApiError::from(err)
+        })?;
     Ok(Json(result))
 }
 
@@ -477,4 +520,12 @@ async fn update_user_suspension(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(status))
+}
+
+fn sdk_client_from_headers(headers: &HeaderMap) -> &str {
+    headers
+        .get(SDK_CLIENT_HEADER)
+        .or_else(|| headers.get(USER_AGENT))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
 }

@@ -5,8 +5,8 @@ use sea_orm::DatabaseConnection;
 use tokio::time::MissedTickBehavior;
 
 use crate::db::{
-    self, ActiveUsersWindowCounts, QueryExecutionError, StatusAmountAggregate, TabStatusAggregate,
-    UserTxWindowStats,
+    self, ActiveUsersWindowCounts, AssetBalanceAggregate, QueryExecutionError,
+    StatusAmountAggregate, TabStatusAggregate, UserTxWindowStats,
 };
 use crate::snapshot::{Snapshot, SnapshotMeta, SnapshotStore};
 use crate::telemetry;
@@ -16,6 +16,7 @@ const SETTLED_USER_TX_STATUSES: [&str; 1] = ["FINALIZED"];
 struct SnapshotTickResult {
     snapshot: Snapshot,
     meta: SnapshotMeta,
+    asset_balance_aggregates: Vec<AssetBalanceAggregate>,
     tabs_status_aggregates: Vec<TabStatusAggregate>,
     guarantee_status_aggregates: Vec<StatusAmountAggregate>,
     settlement_status_aggregates: Vec<StatusAmountAggregate>,
@@ -83,6 +84,13 @@ async fn run_and_publish_snapshot_tick(
             telemetry::set_active_users_1h(result.snapshot.active_users_1h);
             telemetry::set_active_users_24h(result.snapshot.active_users_24h);
             telemetry::set_active_users_7d(result.snapshot.active_users_7d);
+            for aggregate in &result.asset_balance_aggregates {
+                telemetry::set_user_asset_balance_aggregate(
+                    &aggregate.asset_address,
+                    aggregate.total_amount_sum,
+                    aggregate.locked_amount_sum,
+                );
+            }
             for aggregate in &result.tabs_status_aggregates {
                 telemetry::set_tabs_status_aggregate(
                     &aggregate.status,
@@ -168,6 +176,8 @@ async fn run_snapshot_tick(
         active_users_24h,
         active_users_7d,
     } = db::fetch_active_users_window_counts(readonly_db, query_timeout_ms).await?;
+    let asset_balance_aggregates =
+        db::fetch_asset_balance_aggregates(readonly_db, query_timeout_ms).await?;
     let tabs_status_aggregates =
         db::fetch_tabs_status_aggregates(readonly_db, query_timeout_ms).await?;
     let guarantee_status_aggregates =
@@ -193,6 +203,7 @@ async fn run_snapshot_tick(
     Ok(SnapshotTickResult {
         snapshot,
         meta,
+        asset_balance_aggregates,
         tabs_status_aggregates,
         guarantee_status_aggregates,
         settlement_status_aggregates,
@@ -322,6 +333,26 @@ mod tests {
         )
         .await
         .expect("users should seed");
+
+        db.execute_unprepared(
+            r#"
+            INSERT INTO "UserAssetBalance" (
+                user_address,
+                asset_address,
+                total,
+                locked,
+                version,
+                created_at,
+                updated_at
+            )
+            VALUES
+                ('0xU1', '0xA1', '100', '40', 1, NOW(), NOW()),
+                ('0xU2', '0xA1', '50', '10', 1, NOW(), NOW()),
+                ('0xU3', '0xA2', '70', '0', 1, NOW(), NOW());
+            "#,
+        )
+        .await
+        .expect("asset balances should seed");
 
         db.execute_unprepared(
             r#"
@@ -475,6 +506,14 @@ mod tests {
         assert_eq!(result.snapshot.active_users_1h, 1);
         assert_eq!(result.snapshot.active_users_24h, 2);
         assert_eq!(result.snapshot.active_users_7d, 2);
+
+        let asset_a1 = result
+            .asset_balance_aggregates
+            .iter()
+            .find(|aggregate| aggregate.asset_address == "0xA1")
+            .expect("0xA1 asset balance aggregate should exist");
+        assert_eq!(asset_a1.total_amount_sum, 150.0);
+        assert_eq!(asset_a1.locked_amount_sum, 50.0);
 
         let tabs_open = result
             .tabs_status_aggregates

@@ -216,6 +216,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         confirmation_mode: "finalized".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
         payment_scan_lookback_blocks: 1,
+        payment_legacy_scan_enabled: false,
         initial_event_scan_lookback_blocks: 10,
         max_log_block_range: 10_000,
         finalized_head_depth: 1,
