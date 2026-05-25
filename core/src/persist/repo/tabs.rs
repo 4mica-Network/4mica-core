@@ -315,15 +315,44 @@ pub async fn get_tab_by_id(
 }
 
 #[measure(record_db_time)]
+pub async fn get_tabs_for_user(
+    ctx: &PersistCtx,
+    user_address: &str,
+    settlement_statuses: &[SettlementStatus],
+) -> Result<Vec<tabs::Model>, PersistDbError> {
+    get_tabs_for_address_column(
+        ctx,
+        tabs::Column::UserAddress,
+        user_address,
+        settlement_statuses,
+    )
+    .await
+}
+
+#[measure(record_db_time)]
 pub async fn get_tabs_for_recipient(
     ctx: &PersistCtx,
     recipient_address: &str,
     settlement_statuses: &[SettlementStatus],
 ) -> Result<Vec<tabs::Model>, PersistDbError> {
-    let recipient_address = parse_address(recipient_address)?;
+    get_tabs_for_address_column(
+        ctx,
+        tabs::Column::ServerAddress,
+        recipient_address,
+        settlement_statuses,
+    )
+    .await
+}
 
-    let mut condition =
-        Condition::all().add(tabs::Column::ServerAddress.eq(recipient_address.as_str()));
+async fn get_tabs_for_address_column(
+    ctx: &PersistCtx,
+    address_column: tabs::Column,
+    address: &str,
+    settlement_statuses: &[SettlementStatus],
+) -> Result<Vec<tabs::Model>, PersistDbError> {
+    let address = parse_address(address)?;
+
+    let mut condition = Condition::all().add(address_column.eq(address.as_str()));
 
     if !settlement_statuses.is_empty() {
         condition = condition

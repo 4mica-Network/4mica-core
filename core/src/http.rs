@@ -96,6 +96,7 @@ pub fn router(service: CoreService, metrics_recorder: PrometheusHandle) -> Route
             "/core/tabs/{tab_id}/collateral-events",
             get(get_collateral_events_for_tab),
         )
+        .route("/core/users/{user_address}/tabs", get(list_user_tabs))
         .route(
             "/core/users/{user_address}/assets/{asset_address}",
             get(get_user_asset_balance),
@@ -412,23 +413,37 @@ async fn list_recipient_tabs(
     Path(recipient): Path<String>,
     Query(params): Query<Vec<(String, String)>>,
 ) -> Result<Json<Vec<TabInfo>>, ApiError> {
-    let statuses: Vec<String> = params
-        .into_iter()
-        .filter_map(|(key, value)| {
-            if key == "settlement_status" {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let parsed = mapper::parse_settlement_statuses(&statuses).map_err(ApiError::from)?;
+    let parsed = parse_settlement_status_query(params)?;
     let tabs = service
         .list_tabs_for_recipient(&auth, recipient, &parsed)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(tabs))
+}
+
+async fn list_user_tabs(
+    State(service): State<CoreService>,
+    Extension(auth): Extension<AccessContext>,
+    Path(user_address): Path<String>,
+    Query(params): Query<Vec<(String, String)>>,
+) -> Result<Json<Vec<TabInfo>>, ApiError> {
+    let parsed = parse_settlement_status_query(params)?;
+    let tabs = service
+        .list_tabs_for_user(&auth, user_address, &parsed)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(tabs))
+}
+
+fn parse_settlement_status_query(
+    params: Vec<(String, String)>,
+) -> Result<Vec<SettlementStatus>, ApiError> {
+    let statuses = params
+        .into_iter()
+        .filter_map(|(key, value)| (key == "settlement_status").then_some(value))
+        .collect::<Vec<_>>();
+
+    mapper::parse_settlement_statuses(&statuses).map_err(ApiError::from)
 }
 
 async fn get_tab_guarantees(
