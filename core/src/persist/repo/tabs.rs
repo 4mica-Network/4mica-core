@@ -315,6 +315,30 @@ pub async fn get_tab_by_id(
 }
 
 #[measure(record_db_time)]
+pub async fn get_tabs_for_user(
+    ctx: &PersistCtx,
+    user_address: &str,
+    settlement_statuses: &[SettlementStatus],
+) -> Result<Vec<tabs::Model>, PersistDbError> {
+    let user_address = parse_address(user_address)?;
+
+    let mut condition = Condition::all().add(tabs::Column::UserAddress.eq(user_address.as_str()));
+
+    if !settlement_statuses.is_empty() {
+        condition = condition
+            .add(tabs::Column::SettlementStatus.is_in(settlement_statuses.iter().cloned()));
+    }
+
+    let rows = tabs::Entity::find()
+        .filter(condition)
+        .order_by_desc(tabs::Column::UpdatedAt)
+        .all(ctx.db.as_ref())
+        .await?;
+
+    Ok(rows)
+}
+
+#[measure(record_db_time)]
 pub async fn get_tabs_for_recipient(
     ctx: &PersistCtx,
     recipient_address: &str,
