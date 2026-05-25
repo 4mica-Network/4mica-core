@@ -320,22 +320,13 @@ pub async fn get_tabs_for_user(
     user_address: &str,
     settlement_statuses: &[SettlementStatus],
 ) -> Result<Vec<tabs::Model>, PersistDbError> {
-    let user_address = parse_address(user_address)?;
-
-    let mut condition = Condition::all().add(tabs::Column::UserAddress.eq(user_address.as_str()));
-
-    if !settlement_statuses.is_empty() {
-        condition = condition
-            .add(tabs::Column::SettlementStatus.is_in(settlement_statuses.iter().cloned()));
-    }
-
-    let rows = tabs::Entity::find()
-        .filter(condition)
-        .order_by_desc(tabs::Column::UpdatedAt)
-        .all(ctx.db.as_ref())
-        .await?;
-
-    Ok(rows)
+    get_tabs_for_address_column(
+        ctx,
+        tabs::Column::UserAddress,
+        user_address,
+        settlement_statuses,
+    )
+    .await
 }
 
 #[measure(record_db_time)]
@@ -344,10 +335,24 @@ pub async fn get_tabs_for_recipient(
     recipient_address: &str,
     settlement_statuses: &[SettlementStatus],
 ) -> Result<Vec<tabs::Model>, PersistDbError> {
-    let recipient_address = parse_address(recipient_address)?;
+    get_tabs_for_address_column(
+        ctx,
+        tabs::Column::ServerAddress,
+        recipient_address,
+        settlement_statuses,
+    )
+    .await
+}
 
-    let mut condition =
-        Condition::all().add(tabs::Column::ServerAddress.eq(recipient_address.as_str()));
+async fn get_tabs_for_address_column(
+    ctx: &PersistCtx,
+    address_column: tabs::Column,
+    address: &str,
+    settlement_statuses: &[SettlementStatus],
+) -> Result<Vec<tabs::Model>, PersistDbError> {
+    let address = parse_address(address)?;
+
+    let mut condition = Condition::all().add(address_column.eq(address.as_str()));
 
     if !settlement_statuses.is_empty() {
         condition = condition

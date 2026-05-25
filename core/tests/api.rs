@@ -6,7 +6,9 @@ use alloy::{
 };
 use alloy_sol_types::SolValue;
 use chrono::{Duration, Utc};
-use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ};
+use core_service::auth::constants::{
+    ROLE_FACILITATOR, SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ,
+};
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::persist::{PersistCtx, repo};
 use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
@@ -673,6 +675,96 @@ async fn core_api_get_tab_and_list_recipient_tabs() -> anyhow::Result<()> {
         .await
         .expect("filter tabs");
     assert!(settled_only.is_empty());
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial]
+async fn core_api_list_user_tabs_authorizes_owner_and_facilitator() -> anyhow::Result<()> {
+    let (config, core_client, ctx, recipient_auth) = setup_clean_db().await?;
+
+    let user_signer = PrivateKeySigner::random();
+    let user_addr = format!("{:#x}", user_signer.address());
+    let recipient_addr = recipient_auth.address.clone();
+    common::fixtures::ensure_user(&ctx, &user_addr).await?;
+
+    let tab_id = core_client
+        .create_payment_tab(CreatePaymentTabRequest {
+            user_address: user_addr.clone(),
+            recipient_address: recipient_addr,
+            erc20_token: None,
+            ttl: Some(600),
+            guarantee_version: 1,
+        })
+        .await
+        .expect("create tab")
+        .id;
+
+    let base_addr = core_base_url(&config);
+    let http_client = reqwest::Client::new();
+    let owner_auth = login_with_siwe(&base_addr, &ctx, &user_signer, "user", &[SCOPE_TAB_READ])
+        .await
+        .expect("owner login");
+
+    let owner_resp = http_client
+        .get(format!(
+            "{base_addr}/core/users/{user_addr}/tabs?settlement_status=pending"
+        ))
+        .bearer_auth(&owner_auth.access_token)
+        .send()
+        .await
+        .expect("owner list tabs");
+    assert_eq!(owner_resp.status(), reqwest::StatusCode::OK);
+    let owner_tabs: Vec<TabInfo> = owner_resp.json().await.expect("decode owner tabs");
+    assert!(owner_tabs.iter().any(|tab| tab.tab_id == tab_id));
+
+    let settled_resp = http_client
+        .get(format!(
+            "{base_addr}/core/users/{user_addr}/tabs?settlement_status=settled"
+        ))
+        .bearer_auth(&owner_auth.access_token)
+        .send()
+        .await
+        .expect("owner list settled tabs");
+    assert_eq!(settled_resp.status(), reqwest::StatusCode::OK);
+    let settled_tabs: Vec<TabInfo> = settled_resp.json().await.expect("decode settled tabs");
+    assert!(settled_tabs.is_empty());
+
+    let facilitator_signer = PrivateKeySigner::random();
+    let facilitator_auth = login_with_siwe(
+        &base_addr,
+        &ctx,
+        &facilitator_signer,
+        ROLE_FACILITATOR,
+        &[SCOPE_TAB_READ],
+    )
+    .await
+    .expect("facilitator login");
+    let facilitator_resp = http_client
+        .get(format!("{base_addr}/core/users/{user_addr}/tabs"))
+        .bearer_auth(&facilitator_auth.access_token)
+        .send()
+        .await
+        .expect("facilitator list tabs");
+    assert_eq!(facilitator_resp.status(), reqwest::StatusCode::OK);
+    let facilitator_tabs: Vec<TabInfo> = facilitator_resp
+        .json()
+        .await
+        .expect("decode facilitator tabs");
+    assert!(facilitator_tabs.iter().any(|tab| tab.tab_id == tab_id));
+
+    let other_signer = PrivateKeySigner::random();
+    let other_auth = login_with_siwe(&base_addr, &ctx, &other_signer, "user", &[SCOPE_TAB_READ])
+        .await
+        .expect("other user login");
+    let denied_resp = http_client
+        .get(format!("{base_addr}/core/users/{user_addr}/tabs"))
+        .bearer_auth(&other_auth.access_token)
+        .send()
+        .await
+        .expect("unrelated user list tabs");
+    assert_eq!(denied_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     Ok(())
 }
