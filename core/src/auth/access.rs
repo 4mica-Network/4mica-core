@@ -76,6 +76,24 @@ pub fn require_user_match(auth: &AccessContext, user_address: &str) -> ServiceRe
     Ok(())
 }
 
+pub fn require_user_match_or_facilitator(
+    auth: &AccessContext,
+    user_address: &str,
+) -> ServiceResult<()> {
+    if !addresses_match(&auth.wallet_address, user_address)
+        && require_facilitator_role(auth).is_err()
+    {
+        warn!(
+            "auth user denied: wallet={}, role={}, user={}",
+            auth.wallet_address, auth.role, user_address
+        );
+        return Err(ServiceError::Unauthorized(
+            "user address does not match token subject and role is not facilitator".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn require_tab_owner_or_facilitator(
     auth: &AccessContext,
     tab: &tabs::Model,
@@ -109,7 +127,16 @@ pub fn require_facilitator_role(auth: &AccessContext) -> ServiceResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::scope_contains;
+    use super::{AccessContext, require_user_match_or_facilitator, scope_contains};
+    use crate::auth::constants::{ROLE_FACILITATOR, SCOPE_TAB_READ};
+
+    fn make_auth(wallet: &str, role: &str) -> AccessContext {
+        AccessContext {
+            wallet_address: wallet.to_string(),
+            role: role.to_string(),
+            scopes: vec![SCOPE_TAB_READ.to_string()],
+        }
+    }
 
     #[test]
     fn scope_contains_matches_case_insensitively() {
@@ -128,5 +155,29 @@ mod tests {
     fn scope_contains_returns_false_for_missing_scope() {
         let scopes = vec!["tab:read".to_string()];
         assert!(!scope_contains(&scopes, "tab:create"));
+    }
+
+    #[test]
+    fn require_user_match_or_facilitator_allows_matching_address() {
+        let auth = make_auth("0xABCDEF", "user");
+        assert!(require_user_match_or_facilitator(&auth, "0xABCDEF").is_ok());
+    }
+
+    #[test]
+    fn require_user_match_or_facilitator_allows_case_insensitive_match() {
+        let auth = make_auth("0xabcdef", "user");
+        assert!(require_user_match_or_facilitator(&auth, "0xABCDEF").is_ok());
+    }
+
+    #[test]
+    fn require_user_match_or_facilitator_allows_facilitator_role() {
+        let auth = make_auth("0x000000", ROLE_FACILITATOR);
+        assert!(require_user_match_or_facilitator(&auth, "0xDIFFERENT").is_ok());
+    }
+
+    #[test]
+    fn require_user_match_or_facilitator_denies_address_mismatch_without_facilitator_role() {
+        let auth = make_auth("0x111111", "user");
+        assert!(require_user_match_or_facilitator(&auth, "0x222222").is_err());
     }
 }

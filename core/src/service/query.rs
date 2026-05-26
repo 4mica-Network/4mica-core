@@ -16,6 +16,24 @@ use rpc::{
 use super::CoreService;
 
 impl CoreService {
+    pub async fn list_tabs_for_user(
+        &self,
+        auth: &AccessContext,
+        user_address: String,
+        settlement_statuses: &[SettlementStatus],
+    ) -> ServiceResult<Vec<TabInfo>> {
+        access::require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_user_match_or_facilitator(auth, &user_address)?;
+
+        let tabs =
+            repo::get_tabs_for_user(&self.inner.persist_ctx, &user_address, settlement_statuses)
+                .await?;
+
+        tabs.into_iter()
+            .map(mapper::tab_model_to_info)
+            .collect::<ServiceResult<Vec<_>>>()
+    }
+
     pub async fn list_tabs_for_recipient(
         &self,
         auth: &AccessContext,
