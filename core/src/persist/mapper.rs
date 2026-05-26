@@ -27,6 +27,10 @@ pub fn settlement_status_to_str(status: SettlementStatus) -> &'static str {
 
 pub fn tab_model_to_info(tab: tabs::Model) -> ServiceResult<TabInfo> {
     let tab_id = U256::from_str(&tab.id).map_err(|e| anyhow!("invalid tab id {}: {e}", tab.id))?;
+    let total_amount = U256::from_str(&tab.total_amount)
+        .map_err(|e| anyhow!("invalid tab total amount {}: {e}", tab.total_amount))?;
+    let paid_amount = U256::from_str(&tab.paid_amount)
+        .map_err(|e| anyhow!("invalid tab paid amount {}: {e}", tab.paid_amount))?;
     let status = tab_status_to_str(tab.status).to_string();
     let settlement_status = settlement_status_to_str(tab.settlement_status).to_string();
 
@@ -43,6 +47,8 @@ pub fn tab_model_to_info(tab: tabs::Model) -> ServiceResult<TabInfo> {
             .accepted_guarantee_version
             .ok_or_else(|| anyhow!("tab {} missing accepted guarantee version", tab.id))?
             as u64,
+        total_amount,
+        paid_amount,
         start_timestamp,
         ttl_seconds: tab.ttl,
         status,

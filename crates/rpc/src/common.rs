@@ -52,6 +52,8 @@ pub struct TabInfo {
     pub recipient_address: String,
     pub asset_address: String,
     pub accepted_guarantee_version: u64,
+    pub total_amount: U256,
+    pub paid_amount: U256,
     pub start_timestamp: i64,
     pub ttl_seconds: i64,
     pub status: String,
