@@ -11,7 +11,7 @@ use crate::{
     PaymentSignature,
     client::{
         ClientCtx,
-        model::{StablecoinPosition, TabPaymentStatus, UserInfo},
+        model::{StablecoinPosition, TabPaymentStatus, TransactionOptions, UserInfo},
     },
     error::{
         ApproveErc20Error, CancelWithdrawalError, DepositError, FinalizeWithdrawalError,
@@ -53,6 +53,19 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
+        self.approve_erc20_with_options(token, amount, TransactionOptions::default())
+            .await
+    }
+
+    pub async fn approve_erc20_with_options(
+        &self,
+        token: String,
+        amount: U256,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, ApproveErc20Error>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
         let token = validate_address(&token).map_err(|_| {
             ApproveErc20Error::InvalidParams(format!("invalid ERC20 token address: {token}"))
         })?;
@@ -60,13 +73,17 @@ impl<S> UserClient<S> {
         let spender = self.ctx.contract_address();
         let contract = self.ctx.get_erc20_write_contract(token).await?;
 
-        let send_result = contract
-            .approve(spender, amount)
-            .send()
-            .await
-            .map_err(ApproveErc20Error::from)?;
+        let mut call = contract.approve(spender, amount);
+        if let Some(gas_limit) = options.gas_limit {
+            call = call.gas(gas_limit);
+        }
 
-        let receipt = send_result
+        let mut pending = call.send().await.map_err(ApproveErc20Error::from)?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending = pending.with_timeout(Some(timeout));
+        }
+
+        let receipt = pending
             .get_receipt()
             .await
             .map_err(alloy::contract::Error::from)
@@ -91,28 +108,42 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
+        self.deposit_with_options(amount, erc20_token, TransactionOptions::default())
+            .await
+    }
+
+    pub async fn deposit_with_options(
+        &self,
+        amount: U256,
+        erc20_token: Option<String>,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, DepositError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let contract = self.ctx.get_write_contract().await?;
         let send_result = if let Some(token) = erc20_token {
             let token = validate_address(&token).map_err(|_| {
                 DepositError::InvalidParams(format!("invalid ERC20 token address: {token}"))
             })?;
-            self.ctx
-                .get_write_contract()
-                .await?
-                .depositStablecoin(token, amount)
-                .send()
-                .await
+            let mut call = contract.depositStablecoin(token, amount);
+            if let Some(gas_limit) = options.gas_limit {
+                call = call.gas(gas_limit);
+            }
+            call.send().await
         } else {
-            self.ctx
-                .get_write_contract()
-                .await?
-                .deposit()
-                .value(amount)
-                .send()
-                .await
+            let mut call = contract.deposit().value(amount);
+            if let Some(gas_limit) = options.gas_limit {
+                call = call.gas(gas_limit);
+            }
+            call.send().await
         };
 
-        let receipt = send_result
-            .map_err(DepositError::from)?
+        let mut pending = send_result.map_err(DepositError::from)?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending = pending.with_timeout(Some(timeout));
+        }
+        let receipt = pending
             .get_receipt()
             .await
             .map_err(alloy::contract::Error::from)
@@ -357,6 +388,7 @@ impl<S> UserClient<S> {
         amount: U256,
         erc20_token: String,
         recipient: Address,
+        options: TransactionOptions,
     ) -> Result<TransactionReceipt, PayTabError>
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
@@ -365,16 +397,17 @@ impl<S> UserClient<S> {
             PayTabError::InvalidParams(format!("invalid ERC20 token address: {erc20_token}"))
         })?;
 
-        let send_result = self
-            .ctx
-            .get_write_contract()
-            .await?
-            .payTabInERC20Token(tab_id, token, amount, recipient)
-            .send()
-            .await
-            .map_err(PayTabError::from)?;
+        let contract = self.ctx.get_write_contract().await?;
+        let mut call = contract.payTabInERC20Token(tab_id, token, amount, recipient);
+        if let Some(gas_limit) = options.gas_limit {
+            call = call.gas(gas_limit);
+        }
 
-        let receipt = send_result
+        let mut pending = call.send().await.map_err(PayTabError::from)?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending = pending.with_timeout(Some(timeout));
+        }
+        let receipt = pending
             .get_receipt()
             .await
             .map_err(alloy::contract::Error::from)
@@ -402,12 +435,35 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
+        self.pay_tab_with_options(
+            tab_id,
+            req_id,
+            amount,
+            recipient_address,
+            erc20_token,
+            TransactionOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn pay_tab_with_options(
+        &self,
+        tab_id: U256,
+        req_id: U256,
+        amount: U256,
+        recipient_address: String,
+        erc20_token: Option<String>,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, PayTabError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
         let recipient = validate_address(&recipient_address)
             .map_err(|e| PayTabError::InvalidParams(e.to_string()))?;
 
         if let Some(token) = erc20_token {
             return self
-                .pay_tab_in_erc20_token(tab_id, amount, token, recipient)
+                .pay_tab_in_erc20_token(tab_id, amount, token, recipient, options)
                 .await;
         }
 
@@ -416,21 +472,66 @@ impl<S> UserClient<S> {
             .with_to(recipient)
             .with_value(amount)
             .with_input(input.into_bytes())
-            .with_gas_limit(120_000u64);
+            .with_gas_limit(options.gas_limit.unwrap_or(120_000));
 
-        let pending_tx = self
+        let mut pending_tx = self
             .ctx
             .get_wallet_provider()
             .await?
             .send_transaction(tx)
             .await
             .map_err(|e| PayTabError::Transport(e.to_string()))?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending_tx = pending_tx.with_timeout(Some(timeout));
+        }
         let receipt = pending_tx
             .get_receipt()
             .await
             .map_err(|e| PayTabError::Transport(e.to_string()))?;
 
         Ok(receipt)
+    }
+
+    /// Pay a tab by resolving the recipient, asset, amount, and request id from
+    /// the core service.
+    pub async fn pay_tab_auto(&self, tab_id: U256) -> Result<TransactionReceipt, PayTabError>
+    where
+        S: TxSigner<Signature> + Signer + Send + Sync + Clone + 'static,
+    {
+        self.pay_tab_auto_with_options(tab_id, TransactionOptions::default())
+            .await
+    }
+
+    pub async fn pay_tab_auto_with_options(
+        &self,
+        tab_id: U256,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, PayTabError>
+    where
+        S: TxSigner<Signature> + Signer + Send + Sync + Clone + 'static,
+    {
+        let rpc = self.ctx.rpc_proxy().await?;
+        let tab = rpc
+            .get_tab(tab_id)
+            .await?
+            .ok_or_else(|| PayTabError::InvalidParams(format!("tab {tab_id:#x} not found")))?;
+        let guarantee = rpc.get_latest_guarantee(tab_id).await?.ok_or_else(|| {
+            PayTabError::InvalidParams(format!("tab {tab_id:#x} has no guarantee"))
+        })?;
+
+        let asset = validate_address(&tab.asset_address)
+            .map_err(|e| PayTabError::InvalidParams(e.to_string()))?;
+        let erc20_token = (asset != Address::ZERO).then_some(tab.asset_address);
+
+        self.pay_tab_with_options(
+            tab_id,
+            guarantee.req_id,
+            guarantee.amount,
+            tab.recipient_address,
+            erc20_token,
+            options,
+        )
+        .await
     }
 
     /// Requests a withdrawal of collateral from the user's account
@@ -447,15 +548,43 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
+        self.request_withdrawal_with_options(amount, erc20_token, TransactionOptions::default())
+            .await
+    }
+
+    pub async fn request_withdrawal_with_options(
+        &self,
+        amount: U256,
+        erc20_token: Option<String>,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, RequestWithdrawalError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
         let contract = self.ctx.get_write_contract().await?;
         let send_result =
             match parse_erc20_token(erc20_token, RequestWithdrawalError::InvalidParams)? {
-                Some(token) => contract.requestWithdrawal_1(token, amount).send().await,
-                None => contract.requestWithdrawal_0(amount).send().await,
+                Some(token) => {
+                    let mut call = contract.requestWithdrawal_1(token, amount);
+                    if let Some(gas_limit) = options.gas_limit {
+                        call = call.gas(gas_limit);
+                    }
+                    call.send().await
+                }
+                None => {
+                    let mut call = contract.requestWithdrawal_0(amount);
+                    if let Some(gas_limit) = options.gas_limit {
+                        call = call.gas(gas_limit);
+                    }
+                    call.send().await
+                }
             };
 
-        let receipt = send_result
-            .map_err(RequestWithdrawalError::from)?
+        let mut pending = send_result.map_err(RequestWithdrawalError::from)?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending = pending.with_timeout(Some(timeout));
+        }
+        let receipt = pending
             .get_receipt()
             .await
             .map_err(alloy::contract::Error::from)
@@ -476,15 +605,42 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
+        self.cancel_withdrawal_with_options(erc20_token, TransactionOptions::default())
+            .await
+    }
+
+    pub async fn cancel_withdrawal_with_options(
+        &self,
+        erc20_token: Option<String>,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, CancelWithdrawalError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
         let contract = self.ctx.get_write_contract().await?;
         let send_result =
             match parse_erc20_token(erc20_token, CancelWithdrawalError::InvalidParams)? {
-                Some(token) => contract.cancelWithdrawal_1(token).send().await,
-                None => contract.cancelWithdrawal_0().send().await,
+                Some(token) => {
+                    let mut call = contract.cancelWithdrawal_1(token);
+                    if let Some(gas_limit) = options.gas_limit {
+                        call = call.gas(gas_limit);
+                    }
+                    call.send().await
+                }
+                None => {
+                    let mut call = contract.cancelWithdrawal_0();
+                    if let Some(gas_limit) = options.gas_limit {
+                        call = call.gas(gas_limit);
+                    }
+                    call.send().await
+                }
             };
 
-        let receipt = send_result
-            .map_err(CancelWithdrawalError::from)?
+        let mut pending = send_result.map_err(CancelWithdrawalError::from)?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending = pending.with_timeout(Some(timeout));
+        }
+        let receipt = pending
             .get_receipt()
             .await
             .map_err(alloy::contract::Error::from)
@@ -505,15 +661,42 @@ impl<S> UserClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
+        self.finalize_withdrawal_with_options(erc20_token, TransactionOptions::default())
+            .await
+    }
+
+    pub async fn finalize_withdrawal_with_options(
+        &self,
+        erc20_token: Option<String>,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, FinalizeWithdrawalError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
         let contract = self.ctx.get_write_contract().await?;
         let send_result =
             match parse_erc20_token(erc20_token, FinalizeWithdrawalError::InvalidParams)? {
-                Some(token) => contract.finalizeWithdrawal_1(token).send().await,
-                None => contract.finalizeWithdrawal_0().send().await,
+                Some(token) => {
+                    let mut call = contract.finalizeWithdrawal_1(token);
+                    if let Some(gas_limit) = options.gas_limit {
+                        call = call.gas(gas_limit);
+                    }
+                    call.send().await
+                }
+                None => {
+                    let mut call = contract.finalizeWithdrawal_0();
+                    if let Some(gas_limit) = options.gas_limit {
+                        call = call.gas(gas_limit);
+                    }
+                    call.send().await
+                }
             };
 
-        let receipt = send_result
-            .map_err(FinalizeWithdrawalError::from)?
+        let mut pending = send_result.map_err(FinalizeWithdrawalError::from)?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending = pending.with_timeout(Some(timeout));
+        }
+        let receipt = pending
             .get_receipt()
             .await
             .map_err(alloy::contract::Error::from)
