@@ -102,6 +102,37 @@ async fn rpc_proxy_surfaces_api_errors() {
 
 #[tokio::test]
 #[serial_test::file_serial]
+async fn rpc_proxy_list_user_tabs_encodes_status_filters() {
+    let router = Router::new().route(
+        "/core/users/{user}/tabs",
+        get(|uri: axum::http::Uri| async move {
+            assert_eq!(
+                uri.query(),
+                Some("settlement_status=pending&settlement_status=settled")
+            );
+            Json(Vec::<rpc::TabInfo>::new())
+        }),
+    );
+    let Ok((base, handle)) = spawn_router(router).await else {
+        eprintln!("skipping test: failed to bind local port");
+        return;
+    };
+
+    let proxy = RpcProxy::new(&base).expect("create proxy");
+    let tabs = proxy
+        .list_user_tabs(
+            "0x1234567890abcdef1234567890abcdef12345678".into(),
+            Some(vec!["pending".into(), "settled".into()]),
+        )
+        .await
+        .expect("list user tabs");
+    assert!(tabs.is_empty());
+
+    handle.abort();
+}
+
+#[tokio::test]
+#[serial_test::file_serial]
 async fn rpc_proxy_returns_decode_error_on_invalid_json() {
     let router = Router::new().route(
         "/core/public-params",

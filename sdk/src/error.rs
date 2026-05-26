@@ -275,6 +275,9 @@ pub enum PayTabError {
     UnsupportedAsset(Address),
 
     #[error(transparent)]
+    Rpc(#[from] ApiClientError),
+
+    #[error(transparent)]
     Client(#[from] ClientError),
 
     #[error("unknown revert (selector {selector:#x})")]
