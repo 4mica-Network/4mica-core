@@ -174,6 +174,22 @@ impl RpcProxy {
         self.get(url).await
     }
 
+    pub async fn list_user_tabs(
+        &self,
+        user_address: String,
+        settlement_statuses: Option<Vec<String>>,
+    ) -> Result<Vec<TabInfo>, ApiClientError> {
+        let path = format!("/core/users/{user_address}/tabs");
+        let mut url = self.url(&path)?;
+        if let Some(statuses) = settlement_statuses {
+            let mut pairs = url.query_pairs_mut();
+            for status in statuses {
+                pairs.append_pair("settlement_status", &status);
+            }
+        }
+        self.get(url).await
+    }
+
     pub async fn get_tab_guarantees(
         &self,
         tab_id: U256,

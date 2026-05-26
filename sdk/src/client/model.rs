@@ -5,8 +5,27 @@ use rpc::{
     PendingRemunerationInfo as RpcPendingRemunerationInfo, TabInfo as RpcTabInfo,
     UserTransactionInfo as RpcUserTransactionInfo,
 };
+use std::time::Duration;
 
 use crate::contract::Core4Mica;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TransactionOptions {
+    pub gas_limit: Option<u64>,
+    pub receipt_timeout: Option<Duration>,
+}
+
+impl TransactionOptions {
+    pub fn with_gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = Some(gas_limit);
+        self
+    }
+
+    pub fn with_receipt_timeout(mut self, timeout: Duration) -> Self {
+        self.receipt_timeout = Some(timeout);
+        self
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TabPaymentStatus {

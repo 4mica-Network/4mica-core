@@ -14,7 +14,7 @@ use rpc::{
 use crate::{
     client::model::{
         AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo,
-        PendingRemunerationInfo, RecipientPaymentInfo, TabInfo,
+        PendingRemunerationInfo, RecipientPaymentInfo, TabInfo, TransactionOptions,
     },
     client::{ClientCtx, model::TabPaymentStatus},
     error::{
@@ -215,6 +215,18 @@ impl<S> RecipientClient<S> {
     where
         S: TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
+        self.remunerate_with_options(cert, TransactionOptions::default())
+            .await
+    }
+
+    pub async fn remunerate_with_options(
+        &self,
+        cert: BLSCert,
+        options: TransactionOptions,
+    ) -> Result<TransactionReceipt, RemunerateError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
         self.verify_payment_guarantee(&cert)
             .map_err(|err| match err {
                 VerifyGuaranteeError::InvalidCertificate(source) => {
@@ -238,26 +250,25 @@ impl<S> RecipientClient<S> {
             .map_err(|e| RemunerateError::SignatureDecode(anyhow::Error::new(e)))?;
 
         let claims_bytes = cert.claims().to_vec();
+        let contract = self.ctx.get_write_contract().await?;
 
         // Static call first to surface a revert without submitting a transaction
-        self.ctx
-            .get_write_contract()
-            .await?
+        contract
             .remunerate(claims_bytes.clone().into(), sig_words.into())
             .call()
             .await
             .map_err(RemunerateError::from)?;
 
-        let send_result = self
-            .ctx
-            .get_write_contract()
-            .await?
-            .remunerate(claims_bytes.into(), sig_words.into())
-            .send()
-            .await
-            .map_err(RemunerateError::from)?;
+        let mut call = contract.remunerate(claims_bytes.into(), sig_words.into());
+        if let Some(gas_limit) = options.gas_limit {
+            call = call.gas(gas_limit);
+        }
 
-        let receipt = send_result
+        let mut pending = call.send().await.map_err(RemunerateError::from)?;
+        if let Some(timeout) = options.receipt_timeout {
+            pending = pending.with_timeout(Some(timeout));
+        }
+        let receipt = pending
             .get_receipt()
             .await
             .map_err(alloy::contract::Error::from)

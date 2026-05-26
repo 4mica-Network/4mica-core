@@ -31,6 +31,19 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 zeroize = { workspace = true }
+cdp-sdk = { version = "0.6.0", optional = true, default-features = false, features = [
+    "rustls-tls",
+] }
+reqwest-middleware = { version = "0.4.2", optional = true, default-features = false, features = [
+    "json",
+] }
+reqwest-012 = { package = "reqwest", version = "0.12.4", optional = true, default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
+
+[features]
+cdp = ["dep:cdp-sdk", "dep:reqwest-middleware", "dep:reqwest-012"]
 
 [dev-dependencies]
 tokio = { workspace = true }

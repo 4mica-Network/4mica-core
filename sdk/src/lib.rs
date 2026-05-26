@@ -7,6 +7,7 @@ pub mod error;
 pub mod guarantee;
 mod sig;
 mod validators;
+pub mod wallet;
 pub mod x402;
 
 pub use alloy::primitives::{Address, U256};
@@ -21,7 +22,8 @@ pub use auth::{AuthClient, AuthSession, AuthTokens};
 pub use client::Client;
 pub use client::model::{
     AssetBalanceInfo, CollateralEventInfo, CreateTabResult, GuaranteeInfo, PendingRemunerationInfo,
-    RecipientPaymentInfo, StablecoinPosition, TabInfo, TabPaymentStatus, UserInfo,
+    RecipientPaymentInfo, StablecoinPosition, TabInfo, TabPaymentStatus, TransactionOptions,
+    UserInfo,
 };
 pub use config::AuthConfig;
 pub use config::{Config, ConfigBuilder, NETWORKS, NetworkInfo, resolve_network_rpc_url};
@@ -31,6 +33,8 @@ pub use guarantee::{
     PreparedPaymentGuaranteeRequest,
 };
 pub use sig::PaymentSignature;
+#[cfg(feature = "cdp")]
+pub use wallet::cdp::{CdpAccountConfig, CdpSigner, CdpWalletError, create_cdp_account};
 pub use x402::X402Flow;
 pub use x402::{FlowSigner, X402SettledPayment, X402SignedPayment};
 // Backwards compatibility with earlier facilitator naming.
