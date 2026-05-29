@@ -73,7 +73,7 @@ impl CoreService {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| {
                 if host.is_empty() {
-                    "localhost".to_string()
+                    "localhost".to_owned()
                 } else {
                     host.to_string()
                 }

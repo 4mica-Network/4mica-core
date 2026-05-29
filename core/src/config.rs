@@ -203,9 +203,9 @@ impl GuaranteeConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         validate_guarantee_version(self.max_accepted_version, "GUARANTEE_REQUEST_VERSION")?;
         let accepted_versions = self.accepted_request_versions()?;
-        for version in &accepted_versions {
-            validate_guarantee_version(*version, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")?;
-        }
+        accepted_versions.iter().try_for_each(|v| {
+            validate_guarantee_version(*v, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")
+        })?;
         let canonicalization_version = self.validation_hash_canonicalization_version.trim();
         if canonicalization_version.is_empty() {
             bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");

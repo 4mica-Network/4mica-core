@@ -49,9 +49,9 @@ pub async fn create_pending_tab(
         ttl: Set(input.ttl),
         status: Set(TabStatus::Pending),
         settlement_status: Set(SettlementStatus::Pending),
-        total_amount: Set("0".to_string()),
-        paid_amount: Set("0".to_string()),
-        last_req_id: Set("0x0".to_string()),
+        total_amount: Set("0".to_owned()),
+        paid_amount: Set("0".to_owned()),
+        last_req_id: Set("0x0".to_owned()),
         accepted_guarantee_version: Set(Some(i32::try_from(input.guarantee_version).map_err(
             |_| {
                 PersistDbError::InvariantViolation(format!(

@@ -26,6 +26,14 @@ fn secs_since(dt: NaiveDateTime) -> f64 {
     (Utc::now().naive_utc() - dt).num_seconds().max(0) as f64
 }
 
+fn non_zero_hash_string(hash: B256) -> Option<String> {
+    (!hash.is_zero()).then(|| format!("{hash:#x}"))
+}
+
+fn parse_non_zero_hash_string(s: &str) -> Option<String> {
+    B256::from_str(s).ok().and_then(non_zero_hash_string)
+}
+
 struct SafeHead {
     number: u64,
     hash: B256,
@@ -376,7 +384,7 @@ impl CoreService {
         };
 
         let record_hash = format!("{:#x}", record_tx.tx_hash);
-        let record_block_hash = record_tx.block_hash.map(|hash| format!("{:#x}", hash));
+        let record_block_hash = record_tx.block_hash.and_then(non_zero_hash_string);
 
         repo::mark_payment_transaction_recorded(
             &self.inner.persist_ctx,
@@ -547,14 +555,18 @@ impl CoreService {
                 .await;
         }
 
-        if let Some(expected_hash) = tx.record_tx_block_hash.as_deref()
-            && let Some(receipt_hash) = receipt.block_hash
+        let stored_hash = tx
+            .record_tx_block_hash
+            .as_deref()
+            .and_then(parse_non_zero_hash_string);
+        if let (Some(expected), Some(receipt_block_hash)) =
+            (stored_hash.as_deref(), receipt.block_hash)
         {
-            let actual_hash = format!("{:#x}", receipt_hash);
-            if !actual_hash.eq_ignore_ascii_case(expected_hash) {
+            let actual = format!("{receipt_block_hash:#x}");
+            if !actual.eq_ignore_ascii_case(expected) {
                 warn!(
                     "Record receipt hash mismatch for tx {} (expected {}, got {}); marking reverted",
-                    record_tx_hash, expected_hash, actual_hash
+                    record_tx_hash, expected, actual
                 );
                 return self
                     .revert_recorded_payment(&tx.tx_id, &tx.asset_address, duration)

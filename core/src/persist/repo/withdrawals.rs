@@ -66,7 +66,7 @@ pub async fn request_withdrawal_with_event(
                     user_address: Set(user_address.clone()),
                     asset_address: Set(asset_address.clone()),
                     requested_amount: Set(amount.to_string()),
-                    executed_amount: Set("0".to_string()),
+                    executed_amount: Set("0".to_owned()),
                     request_ts: Set(ts),
                     status: Set(WithdrawalStatus::Pending),
                     request_event_chain_id: Set(event.as_ref().map(|e| e.chain_id as i64)),
@@ -209,7 +209,10 @@ pub async fn finalize_withdrawal_with_event(
                         count: pending.len(),
                     });
                 }
-                let withdrawal = pending.into_iter().next().unwrap();
+                let withdrawal = pending
+                    .into_iter()
+                    .next()
+                    .expect("invariant: exactly one pending withdrawal after length checks");
 
                 let requested = U256::from_str(&withdrawal.requested_amount)
                     .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
@@ -298,7 +301,10 @@ pub async fn mark_withdrawal_executed_with_event(
                     });
                 }
 
-                let withdrawal = pending.into_iter().next().unwrap();
+                let withdrawal = pending
+                    .into_iter()
+                    .next()
+                    .expect("invariant: exactly one pending withdrawal after length checks");
                 let requested = U256::from_str(&withdrawal.requested_amount)
                     .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
                 let executed_amount = std::cmp::min(executed_amount, requested);

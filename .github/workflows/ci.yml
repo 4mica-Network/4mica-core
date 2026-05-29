@@ -118,7 +118,10 @@ jobs:
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --via-ir \
-            -vvvv
+            -vvvv 2>&1 | tee /tmp/deploy.log
+          CORE4MICA_ADDR=$(grep -oP '(?<=Core4Mica: )0x[0-9a-fA-F]{40}' /tmp/deploy.log | tail -1)
+          echo "Deployed Core4Mica at: $CORE4MICA_ADDR"
+          echo "ETHEREUM_CONTRACT_ADDRESS=$CORE4MICA_ADDR" >> "$GITHUB_ENV"
 
       - name: Run cargo check
         run: cargo check --workspace --all-targets --all-features
@@ -140,7 +143,7 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
@@ -181,7 +184,7 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
@@ -203,7 +206,7 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
@@ -219,7 +222,7 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
@@ -270,7 +273,7 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
@@ -311,7 +314,7 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ secrets.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
           CRON_JOB_SETTINGS: "*/3 * * * * *"
