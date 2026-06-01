@@ -1,5 +1,5 @@
 use crate::auth::access::{self, AccessContext};
-use crate::auth::constants::SCOPE_TAB_READ;
+use crate::auth::constants::SCOPE_PAYMENT_READ;
 use crate::persist::mapper;
 use crate::{
     error::ServiceResult,
@@ -15,7 +15,7 @@ impl CoreService {
         auth: &AccessContext,
         recipient_address: String,
     ) -> ServiceResult<Vec<UserTransactionInfo>> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_scope(auth, SCOPE_PAYMENT_READ)?;
         access::require_recipient_match(auth, &recipient_address)?;
 
         let rows =
@@ -31,7 +31,7 @@ impl CoreService {
         user_address: String,
         asset_address: String,
     ) -> ServiceResult<Option<AssetBalanceInfo>> {
-        access::require_scope(auth, SCOPE_TAB_READ)?;
+        access::require_scope(auth, SCOPE_PAYMENT_READ)?;
 
         let Some(balance) =
             repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)

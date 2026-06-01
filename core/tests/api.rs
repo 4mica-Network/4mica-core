@@ -6,7 +6,7 @@ use alloy::{
 };
 use alloy_sol_types::SolValue;
 use chrono::Utc;
-use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ};
+use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_PAYMENT_READ};
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
 use core_service::http;
 use core_service::metrics::setup_metrics_recorder;
@@ -122,7 +122,7 @@ async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx, Au
         &ctx,
         &recipient_signer,
         ADMIN_WALLET_ROLE,
-        &[SCOPE_TAB_CREATE, SCOPE_TAB_READ, SCOPE_GUARANTEE_ISSUE],
+        &[SCOPE_PAYMENT_READ, SCOPE_GUARANTEE_ISSUE],
     )
     .await?;
     let core_client = RpcProxy::new(&core_addr)?.with_bearer_token(auth.access_token.clone());
@@ -371,7 +371,7 @@ async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
     let base_addr = core_base_url(&config);
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
-    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
 
     let client = reqwest::Client::new();
@@ -425,7 +425,7 @@ async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
     let base_addr = core_base_url(&config);
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
-    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
 
     let client = reqwest::Client::new();
@@ -470,7 +470,7 @@ async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
     let base_addr = core_base_url(&config);
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
-    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
 
     let client = reqwest::Client::new();
@@ -530,7 +530,10 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
     let presented_address = mixed_case_address(&stored_address);
 
     assert_eq!(stored_address, presented_address.to_ascii_lowercase());
-    let scopes = vec![SCOPE_TAB_CREATE.to_string(), SCOPE_TAB_READ.to_string()];
+    let scopes = vec![
+        SCOPE_PAYMENT_READ.to_string(),
+        SCOPE_GUARANTEE_ISSUE.to_string(),
+    ];
     repo::upsert_wallet_role(
         &ctx,
         &stored_address,
@@ -543,7 +546,10 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
         .await?
         .expect("wallet role should be retrievable by mixed-case address");
     assert_eq!(row.role, ADMIN_WALLET_ROLE);
-    assert_eq!(row.scopes, serde_json::json!(["tab:create", "tab:read"]));
+    assert_eq!(
+        row.scopes,
+        serde_json::json!(["guarantee:issue", "payment:read"])
+    );
 
     Ok(())
 }
@@ -1708,7 +1714,7 @@ async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> 
         &ctx,
         &recipient_wallet,
         "recipient",
-        &[SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE],
+        &[SCOPE_GUARANTEE_ISSUE],
     )
     .await?;
 

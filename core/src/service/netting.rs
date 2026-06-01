@@ -263,7 +263,7 @@ impl CoreService {
             merkle_root.as_slice(),
             b"batch",
         ]);
-        let merkle_root = bytes32_hex(merkle_root);
+        let merkle_root = crypto::hex::encode_hex(merkle_root.as_slice());
 
         repo::create_clearing_batch_on(
             self.inner.persist_ctx.db.as_ref(),
@@ -511,7 +511,7 @@ fn participant_leaves_for_positions(
 }
 
 fn settlement_hash<const N: usize>(parts: [&[u8]; N]) -> String {
-    bytes32_hex(settlement_digest(parts))
+    crypto::hex::encode_hex(settlement_digest(parts).as_slice())
 }
 
 fn settlement_digest<const N: usize>(parts: [&[u8]; N]) -> B256 {
@@ -558,10 +558,6 @@ fn address_word(address: Address) -> [u8; 32] {
     let mut word = [0u8; 32];
     word[12..].copy_from_slice(address.as_slice());
     word
-}
-
-fn bytes32_hex(value: B256) -> String {
-    format!("0x{}", hex::encode(value.as_slice()))
 }
 
 #[cfg(test)]
