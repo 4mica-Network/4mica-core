@@ -1,9 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use alloy::primitives::{Address, B256, U256, keccak256};
 use anyhow::anyhow;
 use chrono::Utc;
+use crypto::merkle::MerkleTree;
 use entities::{
     clearing_batch, cycle_participant_position,
     sea_orm_active_enums::{ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus},
@@ -252,7 +253,8 @@ impl CoreService {
             )));
         }
 
-        let merkle_root = merkle_root(participant_leaves.iter().map(|leaf| leaf.leaf).collect());
+        let merkle_root =
+            MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf)).root();
         let batch_hash = settlement_hash([
             cycle.id.as_bytes(),
             cycle.asset_address.as_bytes(),
@@ -316,7 +318,8 @@ impl CoreService {
             &cycle.id,
             positions,
         )?;
-        let computed_root = merkle_root(participant_leaves.iter().map(|leaf| leaf.leaf).collect());
+        let tree = MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf));
+        let computed_root = tree.root();
         if computed_root != stored_root {
             return Err(ServiceError::InvalidParams(format!(
                 "clearing batch Merkle root mismatch for cycle {cycle_id}: stored {stored_root:#x}, computed {computed_root:#x}"
@@ -331,11 +334,7 @@ impl CoreService {
                     "Clearing participant {participant} in settlement cycle {cycle_id}"
                 ))
             })?;
-        let proof = sorted_merkle_proof(
-            participant_leaves.iter().map(|leaf| leaf.leaf).collect(),
-            target.leaf,
-        )
-        .ok_or_else(|| {
+        let proof = tree.proof(target.leaf).ok_or_else(|| {
             ServiceError::NotFound(format!(
                 "Clearing participant {participant} in settlement cycle {cycle_id}"
             ))
@@ -561,70 +560,6 @@ fn address_word(address: Address) -> [u8; 32] {
     word
 }
 
-fn merkle_root(leaves: Vec<B256>) -> B256 {
-    if leaves.is_empty() {
-        return B256::ZERO;
-    }
-
-    let mut level = leaves
-        .into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    while level.len() > 1 {
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        for pair in level.chunks(2) {
-            let left = pair[0];
-            let right = if pair.len() == 2 { pair[1] } else { pair[0] };
-            next.push(hash_pair(left, right));
-        }
-        level = next;
-    }
-    level[0]
-}
-
-fn sorted_merkle_proof(leaves: Vec<B256>, target: B256) -> Option<Vec<B256>> {
-    let mut level = leaves
-        .into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let mut target_index = level.iter().position(|leaf| *leaf == target)?;
-    let mut proof = Vec::new();
-
-    while level.len() > 1 {
-        let sibling_index = if target_index % 2 == 0 {
-            if target_index + 1 < level.len() {
-                target_index + 1
-            } else {
-                target_index
-            }
-        } else {
-            target_index - 1
-        };
-        proof.push(level[sibling_index]);
-
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        for pair in level.chunks(2) {
-            let left = pair[0];
-            let right = if pair.len() == 2 { pair[1] } else { pair[0] };
-            next.push(hash_pair(left, right));
-        }
-        level = next;
-        target_index /= 2;
-    }
-
-    Some(proof)
-}
-
-fn hash_pair(a: B256, b: B256) -> B256 {
-    let (left, right) = if a <= b { (a, b) } else { (b, a) };
-    let mut encoded = Vec::with_capacity(64);
-    encoded.extend_from_slice(left.as_slice());
-    encoded.extend_from_slice(right.as_slice());
-    keccak256(encoded)
-}
-
 fn bytes32_hex(value: B256) -> String {
     format!("0x{}", hex::encode(value.as_slice()))
 }
@@ -634,47 +569,7 @@ mod tests {
     use super::*;
     use alloy_sol_types::SolValue;
     use chrono::Utc;
-
-    #[test]
-    fn merkle_root_is_order_independent() {
-        let clearing_house = Address::ZERO;
-        let asset = Address::ZERO;
-        let a = participant_leaf(
-            1,
-            clearing_house,
-            "cycle",
-            asset,
-            Address::from_str("0x1111111111111111111111111111111111111111").unwrap(),
-            U256::from(10),
-            ClearingParticipantRole::NetDebtor,
-        );
-        let b = participant_leaf(
-            1,
-            clearing_house,
-            "cycle",
-            asset,
-            Address::from_str("0x2222222222222222222222222222222222222222").unwrap(),
-            U256::from(10),
-            ClearingParticipantRole::NetCreditor,
-        );
-
-        assert_eq!(merkle_root(vec![a, b]), merkle_root(vec![b, a]));
-    }
-
-    #[test]
-    fn merkle_root_deduplicates_identical_leaves() {
-        let leaf = participant_leaf(
-            1,
-            Address::ZERO,
-            "cycle",
-            Address::ZERO,
-            Address::from_str("0x1111111111111111111111111111111111111111").unwrap(),
-            U256::from(10),
-            ClearingParticipantRole::NetDebtor,
-        );
-
-        assert_eq!(merkle_root(vec![leaf]), merkle_root(vec![leaf, leaf]));
-    }
+    use crypto::merkle::verify_proof;
 
     #[test]
     fn participant_leaf_matches_clearing_house_solidity_encoding() {
@@ -749,11 +644,10 @@ mod tests {
             ClearingParticipantRole::NetDebtor,
         );
 
-        let leaves = vec![debtor_leaf, creditor_leaf, other_debtor_leaf];
-        let root = merkle_root(leaves.clone());
-        let proof = sorted_merkle_proof(leaves, debtor_leaf).unwrap();
+        let tree = MerkleTree::from_leaves([debtor_leaf, creditor_leaf, other_debtor_leaf]);
+        let proof = tree.proof(debtor_leaf).unwrap();
 
-        assert!(verify_sorted_merkle_proof(&proof, root, debtor_leaf));
+        assert!(verify_proof(&proof, tree.root(), debtor_leaf));
     }
 
     #[test]
@@ -795,24 +689,13 @@ mod tests {
             .iter()
             .find(|leaf| leaf.role == ParticipantCycleRole::NetDebtor)
             .unwrap();
-        let root = merkle_root(leaves.iter().map(|leaf| leaf.leaf).collect());
-        let proof = sorted_merkle_proof(
-            leaves.iter().map(|leaf| leaf.leaf).collect(),
-            debtor_leaf.leaf,
-        )
-        .unwrap();
+        let tree = MerkleTree::from_leaves(leaves.iter().map(|leaf| leaf.leaf));
+        let proof = tree.proof(debtor_leaf.leaf).unwrap();
 
         assert_eq!(debtor_leaf.amount, U256::from(10));
         assert_eq!(debtor_leaf.net_debit, U256::from(10));
         assert_eq!(debtor_leaf.net_credit, U256::ZERO);
-        assert!(verify_sorted_merkle_proof(&proof, root, debtor_leaf.leaf));
-    }
-
-    fn verify_sorted_merkle_proof(proof: &[B256], root: B256, leaf: B256) -> bool {
-        let computed = proof.iter().fold(leaf, |computed, proof_element| {
-            hash_pair(computed, *proof_element)
-        });
-        computed == root
+        assert!(verify_proof(&proof, tree.root(), debtor_leaf.leaf));
     }
 
     fn position_model(
