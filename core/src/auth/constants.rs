@@ -7,10 +7,9 @@ pub const WALLET_STATUS_ALLOWED: [&str; 3] = [
     WALLET_STATUS_REVOKED,
 ];
 
-pub const SCOPE_TAB_CREATE: &str = "tab:create";
-pub const SCOPE_TAB_READ: &str = "tab:read";
+pub const SCOPE_PAYMENT_READ: &str = "payment:read";
 pub const SCOPE_GUARANTEE_ISSUE: &str = "guarantee:issue";
-pub const DEFAULT_SCOPES: [&str; 1] = [SCOPE_TAB_READ];
+pub const DEFAULT_SCOPES: [&str; 1] = [SCOPE_PAYMENT_READ];
 
 pub const ROLE_USER: &str = "user";
 pub const ROLE_ADMIN: &str = "admin";

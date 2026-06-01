@@ -1,6 +1,6 @@
 use crate::auth::{
     access::{self, AccessContext},
-    constants::SCOPE_TAB_READ,
+    constants::SCOPE_PAYMENT_READ,
 };
 use crate::{error::ServiceError, service::CoreService};
 use alloy_primitives::B256;
@@ -258,7 +258,7 @@ async fn get_clearing_participant_proof(
     Extension(auth): Extension<AccessContext>,
     Path((cycle_id, participant)): Path<(String, String)>,
 ) -> Result<Json<ClearingParticipantProofResponse>, ApiError> {
-    access::require_scope(&auth, SCOPE_TAB_READ)?;
+    access::require_scope(&auth, SCOPE_PAYMENT_READ)?;
     if !access::addresses_match(&auth.wallet_address, &participant)
         && access::require_admin_role(&auth).is_err()
         && access::require_facilitator_role(&auth).is_err()
@@ -280,7 +280,7 @@ async fn get_clearing_participant_action(
     Path((cycle_id, participant)): Path<(String, String)>,
     Query(query): Query<ClearingActionQuery>,
 ) -> Result<Json<ClearingSettlementActionResponse>, ApiError> {
-    access::require_scope(&auth, SCOPE_TAB_READ)?;
+    access::require_scope(&auth, SCOPE_PAYMENT_READ)?;
     if query.action != ClearingSettlementAction::MarkDefaulted
         && !access::addresses_match(&auth.wallet_address, &participant)
         && access::require_admin_role(&auth).is_err()

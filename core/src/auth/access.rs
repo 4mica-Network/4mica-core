@@ -97,20 +97,20 @@ mod tests {
 
     #[test]
     fn scope_contains_matches_case_insensitively() {
-        let scopes = vec!["tab:read".to_string(), "Guarantee:Issue".to_string()];
+        let scopes = vec!["payment:read".to_string(), "Guarantee:Issue".to_string()];
         assert!(scope_contains(&scopes, "guarantee:issue"));
-        assert!(scope_contains(&scopes, "TAB:READ"));
+        assert!(scope_contains(&scopes, "PAYMENT:READ"));
     }
 
     #[test]
     fn scope_contains_trims_scope_values() {
-        let scopes = vec!["  tab:create  ".to_string()];
-        assert!(scope_contains(&scopes, "tab:create"));
+        let scopes = vec!["  payment:read  ".to_string()];
+        assert!(scope_contains(&scopes, "payment:read"));
     }
 
     #[test]
     fn scope_contains_returns_false_for_missing_scope() {
-        let scopes = vec!["tab:read".to_string()];
-        assert!(!scope_contains(&scopes, "tab:create"));
+        let scopes = vec!["payment:read".to_string()];
+        assert!(!scope_contains(&scopes, "guarantee:issue"));
     }
 }
