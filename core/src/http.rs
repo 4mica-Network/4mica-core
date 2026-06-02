@@ -2,8 +2,8 @@ use crate::auth::{
     access::{self, AccessContext},
     constants::SCOPE_PAYMENT_READ,
 };
+use crate::evm::bytes32_hex;
 use crate::{error::ServiceError, service::CoreService};
-use alloy_primitives::B256;
 use axum::extract::FromRef;
 use axum::{
     Json, Router,
@@ -150,10 +150,6 @@ impl From<ServiceError> for ApiError {
             }
         }
     }
-}
-
-fn bytes32_hex(value: B256) -> String {
-    format!("{value:#x}")
 }
 
 fn participant_role_to_response(

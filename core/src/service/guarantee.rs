@@ -1,15 +1,15 @@
 use crate::error::PersistDbError;
+use crate::evm::guarantee::{guarantee_id_for_cycle, verify_guarantee_request_signature};
 use crate::service::CoreService;
 use crate::{
     auth::{
         access::{self, AccessContext},
         constants::SCOPE_GUARANTEE_ISSUE,
-        verify_guarantee_request_signature,
     },
     error::{ServiceError, ServiceResult},
     persist::repo,
 };
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::Address;
 use anyhow::anyhow;
 use chrono::Utc;
 use crypto::bls::{BLSCert, BlsClaims};
@@ -193,8 +193,8 @@ impl CoreService {
         let active_cycle = self
             .get_or_create_active_cycle(req.claims.asset_address(), Utc::now())
             .await?;
-        let signed_cycle_id = cycle_claim_id(&active_cycle.id);
-        let guarantee_id = guarantee_id_for(&active_cycle.id, &req.claims);
+        let signed_cycle_id = crate::evm::clearing::claim_cycle_id(&active_cycle.id);
+        let guarantee_id = guarantee_id_for_cycle(&active_cycle.id, &req.claims);
 
         if repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), &guarantee_id)
             .await?
@@ -355,32 +355,6 @@ impl CoreService {
     }
 }
 
-fn cycle_claim_id(cycle_id: &str) -> U256 {
-    U256::from_be_bytes(keccak256(cycle_id.as_bytes()).into())
-}
-
-fn guarantee_id_for(cycle_id: &str, claims: &PaymentGuaranteeRequestClaims) -> String {
-    let digest = guarantee_digest(cycle_id, claims);
-    format!("0x{}", hex::encode(digest.as_slice()))
-}
-
-fn guarantee_digest(cycle_id: &str, claims: &PaymentGuaranteeRequestClaims) -> B256 {
-    let mut encoded = Vec::new();
-    for part in [
-        b"4MICA_CYCLE_GUARANTEE_V1".as_slice(),
-        cycle_id.as_bytes(),
-        claims.user_address().as_bytes(),
-        claims.recipient_address().as_bytes(),
-        claims.asset_address().as_bytes(),
-        claims.req_id().to_string().as_bytes(),
-        claims.version().to_string().as_bytes(),
-    ] {
-        encoded.extend_from_slice(&(part.len() as u64).to_be_bytes());
-        encoded.extend_from_slice(part);
-    }
-    keccak256(encoded)
-}
-
 fn settlement_status_for_request(
     claims: &PaymentGuaranteeRequestClaims,
 ) -> GuaranteeSettlementStatus {
@@ -394,7 +368,7 @@ fn settlement_status_for_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::B256;
+    use alloy::primitives::{B256, U256};
     use rpc::{GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeValidationPolicyV2};
 
     fn v1_claims(req_id: u64) -> PaymentGuaranteeRequestClaims {
@@ -428,29 +402,6 @@ mod tests {
                 required_validation_tag: "hard-finality".to_string(),
             },
         }))
-    }
-
-    #[test]
-    fn cycle_claim_id_is_stable_and_cycle_scoped() {
-        let first = cycle_claim_id("0x0000000000000000000000000000000000000000:1777248000");
-        let second = cycle_claim_id("0x0000000000000000000000000000000000000000:1777248000");
-        let other = cycle_claim_id("0x0000000000000000000000000000000000000000:1777334400");
-
-        assert_eq!(first, second);
-        assert_ne!(first, U256::ZERO);
-        assert_ne!(first, other);
-    }
-
-    #[test]
-    fn guarantee_id_is_stable_and_microtransaction_scoped() {
-        let cycle_id = "0x0000000000000000000000000000000000000000:1777248000";
-        let first = guarantee_id_for(cycle_id, &v1_claims(1));
-        let second = guarantee_id_for(cycle_id, &v1_claims(1));
-        let other = guarantee_id_for(cycle_id, &v1_claims(2));
-
-        assert_eq!(first, second);
-        assert_ne!(first, other);
-        assert!(first.starts_with("0x"));
     }
 
     #[test]

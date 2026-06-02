@@ -12,7 +12,7 @@ use core_service::http;
 use core_service::metrics::setup_metrics_recorder;
 use core_service::persist::{PersistCtx, repo};
 use core_service::service::CoreService;
-use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
+use core_service::{evm::guarantee::verify_guarantee_request_signature, util::u256_to_string};
 use crypto::bls::BlsPublicKey;
 use entities::guarantee as guarantee_entity;
 use metrics_exporter_prometheus::PrometheusHandle;
