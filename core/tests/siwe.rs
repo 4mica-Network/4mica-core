@@ -3,7 +3,7 @@ use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::anyhow;
-use core_service::auth::siwe::verify_siwe_message;
+use core_service::evm::siwe::verify_siwe_message;
 use test_log::test;
 
 mod common;

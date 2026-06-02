@@ -2,6 +2,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod ethereum;
+pub mod evm;
 pub mod http;
 pub mod metrics;
 pub mod persist;

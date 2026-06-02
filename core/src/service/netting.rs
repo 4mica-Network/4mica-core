@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::Utc;
 use crypto::merkle::MerkleTree;
@@ -13,9 +12,36 @@ use sea_orm::TransactionTrait;
 
 use crate::{
     error::{ServiceError, ServiceResult},
+    evm::{self, clearing::hash_participant_leaf},
     persist::repo,
     service::CoreService,
 };
+
+/// The clearing role encoded into a leaf, matching the ClearingHouse contract's
+/// numbering.
+#[derive(Debug, Clone, Copy)]
+pub enum ClearingParticipantRole {
+    NetDebtor = 0,
+    NetCreditor = 1,
+}
+
+/// A participant's net position within a cycle, paired with its Merkle leaf.
+///
+/// A single participant can appear as both a debtor and a creditor across
+/// different positions, so each [`ParticipantLeaf`] captures one side.
+#[derive(Debug, Clone)]
+pub struct ParticipantLeaf {
+    pub participant: Address,
+    pub asset_address: Address,
+    pub role: ParticipantCycleRole,
+    /// The net amount for this side (the net debit for debtors, net credit for
+    /// creditors).
+    pub amount: U256,
+    pub net_debit: U256,
+    pub net_credit: U256,
+    /// The keccak256 leaf committed to the clearing batch Merkle tree.
+    pub leaf: B256,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClearingParticipantProof {
@@ -30,6 +56,65 @@ pub struct ClearingParticipantProof {
     pub leaf: B256,
     pub merkle_root: B256,
     pub proof: Vec<B256>,
+}
+
+/// Build the clearing leaves for a cycle from its stored participant positions.
+///
+/// A position contributes a debtor leaf when it has a positive net debit and a
+/// creditor leaf when it has a positive net credit; flat positions contribute
+/// nothing.
+pub fn participant_leaves_for_positions(
+    chain_id: u64,
+    clearing_house_address: Address,
+    cycle_id: &str,
+    positions: Vec<cycle_participant_position::Model>,
+) -> ServiceResult<Vec<ParticipantLeaf>> {
+    let mut leaves = Vec::new();
+    for position in positions {
+        let asset_address = evm::parse_optional_address("cycle asset", &position.asset_address)?;
+        let participant = evm::parse_optional_address("cycle participant", &position.participant)?;
+        let net_debit = evm::parse_u256("cycle net debit", &position.net_debit)?;
+        let net_credit = evm::parse_u256("cycle net credit", &position.net_credit)?;
+        if net_debit > U256::ZERO {
+            leaves.push(ParticipantLeaf {
+                participant,
+                asset_address,
+                role: ParticipantCycleRole::NetDebtor,
+                amount: net_debit,
+                net_debit,
+                net_credit,
+                leaf: hash_participant_leaf(
+                    chain_id,
+                    clearing_house_address,
+                    cycle_id,
+                    asset_address,
+                    participant,
+                    net_debit,
+                    ClearingParticipantRole::NetDebtor,
+                ),
+            });
+        }
+        if net_credit > U256::ZERO {
+            leaves.push(ParticipantLeaf {
+                participant,
+                asset_address,
+                role: ParticipantCycleRole::NetCreditor,
+                amount: net_credit,
+                net_debit,
+                net_credit,
+                leaf: hash_participant_leaf(
+                    chain_id,
+                    clearing_house_address,
+                    cycle_id,
+                    asset_address,
+                    participant,
+                    net_credit,
+                    ClearingParticipantRole::NetCreditor,
+                ),
+            });
+        }
+    }
+    Ok(leaves)
 }
 
 impl CoreService {
@@ -47,7 +132,7 @@ impl CoreService {
         let mut gross_total = U256::ZERO;
 
         for guarantee in guarantees {
-            let amount = parse_amount(&guarantee.value)?;
+            let amount = evm::parse_u256("cycle settlement amount", &guarantee.value)?;
             gross_total = gross_total
                 .checked_add(amount)
                 .ok_or_else(|| ServiceError::Other(anyhow!("cycle gross amount overflow")))?;
@@ -113,7 +198,8 @@ impl CoreService {
         let mut totals = BTreeMap::<ParticipantAssetKey, ParticipantTotals>::new();
 
         for edge in edges {
-            let amount = parse_amount(&edge.finalized_payable_amount)?;
+            let amount =
+                evm::parse_u256("cycle settlement amount", &edge.finalized_payable_amount)?;
             let payer_key = ParticipantAssetKey {
                 participant: edge.payer,
                 asset_address: edge.asset_address.clone(),
@@ -215,7 +301,7 @@ impl CoreService {
         let mut debtor_count = 0i64;
         let mut creditor_count = 0i64;
         let chain_id = self.inner.public_params.chain_id;
-        let clearing_house_address = parse_configured_address(
+        let clearing_house_address = evm::parse_optional_address(
             "ETHEREUM_CLEARING_HOUSE_ADDRESS",
             &self.inner.config.ethereum_config.clearing_house_address,
         )?;
@@ -255,15 +341,15 @@ impl CoreService {
 
         let merkle_root =
             MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf)).root();
-        let batch_hash = settlement_hash([
+        let batch_hash = evm::bytes32_hex(evm::length_prefixed_keccak(&[
             cycle.id.as_bytes(),
             cycle.asset_address.as_bytes(),
             total_net_debit.to_string().as_bytes(),
             total_net_credit.to_string().as_bytes(),
             merkle_root.as_slice(),
-            b"batch",
-        ]);
-        let merkle_root = crypto::hex::encode_hex(merkle_root.as_slice());
+            b"batch".as_slice(),
+        ]));
+        let merkle_root = evm::bytes32_hex(merkle_root);
 
         repo::create_clearing_batch_on(
             self.inner.persist_ctx.db.as_ref(),
@@ -300,10 +386,10 @@ impl CoreService {
                     ))
                 })?;
 
-        let participant_address = parse_configured_address("cycle participant", participant)?;
-        let stored_root = parse_bytes32("clearing batch Merkle root", &batch.merkle_root)?;
+        let participant_address = evm::parse_optional_address("cycle participant", participant)?;
+        let stored_root = evm::parse_bytes32("clearing batch Merkle root", &batch.merkle_root)?;
         let chain_id = self.inner.public_params.chain_id;
-        let clearing_house_address = parse_configured_address(
+        let clearing_house_address = evm::parse_optional_address(
             "ETHEREUM_CLEARING_HOUSE_ADDRESS",
             &self.inner.config.ethereum_config.clearing_house_address,
         )?;
@@ -341,7 +427,7 @@ impl CoreService {
         })?;
 
         Ok(ClearingParticipantProof {
-            cycle_id: clearing_cycle_id(&cycle.id),
+            cycle_id: evm::cycle_id_hash(&cycle.id),
             cycle_id_text: cycle.id,
             asset_address: target.asset_address,
             participant: target.participant,
@@ -398,27 +484,6 @@ impl CoreService {
     }
 }
 
-fn parse_amount(raw: &str) -> ServiceResult<U256> {
-    U256::from_str(raw).map_err(|err| {
-        ServiceError::InvalidParams(format!("invalid cycle settlement amount '{raw}': {err}"))
-    })
-}
-
-fn parse_configured_address(label: &str, raw: &str) -> ServiceResult<Address> {
-    let value = raw.trim();
-    if value.is_empty() {
-        return Ok(Address::ZERO);
-    }
-    Address::from_str(value).map_err(|err| {
-        ServiceError::InvalidParams(format!("invalid {label} address '{raw}': {err}"))
-    })
-}
-
-fn parse_bytes32(label: &str, raw: &str) -> ServiceResult<B256> {
-    B256::from_str(raw.trim())
-        .map_err(|err| ServiceError::InvalidParams(format!("invalid {label} '{raw}': {err}")))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ExposureEdgeKey {
     payer: String,
@@ -445,209 +510,14 @@ struct ParticipantTotals {
     gross_incoming: U256,
 }
 
-#[derive(Debug, Clone)]
-struct ParticipantLeaf {
-    participant: Address,
-    asset_address: Address,
-    role: ParticipantCycleRole,
-    amount: U256,
-    net_debit: U256,
-    net_credit: U256,
-    leaf: B256,
-}
-
-fn participant_leaves_for_positions(
-    chain_id: u64,
-    clearing_house_address: Address,
-    cycle_id: &str,
-    positions: Vec<cycle_participant_position::Model>,
-) -> ServiceResult<Vec<ParticipantLeaf>> {
-    let mut leaves = Vec::new();
-    for position in positions {
-        let asset_address = parse_configured_address("cycle asset", &position.asset_address)?;
-        let participant = parse_configured_address("cycle participant", &position.participant)?;
-        let net_debit = parse_amount(&position.net_debit)?;
-        let net_credit = parse_amount(&position.net_credit)?;
-        if net_debit > U256::ZERO {
-            leaves.push(ParticipantLeaf {
-                participant,
-                asset_address,
-                role: ParticipantCycleRole::NetDebtor,
-                amount: net_debit,
-                net_debit,
-                net_credit,
-                leaf: participant_leaf(
-                    chain_id,
-                    clearing_house_address,
-                    cycle_id,
-                    asset_address,
-                    participant,
-                    net_debit,
-                    ClearingParticipantRole::NetDebtor,
-                ),
-            });
-        }
-        if net_credit > U256::ZERO {
-            leaves.push(ParticipantLeaf {
-                participant,
-                asset_address,
-                role: ParticipantCycleRole::NetCreditor,
-                amount: net_credit,
-                net_debit,
-                net_credit,
-                leaf: participant_leaf(
-                    chain_id,
-                    clearing_house_address,
-                    cycle_id,
-                    asset_address,
-                    participant,
-                    net_credit,
-                    ClearingParticipantRole::NetCreditor,
-                ),
-            });
-        }
-    }
-    Ok(leaves)
-}
-
-fn settlement_hash<const N: usize>(parts: [&[u8]; N]) -> String {
-    crypto::hex::encode_hex(settlement_digest(parts).as_slice())
-}
-
-fn settlement_digest<const N: usize>(parts: [&[u8]; N]) -> B256 {
-    let mut encoded = Vec::new();
-    for part in parts {
-        encoded.extend_from_slice(&(part.len() as u64).to_be_bytes());
-        encoded.extend_from_slice(part);
-    }
-    keccak256(encoded)
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ClearingParticipantRole {
-    NetDebtor = 0,
-    NetCreditor = 1,
-}
-
-fn participant_leaf(
-    chain_id: u64,
-    clearing_house_address: Address,
-    cycle_id: &str,
-    asset_address: Address,
-    participant: Address,
-    amount: U256,
-    role: ClearingParticipantRole,
-) -> B256 {
-    let cycle_id = clearing_cycle_id(cycle_id);
-    let mut encoded = Vec::with_capacity(0xe0);
-    encoded.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
-    encoded.extend_from_slice(&address_word(clearing_house_address));
-    encoded.extend_from_slice(cycle_id.as_slice());
-    encoded.extend_from_slice(&address_word(asset_address));
-    encoded.extend_from_slice(&address_word(participant));
-    encoded.extend_from_slice(&amount.to_be_bytes::<32>());
-    encoded.extend_from_slice(&U256::from(role as u8).to_be_bytes::<32>());
-    keccak256(encoded)
-}
-
-fn clearing_cycle_id(cycle_id: &str) -> B256 {
-    keccak256(cycle_id.as_bytes())
-}
-
-fn address_word(address: Address) -> [u8; 32] {
-    let mut word = [0u8; 32];
-    word[12..].copy_from_slice(address.as_slice());
-    word
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_sol_types::SolValue;
-    use chrono::Utc;
-    use crypto::merkle::verify_proof;
-
-    #[test]
-    fn participant_leaf_matches_clearing_house_solidity_encoding() {
-        let chain_id = 84532u64;
-        let clearing_house =
-            Address::from_str("0x1111111111111111111111111111111111111111").unwrap();
-        let asset = Address::from_str("0x2222222222222222222222222222222222222222").unwrap();
-        let participant = Address::from_str("0x3333333333333333333333333333333333333333").unwrap();
-        let amount = U256::from(123_456_789u64);
-
-        let actual = participant_leaf(
-            chain_id,
-            clearing_house,
-            "base-sepolia:2026-04-30T00",
-            asset,
-            participant,
-            amount,
-            ClearingParticipantRole::NetDebtor,
-        );
-
-        let expected = keccak256(
-            (
-                U256::from(chain_id),
-                clearing_house,
-                clearing_cycle_id("base-sepolia:2026-04-30T00"),
-                asset,
-                participant,
-                amount,
-                U256::ZERO,
-            )
-                .abi_encode(),
-        );
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn merkle_proof_matches_openzeppelin_sorted_pair_verification() {
-        let chain_id = 84532u64;
-        let clearing_house =
-            Address::from_str("0x1111111111111111111111111111111111111111").unwrap();
-        let asset = Address::from_str("0x2222222222222222222222222222222222222222").unwrap();
-        let debtor = Address::from_str("0x3333333333333333333333333333333333333333").unwrap();
-        let creditor = Address::from_str("0x4444444444444444444444444444444444444444").unwrap();
-        let other_debtor = Address::from_str("0x5555555555555555555555555555555555555555").unwrap();
-
-        let debtor_leaf = participant_leaf(
-            chain_id,
-            clearing_house,
-            "cycle",
-            asset,
-            debtor,
-            U256::from(10),
-            ClearingParticipantRole::NetDebtor,
-        );
-        let creditor_leaf = participant_leaf(
-            chain_id,
-            clearing_house,
-            "cycle",
-            asset,
-            creditor,
-            U256::from(10),
-            ClearingParticipantRole::NetCreditor,
-        );
-        let other_debtor_leaf = participant_leaf(
-            chain_id,
-            clearing_house,
-            "cycle",
-            asset,
-            other_debtor,
-            U256::from(3),
-            ClearingParticipantRole::NetDebtor,
-        );
-
-        let tree = MerkleTree::from_leaves([debtor_leaf, creditor_leaf, other_debtor_leaf]);
-        let proof = tree.proof(debtor_leaf).unwrap();
-
-        assert!(verify_proof(&proof, tree.root(), debtor_leaf));
-    }
+    use crypto::merkle::{MerkleTree, verify_proof};
 
     #[test]
     fn participant_leaves_build_contract_verifiable_proof_payload() {
+        use std::str::FromStr;
         let chain_id = 84532u64;
         let clearing_house =
             Address::from_str("0x1111111111111111111111111111111111111111").unwrap();

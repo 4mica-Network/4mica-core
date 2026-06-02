@@ -1,6 +1,4 @@
-use std::str::FromStr;
-
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, B256};
 use anyhow::anyhow;
 use chrono::{NaiveDateTime, Utc};
 use entities::sea_orm_active_enums::{
@@ -12,6 +10,7 @@ use sea_orm::TransactionTrait;
 use crate::{
     error::{ServiceError, ServiceResult},
     ethereum::ClearingCommitInput,
+    evm,
     persist::repo,
     service::CoreService,
 };
@@ -37,7 +36,7 @@ impl CoreService {
                         "settlement cycle {cycle_id} has no clearing batch"
                     ))
                 })?;
-        let _clearing_house_address = parse_address(
+        let _clearing_house_address = evm::parse_address(
             "ETHEREUM_CLEARING_HOUSE_ADDRESS",
             &self.inner.config.ethereum_config.clearing_house_address,
         )
@@ -53,22 +52,22 @@ impl CoreService {
         })?;
 
         let input = ClearingCommitInput {
-            cycle_id: clearing_cycle_id(&cycle.id),
-            asset: parse_address("cycle asset", &batch.asset_address)?,
-            merkle_root: parse_bytes32("clearing batch Merkle root", &batch.merkle_root)?,
-            total_net_debit: parse_amount(
+            cycle_id: evm::cycle_id_hash(&cycle.id),
+            asset: evm::parse_address("cycle asset", &batch.asset_address)?,
+            merkle_root: evm::parse_bytes32("clearing batch Merkle root", &batch.merkle_root)?,
+            total_net_debit: evm::parse_u256(
                 "clearing batch total net debit",
                 &batch.total_net_debit,
             )?,
-            total_net_credit: parse_amount(
+            total_net_credit: evm::parse_u256(
                 "clearing batch total net credit",
                 &batch.total_net_credit,
             )?,
-            payment_submission_deadline: timestamp_u64(
+            payment_submission_deadline: crate::util::timestamp_to_u64(
                 "payment submission deadline",
                 cycle.payment_submission_deadline,
             )?,
-            payment_finality_deadline: timestamp_u64(
+            payment_finality_deadline: crate::util::timestamp_to_u64(
                 "payment finality deadline",
                 cycle.payment_finality_deadline,
             )?,
@@ -339,7 +338,7 @@ impl CoreService {
             repo::list_cycles_for_onchain_resolution_on(self.inner.persist_ctx.db.as_ref()).await?;
         Ok(cycles
             .into_iter()
-            .find(|cycle| clearing_cycle_id(&cycle.id) == onchain_cycle_id)
+            .find(|cycle| evm::cycle_id_hash(&cycle.id) == onchain_cycle_id)
             .map(|cycle| cycle.id))
     }
 }
@@ -377,30 +376,4 @@ fn map_transaction_error(err: sea_orm::TransactionError<ServiceError>) -> Servic
             crate::error::PersistDbError::DatabaseFailure(err).into()
         }
     }
-}
-
-fn clearing_cycle_id(cycle_id: &str) -> B256 {
-    keccak256(cycle_id.as_bytes())
-}
-
-fn parse_address(label: &str, raw: &str) -> ServiceResult<Address> {
-    Address::from_str(raw.trim()).map_err(|err| {
-        ServiceError::InvalidParams(format!("invalid {label} address '{raw}': {err}"))
-    })
-}
-
-fn parse_bytes32(label: &str, raw: &str) -> ServiceResult<B256> {
-    B256::from_str(raw.trim())
-        .map_err(|err| ServiceError::InvalidParams(format!("invalid {label} '{raw}': {err}")))
-}
-
-fn parse_amount(label: &str, raw: &str) -> ServiceResult<U256> {
-    U256::from_str(raw.trim())
-        .map_err(|err| ServiceError::InvalidParams(format!("invalid {label} '{raw}': {err}")))
-}
-
-fn timestamp_u64(label: &str, value: NaiveDateTime) -> ServiceResult<u64> {
-    let timestamp = value.and_utc().timestamp();
-    u64::try_from(timestamp)
-        .map_err(|_| ServiceError::InvalidParams(format!("{label} is before unix epoch")))
 }
