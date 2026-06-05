@@ -179,7 +179,7 @@ impl EthereumEventHandler for CoreService {
             cycleId, debtor, ..
         } = *log.log_decode()?.data();
         let tx_hash = tx_hash_from_log(&log)?;
-        self.process_paid_debtor(cycleId, &debtor.to_string(), &tx_hash)
+        self.process_paid_debtor(cycleId, &format!("{debtor:#x}"), &tx_hash)
             .await
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
@@ -190,7 +190,7 @@ impl EthereumEventHandler for CoreService {
             cycleId, creditor, ..
         } = *log.log_decode()?.data();
         let tx_hash = tx_hash_from_log(&log)?;
-        self.process_credit_claim(cycleId, &creditor.to_string(), &tx_hash)
+        self.process_credit_claim(cycleId, &format!("{creditor:#x}"), &tx_hash)
             .await
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
@@ -200,7 +200,7 @@ impl EthereumEventHandler for CoreService {
         let DebtorDefaulted {
             cycleId, debtor, ..
         } = *log.log_decode()?.data();
-        self.process_defaulted_debtor(cycleId, &debtor.to_string())
+        self.process_defaulted_debtor(cycleId, &format!("{debtor:#x}"))
             .await
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
@@ -210,7 +210,7 @@ impl EthereumEventHandler for CoreService {
         let DefaultCovered {
             cycleId, debtor, ..
         } = *log.log_decode()?.data();
-        self.process_default_covered(cycleId, &debtor.to_string())
+        self.process_default_covered(cycleId, &format!("{debtor:#x}"))
             .await
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
