@@ -1,5 +1,5 @@
 use entities::sea_orm_active_enums;
-use sea_orm::entity::prelude::DeriveIden;
+use sea_orm::entity::prelude::{DeriveActiveEnum, DeriveIden, EnumIter};
 use sea_orm_migration::prelude::extension::postgres::Type;
 use sea_orm_migration::sea_orm::ActiveEnum;
 use sea_orm_migration::{prelude::*, sea_orm::Schema};
@@ -7,6 +7,30 @@ use sea_query::Alias;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "settlement_status")]
+pub enum SettlementStatus {
+    #[sea_orm(string_value = "PENDING")]
+    Pending,
+    #[sea_orm(string_value = "SETTLED")]
+    Settled,
+    #[sea_orm(string_value = "FAILED")]
+    Failed,
+    #[sea_orm(string_value = "REMUNERATED")]
+    Remunerated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "tab_status")]
+pub enum TabStatus {
+    #[sea_orm(string_value = "PENDING")]
+    Pending,
+    #[sea_orm(string_value = "OPEN")]
+    Open,
+    #[sea_orm(string_value = "CLOSED")]
+    Closed,
+}
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
@@ -25,16 +49,14 @@ impl MigrationTrait for Migration {
             return Err(err);
         }
         if let Err(err) = manager
-            .create_type(
-                schema.create_enum_from_active_enum::<sea_orm_active_enums::SettlementStatus>(),
-            )
+            .create_type(schema.create_enum_from_active_enum::<SettlementStatus>())
             .await
             && !is_duplicate_type_error(&err)
         {
             return Err(err);
         }
         if let Err(err) = manager
-            .create_type(schema.create_enum_from_active_enum::<sea_orm_active_enums::TabStatus>())
+            .create_type(schema.create_enum_from_active_enum::<TabStatus>())
             .await
             && !is_duplicate_type_error(&err)
         {
@@ -94,16 +116,12 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Tabs::StartTs).timestamp().not_null())
                     .col(
                         ColumnDef::new(Tabs::Status)
-                            .custom(Alias::new(
-                                sea_orm_active_enums::TabStatus::name().to_string(),
-                            ))
+                            .custom(Alias::new(TabStatus::name().to_string()))
                             .not_null(),
                     )
                     .col(
                         ColumnDef::new(Tabs::SettlementStatus)
-                            .custom(Alias::new(
-                                sea_orm_active_enums::SettlementStatus::name().to_string(),
-                            ))
+                            .custom(Alias::new(SettlementStatus::name().to_string()))
                             .not_null(),
                     )
                     .col(ColumnDef::new(Tabs::Ttl).big_integer().not_null())

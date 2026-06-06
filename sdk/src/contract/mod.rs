@@ -93,12 +93,6 @@ sol! {
             uint256 amount;
         }
 
-        struct PaymentStatus {
-            uint256 paid;
-            bool remunerated;
-            address asset;
-        }
-
         struct UserAssetInfo {
             address asset;
             uint256 collateral;
@@ -156,19 +150,6 @@ sol! {
         function finalizeWithdrawal() external;
         function finalizeWithdrawal(address asset) external;
 
-        function payTabInERC20Token(
-            uint256 tab_id,
-            address asset,
-            uint256 amount,
-            address recipient
-        ) external;
-
-        /// Remunerate a recipient based on a signed guarantee
-        function remunerate(
-            bytes calldata guaranteeData,
-            G2Point calldata signature
-        ) external;
-
         // ========= Admin / Manager =========
         function setRemunerationGracePeriod(uint256 _gracePeriod) external;
         function setWithdrawalGracePeriod(uint256 _gracePeriod) external;
@@ -190,18 +171,11 @@ sol! {
                 address decoder,
                 bool enabled
             );
-        function recordPayment(uint256 tabId, address asset, uint256 amount) external;
-
         // ========= Views =========
         function getUserAllAssets(address userAddr)
             external
             view
             returns (UserAssetInfo[] memory);
-
-        function getPaymentStatus(uint256 tabId)
-            external
-            view
-            returns (uint256 paid, bool remunerated, address asset);
 
         function getERC20Tokens() external view returns (address[] memory);
 
@@ -251,5 +225,14 @@ sol! {
         function approve(address spender, uint256 amount) external returns (bool);
         function transfer(address to, uint256 amount) external returns (bool);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    }
+}
+
+sol! {
+    #[sol(rpc)]
+    contract ClearingHouse {
+        function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable;
+        function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
+        function markDefaulted(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof) external;
     }
 }

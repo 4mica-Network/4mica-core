@@ -1,609 +1,97 @@
-use alloy::primitives::{B256, U256};
-use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use chrono::{Duration, Utc};
-use core_service::{
-    auth::{
-        access::AccessContext,
-        constants::{SCOPE_TAB_CREATE, SCOPE_TAB_READ},
-    },
-    config::{AppConfig, DEFAULT_ASSET_ADDRESS, DEFAULT_TTL_SECS},
-    ethereum::{CoreContractApi, GuaranteeVersionConfig, RecordPaymentTx},
-    persist::{PersistCtx, repo},
-    service::{CoreService, CoreServiceDeps},
-    util::u256_to_string,
-};
-use entities::sea_orm_active_enums::{SettlementStatus, TabStatus};
-use entities::tabs;
-use migration::{Migrator, MigratorTrait};
-use rand::random;
-use rpc::CreatePaymentTabRequest;
-use sea_orm::{EntityTrait, Set};
-use std::{panic, sync::Arc, sync::Once};
+use entities::sea_orm_active_enums::SettlementCycleStatus;
 
-const DEFAULT_TAB_EXPIRATION_TIME: u64 = DEFAULT_TTL_SECS + 60;
-const DEFAULT_ROLE: &str = "user";
-const FACILITATOR_ROLE: &str = "facilitator";
-static TEST_ENV: Once = Once::new();
+#[path = "common/mod.rs"]
+mod common;
 
-fn load_test_env() {
-    TEST_ENV.call_once(|| {
-        dotenv::dotenv().ok();
-        dotenv::from_filename("../.env").ok();
-    });
-}
-
-fn recipient_auth(recipient: &str) -> AccessContext {
-    AccessContext {
-        wallet_address: recipient.to_string(),
-        role: DEFAULT_ROLE.to_string(),
-        scopes: vec![SCOPE_TAB_CREATE.to_string()],
-    }
-}
-
-fn facilitator_auth(facilitator: &str) -> AccessContext {
-    AccessContext {
-        wallet_address: facilitator.to_string(),
-        role: FACILITATOR_ROLE.to_string(),
-        scopes: vec![SCOPE_TAB_CREATE.to_string(), SCOPE_TAB_READ.to_string()],
-    }
-}
-
-fn build_read_provider() -> anyhow::Result<DynProvider> {
-    let provider_res = panic::catch_unwind(|| {
-        ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| anvil.port(40106u16))
-    });
-
-    let provider = match provider_res {
-        Ok(Ok(p)) => p,
-        Ok(Err(err)) => return Err(anyhow::Error::from(err)),
-        Err(_) => return Err(anyhow::anyhow!("failed to start anvil provider (panic)")),
-    };
-
-    Ok(provider.erased())
-}
-
-async fn build_core_service(
-    persist_ctx: PersistCtx,
-    tab_expiration_time: u64,
-) -> anyhow::Result<CoreService> {
-    build_core_service_with_guarantee_versions(persist_ctx, tab_expiration_time, &[1]).await
-}
-
-async fn build_core_service_with_guarantee_versions(
-    persist_ctx: PersistCtx,
-    tab_expiration_time: u64,
-    accepted_versions: &[u64],
-) -> anyhow::Result<CoreService> {
-    dotenv::dotenv().ok();
-    dotenv::from_filename("../.env").ok();
-    let mut config = AppConfig::fetch()?;
-    let max_accepted_version = accepted_versions
-        .iter()
-        .copied()
-        .max()
-        .ok_or_else(|| anyhow::anyhow!("accepted_versions must not be empty"))?;
-    config.guarantee.max_accepted_version = max_accepted_version;
-    config.guarantee.accepted_request_versions = accepted_versions
-        .iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    if accepted_versions.iter().any(|version| *version >= 2) {
-        config.guarantee.trusted_validation_registries =
-            "0x1111111111111111111111111111111111111111".to_string();
-    } else {
-        config.guarantee.trusted_validation_registries.clear();
-    }
-    let read_provider = build_read_provider()?;
-    let chain_id = read_provider.get_chain_id().await?;
-
-    let contract_api: Arc<dyn CoreContractApi> = Arc::new(MockContractApi {
-        chain_id,
-        domain: [0u8; 32],
-        tab_expiration_time,
-    });
-
-    CoreService::new_with_dependencies(
-        config,
-        CoreServiceDeps {
-            persist_ctx,
-            contract_api,
-            chain_id,
-            read_provider,
-            guarantee_domains: accepted_versions
-                .iter()
-                .copied()
-                .map(|version| (version, [0u8; 32]))
-                .collect(),
-            tab_expiration_time,
-        },
-    )
-}
-
-async fn seed_user(ctx: &PersistCtx, addr: &str) {
-    use core_service::persist::repo::users::ensure_user_exists_on;
-
-    ensure_user_exists_on(ctx.db.as_ref(), addr)
-        .await
-        .expect("seed user");
-}
+use common::cycle_fixtures::setup_cycle_service;
+use core_service::{config::DEFAULT_ASSET_ADDRESS, persist::repo};
 
 #[tokio::test]
-#[serial_test::file_serial]
-async fn returns_existing_pending_tab_when_active() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
-        .await
-        .expect("core service");
+#[serial_test::file_serial(db)]
+async fn active_cycle_creation_reuses_open_cycle_for_same_asset() -> anyhow::Result<()> {
+    let service = setup_cycle_service().await?;
+    let now = Utc::now();
 
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
-    let auth = recipient_auth(&recipient);
-    let first = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user.clone(),
-                recipient_address: recipient.clone(),
-                erc20_token: None,
-                ttl: Some(600),
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect("first tab");
-
-    // Second request with a different TTL should still reuse the active pending tab.
-    let second = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user.clone(),
-                recipient_address: recipient.clone(),
-                erc20_token: None,
-                ttl: Some(1200),
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect("second tab");
+    let first = service
+        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, now)
+        .await?;
+    let second = service
+        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, now + Duration::minutes(1))
+        .await?;
 
     assert_eq!(first.id, second.id);
-    assert_eq!(first.next_req_id, U256::ZERO);
-    assert_eq!(second.next_req_id, U256::from(1u8));
+    assert_eq!(first.status, SettlementCycleStatus::Open);
 
-    // TTL should remain what the first tab was created with.
-    let stored = repo::get_tab_by_id(&ctx, first.id)
-        .await
-        .expect("tab fetch")
-        .expect("tab present");
-    assert_eq!(stored.ttl, 600);
-    assert_eq!(stored.status, TabStatus::Pending);
-    assert_eq!(stored.settlement_status, SettlementStatus::Pending);
-    assert_eq!(stored.last_req_id, "0x1");
+    Ok(())
 }
 
 #[tokio::test]
-#[serial_test::file_serial]
-async fn closes_expired_pending_tab_and_creates_new_one() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
-        .await
-        .expect("core service");
-
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
-    let auth = recipient_auth(&recipient);
-
-    // Manually seed an expired pending tab.
-    let expired_id = U256::from(random::<u128>());
-    let expired_ttl = 60i64;
-    let expired_start = (Utc::now() - Duration::seconds(expired_ttl + 5)).naive_utc();
-    let expired_tab = tabs::ActiveModel {
-        id: Set(u256_to_string(expired_id)),
-        user_address: Set(user.clone()),
-        server_address: Set(recipient.clone()),
-        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        start_ts: Set(expired_start),
-        ttl: Set(expired_ttl),
-        status: Set(TabStatus::Pending),
-        settlement_status: Set(SettlementStatus::Pending),
-        total_amount: Set("0".to_string()),
-        paid_amount: Set("0".to_string()),
-        last_req_id: Set("0x0".to_string()),
-        accepted_guarantee_version: Set(Some(1)),
-        version: Set(1),
-        created_at: Set(expired_start),
-        updated_at: Set(expired_start),
-    };
-    tabs::Entity::insert(expired_tab)
-        .exec(ctx.db.as_ref())
-        .await
-        .expect("seed expired tab");
-
-    let created = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user,
-                recipient_address: recipient,
-                erc20_token: None,
-                ttl: Some(300),
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect("tab created after closing expired");
-
-    assert_ne!(created.id, expired_id);
-    assert_eq!(created.next_req_id, U256::ZERO);
-
-    let fetched = repo::get_tab_by_id(&ctx, expired_id)
-        .await
-        .expect("tab fetch")
-        .expect("tab present");
-    assert_eq!(fetched.ttl, expired_ttl);
-    assert_eq!(fetched.status, TabStatus::Closed);
-}
-
-#[tokio::test]
-#[serial_test::file_serial]
-async fn returns_existing_open_tab_when_active() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
-        .await
-        .expect("core service");
-
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
-    let auth = recipient_auth(&recipient);
-
-    let open_id = U256::from(random::<u128>());
-    let open_ttl = 600i64;
-    let open_start = (Utc::now() - Duration::seconds(30)).naive_utc();
-    let open_tab = tabs::ActiveModel {
-        id: Set(u256_to_string(open_id)),
-        user_address: Set(user.clone()),
-        server_address: Set(recipient.clone()),
-        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        start_ts: Set(open_start),
-        ttl: Set(open_ttl),
-        status: Set(TabStatus::Open),
-        settlement_status: Set(SettlementStatus::Pending),
-        total_amount: Set("0".to_string()),
-        paid_amount: Set("0".to_string()),
-        last_req_id: Set("0x0".to_string()),
-        accepted_guarantee_version: Set(Some(1)),
-        version: Set(1),
-        created_at: Set(open_start),
-        updated_at: Set(open_start),
-    };
-    tabs::Entity::insert(open_tab)
-        .exec(ctx.db.as_ref())
-        .await
-        .expect("seed open tab");
-
-    let reused = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user,
-                recipient_address: recipient,
-                erc20_token: None,
-                ttl: Some(1200),
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect("open tab reused");
-
-    assert_eq!(reused.id, open_id);
-    assert_eq!(reused.next_req_id, U256::from(1u8));
-
-    let fetched = repo::get_tab_by_id(&ctx, reused.id)
-        .await
-        .expect("tab fetch")
-        .expect("tab present");
-    assert_eq!(fetched.status, TabStatus::Open);
-    assert_eq!(fetched.ttl, open_ttl);
-    assert_eq!(fetched.last_req_id, "0x1");
-}
-
-#[tokio::test]
-#[serial_test::file_serial]
-async fn creates_distinct_active_tabs_per_guarantee_version() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    let core_service = build_core_service_with_guarantee_versions(
-        ctx.clone(),
-        DEFAULT_TAB_EXPIRATION_TIME,
-        &[1, 2],
+#[serial_test::file_serial(db)]
+async fn elapsed_open_cycle_is_frozen_before_new_cycle_is_created() -> anyhow::Result<()> {
+    let service = setup_cycle_service().await?;
+    let ctx = service.persist_ctx();
+    let now = Utc::now().naive_utc();
+    let old_id = "elapsed-open-cycle";
+    repo::create_settlement_cycle_on(
+        ctx.db.as_ref(),
+        repo::CreateSettlementCycleInput {
+            id: old_id.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            period_start: now - Duration::hours(3),
+            period_end: now - Duration::hours(2),
+            resolution_cutoff: now - Duration::hours(1),
+            clearing_commit_deadline: now - Duration::minutes(30),
+            payment_submission_deadline: now + Duration::hours(1),
+            payment_finality_deadline: now + Duration::hours(2),
+        },
     )
-    .await
-    .expect("core service");
+    .await?;
 
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
-    let auth = recipient_auth(&recipient);
+    let frozen = service.freeze_elapsed_cycles().await?;
+    let old_after = repo::get_cycle_by_id(ctx, old_id)
+        .await?
+        .expect("old cycle");
 
-    let v1 = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user.clone(),
-                recipient_address: recipient.clone(),
-                erc20_token: None,
-                ttl: Some(600),
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect("v1 tab");
+    assert_eq!(frozen, vec![old_id.to_string()]);
+    assert_eq!(old_after.status, SettlementCycleStatus::Frozen);
 
-    let v2 = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user.clone(),
-                recipient_address: recipient.clone(),
-                erc20_token: None,
-                ttl: Some(600),
-                guarantee_version: 2,
-            },
-        )
-        .await
-        .expect("v2 tab");
-
-    assert_ne!(v1.id, v2.id);
-
-    let v1_stored = repo::get_tab_by_id(&ctx, v1.id)
-        .await
-        .expect("v1 tab fetch")
-        .expect("v1 tab present");
-    let v2_stored = repo::get_tab_by_id(&ctx, v2.id)
-        .await
-        .expect("v2 tab fetch")
-        .expect("v2 tab present");
-
-    assert_eq!(v1_stored.accepted_guarantee_version, Some(1));
-    assert_eq!(v2_stored.accepted_guarantee_version, Some(2));
+    Ok(())
 }
 
 #[tokio::test]
-#[serial_test::file_serial]
-async fn unique_index_rejects_duplicate_active_tab_identity() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    Migrator::up(ctx.db.as_ref(), None)
-        .await
-        .expect("apply latest migrations");
+#[serial_test::file_serial(db)]
+async fn freeze_elapsed_cycles_is_idempotent() -> anyhow::Result<()> {
+    let service = setup_cycle_service().await?;
+    let ctx = service.persist_ctx();
+    let now = Utc::now().naive_utc();
+    let cycle_id = "idempotent-freeze-cycle";
+    repo::create_settlement_cycle_on(
+        ctx.db.as_ref(),
+        repo::CreateSettlementCycleInput {
+            id: cycle_id.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            period_start: now - Duration::hours(3),
+            period_end: now - Duration::hours(2),
+            resolution_cutoff: now - Duration::hours(1),
+            clearing_commit_deadline: now - Duration::minutes(30),
+            payment_submission_deadline: now + Duration::hours(1),
+            payment_finality_deadline: now + Duration::hours(2),
+        },
+    )
+    .await?;
 
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
+    let first = service.freeze_elapsed_cycles().await?;
+    let second = service.freeze_elapsed_cycles().await?;
 
-    let start = Utc::now().naive_utc();
-    let first = tabs::ActiveModel {
-        id: Set(u256_to_string(U256::from(random::<u128>()))),
-        user_address: Set(user.clone()),
-        server_address: Set(recipient.clone()),
-        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        start_ts: Set(start),
-        ttl: Set(600),
-        status: Set(TabStatus::Pending),
-        settlement_status: Set(SettlementStatus::Pending),
-        total_amount: Set("0".to_string()),
-        paid_amount: Set("0".to_string()),
-        last_req_id: Set("0x0".to_string()),
-        accepted_guarantee_version: Set(Some(1)),
-        version: Set(1),
-        created_at: Set(start),
-        updated_at: Set(start),
-    };
-    tabs::Entity::insert(first)
-        .exec(ctx.db.as_ref())
-        .await
-        .expect("seed first active tab");
-
-    let duplicate = tabs::ActiveModel {
-        id: Set(u256_to_string(U256::from(random::<u128>()))),
-        user_address: Set(user),
-        server_address: Set(recipient),
-        asset_address: Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        start_ts: Set(start),
-        ttl: Set(600),
-        status: Set(TabStatus::Open),
-        settlement_status: Set(SettlementStatus::Pending),
-        total_amount: Set("0".to_string()),
-        paid_amount: Set("0".to_string()),
-        last_req_id: Set("0x0".to_string()),
-        accepted_guarantee_version: Set(Some(1)),
-        version: Set(1),
-        created_at: Set(start),
-        updated_at: Set(start),
-    };
-    let err = tabs::Entity::insert(duplicate)
-        .exec(ctx.db.as_ref())
-        .await
-        .expect_err("duplicate active tab should violate unique index");
-
-    assert_eq!(
-        repo::common::constraint_name(&err).as_deref(),
-        Some("uniq_active_tab_identity")
+    assert!(
+        first.contains(&cycle_id.to_string()),
+        "first run must freeze the elapsed cycle"
     );
-}
+    assert!(
+        second.is_empty(),
+        "second run must be a no-op — cycle is already frozen"
+    );
 
-#[tokio::test]
-#[serial_test::file_serial]
-async fn uses_default_ttl_when_not_provided() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    let core_service = build_core_service(ctx.clone(), DEFAULT_TAB_EXPIRATION_TIME)
-        .await
-        .expect("core service");
-
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
-    let auth = recipient_auth(&recipient);
-
-    let tab = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user.clone(),
-                recipient_address: recipient.clone(),
-                erc20_token: None,
-                ttl: None,
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect("tab with default ttl");
-
-    assert_eq!(tab.next_req_id, U256::ZERO);
-
-    let stored = repo::get_tab_by_id(&ctx, tab.id)
-        .await
-        .expect("tab fetch")
-        .expect("tab present");
-    assert_eq!(stored.ttl, DEFAULT_TTL_SECS as i64);
-    assert_eq!(stored.user_address, user);
-    assert_eq!(stored.server_address, recipient);
-    assert_eq!(stored.last_req_id, "0x0");
-}
-
-#[tokio::test]
-#[serial_test::file_serial]
-async fn rejects_ttl_exceeding_tab_expiration() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    let core_service = build_core_service(ctx.clone(), 300)
-        .await
-        .expect("core service");
-
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
-    let auth = recipient_auth(&recipient);
-
-    let err = core_service
-        .create_payment_tab(
-            &auth,
-            CreatePaymentTabRequest {
-                user_address: user,
-                recipient_address: recipient,
-                erc20_token: None,
-                ttl: Some(600),
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect_err("ttl should exceed tab expiration");
-
-    assert!(matches!(
-        err,
-        core_service::error::ServiceError::InvalidParams(msg)
-            if msg.contains("tab expiration time")
-    ));
-}
-
-#[tokio::test]
-#[serial_test::file_serial]
-async fn facilitator_can_create_tab_for_recipient() {
-    load_test_env();
-    let ctx = PersistCtx::new().await.expect("persist ctx");
-    let core_service = build_core_service(ctx.clone(), 300)
-        .await
-        .expect("core service");
-
-    let user = format!("0x{:040x}", rand::random::<u128>());
-    let recipient = format!("0x{:040x}", rand::random::<u128>());
-    let facilitator = format!("0x{:040x}", rand::random::<u128>());
-
-    seed_user(&ctx, &user).await;
-    seed_user(&ctx, &recipient).await;
-
-    let facilitator_auth = facilitator_auth(&facilitator);
-
-    let tab = core_service
-        .create_payment_tab(
-            &facilitator_auth,
-            CreatePaymentTabRequest {
-                user_address: user.clone(),
-                recipient_address: recipient.clone(),
-                erc20_token: None,
-                ttl: Some(300),
-                guarantee_version: 1,
-            },
-        )
-        .await
-        .expect("tab created");
-
-    assert_eq!(tab.user_address, user);
-    assert_eq!(tab.recipient_address, recipient);
-    assert_eq!(tab.next_req_id, U256::ZERO);
-}
-struct MockContractApi {
-    chain_id: u64,
-    domain: [u8; 32],
-    tab_expiration_time: u64,
-}
-
-#[async_trait::async_trait]
-impl CoreContractApi for MockContractApi {
-    async fn get_chain_id(&self) -> Result<u64, core_service::error::CoreContractApiError> {
-        Ok(self.chain_id)
-    }
-
-    async fn get_guarantee_version_config(
-        &self,
-        version: u64,
-    ) -> Result<GuaranteeVersionConfig, core_service::error::CoreContractApiError> {
-        Ok(GuaranteeVersionConfig {
-            version,
-            domain_separator: self.domain,
-            decoder: alloy::primitives::Address::ZERO,
-            enabled: true,
-        })
-    }
-
-    async fn get_tab_expiration_time(
-        &self,
-    ) -> Result<u64, core_service::error::CoreContractApiError> {
-        Ok(self.tab_expiration_time)
-    }
-
-    async fn record_payment(
-        &self,
-        _tab_id: U256,
-        _asset: alloy::primitives::Address,
-        _amount: U256,
-    ) -> Result<RecordPaymentTx, core_service::error::CoreContractApiError> {
-        Ok(RecordPaymentTx {
-            tx_hash: B256::ZERO,
-            block_number: None,
-            block_hash: None,
-        })
-    }
-
-    async fn get_supported_tokens(
-        &self,
-    ) -> Result<Vec<rpc::SupportedTokenInfo>, core_service::error::CoreContractApiError> {
-        Ok(vec![])
-    }
+    Ok(())
 }

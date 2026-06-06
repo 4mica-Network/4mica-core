@@ -217,7 +217,10 @@ contract Core4MicaAaveForkTest is Test {
         _assertScaledReconciliationWithinTolerance(asset);
     }
 
-    function testFork_RemunerationWithdrawalAndTreasuryClaim_ReconcileWithinDustTolerance() public onlyIfForkConfigured {
+    function testFork_RemunerationWithdrawalAndTreasuryClaim_ReconcileWithinDustTolerance()
+        public
+        onlyIfForkConfigured
+    {
         address asset = stablecoins[0];
         uint256 depositAmount = _largeDepositAmount(asset);
         uint256 remuneratedAmount = depositAmount / 4;
@@ -289,8 +292,8 @@ contract Core4MicaAaveForkTest is Test {
 
     function _assertScaledReconciliationWithinTolerance(address asset) internal view {
         uint256 observed = core4Mica.contractScaledATokenBalance(asset);
-        uint256 tracked =
-            core4Mica.totalUserScaledBalance(asset) + core4Mica.protocolScaledBalance(asset) + core4Mica.surplusScaledBalance(asset);
+        uint256 tracked = core4Mica.totalUserScaledBalance(asset) + core4Mica.protocolScaledBalance(asset)
+            + core4Mica.surplusScaledBalance(asset);
         uint256 tolerance = core4Mica.reconciliationDustToleranceScaled();
         uint256 gap = observed >= tracked ? observed - tracked : tracked - observed;
         assertLe(gap, tolerance, "scaled reconciliation drift exceeded tolerance");

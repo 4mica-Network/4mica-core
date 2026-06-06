@@ -12,7 +12,6 @@ use sea_orm::{
 use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::collateral::unlock_user_collateral_on;
 use super::common::{now, parse_address};
 use super::users::ensure_user_exists_on;
 use crate::metrics::misc::record_db_time;
@@ -37,7 +36,6 @@ pub async fn submit_payment_transaction(
         recipient_address: Set(recipient_address),
         asset_address: Set(asset_address),
         amount: Set(amount.to_string()),
-        tab_id: Set(None),
         block_number: Set(None),
         block_hash: Set(None),
         record_tx_hash: Set(None),
@@ -72,7 +70,6 @@ pub struct PendingPaymentInput {
     pub asset_address: String,
     pub transaction_id: String,
     pub amount: U256,
-    pub tab_id: String,
     pub block_number: u64,
     pub block_hash: Option<String>,
 }
@@ -93,7 +90,6 @@ pub async fn submit_pending_payment_transaction(
         recipient_address: Set(pending.recipient_address),
         asset_address: Set(pending.asset_address),
         amount: Set(pending.amount.to_string()),
-        tab_id: Set(Some(pending.tab_id)),
         block_number: Set(Some(pending.block_number as i64)),
         block_hash: Set(pending.block_hash),
         record_tx_hash: Set(None),
@@ -268,35 +264,6 @@ pub async fn finalize_recorded_payment_transaction(
                 if claim.rows_affected == 0 {
                     return Ok(false);
                 }
-
-                let tx_row = user_transaction::Entity::find_by_id(&tx_id)
-                    .one(txn)
-                    .await?
-                    .ok_or_else(|| PersistDbError::TransactionNotFound(tx_id.clone()))?;
-
-                let tab_id_str = tx_row.tab_id.clone().ok_or_else(|| {
-                    PersistDbError::InvariantViolation(format!(
-                        "recorded tx {} missing tab_id",
-                        tx_row.tx_id
-                    ))
-                })?;
-                let tab_id = U256::from_str(&tab_id_str).map_err(|e| {
-                    PersistDbError::InvariantViolation(format!(
-                        "invalid tab_id {} for tx {}: {e}",
-                        tab_id_str, tx_row.tx_id
-                    ))
-                })?;
-                let amount = U256::from_str(&tx_row.amount)
-                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
-
-                unlock_user_collateral_on(
-                    txn,
-                    tab_id,
-                    tx_row.asset_address.clone(),
-                    amount,
-                    Some(tx_row.tx_id.clone()),
-                )
-                .await?;
 
                 let updated = user_transaction::Entity::update_many()
                     .filter(user_transaction::Column::TxId.eq(&tx_id))

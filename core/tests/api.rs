@@ -5,33 +5,35 @@ use alloy::{
     sol_types::{SolStruct, eip712_domain, sol},
 };
 use alloy_sol_types::SolValue;
-use chrono::{Duration, Utc};
-use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE, SCOPE_TAB_READ};
+use chrono::Utc;
+use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_PAYMENT_READ};
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS};
+use core_service::http;
+use core_service::metrics::setup_metrics_recorder;
 use core_service::persist::{PersistCtx, repo};
-use core_service::{auth::verify_guarantee_request_signature, util::u256_to_string};
+use core_service::service::CoreService;
+use core_service::{evm::guarantee::verify_guarantee_request_signature, util::u256_to_string};
 use crypto::bls::BlsPublicKey;
-use entities::collateral_event;
 use entities::guarantee as guarantee_entity;
-use entities::sea_orm_active_enums::CollateralEventType;
+use metrics_exporter_prometheus::PrometheusHandle;
 use rand::random;
 use rpc::{
-    ApiClientError, CorePublicParameters, CreatePaymentTabRequest, PaymentGuaranteeClaims,
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
+    ApiClientError, CorePublicParameters, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
+    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
     PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2, RpcProxy, SigningScheme,
-    TabInfo, UpdateUserSuspensionRequest, compute_validation_request_hash,
-    compute_validation_subject_hash,
+    UpdateUserSuspensionRequest, compute_validation_request_hash, compute_validation_subject_hash,
 };
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::Deserialize;
 use std::str::FromStr;
-use uuid::Uuid;
+use std::sync::OnceLock;
+use tokio::net::TcpListener;
 
 #[path = "common/mod.rs"]
 mod common;
 use common::fixtures::{
     clear_all_tables, ensure_user_with_collateral, init_test_env, random_address,
-    set_locked_collateral,
+    read_locked_collateral,
 };
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
 const ADMIN_WALLET_ROLE: &str = "admin";
@@ -79,10 +81,40 @@ fn core_base_url(config: &AppConfig) -> String {
     )
 }
 
+fn test_metrics_recorder(config: &AppConfig) -> anyhow::Result<PrometheusHandle> {
+    static METRICS: OnceLock<PrometheusHandle> = OnceLock::new();
+    if let Some(handle) = METRICS.get() {
+        return Ok(handle.clone());
+    }
+
+    let handle = setup_metrics_recorder(config)?;
+    let _ = METRICS.set(handle.clone());
+    Ok(handle)
+}
+
+async fn spawn_test_api(config: &mut AppConfig) -> anyhow::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let local_addr = listener.local_addr()?;
+    config.server_config.host = local_addr.ip().to_string();
+    config.server_config.port = local_addr.port().to_string();
+
+    let service = CoreService::new(config.clone()).await?;
+    let metrics = test_metrics_recorder(config)?;
+    let app = http::router(service, metrics);
+    tokio::spawn(async move {
+        if let Err(err) = axum::serve(listener, app).await {
+            log::error!("test api server exited: {err}");
+        }
+    });
+
+    Ok(())
+}
+
 async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx, AuthSession)> {
-    let (config, ctx) = init_test_env().await?;
-    let core_addr = core_base_url(&config);
+    let (mut config, ctx) = init_test_env().await?;
     clear_all_tables(&ctx).await?;
+    spawn_test_api(&mut config).await?;
+    let core_addr = core_base_url(&config);
 
     let recipient_signer = PrivateKeySigner::random();
     let auth = login_with_siwe(
@@ -90,7 +122,7 @@ async fn setup_clean_db() -> anyhow::Result<(AppConfig, RpcProxy, PersistCtx, Au
         &ctx,
         &recipient_signer,
         ADMIN_WALLET_ROLE,
-        &[SCOPE_TAB_CREATE, SCOPE_TAB_READ, SCOPE_GUARANTEE_ISSUE],
+        &[SCOPE_PAYMENT_READ, SCOPE_GUARANTEE_ISSUE],
     )
     .await?;
     let core_client = RpcProxy::new(&core_addr)?.with_bearer_token(auth.access_token.clone());
@@ -102,7 +134,6 @@ sol! {
     struct SolGuaranteeRequestClaimsV1 {
         address user;
         address recipient;
-        uint256  tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -217,7 +248,7 @@ async fn build_signed_req(
     public_params: &CorePublicParameters,
     user_addr: &str,
     recipient_addr: &str,
-    tab_id: U256,
+    _tab_id: U256,
     req_id: U256,
     amount: U256,
     wallet: &alloy::signers::local::PrivateKeySigner,
@@ -233,7 +264,6 @@ async fn build_signed_req(
         let validation_subject_hash = compute_validation_subject_hash(
             user_addr,
             recipient_addr,
-            tab_id,
             req_id,
             amount,
             asset_address,
@@ -267,7 +297,6 @@ async fn build_signed_req(
         let claims = PaymentGuaranteeRequestClaimsV2 {
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id,
             req_id,
             amount,
             timestamp: ts,
@@ -283,7 +312,6 @@ async fn build_signed_req(
         let msg = SolGuaranteeRequestClaimsV2 {
             user: Address::from_str(user_addr).unwrap(),
             recipient: Address::from_str(recipient_addr).unwrap(),
-            tabId: tab_id,
             reqId: req_id,
             amount,
             asset: Address::from_str(asset_address).unwrap(),
@@ -315,7 +343,6 @@ async fn build_signed_req(
     let msg = SolGuaranteeRequestClaimsV1 {
         user: Address::from_str(user_addr).unwrap(),
         recipient: Address::from_str(recipient_addr).unwrap(),
-        tabId: tab_id,
         reqId: req_id,
         amount,
         asset: Address::from_str(asset_address).unwrap(),
@@ -327,7 +354,6 @@ async fn build_signed_req(
         PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user_addr.to_string(),
             recipient_address: recipient_addr.to_string(),
-            tab_id,
             req_id,
             amount,
             timestamp: ts,
@@ -339,13 +365,13 @@ async fn build_signed_req(
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
     let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let base_addr = core_base_url(&config);
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
-    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
 
     let client = reqwest::Client::new();
@@ -393,13 +419,13 @@ async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
     let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let base_addr = core_base_url(&config);
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
-    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
 
     let client = reqwest::Client::new();
@@ -438,13 +464,13 @@ async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
     let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let base_addr = core_base_url(&config);
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
-    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
 
     let client = reqwest::Client::new();
@@ -496,50 +522,7 @@ async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn auth_scope_denial_rejects_tab_creation() -> anyhow::Result<()> {
-    let (config, _core_client, ctx, _auth) = setup_clean_db().await?;
-    let base_addr = core_base_url(&config);
-    let signer = PrivateKeySigner::random();
-    let recipient_address = signer.address().to_string();
-    let user_address = random_address();
-
-    let auth = login_with_siwe(
-        &base_addr,
-        &ctx,
-        &signer,
-        ADMIN_WALLET_ROLE,
-        &[SCOPE_TAB_READ],
-    )
-    .await?;
-    let client = RpcProxy::new(&base_addr)?.with_bearer_token(auth.access_token);
-
-    let err = client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address,
-            recipient_address,
-            erc20_token: None,
-            ttl: None,
-            guarantee_version: 1,
-        })
-        .await
-        .expect_err("missing scope should reject");
-    match err {
-        ApiClientError::Api { status, message } => {
-            assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
-            assert!(
-                message.contains("missing scope"),
-                "unexpected message: {message}"
-            );
-        }
-        other => anyhow::bail!("unexpected error: {other:?}"),
-    }
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Result<()> {
     let (_config, _core_client, ctx, _auth) = setup_clean_db().await?;
     let signer = PrivateKeySigner::random();
@@ -547,7 +530,10 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
     let presented_address = mixed_case_address(&stored_address);
 
     assert_eq!(stored_address, presented_address.to_ascii_lowercase());
-    let scopes = vec![SCOPE_TAB_CREATE.to_string(), SCOPE_TAB_READ.to_string()];
+    let scopes = vec![
+        SCOPE_PAYMENT_READ.to_string(),
+        SCOPE_GUARANTEE_ISSUE.to_string(),
+    ];
     repo::upsert_wallet_role(
         &ctx,
         &stored_address,
@@ -560,385 +546,16 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
         .await?
         .expect("wallet role should be retrievable by mixed-case address");
     assert_eq!(row.role, ADMIN_WALLET_ROLE);
-    assert_eq!(row.scopes, serde_json::json!(["tab:create", "tab:read"]));
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_pending_remunerations_clear_after_settlement() -> anyhow::Result<()> {
-    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(12u64)).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(900),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let params = core_client.get_public_params().await.unwrap();
-    let req = build_signed_req(
-        &params,
-        &user_addr,
-        &recipient_addr,
-        tab_id,
-        U256::ZERO,
-        U256::from(3u64),
-        &wallet,
-        None,
-        DEFAULT_ASSET_ADDRESS,
-    )
-    .await;
-    core_client
-        .issue_guarantee(req)
-        .await
-        .expect("issue guarantee");
-
-    let pending = core_client
-        .list_pending_remunerations(recipient_addr.clone())
-        .await
-        .expect("pending rems");
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].tab.tab_id, tab_id);
-
-    repo::remunerate_recipient(
-        &ctx,
-        tab_id,
-        DEFAULT_ASSET_ADDRESS.to_string(),
-        U256::from(3u64),
-    )
-    .await
-    .expect("remunerate");
-
-    let cleared = core_client
-        .list_pending_remunerations(recipient_addr)
-        .await
-        .expect("pending rems cleared");
-    assert!(cleared.is_empty());
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_get_tab_and_list_recipient_tabs() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let create_res = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
-    let tab_id = create_res.id;
-
-    let fetched = core_client
-        .get_tab(tab_id)
-        .await
-        .expect("get tab")
-        .expect("tab exists");
-    assert_eq!(fetched.user_address, user_addr);
-    assert_eq!(fetched.recipient_address, recipient_addr);
-    assert_eq!(fetched.status, "PENDING");
-    assert_eq!(fetched.settlement_status, "PENDING");
-
-    let all_tabs = core_client
-        .list_recipient_tabs(recipient_addr.clone(), None)
-        .await
-        .expect("list tabs");
-    assert!(all_tabs.iter().any(|t| t.tab_id == tab_id));
-
-    let settled_only = core_client
-        .list_recipient_tabs(recipient_addr, Some(vec!["settled".into()]))
-        .await
-        .expect("filter tabs");
-    assert!(settled_only.is_empty());
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_get_tab_returns_none_for_missing() -> anyhow::Result<()> {
-    let (_, core_client, _, _auth) = setup_clean_db().await?;
-
-    let missing = core_client
-        .get_tab(U256::from(999u64))
-        .await
-        .expect("get missing tab");
-    assert!(missing.is_none());
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_list_recipient_tabs_invalid_status_errors() -> anyhow::Result<()> {
-    let (_, core_client, _, auth) = setup_clean_db().await?;
-
-    let err = core_client
-        .list_recipient_tabs(auth.address.clone(), Some(vec!["unknown".into()]))
-        .await
-        .unwrap_err();
-    assert!(
-        err.to_string().contains("invalid settlement status"),
-        "unexpected error: {err}"
-    );
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_list_recipient_tabs_case_insensitive_filter() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(300),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let filtered = core_client
-        .list_recipient_tabs(
-            recipient_addr.clone(),
-            Some(vec!["pending".into(), "SETTLED".into()]),
-        )
-        .await
-        .expect("list tabs");
-    assert!(filtered.iter().any(|t| t.tab_id == tab_id));
-
-    let empty = core_client
-        .list_recipient_tabs(recipient_addr, Some(vec!["failed".into()]))
-        .await
-        .expect("list tabs failed");
-    assert!(empty.is_empty());
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_list_recipient_tabs_http_query_variants() -> anyhow::Result<()> {
-    let (config, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let base_addr = format!(
-        "http://{}:{}",
-        config.server_config.host, config.server_config.port
-    );
-    let access_token = auth.access_token.clone();
-    let http_client = reqwest::Client::new();
-
-    let single_url = format!(
-        "{base}/core/recipients/{recipient}/tabs?settlement_status=pending",
-        base = base_addr,
-        recipient = recipient_addr
-    );
-    let resp = http_client
-        .get(&single_url)
-        .bearer_auth(&access_token)
-        .send()
-        .await
-        .expect("single status request");
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
-    let tabs: Vec<TabInfo> = resp.json().await.expect("decode single response");
-    assert!(
-        tabs.iter().any(|tab| tab.tab_id == tab_id),
-        "expected tab_id {tab_id} in single-status response"
-    );
-
-    let multi_url = format!(
-        "{base}/core/recipients/{recipient}/tabs?settlement_status=pending&settlement_status=settled",
-        base = base_addr,
-        recipient = recipient_addr
-    );
-    let resp = http_client
-        .get(&multi_url)
-        .bearer_auth(&access_token)
-        .send()
-        .await
-        .expect("multi status request");
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
-    let tabs: Vec<TabInfo> = resp.json().await.expect("decode multi response");
-    assert!(
-        tabs.iter().any(|tab| tab.tab_id == tab_id),
-        "expected tab_id {tab_id} in multi-status response"
-    );
-
-    let invalid_url = format!(
-        "{base}/core/recipients/{recipient}/tabs?settlement_status=unknown",
-        base = base_addr,
-        recipient = recipient_addr
-    );
-    let resp = http_client
-        .get(&invalid_url)
-        .bearer_auth(&access_token)
-        .send()
-        .await
-        .expect("invalid status request");
-    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-    let err_json: serde_json::Value = resp.json().await.expect("decode invalid response");
-    assert!(
-        err_json["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("invalid settlement status"),
-        "unexpected error payload: {err_json:?}"
-    );
-
-    let bad_body = http_client
-        .post(format!("{base}/core/payment-tabs", base = base_addr))
-        .bearer_auth(access_token)
-        .json(&serde_json::json!({
-            "recipient_address": recipient_addr,
-            "ttl": 1200
-        }))
-        .send()
-        .await
-        .expect("send invalid body");
     assert_eq!(
-        bad_body.status(),
-        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 422 for malformed request body"
+        row.scopes,
+        serde_json::json!(["guarantee:issue", "payment:read"])
     );
 
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn create_tab_rejects_unregistered_user() -> anyhow::Result<()> {
-    let (_, core_client, _, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-
-    let tab_result = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: None,
-            guarantee_version: 1,
-        })
-        .await;
-    assert!(tab_result.is_err(), "must reject if user is not registered");
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_recipient_payments_and_events() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
-
-    let create_res = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(1200),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
-    let tab_id = create_res.id;
-
-    let tx_hash = format!("0x{:032x}", random::<u128>());
-    repo::submit_payment_transaction(
-        &ctx,
-        user_addr.clone(),
-        recipient_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
-        tx_hash,
-        U256::from(7u64),
-    )
-    .await
-    .expect("submit payment tx");
-
-    set_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS, U256::from(5u64))
-        .await
-        .expect("lock collateral before remuneration");
-
-    repo::remunerate_recipient(
-        &ctx,
-        tab_id,
-        DEFAULT_ASSET_ADDRESS.to_string(),
-        U256::from(5u64),
-    )
-    .await
-    .expect("remunerate tab");
-
-    let payments = core_client
-        .list_recipient_payments(recipient_addr.clone())
-        .await
-        .expect("list recipient payments");
-    assert_eq!(payments.len(), 1);
-    assert_eq!(payments[0].user_address, user_addr);
-
-    let events = core_client
-        .get_collateral_events_for_tab(tab_id)
-        .await
-        .expect("collateral events");
-    assert!(!events.is_empty());
-    assert_eq!(events[0].event_type, "REMUNERATE");
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn core_api_recipient_payments_flags() -> anyhow::Result<()> {
     let (_, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -977,7 +594,7 @@ async fn core_api_recipient_payments_flags() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn core_api_list_recipient_payments_empty() -> anyhow::Result<()> {
     let (_, core_client, _, auth) = setup_clean_db().await?;
 
@@ -990,117 +607,7 @@ async fn core_api_list_recipient_payments_empty() -> anyhow::Result<()> {
     Ok(())
 }
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_collateral_events_multiple_types() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(40u64)).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(1200),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let now = Utc::now().naive_utc();
-    let unlock_event = collateral_event::ActiveModel {
-        id: sea_orm::ActiveValue::Set(Uuid::new_v4().to_string()),
-        user_address: sea_orm::ActiveValue::Set(normalize_address(&user_addr)),
-        asset_address: sea_orm::ActiveValue::Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        amount: sea_orm::ActiveValue::Set(U256::from(5u64).to_string()),
-        event_type: sea_orm::ActiveValue::Set(CollateralEventType::Unlock),
-        tab_id: sea_orm::ActiveValue::Set(Some(u256_to_string(tab_id))),
-        req_id: sea_orm::ActiveValue::Set(None),
-        tx_id: sea_orm::ActiveValue::Set(None),
-        event_chain_id: sea_orm::ActiveValue::Set(None),
-        event_block_hash: sea_orm::ActiveValue::Set(None),
-        event_tx_hash: sea_orm::ActiveValue::Set(None),
-        event_log_index: sea_orm::ActiveValue::Set(None),
-        created_at: sea_orm::ActiveValue::Set(now - Duration::minutes(1)),
-    };
-    unlock_event
-        .insert(ctx.db.as_ref())
-        .await
-        .expect("insert unlock event");
-
-    let remunerate_event = collateral_event::ActiveModel {
-        id: sea_orm::ActiveValue::Set(Uuid::new_v4().to_string()),
-        user_address: sea_orm::ActiveValue::Set(normalize_address(&user_addr)),
-        asset_address: sea_orm::ActiveValue::Set(DEFAULT_ASSET_ADDRESS.to_string()),
-        amount: sea_orm::ActiveValue::Set(U256::from(10u64).to_string()),
-        event_type: sea_orm::ActiveValue::Set(CollateralEventType::Remunerate),
-        tab_id: sea_orm::ActiveValue::Set(Some(u256_to_string(tab_id))),
-        req_id: sea_orm::ActiveValue::Set(None),
-        tx_id: sea_orm::ActiveValue::Set(None),
-        event_chain_id: sea_orm::ActiveValue::Set(None),
-        event_block_hash: sea_orm::ActiveValue::Set(None),
-        event_tx_hash: sea_orm::ActiveValue::Set(None),
-        event_log_index: sea_orm::ActiveValue::Set(None),
-        created_at: sea_orm::ActiveValue::Set(now),
-    };
-    remunerate_event
-        .insert(ctx.db.as_ref())
-        .await
-        .expect("insert remunerate event");
-
-    let events = core_client
-        .get_collateral_events_for_tab(tab_id)
-        .await
-        .expect("events");
-    assert!(events.len() >= 2);
-    let mut seen = events
-        .iter()
-        .map(|e| e.event_type.as_str())
-        .collect::<Vec<_>>();
-    seen.sort();
-    assert!(seen.contains(&"REMUNERATE"));
-    assert!(seen.contains(&"UNLOCK"));
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_collateral_events_empty_for_tab_without_events() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr,
-            recipient_address: recipient_addr,
-            erc20_token: None,
-            ttl: Some(300),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let events = core_client
-        .get_collateral_events_for_tab(tab_id)
-        .await
-        .expect("events");
-    assert!(events.is_empty());
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
     let (_, core_client, ctx, _auth) = setup_clean_db().await?;
 
@@ -1132,217 +639,7 @@ async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_get_user_asset_balance_locked_amount() -> anyhow::Result<()> {
-    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(25u64)).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let params = core_client.get_public_params().await.unwrap();
-    let req = build_signed_req(
-        &params,
-        &user_addr,
-        &recipient_addr,
-        tab_id,
-        U256::ZERO,
-        U256::from(12u64),
-        &wallet,
-        None,
-        DEFAULT_ASSET_ADDRESS,
-    )
-    .await;
-    core_client
-        .issue_guarantee(req)
-        .await
-        .expect("issue guarantee");
-
-    let balance = core_client
-        .get_user_asset_balance(user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string())
-        .await
-        .expect("get balance")
-        .expect("balance exists");
-    assert_eq!(balance.total, U256::from(25u64));
-    assert_eq!(balance.locked, U256::from(12u64));
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn list_settled_tabs_returns_only_settled_entries() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    set_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS, U256::from(10u64))
-        .await
-        .expect("lock collateral before remuneration");
-
-    repo::remunerate_recipient(
-        &ctx,
-        tab_id,
-        DEFAULT_ASSET_ADDRESS.to_string(),
-        U256::from(10u64),
-    )
-    .await
-    .expect("remunerate tab");
-
-    let settled = core_client
-        .list_settled_tabs(recipient_addr.clone())
-        .await
-        .expect("list settled tabs");
-    assert!(settled.iter().any(|tab| tab.tab_id == tab_id));
-
-    let all_tabs = core_client
-        .list_recipient_tabs(recipient_addr, None)
-        .await
-        .expect("list tabs");
-    assert!(all_tabs.iter().any(|tab| tab.tab_id == tab_id));
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn list_settled_tabs_empty_when_none() -> anyhow::Result<()> {
-    let (_, core_client, _, auth) = setup_clean_db().await?;
-
-    let recipient_addr = auth.address.clone();
-    let settled = core_client
-        .list_settled_tabs(recipient_addr)
-        .await
-        .expect("list settled tabs");
-    assert!(settled.is_empty());
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn list_settled_tabs_ignores_pending_tabs() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let settled = core_client
-        .list_settled_tabs(recipient_addr.clone())
-        .await
-        .expect("list settled tabs");
-    assert!(settled.is_empty());
-
-    let all_tabs = core_client
-        .list_recipient_tabs(recipient_addr, None)
-        .await
-        .expect("list tabs");
-    assert!(all_tabs.iter().any(|tab| tab.tab_id == tab_id));
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn suspending_user_blocks_payment_tabs() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-
-    let status = core_client
-        .update_user_suspension(user_addr.clone(), true)
-        .await
-        .expect("suspend user");
-    assert!(status.suspended);
-
-    let err = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect_err("suspended user should not create tabs");
-    match err {
-        ApiClientError::Api { status, message } => {
-            assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
-            assert!(
-                message.contains("user suspended"),
-                "unexpected error message: {message}"
-            );
-        }
-        other => panic!("unexpected error: {:?}", other),
-    }
-
-    let status = core_client
-        .update_user_suspension(user_addr.clone(), false)
-        .await
-        .expect("unsuspend user");
-    assert!(!status.suspended);
-
-    core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr,
-            recipient_address: recipient_addr,
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab after unsuspending");
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn suspension_endpoint_accepts_admin_role() -> anyhow::Result<()> {
     let (config, _core_client, ctx, auth) = setup_clean_db().await?;
     let user_addr = random_address();
@@ -1389,11 +686,22 @@ async fn insert_user_with_asset_collateral(
     Ok(())
 }
 
+async fn list_cycle_guarantees_for_recipient(
+    ctx: &PersistCtx,
+    recipient_addr: &str,
+) -> anyhow::Result<Vec<guarantee_entity::Model>> {
+    let rows = guarantee_entity::Entity::find()
+        .filter(guarantee_entity::Column::ToAddress.eq(normalize_address(recipient_addr)))
+        .order_by_asc(guarantee_entity::Column::ReqId)
+        .all(ctx.db.as_ref())
+        .await?;
+    Ok(rows)
+}
+
 sol! {
     struct SolGuaranteeRequestClaimsV2 {
         address user;
         address recipient;
-        uint256 tabId;
         uint256 reqId;
         uint256 amount;
         address asset;
@@ -1438,7 +746,6 @@ async fn build_eip712_signed_request(
     let msg = SolGuaranteeRequestClaimsV1 {
         user: wallet.address(),
         recipient,
-        tabId: U256::from(0x7461622d6f6b32u128),
         reqId: U256::from(0u64),
         amount: U256::from(42u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
@@ -1452,7 +759,6 @@ async fn build_eip712_signed_request(
         PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: wallet.address().to_string(),
             recipient_address: recipient.to_string(),
-            tab_id: U256::from(0x7461622d6f6b32u128),
             req_id: U256::from(0u64),
             amount: U256::from(42u64),
             timestamp,
@@ -1470,7 +776,6 @@ fn sample_v2_claims(
     let user_address = wallet.address().to_string();
     let recipient_address = Address::from(random::<[u8; 20]>()).to_string();
     let asset_address = DEFAULT_ASSET_ADDRESS.to_string();
-    let tab_id = U256::from(0x7461622d7632u128);
     let req_id = U256::from(0u64);
     let amount = U256::from(42u64);
     let timestamp = Utc::now().timestamp() as u64;
@@ -1478,7 +783,6 @@ fn sample_v2_claims(
     let validation_subject_hash = compute_validation_subject_hash(
         &user_address,
         &recipient_address,
-        tab_id,
         req_id,
         amount,
         &asset_address,
@@ -1508,7 +812,6 @@ fn sample_v2_claims(
     PaymentGuaranteeRequestClaimsV2 {
         user_address,
         recipient_address,
-        tab_id,
         req_id,
         amount,
         asset_address,
@@ -1525,7 +828,6 @@ async fn build_eip712_signed_request_v2(
     let digest = SolGuaranteeRequestClaimsV2 {
         user: Address::from_str(&claims.user_address).expect("valid user"),
         recipient: Address::from_str(&claims.recipient_address).expect("valid recipient"),
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address).expect("valid asset"),
@@ -1562,7 +864,6 @@ async fn build_eip191_signed_request_v2(
     let data = SolGuaranteeRequestClaimsV2 {
         user: Address::from_str(&claims.user_address).expect("valid user"),
         recipient: Address::from_str(&claims.recipient_address).expect("valid recipient"),
-        tabId: claims.tab_id,
         reqId: claims.req_id,
         amount: claims.amount,
         asset: Address::from_str(&claims.asset_address).expect("valid asset"),
@@ -1590,7 +891,7 @@ async fn build_eip191_signed_request_v2(
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1601,23 +902,14 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
 
     let public_params = core_client.get_public_params().await.unwrap();
 
-    let tab = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: None,
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let start_ts = chrono::Utc::now().timestamp() as u64;
     let req0 = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab.id,
+        tab_id,
         U256::ZERO,
         U256::from(1u64),
         &wallet,
@@ -1631,7 +923,7 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab.id,
+        tab_id,
         U256::from(1u64),
         U256::from(2u64),
         &wallet,
@@ -1646,7 +938,7 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab.id,
+        tab_id,
         U256::from(1u64),
         U256::from(3u64),
         &wallet,
@@ -1657,19 +949,16 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
     let result = core_client.issue_guarantee(req_replay).await;
     assert!(result.is_err(), "must reject replayed req_id");
 
-    let guarantees = core_client
-        .get_tab_guarantees(tab.id)
-        .await
-        .expect("list guarantees");
+    let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 2);
-    assert_eq!(guarantees[0].req_id, U256::ZERO);
-    assert_eq!(guarantees[1].req_id, U256::from(1u64));
+    assert_eq!(guarantees[0].req_id, u256_to_string(U256::ZERO));
+    assert_eq!(guarantees[1].req_id, u256_to_string(U256::from(1u64)));
 
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn core_api_guarantee_queries() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1679,17 +968,7 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
 
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(900),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let public_params = core_client.get_public_params().await.unwrap();
     let req = build_signed_req(
@@ -1710,34 +989,19 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
         .await
         .expect("issue guarantee");
 
-    let guarantees = core_client
-        .get_tab_guarantees(tab_id)
-        .await
-        .expect("get tab guarantees");
+    let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 1);
     let guarantee = &guarantees[0];
-    assert_eq!(guarantee.tab_id, tab_id);
-    assert!(guarantee.certificate.is_some());
-
-    let latest = core_client
-        .get_latest_guarantee(tab_id)
-        .await
-        .expect("latest guarantee")
-        .expect("exists");
-    assert_eq!(latest.req_id, guarantee.req_id);
-
-    let specific = core_client
-        .get_guarantee(tab_id, guarantee.req_id)
-        .await
-        .expect("specific guarantee")
-        .expect("found");
-    assert_eq!(specific.amount, guarantee.amount);
+    assert_eq!(guarantee.req_id, u256_to_string(U256::ZERO));
+    assert_eq!(guarantee.value, U256::from(5u64).to_string());
+    assert!(!guarantee.cycle_id.is_empty());
+    assert!(!guarantee.guarantee_id.is_empty());
 
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1747,17 +1011,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
 
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(1200),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let public_params = core_client.get_public_params().await.unwrap();
     let shared_ts = Utc::now().timestamp() as u64;
@@ -1795,69 +1049,17 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
         .await
         .expect("issue second guarantee");
 
-    let guarantees = core_client
-        .get_tab_guarantees(tab_id)
-        .await
-        .expect("get guarantees");
+    let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 2);
-    assert_eq!(guarantees[0].req_id, U256::ZERO);
-    assert_eq!(guarantees[1].req_id, U256::from(1u64));
-
-    let latest = core_client
-        .get_latest_guarantee(tab_id)
-        .await
-        .expect("latest guarantee")
-        .expect("exists");
-    assert_eq!(latest.req_id, U256::from(1u64));
-    assert_eq!(latest.amount, U256::from(7u64));
+    assert_eq!(guarantees[0].req_id, u256_to_string(U256::ZERO));
+    assert_eq!(guarantees[1].req_id, u256_to_string(U256::from(1u64)));
+    assert_eq!(guarantees[1].value, U256::from(7u64).to_string());
 
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn core_api_guarantee_queries_empty_state() -> anyhow::Result<()> {
-    let (_, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let user_addr = random_address();
-    let recipient_addr = auth.address.clone();
-    common::fixtures::ensure_user(&ctx, &user_addr).await?;
-
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(300),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab")
-        .id;
-
-    let empty_guarantees = core_client
-        .get_tab_guarantees(tab_id)
-        .await
-        .expect("get empty guarantees");
-    assert!(empty_guarantees.is_empty());
-
-    let latest = core_client
-        .get_latest_guarantee(tab_id)
-        .await
-        .expect("latest empty");
-    assert!(latest.is_none());
-
-    let specific = core_client
-        .get_guarantee(tab_id, U256::ZERO)
-        .await
-        .expect("specific empty");
-    assert!(specific.is_none());
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -1867,17 +1069,7 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(100u64)).await?;
 
     let public_params = core_client.get_public_params().await.unwrap();
-    let tab = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(3600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
-    let tab_id = tab.id;
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let start_ts = chrono::Utc::now().timestamp() as u64;
 
@@ -1900,13 +1092,10 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         .await
         .expect("first guarantee ok");
 
-    // Decode first certificate and verify total_amount equals amount1
+    // Decode first certificate and verify cycle-native amount and cycle id.
     let claims1 = PaymentGuaranteeClaims::try_from(cert1.claims().as_bytes())?;
     assert_eq!(claims1.amount, amount1);
-    assert_eq!(
-        claims1.total_amount, amount1,
-        "First guarantee: total_amount should equal amount"
-    );
+    assert_ne!(claims1.cycle_id, U256::ZERO);
 
     // Issue second guarantee with amount = 27
     let amount2 = U256::from(27u64);
@@ -1927,14 +1116,10 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
         .await
         .expect("second guarantee ok");
 
-    // Decode second certificate and verify total_amount equals amount1 + amount2
+    // Decode second certificate and verify it belongs to the same active cycle.
     let claims2 = PaymentGuaranteeClaims::try_from(cert2.claims().as_bytes())?;
     assert_eq!(claims2.amount, amount2);
-    let expected_total = amount1.checked_add(amount2).unwrap();
-    assert_eq!(
-        claims2.total_amount, expected_total,
-        "Second guarantee: total_amount should equal sum of all amounts (15 + 27 = 42)"
-    );
+    assert_eq!(claims2.cycle_id, claims1.cycle_id);
 
     // Verify certificate is valid
     let pk = BlsPublicKey::from_bytes(&public_params.public_key)?;
@@ -1944,8 +1129,8 @@ async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
+#[serial_test::file_serial(db)]
+async fn issue_guarantee_does_not_require_tab() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -1968,124 +1153,19 @@ async fn issue_guarantee_rejects_when_tab_not_found() -> anyhow::Result<()> {
     )
     .await;
 
-    let result = core_client.issue_guarantee(req).await;
-    assert!(result.is_err(), "must reject when tab not found");
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn issue_guarantee_should_open_tab() -> anyhow::Result<()> {
-    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-
-    let tab_result = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: None,
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
-
-    let public_params = core_client.get_public_params().await.unwrap();
-    let req = build_signed_req(
-        &public_params,
-        &user_addr,
-        &recipient_addr,
-        tab_result.id,
-        U256::ZERO,
-        U256::ONE,
-        &wallet,
-        None,
-        DEFAULT_ASSET_ADDRESS,
-    )
-    .await;
-
-    core_client
+    let cert = core_client
         .issue_guarantee(req)
         .await
-        .expect("issue guarantee");
-
-    let tab = repo::get_tab_by_id(&ctx, tab_result.id)
-        .await
-        .expect("get tab")
-        .expect("tab exists");
-    assert_eq!(tab.status, entities::sea_orm_active_enums::TabStatus::Open);
+        .expect("cycle-native guarantee should not require a tab");
+    let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())?;
+    assert_eq!(claims.req_id, U256::ZERO);
+    assert_ne!(claims.cycle_id, U256::ZERO);
 
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn issue_guarantee_does_not_open_tab_on_insufficient_collateral() -> anyhow::Result<()> {
-    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
-
-    let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let user_addr = wallet.address().to_string();
-    let recipient_addr = auth.address.clone();
-    ensure_user_with_collateral(&ctx, &user_addr, U256::from(1u64)).await?;
-
-    let tab_result = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: None,
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
-
-    let public_params = core_client.get_public_params().await.unwrap();
-    let req = build_signed_req(
-        &public_params,
-        &user_addr,
-        &recipient_addr,
-        tab_result.id,
-        U256::ZERO,
-        U256::from(2u64),
-        &wallet,
-        None,
-        DEFAULT_ASSET_ADDRESS,
-    )
-    .await;
-
-    let result = core_client.issue_guarantee(req).await;
-    assert!(
-        result.is_err(),
-        "must reject when collateral is insufficient"
-    );
-
-    let tab = repo::get_tab_by_id(&ctx, tab_result.id)
-        .await
-        .expect("get tab")
-        .expect("tab exists");
-    assert_eq!(
-        tab.status,
-        entities::sea_orm_active_enums::TabStatus::Pending
-    );
-
-    let guarantees = repo::get_guarantees_for_tab(&ctx, tab_result.id)
-        .await
-        .expect("get guarantees");
-    assert!(
-        guarantees.is_empty(),
-        "must not store guarantees on failure"
-    );
-
-    Ok(())
-}
-
-#[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2095,23 +1175,14 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
     insert_user_with_asset_collateral(&ctx, &user_addr, STABLE_ASSET_ADDRESS, U256::from(5u64))
         .await?;
 
-    let tab = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: Some(STABLE_ASSET_ADDRESS.to_string()),
-            ttl: Some(3600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let public_params = core_client.get_public_params().await.unwrap();
     let req = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab.id,
+        tab_id,
         U256::ZERO,
         U256::from(1u64),
         &wallet,
@@ -2128,7 +1199,8 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
     assert!(cert.verify(&pk).is_ok());
 
     let stored = guarantee_entity::Entity::find()
-        .filter(guarantee_entity::Column::TabId.eq(u256_to_string(tab.id)))
+        .filter(guarantee_entity::Column::ToAddress.eq(normalize_address(&recipient_addr)))
+        .filter(guarantee_entity::Column::AssetAddress.eq(normalize_address(STABLE_ASSET_ADDRESS)))
         .one(&*ctx.db)
         .await
         .expect("query guarantee");
@@ -2139,7 +1211,7 @@ async fn issue_guarantee_accepts_stablecoin_asset() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2149,23 +1221,14 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
     insert_user_with_asset_collateral(&ctx, &user_addr, STABLE_ASSET_ADDRESS, U256::from(5u64))
         .await?;
 
-    let tab = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: Some(STABLE_ASSET_ADDRESS.to_string()),
-            ttl: Some(3600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let public_params = core_client.get_public_params().await.unwrap();
     let req = build_signed_req(
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab.id,
+        tab_id,
         U256::ZERO,
         U256::from(1u64),
         &wallet,
@@ -2181,8 +1244,8 @@ async fn issue_guarantee_rejects_mismatched_asset_address() -> anyhow::Result<()
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
-async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()> {
+#[serial_test::file_serial(db)]
+async fn issue_guarantee_uses_signed_user_without_tab_match() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
     let tab_user_addr = alloy::signers::local::PrivateKeySigner::random()
@@ -2191,16 +1254,7 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &tab_user_addr, U256::from(5u64)).await?;
 
-    let tab = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: tab_user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(3600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let other_wallet = alloy::signers::local::PrivateKeySigner::random();
     let other_user_addr = other_wallet.address().to_string();
@@ -2211,7 +1265,7 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
         &public_params,
         &other_user_addr,
         &recipient_addr,
-        tab.id,
+        tab_id,
         U256::ZERO,
         U256::from(1u64),
         &other_wallet,
@@ -2220,32 +1274,29 @@ async fn issue_guarantee_rejects_mismatched_user_address() -> anyhow::Result<()>
     )
     .await;
 
-    let result = core_client.issue_guarantee(req).await;
-    assert!(result.is_err(), "must reject mismatched user address");
+    let cert = core_client
+        .issue_guarantee(req)
+        .await
+        .expect("cycle-native issuance should not validate against tab user");
+    let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())?;
+    assert_eq!(
+        Address::from_str(&claims.user_address)?,
+        Address::from_str(&other_user_addr)?
+    );
 
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Result<()> {
-    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+    let (_config, core_client, ctx, _auth) = setup_clean_db().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
-    let tab_recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
-    let tab = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: tab_recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(3600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab");
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let forged_recipient_addr = random_address();
     let public_params = core_client.get_public_params().await.unwrap();
@@ -2253,7 +1304,7 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
         &public_params,
         &user_addr,
         &forged_recipient_addr,
-        tab.id,
+        tab_id,
         U256::ZERO,
         U256::from(1u64),
         &wallet,
@@ -2269,7 +1320,7 @@ async fn issue_guarantee_rejects_mismatched_recipient_address() -> anyhow::Resul
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
 
@@ -2278,39 +1329,7 @@ async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
     let recipient_addr = auth.address.clone();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(20u64)).await?;
 
-    let tab_a = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(3600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab first time");
-
-    let tab_b = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(3600),
-            guarantee_version: 1,
-        })
-        .await
-        .expect("create tab second time");
-
-    assert_eq!(tab_a.id, tab_b.id, "Should return same tab_id");
-    assert_eq!(
-        tab_a.next_req_id,
-        U256::ZERO,
-        "First call should return req_id 0"
-    );
-    assert_eq!(
-        tab_b.next_req_id,
-        U256::from(1u64),
-        "Second call should return req_id 1"
-    );
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let public_params = core_client.get_public_params().await.unwrap();
 
@@ -2318,8 +1337,8 @@ async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab_b.id,
-        tab_b.next_req_id,
+        tab_id,
+        U256::from(1u64),
         U256::from(5u64),
         &wallet,
         None,
@@ -2334,8 +1353,8 @@ async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
         &public_params,
         &user_addr,
         &recipient_addr,
-        tab_a.id,
-        tab_a.next_req_id,
+        tab_id,
+        U256::ZERO,
         U256::from(3u64),
         &wallet,
         None,
@@ -2353,7 +1372,7 @@ async fn issue_guarantee_accepts_out_of_order_req_ids() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2378,7 +1397,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2416,14 +1435,13 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
     use alloy::{primitives::keccak256, sol_types::sol};
     sol! {
         struct SolGuaranteeRequestClaimsV1 {
             address user;
             address recipient;
-            uint256  tabId;
             uint256 reqId;
             uint256 amount;
             address asset;
@@ -2450,12 +1468,9 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
     let user = wallet.address();
     let recipient = Address::from(rand::random::<[u8; 20]>());
     let timestamp = Utc::now().timestamp() as u64;
-    let tab_id = U256::from(0x7461622d7473u128);
-
     let msg = SolGuaranteeRequestClaimsV1 {
         user,
         recipient,
-        tabId: tab_id,
         reqId: U256::ZERO,
         amount: U256::from(1u64),
         asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
@@ -2472,7 +1487,6 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
             user_address: user.to_string(),
             recipient_address: recipient.to_string(),
-            tab_id,
             req_id: U256::ZERO,
             amount: U256::from(1u64),
             timestamp,
@@ -2488,7 +1502,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2519,7 +1533,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2542,7 +1556,7 @@ async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2565,7 +1579,7 @@ async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2595,7 +1609,7 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2625,7 +1639,7 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2655,7 +1669,7 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
@@ -2685,7 +1699,7 @@ async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyh
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> {
     let (config, core_client, ctx, _) = setup_clean_db().await?;
 
@@ -2700,20 +1714,11 @@ async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> 
         &ctx,
         &recipient_wallet,
         "recipient",
-        &[SCOPE_GUARANTEE_ISSUE, SCOPE_TAB_CREATE],
+        &[SCOPE_GUARANTEE_ISSUE],
     )
     .await?;
 
-    let tab_id = recipient_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await?
-        .id;
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let public_params = core_client.get_public_params().await?;
     let req = build_signed_req(
@@ -2753,7 +1758,7 @@ async fn suspending_recipient_blocks_guarantee_requests() -> anyhow::Result<()> 
 }
 
 #[test_log::test(tokio::test)]
-#[serial_test::file_serial]
+#[serial_test::file_serial(db)]
 async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_clean_db().await?;
     let recipient_addr = auth.address.clone();
@@ -2762,16 +1767,7 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
     let user_addr = user_wallet.address().to_string();
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
 
-    let tab_id = core_client
-        .create_payment_tab(CreatePaymentTabRequest {
-            user_address: user_addr.clone(),
-            recipient_address: recipient_addr.clone(),
-            erc20_token: None,
-            ttl: Some(600),
-            guarantee_version: 1,
-        })
-        .await?
-        .id;
+    let tab_id = U256::from_be_bytes(random::<[u8; 32]>());
 
     let public_params = core_client.get_public_params().await?;
     let req = build_signed_req(
@@ -2806,6 +1802,75 @@ async fn suspending_user_blocks_guarantee_requests() -> anyhow::Result<()> {
         }
         other => panic!("unexpected error: {:?}", other),
     }
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial(db)]
+async fn issued_guarantee_increases_locked_collateral() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = auth.address.clone();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
+
+    let locked_before = read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        U256::ZERO,
+        U256::ZERO,
+        U256::from(7u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+    core_client
+        .issue_guarantee(req)
+        .await
+        .expect("issue guarantee");
+
+    let locked_after = read_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
+    assert_eq!(locked_after - locked_before, U256::from(7u64));
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial(db)]
+async fn issue_guarantee_rejected_when_collateral_insufficient() -> anyhow::Result<()> {
+    let (_config, core_client, ctx, auth) = setup_clean_db().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = auth.address.clone();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(3u64)).await?;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+    let req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        U256::ZERO,
+        U256::ZERO,
+        U256::from(10u64),
+        &wallet,
+        None,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let result = core_client.issue_guarantee(req).await;
+    assert!(
+        result.is_err(),
+        "must reject guarantee that exceeds available collateral"
+    );
 
     Ok(())
 }

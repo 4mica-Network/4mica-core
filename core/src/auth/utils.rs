@@ -1,4 +1,4 @@
-use super::constants::{WALLET_STATUS_ACTIVE, WALLET_STATUS_ALLOWED};
+use super::constants::{SCOPE_PAYMENT_READ, SCOPE_TAB_READ_LEGACY, WALLET_STATUS_ACTIVE, WALLET_STATUS_ALLOWED};
 use crate::error::{ServiceError, ServiceResult};
 use alloy::primitives::Address;
 use anyhow::anyhow;
@@ -23,9 +23,25 @@ pub fn parse_rfc3339_date(label: &str, raw: &str) -> ServiceResult<DateTime<Utc>
         .map_err(|_| ServiceError::InvalidParams(format!("invalid {label} timestamp")))
 }
 
+/// Map legacy scope names to their current equivalents.
+///
+/// `tab:read` was renamed to `payment:read` when tabs were removed; existing
+/// wallet rows and unexpired tokens may still carry the old name.
+pub fn normalize_legacy_scope(scope: &str) -> &str {
+    if scope.trim().eq_ignore_ascii_case(SCOPE_TAB_READ_LEGACY) {
+        SCOPE_PAYMENT_READ
+    } else {
+        scope
+    }
+}
+
 pub fn parse_wallet_scopes(address: &str, value: serde_json::Value) -> ServiceResult<Vec<String>> {
-    serde_json::from_value(value)
-        .map_err(|e| ServiceError::Other(anyhow!("invalid scopes for wallet role {address}: {e}")))
+    let scopes: Vec<String> = serde_json::from_value(value)
+        .map_err(|e| ServiceError::Other(anyhow!("invalid scopes for wallet role {address}: {e}")))?;
+    Ok(scopes
+        .iter()
+        .map(|s| normalize_legacy_scope(s).to_string())
+        .collect())
 }
 
 pub fn parse_wallet_address(raw: &str) -> ServiceResult<Address> {
@@ -61,7 +77,7 @@ pub fn validate_wallet_status(status: &str) -> ServiceResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_wallet_address;
+    use super::{normalize_legacy_scope, normalize_wallet_address};
 
     #[test]
     fn normalize_wallet_address_returns_lowercase_hex() {
@@ -69,5 +85,14 @@ mod tests {
             .expect("valid address");
 
         assert_eq!(normalized, "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266");
+    }
+
+    #[test]
+    fn legacy_tab_read_scope_normalizes_to_payment_read() {
+        assert_eq!(normalize_legacy_scope("tab:read"), "payment:read");
+        assert_eq!(normalize_legacy_scope("TAB:READ"), "payment:read");
+        assert_eq!(normalize_legacy_scope("  tab:read  "), "payment:read");
+        assert_eq!(normalize_legacy_scope("payment:read"), "payment:read");
+        assert_eq!(normalize_legacy_scope("guarantee:issue"), "guarantee:issue");
     }
 }

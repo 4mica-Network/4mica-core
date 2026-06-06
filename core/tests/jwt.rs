@@ -40,7 +40,7 @@ fn access_token_expiry_is_enforced() -> Result<()> {
     let claims = AccessTokenClaims {
         sub: "0x0000000000000000000000000000000000000001".into(),
         role: "user".into(),
-        scopes: vec!["tab:read".into()],
+        scopes: vec!["payment:read".into()],
         iss: cfg.jwt_issuer.clone(),
         aud: cfg.jwt_audience.clone(),
         iat,

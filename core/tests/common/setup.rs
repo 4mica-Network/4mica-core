@@ -1,6 +1,10 @@
-use std::{net::TcpListener, sync::Arc};
+use std::{net::TcpListener, str::FromStr, sync::Arc};
 
-use alloy::providers::{DynProvider, Provider, ProviderBuilder, WalletProvider};
+use alloy::network::EthereumWallet;
+use alloy::node_bindings::{Anvil, AnvilInstance};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, FixedBytes, U256};
 use anyhow::Context;
 use core_service::{
@@ -8,16 +12,14 @@ use core_service::{
     ethereum::EthereumEventScanner,
     persist::PersistCtx,
     scheduler::TaskScheduler,
-    service::{
-        CoreService,
-        payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask},
-    },
+    service::CoreService,
 };
 use log::debug;
 
 use crate::common::{
     contract::{
         AccessManager::{self, AccessManagerInstance},
+        ClearingHouse::{self, ClearingHouseInstance},
         Core4Mica::{self, Core4MicaInstance},
         MockAToken, MockAavePool, MockAaveProtocolDataProvider,
         MockERC20::{self, MockERC20Instance},
@@ -26,11 +28,15 @@ use crate::common::{
     fixtures::{clear_all_tables, ensure_migrations},
 };
 
+pub const OPERATOR_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
 pub struct E2eEnvironment {
     pub cfg: AppConfig,
     pub provider: DynProvider,
+    _anvil: AnvilInstance,
     pub access_manager: AccessManagerInstance<DynProvider>,
     pub contract: Core4MicaInstance<DynProvider>,
+    pub clearing_house: ClearingHouseInstance<DynProvider>,
     pub usdc: MockERC20Instance<DynProvider>,
     pub usdt: MockERC20Instance<DynProvider>,
     pub core_service: CoreService,
@@ -52,6 +58,17 @@ pub fn dummy_verification_key() -> (
     )
 }
 
+/// Build an HTTP provider that signs as `key`, returning its address too.
+pub fn wallet_provider(http_url: &str, key: &str) -> anyhow::Result<(Address, DynProvider)> {
+    let signer = PrivateKeySigner::from_str(key)?;
+    let address = signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(signer))
+        .connect_http(http_url.parse()?)
+        .erased();
+    Ok((address, provider))
+}
+
 /// Reserve an unused TCP port for Anvil to bind to.
 fn allocate_anvil_port() -> anyhow::Result<u16> {
     let listener =
@@ -65,8 +82,7 @@ fn allocate_anvil_port() -> anyhow::Result<u16> {
 }
 
 fn init_config() -> AppConfig {
-    let operator_key =
-        String::from("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
+    let operator_key = String::from(OPERATOR_KEY);
     let eth_env_key = "ETHEREUM_PRIVATE_KEY";
 
     dotenv::dotenv().ok();
@@ -192,22 +208,61 @@ async fn deploy_contracts(
     Ok((contract, usdc, usdt, access_manager))
 }
 
+/// Deploy the ClearingHouse and grant the operator role to `operator` (the test
+/// signer, which is also the core service's transaction wallet) so it can commit
+/// cycles and settle defaults through the `restricted` entry points.
+async fn deploy_clearing_house(
+    provider: DynProvider,
+    access_manager: &AccessManagerInstance<DynProvider>,
+    operator: Address,
+) -> anyhow::Result<ClearingHouseInstance<DynProvider>> {
+    const OPERATOR_ROLE: u64 = 9;
+
+    let clearing_house = ClearingHouse::deploy(provider, *access_manager.address())
+        .await
+        .context("ClearingHouse::deploy")?;
+
+    let selectors = vec![
+        FixedBytes::<4>::from(ClearingHouse::commitCycleCall::SELECTOR),
+        FixedBytes::<4>::from(ClearingHouse::settleDefaultFromCollateralCall::SELECTOR),
+    ];
+    access_manager
+        .setTargetFunctionRole(*clearing_house.address(), selectors, OPERATOR_ROLE)
+        .send()
+        .await
+        .context("setTargetFunctionRole send")?
+        .watch()
+        .await
+        .context("setTargetFunctionRole confirm")?;
+    access_manager
+        .grantRole(OPERATOR_ROLE, operator, 0)
+        .send()
+        .await
+        .context("grantRole send")?
+        .watch()
+        .await
+        .context("grantRole confirm")?;
+
+    Ok(clearing_house)
+}
+
 pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     let mut cfg = init_config();
     force_local_e2e_guarantee_defaults(&mut cfg);
     let anvil_port = allocate_anvil_port()?;
 
-    let provider = ProviderBuilder::new()
-        .connect_anvil_with_wallet_and_config(|anvil| anvil.port(anvil_port))?;
-    let signer_addr = provider.default_signer_address();
-    let provider = provider.erased();
+    let anvil = Anvil::new().port(anvil_port).spawn();
+    let (op_addr, op_provider) = wallet_provider(anvil.endpoint_url().as_str(), OPERATOR_KEY)?;
 
     let (contract, usdc, usdt, access_manager) =
-        deploy_contracts(provider.clone(), signer_addr).await?;
+        deploy_contracts(op_provider.clone(), op_addr).await?;
+    let clearing_house =
+        deploy_clearing_house(op_provider.clone(), &access_manager, op_addr).await?;
 
     cfg.ethereum_config = EthereumConfig {
-        chain_id: provider.get_chain_id().await?,
+        chain_id: op_provider.get_chain_id().await?,
         contract_address: contract.address().to_string(),
+        clearing_house_address: clearing_house.address().to_string(),
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
         cron_job_settings: "* * * * * *".to_string(),
@@ -239,27 +294,20 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
 
     let mut scheduler = TaskScheduler::new().await?;
     scheduler.add_task(ethereum_scanner).await?;
-    scheduler
-        .add_task(Arc::new(ScanPaymentsTask::new(core_service.clone())))
-        .await?;
-    scheduler
-        .add_task(Arc::new(ConfirmPaymentsTask::new(core_service.clone())))
-        .await?;
-    scheduler
-        .add_task(Arc::new(FinalizePaymentsTask::new(core_service.clone())))
-        .await?;
     scheduler.start().await?;
 
     Ok(E2eEnvironment {
         cfg,
-        provider,
+        provider: op_provider,
+        _anvil: anvil,
         access_manager,
         contract,
+        clearing_house,
         usdc,
         usdt,
         core_service,
         scheduler,
-        signer_addr,
+        signer_addr: op_addr,
     })
 }
 

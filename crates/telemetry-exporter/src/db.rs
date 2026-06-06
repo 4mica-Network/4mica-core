@@ -20,14 +20,6 @@ pub struct ActiveUsersWindowCounts {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TabStatusAggregate {
-    pub status: String,
-    pub tabs_count: u64,
-    pub total_amount_sum: f64,
-    pub paid_amount_sum: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct StatusAmountAggregate {
     pub status: String,
     pub count: u64,
@@ -202,65 +194,6 @@ pub async fn fetch_active_users_window_counts(
     })
 }
 
-pub async fn fetch_tabs_status_aggregates(
-    db: &DatabaseConnection,
-    timeout_ms: u64,
-) -> Result<Vec<TabStatusAggregate>, QueryExecutionError> {
-    let rows = query_all_with_timeout(
-        db,
-        r#"
-        SELECT
-            s::text AS status,
-            COUNT(t.id)::bigint AS tabs_count,
-            COALESCE(SUM(NULLIF(t.total_amount, '')::numeric), 0)::double precision AS total_amount_sum,
-            COALESCE(SUM(NULLIF(t.paid_amount, '')::numeric), 0)::double precision AS paid_amount_sum
-        FROM unnest(enum_range(NULL::tab_status)) AS s
-        LEFT JOIN "Tabs" t ON t.status = s
-        GROUP BY s
-        ORDER BY s::text
-        "#,
-        timeout_ms,
-    )
-    .await?;
-
-    let mut aggregates = Vec::with_capacity(rows.len());
-    for row in rows {
-        let status: String = row
-            .try_get("", "status")
-            .context("Failed to decode tabs status")
-            .map_err(QueryExecutionError::Query)?;
-        let tabs_count = parse_non_negative_count(
-            row.try_get("", "tabs_count")
-                .context("Failed to decode tabs_count")
-                .map_err(QueryExecutionError::Query)?,
-        )
-        .map_err(QueryExecutionError::Query)?;
-        let total_amount_sum = parse_non_negative_amount(
-            row.try_get("", "total_amount_sum")
-                .context("Failed to decode total_amount_sum")
-                .map_err(QueryExecutionError::Query)?,
-            "total_amount_sum",
-        )
-        .map_err(QueryExecutionError::Query)?;
-        let paid_amount_sum = parse_non_negative_amount(
-            row.try_get("", "paid_amount_sum")
-                .context("Failed to decode paid_amount_sum")
-                .map_err(QueryExecutionError::Query)?,
-            "paid_amount_sum",
-        )
-        .map_err(QueryExecutionError::Query)?;
-
-        aggregates.push(TabStatusAggregate {
-            status,
-            tabs_count,
-            total_amount_sum,
-            paid_amount_sum,
-        });
-    }
-
-    Ok(aggregates)
-}
-
 pub async fn fetch_guarantee_status_aggregates(
     db: &DatabaseConnection,
     timeout_ms: u64,
@@ -270,11 +203,10 @@ pub async fn fetch_guarantee_status_aggregates(
         r#"
         SELECT
             s::text AS status,
-            COUNT(g.tab_id)::bigint AS guarantees_count,
+            COUNT(g.guarantee_id)::bigint AS guarantees_count,
             COALESCE(SUM(NULLIF(g.value, '')::numeric), 0)::double precision AS guarantees_amount_sum
-        FROM unnest(enum_range(NULL::settlement_status)) AS s
-        LEFT JOIN "Tabs" t ON t.settlement_status = s
-        LEFT JOIN "Guarantee" g ON g.tab_id = t.id
+        FROM unnest(enum_range(NULL::guarantee_settlement_status)) AS s
+        LEFT JOIN "Guarantee" g ON g.settlement_status = s
         GROUP BY s
         ORDER BY s::text
         "#,

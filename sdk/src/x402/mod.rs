@@ -261,7 +261,6 @@ where
         Ok(PaymentGuaranteeRequestClaimsV1::new(
             user_address.to_string(),
             requirements.pay_to().to_string(),
-            payment_context.tab_id,
             payment_context.req_id,
             payment_context.amount,
             payment_context.timestamp,
@@ -280,7 +279,6 @@ where
         let validation_subject_hash = compute_validation_subject_hash(
             user_address,
             requirements.pay_to(),
-            payment_context.tab_id,
             payment_context.req_id,
             payment_context.amount,
             requirements.asset(),
@@ -324,7 +322,6 @@ where
         PaymentGuaranteeRequestClaimsV2::builder(
             user_address.to_string(),
             requirements.pay_to.to_string(),
-            payment_context.tab_id,
             payment_context.req_id,
             payment_context.amount,
             payment_context.timestamp,
@@ -340,7 +337,6 @@ where
         tab: &TabResponse,
         user_address: &str,
     ) -> Result<PaymentContext, X402Error> {
-        let tab_id = parse_u256_field("tabId", &tab.tab_id)?;
         let req_id = match tab.next_req_id.as_deref() {
             Some(raw) => parse_u256_field("nextReqId", raw)?,
             None => U256::ZERO,
@@ -360,7 +356,6 @@ where
             .unwrap_or_default();
 
         Ok(PaymentContext {
-            tab_id,
             req_id,
             amount,
             timestamp,
@@ -370,7 +365,6 @@ where
 
 #[derive(Debug, Clone, Copy)]
 struct PaymentContext {
-    tab_id: U256,
     req_id: U256,
     amount: U256,
     timestamp: u64,
