@@ -380,17 +380,17 @@ fn event_meta_from_log(
     let chain_id = service.inner.config.ethereum_config.chain_id;
     let Some(block_hash) = log.block_hash else {
         return Err(BlockchainListenerError::EventHandlerError(
-            "log missing block_hash".to_string(),
+            "log missing block_hash".to_owned(),
         ));
     };
     let Some(tx_hash) = log.transaction_hash else {
         return Err(BlockchainListenerError::EventHandlerError(
-            "log missing tx_hash".to_string(),
+            "log missing tx_hash".to_owned(),
         ));
     };
     let Some(log_index) = log.log_index else {
         return Err(BlockchainListenerError::EventHandlerError(
-            "log missing log_index".to_string(),
+            "log missing log_index".to_owned(),
         ));
     };
 

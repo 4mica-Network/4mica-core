@@ -41,6 +41,8 @@ pub struct EthereumConfig {
     pub ws_rpc_url: String,
     #[envconfig(from = "ETHEREUM_HTTP_RPC_URL")]
     pub http_rpc_url: String,
+    #[envconfig(from = "PUBLIC_ETHEREUM_HTTP_RPC_URL", default = "")]
+    pub public_http_rpc_url: String,
     #[envconfig(from = "ETHEREUM_CONTRACT_ADDRESS")]
     pub contract_address: String,
     #[envconfig(
@@ -63,6 +65,12 @@ pub struct EthereumConfig {
     pub number_of_blocks_to_confirm: u64,
     #[envconfig(from = "PAYMENT_SCAN_LOOKBACK_BLOCKS", default = "5")]
     pub payment_scan_lookback_blocks: u64,
+    /// Legacy payment scanner that inspects full transaction bodies in recent blocks.
+    /// Contract events are the primary payment discovery path; keep this off unless
+    /// explicitly needed because some RPCs return transaction shapes older clients
+    /// cannot deserialize inside full blocks.
+    #[envconfig(from = "PAYMENT_LEGACY_SCAN_ENABLED", default = "false")]
+    pub payment_legacy_scan_enabled: bool,
     /// When scanning for events and cursor is not found in the database, scan back this many blocks.
     #[envconfig(from = "INITIAL_EVENT_SCAN_LOOKBACK_BLOCKS", default = "25")]
     pub initial_event_scan_lookback_blocks: u64,
@@ -200,9 +208,9 @@ impl GuaranteeConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         validate_guarantee_version(self.max_accepted_version, "GUARANTEE_REQUEST_VERSION")?;
         let accepted_versions = self.accepted_request_versions()?;
-        for version in &accepted_versions {
-            validate_guarantee_version(*version, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")?;
-        }
+        accepted_versions.iter().try_for_each(|v| {
+            validate_guarantee_version(*v, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")
+        })?;
         let canonicalization_version = self.validation_hash_canonicalization_version.trim();
         if canonicalization_version.is_empty() {
             bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");

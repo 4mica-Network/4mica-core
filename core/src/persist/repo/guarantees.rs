@@ -16,7 +16,7 @@ use rpc::{
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::parse_address;
+use super::common::{is_unique_violation, parse_address};
 use super::users::ensure_user_exists_on;
 use super::withdrawals::get_pending_withdrawal_on;
 use crate::metrics::misc::record_db_time;
@@ -155,7 +155,16 @@ pub async fn store_cycle_guarantee_on<C: ConnectionTrait>(
 
     guarantee::Entity::insert(active_model)
         .exec_without_returning(conn)
-        .await?;
+        .await
+        .map_err(|err| {
+            if is_unique_violation(&err) {
+                PersistDbError::DuplicateGuarantee {
+                    req_id: data.req_id,
+                }
+            } else {
+                PersistDbError::DatabaseFailure(err)
+            }
+        })?;
 
     Ok(())
 }

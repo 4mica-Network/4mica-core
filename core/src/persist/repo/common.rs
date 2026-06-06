@@ -56,6 +56,16 @@ pub fn is_foreign_key_violation(err: &DbErr) -> bool {
     }
 }
 
+pub fn is_unique_violation(err: &DbErr) -> bool {
+    match err {
+        DbErr::Exec(RuntimeErr::SqlxError(sqlx::Error::Database(db_err)))
+        | DbErr::Query(RuntimeErr::SqlxError(sqlx::Error::Database(db_err))) => {
+            db_err.code().map(|c| c == "23505").unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
 pub fn map_pending_withdrawal_err(
     err: DbErr,
     user_address: &str,

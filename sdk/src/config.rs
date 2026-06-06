@@ -8,6 +8,47 @@ use crate::{
 };
 
 const DEFAULT_AUTH_REFRESH_MARGIN_SECS: u64 = 60;
+const DEFAULT_RPC_URL: &str = "https://ethereum.sepolia.api.4mica.xyz/";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkInfo {
+    pub caip2: &'static str,
+    pub rpc_url: &'static str,
+}
+
+pub const NETWORKS: &[(&str, NetworkInfo)] = &[
+    (
+        "base",
+        NetworkInfo {
+            caip2: "eip155:8453",
+            rpc_url: "https://base.api.4mica.xyz/",
+        },
+    ),
+    (
+        "base-sepolia",
+        NetworkInfo {
+            caip2: "eip155:84532",
+            rpc_url: "https://base.sepolia.api.4mica.xyz/",
+        },
+    ),
+    (
+        "ethereum-sepolia",
+        NetworkInfo {
+            caip2: "eip155:11155111",
+            rpc_url: "https://ethereum.sepolia.api.4mica.xyz/",
+        },
+    ),
+];
+
+pub fn resolve_network_rpc_url(network: &str) -> Option<&'static str> {
+    NETWORKS.iter().find_map(|(name, info)| {
+        if *name == network || info.caip2 == network {
+            Some(info.rpc_url)
+        } else {
+            None
+        }
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
@@ -39,9 +80,11 @@ pub struct ConfigBuilder<S = PrivateKeySigner> {
 
 impl ConfigBuilder<PrivateKeySigner> {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let mut builder = Self::empty();
+        let mut builder = Self::default();
 
-        if let Ok(v) = std::env::var("4MICA_RPC_URL") {
+        if let Ok(v) = std::env::var("4MICA_NETWORK") {
+            builder = builder.network(&v)?;
+        } else if let Ok(v) = std::env::var("4MICA_RPC_URL") {
             builder = builder.rpc_url(v);
         }
         if let Ok(mut v) = std::env::var("4MICA_WALLET_PRIVATE_KEY") {
@@ -97,6 +140,16 @@ impl<S> ConfigBuilder<S> {
     pub fn rpc_url(mut self, rpc_url: String) -> Self {
         self.rpc_url = Some(rpc_url);
         self
+    }
+
+    pub fn network(mut self, value: &str) -> Result<Self, ConfigError> {
+        let url = resolve_network_rpc_url(value).ok_or_else(|| {
+            ConfigError::InvalidValue(format!(
+                "unknown network \"{value}\". Use a known shorthand (e.g. \"base\") or CAIP-2 id, or call rpc_url() directly."
+            ))
+        })?;
+        self.rpc_url = Some(url.to_string());
+        Ok(self)
     }
 
     pub fn signer(mut self, signer: S) -> Self {
@@ -174,7 +227,7 @@ impl<S> ConfigBuilder<S> {
             )));
         }
 
-        let auth = if self.auth_enabled {
+        let auth = if self.auth_enabled && bearer_token.is_none() {
             let auth_url = match self.auth_url {
                 Some(raw) => {
                     validate_url(&raw).map_err(|e| ConfigError::InvalidValue(e.to_string()))?
@@ -223,7 +276,7 @@ impl<S> ConfigBuilder<S> {
 impl<S> Default for ConfigBuilder<S> {
     fn default() -> Self {
         Self::empty()
-            .rpc_url("https://api.4mica.xyz/".to_string())
+            .rpc_url(DEFAULT_RPC_URL.to_string())
             .enable_auth()
     }
 }
@@ -245,7 +298,7 @@ mod tests {
     fn test_default_builder() {
         let builder = ConfigBuilder::<PrivateKeySigner>::default();
 
-        assert_eq!(builder.rpc_url, Some("https://api.4mica.xyz/".to_string()));
+        assert_eq!(builder.rpc_url, Some(DEFAULT_RPC_URL.to_string()));
         assert!(builder.signer.is_none());
         assert!(builder.ethereum_http_rpc_url.is_none());
         assert!(builder.contract_address.is_none());
@@ -266,14 +319,26 @@ mod tests {
 
         assert!(config.is_ok());
         let config = config.unwrap();
-        assert_eq!(config.rpc_url.as_str(), "https://api.4mica.xyz/");
+        assert_eq!(config.rpc_url.as_str(), DEFAULT_RPC_URL);
         assert_eq!(config.signer.address(), local_signer.address());
         assert!(config.ethereum_http_rpc_url.is_none());
         assert!(config.contract_address.is_none());
         assert!(config.bearer_token.is_none());
         let auth = config.auth.expect("default builder should enable auth");
-        assert_eq!(auth.auth_url.as_str(), "https://api.4mica.xyz/");
+        assert_eq!(auth.auth_url.as_str(), DEFAULT_RPC_URL);
         assert_eq!(auth.refresh_margin_secs, DEFAULT_AUTH_REFRESH_MARGIN_SECS);
+    }
+
+    #[test]
+    fn test_build_with_bearer_token_disables_auth() {
+        let config = ConfigBuilder::default()
+            .signer(PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key"))
+            .bearer_token("test-token".to_string())
+            .build()
+            .expect("config should build");
+
+        assert_eq!(config.bearer_token.as_deref(), Some("test-token"));
+        assert!(config.auth.is_none());
     }
 
     #[test]
@@ -299,6 +364,22 @@ mod tests {
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
         assert!(config.bearer_token.is_none());
         assert!(config.auth.is_some());
+    }
+
+    #[test]
+    fn test_network_resolves_base() {
+        let builder = ConfigBuilder::<PrivateKeySigner>::default()
+            .network("base")
+            .expect("base network should resolve");
+
+        assert_eq!(
+            builder.rpc_url,
+            Some("https://base.api.4mica.xyz/".to_string())
+        );
+        assert_eq!(
+            resolve_network_rpc_url("eip155:8453"),
+            Some("https://base.api.4mica.xyz/")
+        );
     }
 
     #[test]
@@ -418,5 +499,55 @@ mod tests {
         let config = config.unwrap();
         assert_eq!(config.rpc_url.as_str(), VALID_RPC_URL);
         assert_eq!(config.signer.address(), local_signer.address());
+    }
+
+    #[test]
+    #[serial]
+    fn test_from_env_uses_default_rpc_url_and_auth_when_unset() {
+        unsafe {
+            std::env::remove_var("4MICA_NETWORK");
+            std::env::remove_var("4MICA_RPC_URL");
+            std::env::remove_var("4MICA_BEARER_TOKEN");
+            std::env::remove_var("4MICA_AUTH_URL");
+            std::env::remove_var("4MICA_AUTH_REFRESH_MARGIN_SECS");
+        }
+
+        let local_signer =
+            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
+
+        let config = ConfigBuilder::from_env()
+            .expect("Invalid environment variables")
+            .signer(local_signer)
+            .build()
+            .expect("config should build");
+
+        assert_eq!(config.rpc_url.as_str(), DEFAULT_RPC_URL);
+        let auth = config.auth.expect("from_env should enable auth by default");
+        assert_eq!(auth.auth_url.as_str(), DEFAULT_RPC_URL);
+    }
+
+    #[test]
+    #[serial]
+    fn test_from_env_network_takes_precedence_over_rpc_url() {
+        unsafe {
+            std::env::set_var("4MICA_NETWORK", "base");
+            std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
+        }
+
+        let local_signer =
+            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
+
+        let config = ConfigBuilder::from_env()
+            .expect("Invalid environment variables")
+            .signer(local_signer)
+            .build()
+            .expect("config should build");
+
+        unsafe {
+            std::env::remove_var("4MICA_NETWORK");
+            std::env::remove_var("4MICA_RPC_URL");
+        }
+
+        assert_eq!(config.rpc_url.as_str(), "https://base.api.4mica.xyz/");
     }
 }

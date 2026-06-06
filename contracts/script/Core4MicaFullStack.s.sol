@@ -39,6 +39,8 @@ contract Core4MicaFullStackScript is Script {
     error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
 
     bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
+    bytes4 private constant RECORD_PAYMENT_BY_ID_SELECTOR =
+        bytes4(keccak256("recordPaymentById(bytes32,uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
         bytes4(keccak256("setTimingParameters(uint256,uint256,uint256,uint256)"));
 
@@ -102,8 +104,7 @@ contract Core4MicaFullStackScript is Script {
 
     function _loadDeploymentConfig(address deployer) internal view returns (DeploymentConfig memory config) {
         address[] memory stablecoins = _loadStablecoinAssets();
-        require(stablecoins.length == 2, "need exactly 2 stablecoins");
-        if (stablecoins[0] == stablecoins[1]) revert InvalidStablecoinConfiguration();
+        _validateStablecoins(stablecoins);
 
         config.deployer = deployer;
         config.managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
@@ -165,7 +166,7 @@ contract Core4MicaFullStackScript is Script {
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
-        bytes4[] memory governanceSelectors = new bytes4[](9);
+        bytes4[] memory governanceSelectors = new bytes4[](10);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         governanceSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
         governanceSelectors[2] = Core4Mica.setTabExpirationTime.selector;
@@ -174,7 +175,8 @@ contract Core4MicaFullStackScript is Script {
         governanceSelectors[5] = Core4Mica.setSynchronizationDelay.selector;
         governanceSelectors[6] = Core4Mica.configureGuaranteeVersion.selector;
         governanceSelectors[7] = Core4Mica.configureAave.selector;
-        governanceSelectors[8] = Core4Mica.setYieldFeeBps.selector;
+        governanceSelectors[8] = Core4Mica.addStablecoinAsset.selector;
+        governanceSelectors[9] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(
@@ -191,6 +193,9 @@ contract Core4MicaFullStackScript is Script {
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(Core4Mica.pause.selector), GUARDIAN_ROLE);
         manager.setTargetFunctionRole(
             address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), FOURMICA_OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), FOURMICA_OPERATOR_ROLE
         );
         manager.setTargetFunctionRole(
             address(core4Mica), _asSingletonArray(Core4Mica.unpause.selector), GOVERNANCE_ROLE
@@ -254,6 +259,14 @@ contract Core4MicaFullStackScript is Script {
         revert("set STABLECOINS_COUNT and STABLECOIN_0..n");
     }
 
+    function _validateStablecoins(address[] memory assets) internal pure {
+        for (uint256 i = 0; i < assets.length; i++) {
+            for (uint256 j = i + 1; j < assets.length; j++) {
+                if (assets[i] == assets[j]) revert InvalidStablecoinConfiguration();
+            }
+        }
+    }
+
     function _assertStablecoinReadback(Core4Mica core4Mica, address[] memory expectedAssets) internal view {
         address[] memory storedAssets = core4Mica.getERC20Tokens();
         if (storedAssets.length != expectedAssets.length) revert StablecoinReadbackMismatch();
@@ -265,32 +278,21 @@ contract Core4MicaFullStackScript is Script {
     function _configureOptionalAave(Core4Mica core4Mica, address[] memory stablecoins) internal {
         bool configureAave = vm.envOr("CONFIGURE_AAVE", false);
         address provider = vm.envOr("AAVE_POOL_ADDRESSES_PROVIDER", address(0));
-        address stablecoinAToken0 = vm.envOr("STABLECOIN_ATOKEN_0", address(0));
-        address stablecoinAToken1 = vm.envOr("STABLECOIN_ATOKEN_1", address(0));
+        (address[] memory aTokens, bool anyATokenSet, bool allATokensSet) = _loadStablecoinATokens(stablecoins.length);
 
-        if (
-            (provider != address(0) || stablecoinAToken0 != address(0) || stablecoinAToken1 != address(0))
-                && (!configureAave
-                    || provider == address(0)
-                    || stablecoinAToken0 == address(0)
-                    || stablecoinAToken1 == address(0))
-        ) {
+        if ((provider != address(0) || anyATokenSet) && (!configureAave || provider == address(0) || !allATokensSet)) {
             revert PartialAaveConfiguration();
         }
 
         if (configureAave) {
-            address[] memory aTokens = new address[](2);
-            aTokens[0] = stablecoinAToken0;
-            aTokens[1] = stablecoinAToken1;
             core4Mica.configureAave(provider, aTokens);
             if (address(core4Mica.aaveAddressesProvider()) != provider) {
                 revert AaveReadbackMismatch("provider");
             }
-            if (core4Mica.stablecoinAToken(stablecoins[0]) != stablecoinAToken0) {
-                revert AaveReadbackMismatch("stablecoinAToken0");
-            }
-            if (core4Mica.stablecoinAToken(stablecoins[1]) != stablecoinAToken1) {
-                revert AaveReadbackMismatch("stablecoinAToken1");
+            for (uint256 i = 0; i < stablecoins.length; i++) {
+                if (core4Mica.stablecoinAToken(stablecoins[i]) != aTokens[i]) {
+                    revert AaveReadbackMismatch(string.concat("stablecoinAToken", vm.toString(i)));
+                }
             }
         }
 
@@ -301,6 +303,24 @@ contract Core4MicaFullStackScript is Script {
             uint256 storedYieldFeeBps = core4Mica.yieldFeeBps();
             if (storedYieldFeeBps != yieldFeeBps) {
                 revert YieldFeeReadbackMismatch(yieldFeeBps, storedYieldFeeBps);
+            }
+        }
+    }
+
+    function _loadStablecoinATokens(uint256 count)
+        internal
+        view
+        returns (address[] memory aTokens, bool anyATokenSet, bool allATokensSet)
+    {
+        aTokens = new address[](count);
+        allATokensSet = count > 0;
+        for (uint256 i = 0; i < count; i++) {
+            string memory key = string.concat("STABLECOIN_ATOKEN_", vm.toString(i));
+            aTokens[i] = vm.envOr(key, address(0));
+            if (aTokens[i] != address(0)) {
+                anyATokenSet = true;
+            } else {
+                allATokensSet = false;
             }
         }
     }

@@ -83,7 +83,7 @@ contract Core4MicaAaveForkTest is Test {
         _fundAndApprove(USER1, stablecoins[1], _depositAmount(stablecoins[1]) * 3);
     }
 
-    function testFork_ConfigureAave_UsesLiveProviderAndReserveMembership() public onlyIfForkConfigured {
+    function testFork_ConfigureAave_UsesLiveProviderAndReserveMembership() public view onlyIfForkConfigured {
         IPoolAddressesProvider provider = IPoolAddressesProvider(providerAddress);
         address livePool = provider.getPool();
         address liveDataProvider = provider.getPoolDataProvider();

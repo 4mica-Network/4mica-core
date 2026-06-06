@@ -45,6 +45,8 @@ pub enum UserTransactionStatus {
     Pending,
     #[sea_orm(string_value = "CONFIRMED")]
     Confirmed,
+    #[sea_orm(string_value = "RECORDING")]
+    Recording,
     #[sea_orm(string_value = "RECORDED")]
     Recorded,
     #[sea_orm(string_value = "FINALIZED")]

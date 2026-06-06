@@ -265,11 +265,13 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         clearing_house_address: clearing_house.address().to_string(),
         ws_rpc_url: format!("ws://localhost:{anvil_port}"),
         http_rpc_url: format!("http://localhost:{anvil_port}"),
+        public_http_rpc_url: format!("http://localhost:{anvil_port}"),
         cron_job_settings: "* * * * * *".to_string(),
         event_scanner_cron: "* * * * * *".to_string(),
         confirmation_mode: "finalized".to_string(),
         number_of_blocks_to_confirm: 1, // faster confirmations for tests
         payment_scan_lookback_blocks: 1,
+        payment_legacy_scan_enabled: false,
         initial_event_scan_lookback_blocks: 10,
         max_log_block_range: 10_000,
         finalized_head_depth: 1,

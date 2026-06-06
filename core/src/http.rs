@@ -3,6 +3,7 @@ use crate::auth::{
     constants::SCOPE_PAYMENT_READ,
 };
 use crate::evm::bytes32_hex;
+use rpc::PaymentGuaranteeRequestEssentials;
 use crate::{error::ServiceError, service::CoreService};
 use axum::extract::FromRef;
 use axum::{
@@ -15,8 +16,11 @@ use axum::{
 };
 use crypto::bls::BLSCert;
 use entities::sea_orm_active_enums::ParticipantCycleRole;
-use http::{StatusCode, header::AUTHORIZATION};
-use log::{debug, warn};
+use http::{
+    HeaderName, StatusCode,
+    header::{AUTHORIZATION, USER_AGENT},
+};
+use log::{debug, info, warn};
 use metrics_4mica::http::HttpMetricsMiddleware;
 use metrics_exporter_prometheus::PrometheusHandle;
 use rpc::{
@@ -28,6 +32,8 @@ use rpc::{
     UserTransactionInfo,
 };
 use serde::Deserialize;
+
+const SDK_CLIENT_HEADER: HeaderName = HeaderName::from_static("x-4mica-sdk");
 
 #[derive(Clone)]
 pub struct AppState {
@@ -411,12 +417,30 @@ async fn get_health(State(service): State<CoreService>) -> Result<impl IntoRespo
 async fn issue_guarantee(
     State(service): State<CoreService>,
     Extension(auth): Extension<AccessContext>,
+    headers: HeaderMap,
     Json(req): Json<PaymentGuaranteeRequest>,
 ) -> Result<Json<BLSCert>, ApiError> {
+    let sdk_client = sdk_client_from_headers(&headers);
+    info!(
+        "core.guarantees request sdk_client={} user={} recipient={} req_id={} guarantee_version={} amount={}",
+        sdk_client,
+        req.claims.user_address(),
+        req.claims.recipient_address(),
+        req.claims.req_id(),
+        req.claims.version(),
+        req.claims.amount(),
+    );
+
     let cert = service
         .issue_payment_guarantee(&auth, req)
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|err| {
+            warn!(
+                "core.guarantees rejected sdk_client={} error={}",
+                sdk_client, err
+            );
+            ApiError::from(err)
+        })?;
     Ok(Json(cert))
 }
 
@@ -456,4 +480,12 @@ async fn update_user_suspension(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(status))
+}
+
+fn sdk_client_from_headers(headers: &HeaderMap) -> &str {
+    headers
+        .get(SDK_CLIENT_HEADER)
+        .or_else(|| headers.get(USER_AGENT))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
 }

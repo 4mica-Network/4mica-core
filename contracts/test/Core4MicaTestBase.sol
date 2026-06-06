@@ -87,6 +87,8 @@ abstract contract Core4MicaTestBase is Test {
     address internal constant ETH_ASSET = address(0);
 
     bytes4 internal constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
+    bytes4 internal constant RECORD_PAYMENT_BY_ID_SELECTOR =
+        bytes4(keccak256("recordPaymentById(bytes32,uint256,address,uint256)"));
 
     bytes32 internal constant TEST_PRIVATE_KEY =
         bytes32(0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3);
@@ -124,15 +126,19 @@ abstract contract Core4MicaTestBase is Test {
         vm.stopPrank();
 
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
+        manager.setTargetFunctionRole(
+            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), OPERATOR_ROLE
+        );
 
-        bytes4[] memory adminSelectors = new bytes4[](7);
+        bytes4[] memory adminSelectors = new bytes4[](8);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
         adminSelectors[3] = Core4Mica.unpause.selector;
         adminSelectors[4] = Core4Mica.configureAave.selector;
-        adminSelectors[5] = Core4Mica.setYieldFeeBps.selector;
-        adminSelectors[6] = Core4Mica.claimProtocolYield.selector;
+        adminSelectors[5] = Core4Mica.addStablecoinAsset.selector;
+        adminSelectors[6] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[7] = Core4Mica.claimProtocolYield.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }

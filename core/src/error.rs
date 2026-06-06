@@ -125,6 +125,9 @@ pub enum PersistDbError {
     #[error("auth token invalid: {0}")]
     AuthTokenInvalid(String),
 
+    #[error("another guarantee with req_id {req_id} already exists")]
+    DuplicateGuarantee { req_id: U256 },
+
     #[error(
         "optimistic lock conflict for user {user}, asset {asset_address}, expected version {expected_version}"
     )]
@@ -215,6 +218,9 @@ impl From<PersistDbError> for ServiceError {
                 ))
             }
             PersistDbError::AuthTokenInvalid(msg) => ServiceError::Unauthorized(msg),
+            PersistDbError::DuplicateGuarantee { req_id } => {
+                ServiceError::DuplicateGuarantee { req_id }
+            }
             PersistDbError::UserBalanceLockConflict { .. } => ServiceError::OptimisticLockConflict,
             PersistDbError::InvariantViolation(msg) => ServiceError::Other(anyhow!(msg)),
             PersistDbError::DatabaseFailure(e) => {

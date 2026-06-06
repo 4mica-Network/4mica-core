@@ -1,4 +1,4 @@
-use super::constants::{SCOPE_PAYMENT_READ, SCOPE_TAB_READ_LEGACY, WALLET_STATUS_ACTIVE, WALLET_STATUS_ALLOWED};
+use super::constants::{SCOPE_PAYMENT_READ, SCOPE_TAB_READ_LEGACY, WalletStatus};
 use crate::error::{ServiceError, ServiceResult};
 use alloy::primitives::Address;
 use anyhow::anyhow;
@@ -61,15 +61,10 @@ pub fn validate_wallet_status(status: &str) -> ServiceResult<()> {
             "wallet role status missing".into(),
         ));
     }
-    if !WALLET_STATUS_ALLOWED
-        .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case(status))
-    {
-        return Err(ServiceError::Unauthorized(
-            "wallet role status invalid".into(),
-        ));
-    }
-    if !status.eq_ignore_ascii_case(WALLET_STATUS_ACTIVE) {
+    let status = status
+        .parse::<WalletStatus>()
+        .map_err(|_| ServiceError::Unauthorized("wallet role status invalid".into()))?;
+    if status != WalletStatus::Active {
         return Err(ServiceError::Unauthorized("wallet role not active".into()));
     }
     Ok(())
