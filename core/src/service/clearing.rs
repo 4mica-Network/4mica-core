@@ -11,7 +11,7 @@ use crate::{
     error::{ServiceError, ServiceResult},
     ethereum::ClearingCommitInput,
     evm,
-    persist::repo,
+    persist::repo::{self, common::parse_address},
     service::CoreService,
 };
 
@@ -145,13 +145,14 @@ impl CoreService {
             return Ok(());
         };
         let now = Utc::now().naive_utc();
+        let debtor = parse_address(debtor)?.into_inner();
         let changed = self
             .inner
             .persist_ctx
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
-                let debtor = debtor.to_string();
+                let debtor = debtor.clone();
                 let tx_hash = tx_hash.to_string();
                 Box::pin(async move {
                     let changed = repo::mark_participant_position_status_on(
@@ -197,13 +198,14 @@ impl CoreService {
             return Ok(());
         };
         let now = Utc::now().naive_utc();
+        let creditor = parse_address(creditor)?.into_inner();
         let changed = self
             .inner
             .persist_ctx
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
-                let creditor = creditor.to_string();
+                let creditor = creditor.clone();
                 let tx_hash = tx_hash.to_string();
                 Box::pin(async move {
                     let changed = repo::mark_participant_position_status_on(
@@ -242,6 +244,8 @@ impl CoreService {
         onchain_cycle_id: B256,
         debtor: &str,
     ) -> ServiceResult<()> {
+        let debtor = parse_address(debtor)?.into_inner();
+
         let Some(cycle_id) = self.resolve_onchain_cycle_id(onchain_cycle_id).await? else {
             warn!("debtor default event for unknown on-chain cycle id {onchain_cycle_id:#x}");
             return Ok(());
@@ -249,7 +253,7 @@ impl CoreService {
         repo::mark_participant_position_status_on(
             self.inner.persist_ctx.db.as_ref(),
             &cycle_id,
-            debtor,
+            &debtor,
             ParticipantCycleStatus::Unpaid,
             ParticipantCycleStatus::Defaulted,
             None,
@@ -281,13 +285,14 @@ impl CoreService {
             return Ok(());
         };
         let now = Utc::now().naive_utc();
+        let debtor = parse_address(debtor)?.into_inner();
         let changed = self
             .inner
             .persist_ctx
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
-                let debtor = debtor.to_string();
+                let debtor = debtor.clone();
                 Box::pin(async move {
                     settle_netted_guarantees_for_payer(
                         txn,

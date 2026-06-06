@@ -1,6 +1,7 @@
 use crate::error::PersistDbError;
 use crate::metrics::misc::record_db_time;
 use crate::persist::PersistCtx;
+use crate::persist::repo::common::parse_address;
 use alloy::primitives::U256;
 use chrono::NaiveDateTime;
 use entities::sea_orm_active_enums::{
@@ -73,6 +74,7 @@ pub async fn get_open_cycle_by_asset_on<C: ConnectionTrait>(
     conn: &C,
     asset_address: &str,
 ) -> Result<Option<settlement_cycle::Model>, PersistDbError> {
+    let asset_address = parse_address(asset_address)?.into_inner();
     let model = settlement_cycle::Entity::find()
         .filter(settlement_cycle::Column::AssetAddress.eq(asset_address))
         .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Open))
@@ -107,9 +109,10 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
     input: CreateSettlementCycleInput,
 ) -> Result<settlement_cycle::Model, PersistDbError> {
     let now = chrono::Utc::now().naive_utc();
+    let asset_address = parse_address(&input.asset_address)?.into_inner();
     let active_model = settlement_cycle::ActiveModel {
         id: Set(input.id.clone()),
-        asset_address: Set(input.asset_address),
+        asset_address: Set(asset_address),
         period_start: Set(input.period_start),
         period_end: Set(input.period_end),
         resolution_cutoff: Set(input.resolution_cutoff),

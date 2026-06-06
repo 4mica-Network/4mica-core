@@ -105,8 +105,8 @@ pub async fn revert_deposit(
     amount: U256,
     event: EventMeta,
 ) -> Result<(), PersistDbError> {
-    parse_address(&user_address)?;
-    parse_address(&asset_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
 
     ctx.db
         .transaction(|txn| {

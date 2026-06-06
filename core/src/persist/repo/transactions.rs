@@ -25,9 +25,9 @@ pub async fn submit_payment_transaction(
     transaction_id: String,
     amount: U256,
 ) -> Result<u64, PersistDbError> {
-    parse_address(&user_address)?;
-    parse_address(&recipient_address)?;
-    parse_address(&asset_address)?;
+    let user_address = parse_address(&user_address)?.into_inner();
+    let recipient_address = parse_address(&recipient_address)?.into_inner();
+    let asset_address = parse_address(&asset_address)?.into_inner();
     ensure_user_exists_on(ctx.db.as_ref(), &user_address).await?;
 
     let tx = user_transaction::ActiveModel {
@@ -79,16 +79,16 @@ pub async fn submit_pending_payment_transaction(
     ctx: &PersistCtx,
     pending: PendingPaymentInput,
 ) -> Result<u64, PersistDbError> {
-    parse_address(&pending.user_address)?;
-    parse_address(&pending.recipient_address)?;
-    parse_address(&pending.asset_address)?;
-    ensure_user_exists_on(ctx.db.as_ref(), &pending.user_address).await?;
+    let user_address = parse_address(&pending.user_address)?.into_inner();
+    let recipient_address = parse_address(&pending.recipient_address)?.into_inner();
+    let asset_address = parse_address(&pending.asset_address)?.into_inner();
+    ensure_user_exists_on(ctx.db.as_ref(), &user_address).await?;
 
     let tx = user_transaction::ActiveModel {
         tx_id: Set(pending.transaction_id),
-        user_address: Set(pending.user_address),
-        recipient_address: Set(pending.recipient_address),
-        asset_address: Set(pending.asset_address),
+        user_address: Set(user_address),
+        recipient_address: Set(recipient_address),
+        asset_address: Set(asset_address),
         amount: Set(pending.amount.to_string()),
         block_number: Set(Some(pending.block_number as i64)),
         block_hash: Set(pending.block_hash),
