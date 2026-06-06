@@ -3,7 +3,6 @@ use crate::auth::{
     constants::SCOPE_PAYMENT_READ,
 };
 use crate::evm::bytes32_hex;
-use rpc::PaymentGuaranteeRequestEssentials;
 use crate::{error::ServiceError, service::CoreService};
 use axum::extract::FromRef;
 use axum::{
@@ -23,6 +22,7 @@ use http::{
 use log::{debug, info, warn};
 use metrics_4mica::http::HttpMetricsMiddleware;
 use metrics_exporter_prometheus::PrometheusHandle;
+use rpc::PaymentGuaranteeRequestEssentials;
 use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,

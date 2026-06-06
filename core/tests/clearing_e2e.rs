@@ -112,10 +112,10 @@ async fn poll_cycle_status(
     expected: SettlementCycleStatus,
 ) -> anyhow::Result<()> {
     for _ in 0..POLL_ATTEMPTS {
-        if let Some(cycle) = repo::get_cycle_by_id(ctx, cycle_id).await? {
-            if cycle.status == expected {
-                return Ok(());
-            }
+        if let Some(cycle) = repo::get_cycle_by_id(ctx, cycle_id).await?
+            && cycle.status == expected
+        {
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -131,10 +131,9 @@ async fn poll_guarantee_status(
         if let Some(g) = guarantee::Entity::find_by_id(guarantee_id.to_string())
             .one(ctx.db.as_ref())
             .await?
+            && g.settlement_status == expected
         {
-            if g.settlement_status == expected {
-                return Ok(());
-            }
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

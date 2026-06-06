@@ -36,8 +36,9 @@ pub fn normalize_legacy_scope(scope: &str) -> &str {
 }
 
 pub fn parse_wallet_scopes(address: &str, value: serde_json::Value) -> ServiceResult<Vec<String>> {
-    let scopes: Vec<String> = serde_json::from_value(value)
-        .map_err(|e| ServiceError::Other(anyhow!("invalid scopes for wallet role {address}: {e}")))?;
+    let scopes: Vec<String> = serde_json::from_value(value).map_err(|e| {
+        ServiceError::Other(anyhow!("invalid scopes for wallet role {address}: {e}"))
+    })?;
     Ok(scopes
         .iter()
         .map(|s| normalize_legacy_scope(s).to_string())

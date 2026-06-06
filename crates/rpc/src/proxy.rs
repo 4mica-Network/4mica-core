@@ -26,7 +26,6 @@ fn build_default_headers() -> HeaderMap {
     headers
 }
 
-
 #[derive(Debug, Clone)]
 pub struct RpcProxy {
     client: Client,
