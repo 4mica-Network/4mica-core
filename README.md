@@ -17,7 +17,6 @@
 <a href="https://creativecommons.org/licenses/by-nc/4.0/">
     <img src="https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg" alt="License: CC BY-NC 4.0"/>
 </a>
-  </a>
 </p>
 
 ---
@@ -33,7 +32,6 @@ Visit the official website: [https://4mica.xyz](https://4mica.xyz)
 - Developer docs: [https://4mica.xyz/resources/technical-docs](https://4mica.xyz/resources/technical-docs)
 - Rust SDK API: [crates.io/sdk-4mica](https://crates.io/crates/sdk-4mica) · [docs.rs](https://docs.rs/sdk-4mica)
 - Contract deployment and activation: [contracts/README.md](contracts/README.md) · [contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md)
-- V2 implementation notes: [changes.md](changes.md)
 
 ---
 
@@ -49,7 +47,7 @@ Install from crates.io:
 
 ```toml
 [dependencies]
-sdk-4mica = "0.6.0"
+sdk-4mica = "1.2.0"
 ```
 
 Minimal bootstrap:
@@ -75,8 +73,7 @@ See `sdk/README.md` for full examples, configuration options, and X402 flows.
 
 ## Guarantee V2
 
-This repository includes the ERC-8004 validation-gated remuneration flow described in
-[`changes.md`](changes.md).
+This repository includes the ERC-8004 validation-gated remuneration flow (V2).
 
 - Core accepts guarantee request versions according to `GUARANTEE_REQUEST_VERSION` and
   `GUARANTEE_ACCEPTED_REQUEST_VERSIONS`.
@@ -94,17 +91,28 @@ This repository includes the ERC-8004 validation-gated remuneration flow describ
 
 - [Docker](https://www.docker.com/)
 - [Rust](https://www.rust-lang.org/) `stable`
+- [Foundry](https://book.getfoundry.sh/) (for contract deployment)
 
 ### Running the Project
 
-To run the project locally, execute:
+1. Start the local database:
 
-```bash
-deployment/deploy_local.sh
-```
+   ```bash
+   docker compose up -d
+   ```
 
-This script prepares and launches all required development services. It deploys the local stack
-and starts the services needed for end-to-end development.
+2. Copy and configure the environment:
+
+   ```bash
+   cp contracts/.env.example contracts/.env
+   # fill in required values
+   ```
+
+3. Run the core service:
+
+   ```bash
+   cargo run --bin core-service
+   ```
 
 For contract deployment and V2 activation details, refer to
 [contracts/README.md](contracts/README.md) and
