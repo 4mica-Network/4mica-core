@@ -13,6 +13,11 @@ categories = ["cryptography"]
 [lib]
 name = "crypto"
 
+# Dev helper: derive on-chain VK words from a BLS secret key (see src/bin/print_vk.rs).
+[[bin]]
+name = "print-vk"
+path = "src/bin/print_vk.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true }

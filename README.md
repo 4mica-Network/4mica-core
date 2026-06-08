@@ -92,19 +92,32 @@ This repository includes the ERC-8004 validation-gated remuneration flow describ
 
 ### Requirements
 
-- [Docker](https://www.docker.com/)
+- [Docker](https://www.docker.com/) (your user must be able to reach the Docker daemon)
 - [Rust](https://www.rust-lang.org/) `stable`
+- [Foundry](https://book.getfoundry.sh/) (`anvil`, `forge`)
 
 ### Running the Project
 
-To run the project locally, execute:
+Bring up the full local stack — Postgres, an Anvil node, forge-deployed contracts,
+database migrations, and `core-service` — with a single command:
 
 ```bash
-deployment/deploy_local.sh
+make dev-up
 ```
 
-This script prepares and launches all required development services. It deploys the local stack
-and starts the services needed for end-to-end development.
+This generates a complete `.env` for you (including the deployed contract address and a
+BLS verification key derived from `BLS_PRIVATE_KEY`), so there are no env vars to wire by
+hand. Then run the e2e suites:
+
+```bash
+make test-core   # core api tests (server spawned in-process)
+make test-sdk    # sdk e2e tests against the running core stack
+```
+
+Other useful targets: `make status`, `make logs`, `make deploy` (redeploy contracts),
+`make dev-down` (stop core + anvil), `make dev-down-all` (also stop Postgres). Run
+`make help` for the full list. See [deployment/dev_stack.sh](deployment/dev_stack.sh) for
+the underlying steps and tunables.
 
 For contract deployment and V2 activation details, refer to
 [contracts/README.md](contracts/README.md) and

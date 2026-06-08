@@ -17,6 +17,10 @@ npm-debug.log*
 pnpm-lock.yaml
 *.env
 *.env_*
+
+# Local dev stack runtime (deployment/dev_stack.sh)
+.dev/
+anvil.log
 out/
 cache/
 .cargo/
@@ -28,6 +32,8 @@ cache/
 .idea/
 cache/
 bin/
+# but keep crate source binaries (e.g. the print-vk dev helper)
+!**/src/bin/
 **/.DS_Store
 
 #Prisma
