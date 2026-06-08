@@ -17,6 +17,7 @@ npm-debug.log*
 pnpm-lock.yaml
 *.env
 *.env_*
+*.env.*
 
 # Local dev stack runtime (deployment/dev_stack.sh)
 .dev/
