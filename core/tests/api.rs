@@ -531,8 +531,8 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
 
     assert_eq!(stored_address, presented_address.to_ascii_lowercase());
     let scopes = vec![
-        SCOPE_PAYMENT_READ.to_string(),
         SCOPE_GUARANTEE_ISSUE.to_string(),
+        SCOPE_PAYMENT_READ.to_string(),
     ];
     repo::upsert_wallet_role(
         &ctx,
