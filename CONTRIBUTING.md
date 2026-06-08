@@ -17,10 +17,17 @@ We welcome all kinds of contributions: bug reports, feature requests, code, docu
 #### 2. Install prerequisites:
    - Rust (stable)
    - Docker
-   - Node.js (v20 or newer)
    - Foundry (for Solidity tests)
 
-### 3. Code Style
+#### 3. Enable git hooks:
+
+   ```bash
+   git config core.hooksPath .githooks
+   ```
+
+   This installs a pre-push hook that runs `cargo fmt --check` and `cargo clippy` before every push.
+
+### 4. Code Style
 
 - **Formatting:** Run `cargo fmt` before committing.  
 - **Linting:** Run `cargo clippy --workspace --all-targets --all-features` and fix warnings.  
@@ -33,7 +40,7 @@ cd contracts
 forge test -vvvv
 ```
 
-### 4. ✅ Pull Request Process
+### 5. ✅ Pull Request Process
 
 1. Fork the repo and create a feature branch:
 

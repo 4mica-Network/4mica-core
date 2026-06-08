@@ -95,6 +95,14 @@ jobs:
           sleep 10
           cat anvil.log
 
+      - name: Check Solidity formatting
+        working-directory: contracts
+        run: forge fmt --check
+
+      - name: Build contracts
+        working-directory: contracts
+        run: forge build
+
       - name: Run Solidity tests
         working-directory: contracts
         run: forge test -vvvv
