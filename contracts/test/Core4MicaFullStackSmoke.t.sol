@@ -8,6 +8,7 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
+import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
 
 contract Core4MicaFullStackSmokeTest is Test {
@@ -100,6 +101,23 @@ contract Core4MicaFullStackSmokeTest is Test {
         assertEq(manager.getTargetFunctionRole(address(router), router.setVersionModule.selector), GOVERNANCE_ROLE);
         assertEq(manager.getTargetFunctionRole(address(router), router.freezeVersion.selector), GOVERNANCE_ROLE);
 
+        ClearingHouse clearingHouse = new ClearingHouse(address(manager));
+        _configureClearingHouseRoles(manager, clearingHouse);
+        assertEq(
+            manager.getTargetFunctionRole(address(clearingHouse), ClearingHouse.commitCycle.selector),
+            FOURMICA_OPERATOR_ROLE
+        );
+        assertEq(
+            manager.getTargetFunctionRole(
+                address(clearingHouse), ClearingHouse.settleDefaultFromCollateral.selector
+            ),
+            FOURMICA_OPERATOR_ROLE
+        );
+        _assertCanCall(manager, deployer, address(clearingHouse), ClearingHouse.commitCycle.selector, true, 0);
+        _assertCanCall(
+            manager, deployer, address(clearingHouse), ClearingHouse.settleDefaultFromCollateral.selector, true, 0
+        );
+
         _assertCanCall(
             manager, deployer, address(core4Mica), Core4Mica.setYieldFeeBps.selector, false, GOVERNANCE_DELAY
         );
@@ -159,6 +177,17 @@ contract Core4MicaFullStackSmokeTest is Test {
         );
         manager.setTargetFunctionRole(
             address(router), _asSingletonArray(router.freezeVersion.selector), GOVERNANCE_ROLE
+        );
+    }
+
+    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse) internal {
+        manager.setTargetFunctionRole(
+            address(clearingHouse), _asSingletonArray(ClearingHouse.commitCycle.selector), FOURMICA_OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(clearingHouse),
+            _asSingletonArray(ClearingHouse.settleDefaultFromCollateral.selector),
+            FOURMICA_OPERATOR_ROLE
         );
     }
 

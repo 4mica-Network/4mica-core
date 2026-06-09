@@ -8,10 +8,11 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
+import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 
 /// @notice Deploys full guarantee stack:
-/// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder.
+/// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder + ClearingHouse.
 ///
 /// Required env:
 /// - DEPLOYER_PRIVATE_KEY
@@ -64,6 +65,7 @@ contract Core4MicaFullStackScript is Script {
         Core4Mica core4Mica;
         GuaranteeDecoderRouter router;
         ValidationRegistryGuaranteeDecoder validationDecoder;
+        ClearingHouse clearingHouse;
     }
 
     struct DeploymentConfig {
@@ -96,6 +98,7 @@ contract Core4MicaFullStackScript is Script {
         console.log("Core4Mica:", address(deployment.core4Mica));
         console.log("GuaranteeDecoderRouter:", address(deployment.router));
         console.log("ValidationRegistryGuaranteeDecoder:", address(deployment.validationDecoder));
+        console.log("ClearingHouse:", address(deployment.clearingHouse));
         console.log("Trusted registries count:", config.trustedRegistries.length);
         console.log("AccessManager admin:", config.managerAdmin);
         console.log("CREATE2 base salt:");
@@ -131,6 +134,7 @@ contract Core4MicaFullStackScript is Script {
             );
         _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
         _configureRouterRoles(deployment.manager, deployment.router);
+        _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse);
     }
 
     function _deployFullStack(
@@ -158,11 +162,16 @@ contract Core4MicaFullStackScript is Script {
             _deriveSalt(baseSalt, "VALIDATION_REGISTRY_GUARANTEE_DECODER"),
             abi.encodePacked(type(ValidationRegistryGuaranteeDecoder).creationCode, abi.encode(trustedRegistries))
         );
+        address clearingHouseAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "CLEARING_HOUSE"),
+            abi.encodePacked(type(ClearingHouse).creationCode, abi.encode(managerAddress))
+        );
 
         deployment.manager = AccessManager(managerAddress);
         deployment.core4Mica = Core4Mica(payable(core4MicaAddress));
         deployment.router = GuaranteeDecoderRouter(routerAddress);
         deployment.validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
+        deployment.clearingHouse = ClearingHouse(clearingHouseAddress);
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
@@ -215,6 +224,18 @@ contract Core4MicaFullStackScript is Script {
         );
         manager.setTargetFunctionRole(
             address(router), _asSingletonArray(router.freezeVersion.selector), GOVERNANCE_ROLE
+        );
+    }
+
+    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse) internal {
+        // Cycle commitment and default settlement are 4mica operator-driven settlement bookkeeping.
+        manager.setTargetFunctionRole(
+            address(clearingHouse), _asSingletonArray(ClearingHouse.commitCycle.selector), FOURMICA_OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(clearingHouse),
+            _asSingletonArray(ClearingHouse.settleDefaultFromCollateral.selector),
+            FOURMICA_OPERATOR_ROLE
         );
     }
 
