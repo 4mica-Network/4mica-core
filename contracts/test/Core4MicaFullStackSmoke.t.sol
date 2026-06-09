@@ -108,9 +108,7 @@ contract Core4MicaFullStackSmokeTest is Test {
             FOURMICA_OPERATOR_ROLE
         );
         assertEq(
-            manager.getTargetFunctionRole(
-                address(clearingHouse), ClearingHouse.settleDefaultFromCollateral.selector
-            ),
+            manager.getTargetFunctionRole(address(clearingHouse), ClearingHouse.settleDefaultFromCollateral.selector),
             FOURMICA_OPERATOR_ROLE
         );
         _assertCanCall(manager, deployer, address(clearingHouse), ClearingHouse.commitCycle.selector, true, 0);
