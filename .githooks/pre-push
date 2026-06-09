@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+echo "Running cargo fmt --check..."
+cargo fmt --all -- --check
+
+echo "Running cargo clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "Running forge fmt --check..."
+forge fmt --check --root contracts

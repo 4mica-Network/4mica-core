@@ -17,7 +17,6 @@
 <a href="https://creativecommons.org/licenses/by-nc/4.0/">
     <img src="https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg" alt="License: CC BY-NC 4.0"/>
 </a>
-  </a>
 </p>
 
 ---
@@ -33,7 +32,6 @@ Visit the official website: [https://4mica.xyz](https://4mica.xyz)
 - Developer docs: [https://4mica.xyz/resources/technical-docs](https://4mica.xyz/resources/technical-docs)
 - Rust SDK API: [crates.io/sdk-4mica](https://crates.io/crates/sdk-4mica) · [docs.rs](https://docs.rs/sdk-4mica)
 - Contract deployment and activation: [contracts/README.md](contracts/README.md) · [contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md)
-- V2 implementation notes: [changes.md](changes.md)
 
 ---
 
@@ -49,7 +47,7 @@ Install from crates.io:
 
 ```toml
 [dependencies]
-sdk-4mica = "0.6.0"
+sdk-4mica = "1.2.0"
 ```
 
 Minimal bootstrap:
@@ -75,8 +73,7 @@ See `sdk/README.md` for full examples, configuration options, and X402 flows.
 
 ## Guarantee V2
 
-This repository includes the ERC-8004 validation-gated remuneration flow described in
-[`changes.md`](changes.md).
+This repository includes the ERC-8004 validation-gated remuneration flow (V2).
 
 - Core accepts guarantee request versions according to `GUARANTEE_REQUEST_VERSION` and
   `GUARANTEE_ACCEPTED_REQUEST_VERSIONS`.
@@ -98,21 +95,42 @@ This repository includes the ERC-8004 validation-gated remuneration flow describ
 
 ### Running the Project
 
-Bring up the full local stack — Postgres, an Anvil node, forge-deployed contracts,
-database migrations, and `core-service` — with a single command:
+The local stack — Postgres, an Anvil node, forge-deployed contracts, database
+migrations, and `core-service` — is orchestrated through the `Makefile` (which wraps
+[deployment/dev_stack.sh](deployment/dev_stack.sh)). Every step generates a complete
+`.env` for you, including the deployed contract and ClearingHouse addresses and a BLS
+verification key derived from `BLS_PRIVATE_KEY`, so there are no env vars to wire by hand.
+
+To run the full stack (for development or the SDK e2e tests):
 
 ```bash
 make dev-up
 ```
 
-This generates a complete `.env` for you (including the deployed contract address and a
-BLS verification key derived from `BLS_PRIVATE_KEY`), so there are no env vars to wire by
-hand. Then run the e2e suites:
+#### Running the tests
 
-```bash
-make test-core   # core api tests (server spawned in-process)
-make test-sdk    # sdk e2e tests against the running core stack
-```
+The two suites need different amounts of the stack, so they are **not** run the same way:
+
+- **Core tests** must run with **no external `core-service` running** — each test builds
+  its own in-process `CoreService` (and the chain tests spawn their own Anvil), so a
+  second long-lived service would race the in-process event scanner on the shared
+  database. They only need infra (Postgres + Anvil + deployed contracts):
+
+  ```bash
+  make infra-up     # pg + anvil + contracts + migrations, but NOT core-service
+  make test-core
+  ```
+
+- **SDK e2e tests** talk to a running `core-service` on `:3000`, so they need the full
+  stack up:
+
+  ```bash
+  make dev-up
+  make test-sdk
+  ```
+
+`make test` chains both correctly: infra → `test-core` (core down) → full stack →
+`test-sdk` (core up).
 
 Other useful targets: `make status`, `make logs`, `make deploy` (redeploy contracts),
 `make dev-down` (stop core + anvil), `make dev-down-all` (also stop Postgres). Run
