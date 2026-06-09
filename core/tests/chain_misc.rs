@@ -2,7 +2,7 @@ use core_service::service::CoreService;
 use test_log::test;
 
 mod common;
-use common::setup::setup_e2e_environment;
+use common::chain::setup_e2e_environment;
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 #[serial_test::file_serial(db)]

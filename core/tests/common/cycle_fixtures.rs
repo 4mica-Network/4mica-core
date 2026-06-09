@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use alloy::primitives::{Address, U256};
 use anyhow::Result;
 use chrono::{Duration, Utc};
@@ -10,17 +8,14 @@ use core_service::{
 };
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 
-use super::fixtures::{clear_all_tables, ensure_user, init_test_env, random_address};
+use super::db::{clear_all_tables, setup_db_test_env};
+use super::fixtures::{ensure_user, normalize_address, random_address};
 
 pub async fn setup_cycle_service() -> Result<CoreService> {
-    let (mut config, ctx) = init_test_env().await?;
+    let (mut config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
     config.ethereum_config.clearing_house_address = Address::ZERO.to_string();
     CoreService::new(config).await
-}
-
-pub fn normalize_address(addr: &str) -> Result<String> {
-    Ok(format!("{:#x}", Address::from_str(addr)?))
 }
 
 pub async fn create_frozen_cycle(ctx: &PersistCtx, id: &str) -> Result<String> {

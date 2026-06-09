@@ -1,11 +1,17 @@
+//! On-chain (anvil) test harness: deploys the full contract stack, runs the
+//! event scanner, and provides chain interaction helpers shared by the
+//! `chain_*.rs` test files.
+
 use std::{net::TcpListener, str::FromStr, sync::Arc};
 
 use alloy::network::EthereumWallet;
 use alloy::node_bindings::{Anvil, AnvilInstance};
+use alloy::primitives::{FixedBytes, U256, keccak256};
+use alloy::providers::ext::AnvilApi;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::SolCall;
-use alloy_primitives::{Address, FixedBytes, U256};
+use alloy_primitives::Address;
 use anyhow::Context;
 use core_service::{
     config::{AppConfig, EthereumConfig},
@@ -16,17 +22,15 @@ use core_service::{
 };
 use log::debug;
 
-use crate::common::{
-    contract::{
-        AccessManager::{self, AccessManagerInstance},
-        ClearingHouse::{self, ClearingHouseInstance},
-        Core4Mica::{self, Core4MicaInstance},
-        MockAToken, MockAavePool, MockAaveProtocolDataProvider,
-        MockERC20::{self, MockERC20Instance},
-        MockPoolAddressesProvider,
-    },
-    fixtures::{clear_all_tables, ensure_migrations},
+use super::contract::{
+    AccessManager::{self, AccessManagerInstance},
+    ClearingHouse::{self, ClearingHouseInstance},
+    Core4Mica::{self, Core4MicaInstance},
+    MockAToken, MockAavePool, MockAaveProtocolDataProvider,
+    MockERC20::{self, MockERC20Instance},
+    MockPoolAddressesProvider,
 };
+use super::db::{clear_all_tables, ensure_migrations};
 
 pub const OPERATOR_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
@@ -67,6 +71,55 @@ pub fn wallet_provider(http_url: &str, key: &str) -> anyhow::Result<(Address, Dy
         .connect_http(http_url.parse()?)
         .erased();
     Ok((address, provider))
+}
+
+/// Compute a 4-byte function selector from a signature string.
+pub fn fn_selector(sig: &str) -> FixedBytes<4> {
+    let h = keccak256(sig.as_bytes());
+    FixedBytes::<4>::from([h[0], h[1], h[2], h[3]])
+}
+
+/// Mine `blocks` confirmations (plus the configured finalized-head depth) so the
+/// event scanner observes finalized state.
+pub async fn mine_confirmations(provider: &DynProvider, blocks: u64) -> anyhow::Result<()> {
+    let finalized_depth = std::env::var("FINALIZED_HEAD_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let total = blocks.saturating_add(finalized_depth);
+    if total > 0 {
+        provider.anvil_mine(Some(total), None).await?;
+    }
+    Ok(())
+}
+
+/// Mint a MockERC20 balance to the signer, approve Core4Mica, and deposit it as
+/// stablecoin collateral. Returns once the deposit tx is mined (not yet
+/// confirmed — call `mine_confirmations` to surface it to the scanner).
+pub async fn deposit_stablecoin(
+    env: &E2eEnvironment,
+    token: &MockERC20Instance<DynProvider>,
+    amount: U256,
+) -> anyhow::Result<()> {
+    token
+        .mint(env.signer_addr, amount)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    token
+        .approve(*env.contract.address(), amount)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    env.contract
+        .depositStablecoin(*token.address(), amount)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    Ok(())
 }
 
 /// Reserve an unused TCP port for Anvil to bind to.

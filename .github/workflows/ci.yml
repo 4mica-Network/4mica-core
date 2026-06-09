@@ -122,6 +122,11 @@ jobs:
           CORE4MICA_ADDR=$(grep -oP '(?<=Core4Mica: )0x[0-9a-fA-F]{40}' /tmp/deploy.log | tail -1)
           echo "Deployed Core4Mica at: $CORE4MICA_ADDR"
           echo "ETHEREUM_CONTRACT_ADDRESS=$CORE4MICA_ADDR" >> "$GITHUB_ENV"
+          # ClearingHouse is a CREATE2-deterministic public address; parse it from
+          # the deploy log (mirrors deployment/dev_stack.sh) — never a secret.
+          CLEARING_HOUSE_ADDR=$(grep -oP '(?<=ClearingHouse: )0x[0-9a-fA-F]{40}' /tmp/deploy.log | tail -1)
+          echo "Deployed ClearingHouse at: $CLEARING_HOUSE_ADDR"
+          echo "ETHEREUM_CLEARING_HOUSE_ADDRESS=$CLEARING_HOUSE_ADDR" >> "$GITHUB_ENV"
 
       - name: Run cargo check
         run: cargo check --workspace --all-targets --all-features
@@ -135,69 +140,11 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: cargo run -- up
 
-      - name: Start API service (core tests)
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SERVER_HOST: 0.0.0.0
-          SERVER_PORT: 3000
-          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
-          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
-          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
-          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-          ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
-          CRON_JOB_SETTINGS: "*/3 * * * * *"
-          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
-          GUARANTEE_REQUEST_VERSION: "2"
-          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
-        run: |
-          # Run the API in the background for core API tests.
-          stdbuf -oL -eL cargo run -p core-service 2>&1 | tee core/api-core.log &
-          for i in {1..30}; do
-            if nc -z 127.0.0.1 3000; then
-              echo "API is up!"
-              break
-            fi
-            echo "Waiting for API..."
-            sleep 5
-          done
-
-      - name: Wait for listener readiness (core tests)
-        run: |
-          for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:3000/core/health >/dev/null; then
-              echo "Listener is ready!"
-              exit 0
-            fi
-            echo "Waiting for listener..."
-            sleep 5
-          done
-          echo "Listener readiness timed out"
-          tail -n 200 core/api-core.log || true
-          exit 1
-
-      - name: Run core API tests
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
-          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
-          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          FINALIZED_HEAD_DEPTH: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
-          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-          ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
-          CRON_JOB_SETTINGS: "*/3 * * * * *"
-          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
-          GUARANTEE_REQUEST_VERSION: "2"
-          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
-        run: cargo test -p core-service --test api
-
-      - name: Stop API service (core tests)
-        if: always()
-        run: |
-          pkill -f core-service || true
-          sleep 2
+      # NOTE: core/tests/* each build their own in-process CoreService (and the
+      # chain_* tests spawn their own anvil), so NO external core-service may be
+      # running here — a second scanner would race the in-process one on the
+      # shared DB + chain_id. The external service is only started later, for the
+      # SDK e2e tests.
 
       - name: Run workspace tests (exclude sdk and core-service)
         env:
@@ -215,7 +162,7 @@ jobs:
           TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
         run: cargo test --workspace --exclude sdk-4mica --exclude core-service
 
-      - name: Run core tests (exclude api target)
+      - name: Run core tests (no external core-service running)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
@@ -229,13 +176,13 @@ jobs:
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
           GUARANTEE_REQUEST_VERSION: "2"
           TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
+        # Run each test binary on its own. The api_*/chain_* suites self-spawn
+        # their server/anvil; `#[serial_test::file_serial(db)]` serializes DB
+        # access across binaries.
         run: |
           cargo test -p core-service --lib
           for test_file in core/tests/*.rs; do
             test_name="$(basename "$test_file" .rs)"
-            if [ "$test_name" = "api" ]; then
-              continue
-            fi
             cargo test -p core-service --test "$test_name"
           done
 
@@ -272,8 +219,10 @@ jobs:
           SERVER_PORT: 3000
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
+          PUBLIC_ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           FINALIZED_HEAD_DEPTH: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
+          ETHEREUM_CLEARING_HOUSE_ADDRESS: ${{ env.ETHEREUM_CLEARING_HOUSE_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
@@ -309,6 +258,8 @@ jobs:
 
       - name: Run SDK tests
         env:
+          # Opt in to the e2e suite; without this the tests self-skip.
+          SDK_LOCAL_E2E: "1"
           DATABASE_URL: ${{ env.SDK_DATABASE_URL }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545

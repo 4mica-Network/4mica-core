@@ -65,4 +65,8 @@ test-sdk-unit: ## Run SDK unit tests (no running stack needed)
 test-sdk: ## Run SDK e2e tests incl. withdraw flows (needs dev-up / core-service on :3000)
 	@set -a; . ./.env; set +a; SDK_LOCAL_E2E=1 cargo test -p sdk-4mica
 
-test: test-core test-sdk ## Run core tests then SDK e2e tests (needs dev-up)
+test: ## Run core tests (infra only, core DOWN) then SDK e2e (full stack, core UP)
+	@$(STACK) infra
+	@$(MAKE) test-core
+	@$(STACK) up
+	@$(MAKE) test-sdk

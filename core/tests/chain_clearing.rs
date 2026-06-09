@@ -21,10 +21,10 @@ use sea_orm::EntityTrait;
 use test_log::test;
 
 mod common;
+use common::chain::{OPERATOR_KEY, setup_e2e_environment};
 use common::contract::ClearingHouse;
 use common::cycle_fixtures::{create_frozen_cycle, store_payable_guarantee};
 use common::fixtures::{ensure_user_with_collateral, set_locked_collateral};
-use common::setup::{OPERATOR_KEY, setup_e2e_environment};
 use core_service::persist::{PersistCtx, repo};
 
 // Operator key = same key CoreService uses internally. A fresh HTTP provider (no
@@ -153,9 +153,9 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     let ctx = svc.persist_ctx();
     let http = env.cfg.ethereum_config.http_rpc_url.clone();
 
-    let (_, op_provider) = common::setup::wallet_provider(&http, OPERATOR_KEY)?;
-    let (debtor, debtor_provider) = common::setup::wallet_provider(&http, DEBTOR_KEY)?;
-    let (creditor, creditor_provider) = common::setup::wallet_provider(&http, CREDITOR_KEY)?;
+    let (_, op_provider) = common::chain::wallet_provider(&http, OPERATOR_KEY)?;
+    let (debtor, debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
+    let (creditor, creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
 
     let cycle_id = "clearing-e2e-roundtrip";
     let guarantee_id = commit_two_party_cycle(&svc, cycle_id, &debtor, &creditor).await?;
@@ -238,9 +238,9 @@ async fn defaulted_cycle_is_covered_and_finalized() -> anyhow::Result<()> {
     let ctx = svc.persist_ctx();
     let http = env.cfg.ethereum_config.http_rpc_url.clone();
 
-    let (_, op_provider) = common::setup::wallet_provider(&http, OPERATOR_KEY)?;
-    let (debtor, _debtor_provider) = common::setup::wallet_provider(&http, DEBTOR_KEY)?;
-    let (creditor, creditor_provider) = common::setup::wallet_provider(&http, CREDITOR_KEY)?;
+    let (_, op_provider) = common::chain::wallet_provider(&http, OPERATOR_KEY)?;
+    let (debtor, _debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
+    let (creditor, creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
 
     let cycle_id = "clearing-e2e-default";
     let guarantee_id = commit_two_party_cycle(&svc, cycle_id, &debtor, &creditor).await?;

@@ -1,69 +1,32 @@
-use alloy::primitives::{FixedBytes, U256, keccak256};
+//! On-chain collateral flows (anvil + event scanner → DB): deposits (native &
+//! stablecoin), withdrawals, finalized-head gating, cursor recovery, and
+//! contract-scoping of events.
 
+use alloy::primitives::U256;
+use alloy::providers::Provider;
 use alloy::providers::ext::AnvilApi;
-use alloy::providers::{DynProvider, Provider};
-use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::ethereum::EthereumEventScanner;
-use core_service::persist::PersistCtx;
 use core_service::persist::repo;
 use core_service::scheduler::Task;
 use entities::sea_orm_active_enums::*;
 use entities::*;
-use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use std::{sync::Arc, time::Duration};
 use test_log::test;
 
+#[path = "common/mod.rs"]
 mod common;
-use crate::common::contract::Core4Mica;
-use crate::common::fixtures::read_collateral;
-use crate::common::setup::{dummy_verification_key, setup_e2e_environment};
+use common::chain::{
+    deposit_stablecoin, dummy_verification_key, fn_selector, mine_confirmations,
+    setup_e2e_environment,
+};
+use common::contract::Core4Mica;
+use common::fixtures::{ensure_user, read_collateral};
 
 static NUMBER_OF_TRIALS: u32 = 120;
 
-fn fn_selector(sig: &str) -> FixedBytes<4> {
-    let h = keccak256(sig.as_bytes());
-    FixedBytes::<4>::from([h[0], h[1], h[2], h[3]])
-}
-
-async fn mine_confirmations(provider: &DynProvider, blocks: u64) -> anyhow::Result<()> {
-    let finalized_depth = std::env::var("FINALIZED_HEAD_DEPTH")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let total = blocks.saturating_add(finalized_depth);
-    if total > 0 {
-        provider.anvil_mine(Some(total), None).await?;
-    }
-    Ok(())
-}
-
-/// Ensure a user row exists (idempotent).
-async fn ensure_user(persist_ctx: &PersistCtx, addr: &str) -> anyhow::Result<()> {
-    let now = Utc::now().naive_utc();
-    let am = user::ActiveModel {
-        address: Set(addr.to_string()),
-        version: Set(0),
-        is_suspended: Set(false),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
-    user::Entity::insert(am)
-        .on_conflict(
-            OnConflict::column(user::Column::Address)
-                .do_nothing()
-                .to_owned(),
-        )
-        .exec_without_returning(persist_ctx.db.as_ref())
-        .await?;
-    Ok(())
-}
-
-//
-// ────────────────────── DEPOSITS ──────────────────────
-//
-
+// ════════════════════════ deposits ════════════════════════
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
 async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
@@ -573,6 +536,115 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
         }
         tries += 1;
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    Ok(())
+}
+
+// ════════════════════════ stablecoin deposit / withdrawal (aToken branch) ════════════════════════
+
+/// Depositing an ERC-20 stablecoin exercises `handle_collateral_deposited` ->
+/// `sync_stablecoin_balance_from_chain` -> `guaranteeCapacity` (the aToken
+/// branch), which the native-ETH deposit tests never reach.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn stablecoin_deposit_syncs_balance_from_chain() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let persist_ctx = env.core_service.persist_ctx();
+    let user_addr = format!("{:#x}", env.signer_addr);
+    let asset_addr = format!("{:#x}", env.usdc.address());
+    ensure_user(persist_ctx, &user_addr).await?;
+
+    let amount = U256::from(1_000_000u64);
+    deposit_stablecoin(&env, &env.usdc, amount).await?;
+    mine_confirmations(&provider, 1).await?;
+
+    let mut tries = 0;
+    loop {
+        let current = read_collateral(persist_ctx, &user_addr, &asset_addr).await?;
+        if current == amount {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("stablecoin deposit not synced to collateral (last={current})");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    Ok(())
+}
+
+/// Finalizing a stablecoin withdrawal exercises `handle_collateral_withdrawn`'s
+/// aToken branch (`mark_withdrawal_executed_with_event`), distinct from the
+/// native `finalize_withdrawal_with_event` branch.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn stablecoin_withdrawal_marks_executed() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let persist_ctx = env.core_service.persist_ctx();
+    let user_addr = format!("{:#x}", env.signer_addr);
+    let asset_addr = format!("{:#x}", env.usdc.address());
+    let usdc_addr = *env.usdc.address();
+    ensure_user(persist_ctx, &user_addr).await?;
+
+    let amount = U256::from(2_000_000u64);
+    deposit_stablecoin(&env, &env.usdc, amount).await?;
+    mine_confirmations(&provider, 1).await?;
+
+    // Wait for the deposit to be reflected before requesting a withdrawal.
+    let mut tries = 0;
+    loop {
+        if read_collateral(persist_ctx, &user_addr, &asset_addr).await? >= amount {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("stablecoin deposit not synced before withdrawal");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    let withdraw_amount = U256::from(1_000_000u64);
+    env.contract
+        .requestWithdrawal_1(usdc_addr, withdraw_amount)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mine_confirmations(&provider, 1).await?;
+
+    // Advance past the withdrawal grace period, then finalize.
+    provider
+        .anvil_set_block_timestamp_interval(23 * 24 * 60 * 60)
+        .await?;
+    env.contract
+        .finalizeWithdrawal_1(usdc_addr)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mine_confirmations(&provider, 1).await?;
+
+    let mut tries = 0;
+    loop {
+        if let Some(w) = withdrawal::Entity::find()
+            .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+            .filter(withdrawal::Column::AssetAddress.eq(asset_addr.clone()))
+            .one(persist_ctx.db.as_ref())
+            .await?
+            && w.status == WithdrawalStatus::Executed
+        {
+            assert_eq!(w.executed_amount, withdraw_amount.to_string());
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("stablecoin withdrawal never marked executed");
+        }
+        tries += 1;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     Ok(())
