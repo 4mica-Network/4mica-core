@@ -219,12 +219,22 @@ impl CoreService {
                     )
                     .await?;
                     if changed {
-                        repo::transition_netted_guarantees_for_cycle_payee_on(
+                        // A net creditor's own outgoing guarantees were fully
+                        // offset by its incoming exposure, so settling its claim
+                        // also discharges those obligations: settle the
+                        // creditor's payer-side (`from = creditor`) guarantees and
+                        // release the collateral they locked. Settlement is always
+                        // keyed on the payer so each participant's locked
+                        // collateral is released exactly once, by its own role
+                        // event (debtor payment, creditor claim, default cover, or
+                        // the finalization sweep for flat participants).
+                        settle_netted_guarantees_for_payer(
                             txn,
                             &cycle_id,
                             &creditor,
                             GuaranteeSettlementStatus::Settled,
                             now,
+                            true,
                         )
                         .await?;
                     }
@@ -323,14 +333,31 @@ impl CoreService {
     }
 
     pub async fn finalize_cycle(&self, cycle_id: &str) -> ServiceResult<()> {
-        let changed = repo::mark_cycle_finalized_on(
-            self.inner.persist_ctx.db.as_ref(),
-            cycle_id,
-            Utc::now().naive_utc(),
-        )
-        .await?;
+        let now = Utc::now().naive_utc();
+        let cycle_id_owned = cycle_id.to_string();
+        let (changed, settled) = self
+            .inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let cycle_id = cycle_id_owned.clone();
+                Box::pin(async move {
+                    let changed = repo::mark_cycle_finalized_on(txn, &cycle_id, now).await?;
+                    let settled = if changed {
+                        settle_remaining_netted_guarantees_for_cycle(txn, &cycle_id, now).await?
+                    } else {
+                        0
+                    };
+                    Ok((changed, settled))
+                })
+            })
+            .await
+            .map_err(map_transaction_error)?;
         if changed {
-            info!("finalized settlement cycle {}", cycle_id);
+            info!(
+                "finalized settlement cycle {} (settled {} residual netted guarantee(s))",
+                cycle_id, settled
+            );
         }
         Ok(())
     }
@@ -371,6 +398,36 @@ async fn settle_netted_guarantees_for_payer<C: sea_orm::ConnectionTrait>(
         }
     }
 
+    Ok(changed)
+}
+
+/// Settle every guarantee still in `Netted` for a cycle and release the
+/// collateral each one locked, keyed on the payer (`from`) side.
+///
+/// This is the finalization backstop for guarantees that no role event reached:
+/// flat participants (whose exposure netted to zero and who therefore emit no
+/// on-chain event), creditors that never claimed, and creditor->debtor edges.
+async fn settle_remaining_netted_guarantees_for_cycle<C: sea_orm::ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> ServiceResult<u64> {
+    let guarantees = repo::list_netted_guarantees_for_cycle_on(conn, cycle_id).await?;
+    if guarantees.is_empty() {
+        return Ok(0);
+    }
+    let changed = repo::transition_all_netted_guarantees_for_cycle_on(
+        conn,
+        cycle_id,
+        GuaranteeSettlementStatus::Settled,
+        now,
+    )
+    .await?;
+    if changed > 0 {
+        for guarantee in &guarantees {
+            repo::release_locked_collateral_for_guarantee_on(conn, guarantee).await?;
+        }
+    }
     Ok(changed)
 }
 

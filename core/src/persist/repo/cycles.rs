@@ -308,6 +308,25 @@ pub async fn mark_cycle_defaulted_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
+pub async fn short_circuit_frozen_cycle_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = settlement_cycle::Entity::update_many()
+        .filter(settlement_cycle::Column::Id.eq(cycle_id))
+        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Frozen))
+        .set(settlement_cycle::ActiveModel {
+            status: Set(SettlementCycleStatus::Finalized),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+#[measure(record_db_time)]
 pub async fn mark_cycle_finalized_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,

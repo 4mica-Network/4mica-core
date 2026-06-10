@@ -203,6 +203,78 @@ async fn pending_validation_guarantee_excluded_from_cycle_netting() -> anyhow::R
     Ok(())
 }
 
+/// A frozen cycle with no FinalizedPayable guarantees has nothing to net or
+/// commit, so it is short-circuited straight to Finalized with no clearing batch
+/// and no on-chain commit.
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn empty_cycle_is_short_circuited_without_chain_commit() -> anyhow::Result<()> {
+    let service = setup_cycle_service().await?;
+    let ctx = service.persist_ctx();
+    let cycle_id = create_frozen_cycle(ctx, "empty-short-circuit-cycle").await?;
+
+    // Only a pending-validation guarantee exists: not payable, so the cycle has
+    // zero payable exposure.
+    let payer = random_address();
+    let payee = random_address();
+    store_pending_guarantee(ctx, &cycle_id, &payer, &payee, 5, 0).await?;
+
+    let computed = service.compute_due_cycle_netting().await?;
+    assert!(
+        computed.is_empty(),
+        "an empty cycle must not be reported as netted/committed"
+    );
+
+    let cycle = repo::get_cycle_by_id(ctx, &cycle_id)
+        .await?
+        .expect("cycle exists");
+    assert_eq!(cycle.status, SettlementCycleStatus::Finalized);
+    assert!(
+        repo::get_clearing_batch_by_cycle_on(ctx.db.as_ref(), &cycle_id)
+            .await?
+            .is_none(),
+        "no clearing batch should be built for an empty cycle"
+    );
+
+    Ok(())
+}
+
+/// A fully-offsetting cycle still has payable guarantees, so it must follow the
+/// normal path — netted, batch built, NettingComputed — not short-circuited.
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn fully_offsetting_cycle_follows_normal_commit_path() -> anyhow::Result<()> {
+    let service = setup_cycle_service().await?;
+    let ctx = service.persist_ctx();
+    let cycle_id = create_frozen_cycle(ctx, "fully-offsetting-cycle").await?;
+
+    // a->b 10 and b->a 10 net flat, but both are FinalizedPayable.
+    let a = random_address();
+    let b = random_address();
+    store_payable_guarantee(ctx, &cycle_id, &a, &b, 10, 0).await?;
+    store_payable_guarantee(ctx, &cycle_id, &b, &a, 10, 1).await?;
+
+    let computed = service.compute_due_cycle_netting().await?;
+    assert_eq!(
+        computed,
+        vec![cycle_id.clone()],
+        "a fully-offsetting cycle must net normally, not short-circuit"
+    );
+
+    let cycle = repo::get_cycle_by_id(ctx, &cycle_id)
+        .await?
+        .expect("cycle exists");
+    assert_eq!(cycle.status, SettlementCycleStatus::NettingComputed);
+
+    let batch = repo::get_clearing_batch_by_cycle_on(ctx.db.as_ref(), &cycle_id)
+        .await?
+        .expect("clearing batch built");
+    assert_eq!(batch.total_net_debit, "0");
+    assert_eq!(batch.total_net_credit, "0");
+
+    Ok(())
+}
+
 #[tokio::test]
 #[serial_test::file_serial(db)]
 async fn marking_cycle_netting_computed_moves_payable_guarantees_to_netted() -> anyhow::Result<()> {

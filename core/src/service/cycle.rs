@@ -7,9 +7,20 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use entities::settlement_cycle;
-use log::info;
+use log::{info, warn};
 use metrics_4mica::measure;
 use std::collections::BTreeSet;
+
+/// Outcome of running the netting pipeline for a single frozen cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CycleNettingOutcome {
+    /// The cycle was netted and transitioned to `NettingComputed`.
+    Computed,
+    /// The cycle had no payable exposure and was finalized without a commit.
+    ShortCircuited,
+    /// Nothing changed (e.g. the cycle was already past `Frozen`).
+    Skipped,
+}
 
 impl CoreService {
     pub async fn get_or_create_active_cycle(
@@ -69,8 +80,10 @@ impl CoreService {
         let assets = self.supported_settlement_assets().await?;
         let mut cycle_ids = Vec::with_capacity(assets.len());
         for asset in assets {
-            let cycle = self.get_or_create_active_cycle(&asset, now).await?;
-            cycle_ids.push(cycle.id);
+            match self.get_or_create_active_cycle(&asset, now).await {
+                Ok(cycle) => cycle_ids.push(cycle.id),
+                Err(err) => warn!("failed to ensure active cycle for asset {asset}: {err:?}"),
+            }
         }
         Ok(cycle_ids)
     }
@@ -82,7 +95,10 @@ impl CoreService {
         let mut frozen = Vec::new();
         for cycle in due {
             let cycle_id = cycle.id.clone();
-            self.freeze_cycle(&cycle_id).await?;
+            if let Err(err) = self.freeze_cycle(&cycle_id).await {
+                warn!("failed to freeze settlement cycle {cycle_id}: {err:?}");
+                continue;
+            }
             frozen.push(cycle_id);
         }
         Ok(frozen)
@@ -96,14 +112,59 @@ impl CoreService {
         let mut computed = Vec::new();
         for cycle in due {
             let cycle_id = cycle.id.clone();
-            self.compute_cycle_exposure_edges(&cycle_id).await?;
-            self.compute_cycle_participant_positions(&cycle_id).await?;
-            self.build_clearing_batch(&cycle_id).await?;
-            if self.mark_cycle_netting_computed(&cycle_id).await? {
-                computed.push(cycle_id);
+            match self.compute_cycle_netting(&cycle_id).await {
+                Ok(CycleNettingOutcome::Computed) => computed.push(cycle_id),
+                Ok(CycleNettingOutcome::ShortCircuited) => info!(
+                    "short-circuited settlement cycle {cycle_id} (no finalized payable guarantees); finalized without on-chain commit"
+                ),
+                Ok(CycleNettingOutcome::Skipped) => {}
+                Err(err) => {
+                    warn!("failed to compute netting for settlement cycle {cycle_id}: {err:?}")
+                }
             }
         }
         Ok(computed)
+    }
+
+    /// Run the netting pipeline for a single frozen cycle.
+    ///
+    /// A cycle with no `FinalizedPayable` guarantees has nothing to net and no
+    /// batch to commit, so it is short-circuited straight to `Finalized` instead
+    /// of emitting an empty ClearingHouse commit. A fully-offsetting cycle (which
+    /// does have payable guarantees, even if they net flat) follows the normal
+    /// path and is committed on-chain.
+    async fn compute_cycle_netting(
+        &self,
+        cycle_id: &str,
+    ) -> crate::error::ServiceResult<CycleNettingOutcome> {
+        let payable_count = repo::count_finalized_payable_guarantees_for_cycle_on(
+            self.inner.persist_ctx.db.as_ref(),
+            cycle_id,
+        )
+        .await?;
+        if payable_count == 0 {
+            let now = Utc::now().naive_utc();
+            let finalized = repo::short_circuit_frozen_cycle_on(
+                self.inner.persist_ctx.db.as_ref(),
+                cycle_id,
+                now,
+            )
+            .await?;
+            return Ok(if finalized {
+                CycleNettingOutcome::ShortCircuited
+            } else {
+                CycleNettingOutcome::Skipped
+            });
+        }
+
+        self.compute_cycle_exposure_edges(cycle_id).await?;
+        self.compute_cycle_participant_positions(cycle_id).await?;
+        self.build_clearing_batch(cycle_id).await?;
+        Ok(if self.mark_cycle_netting_computed(cycle_id).await? {
+            CycleNettingOutcome::Computed
+        } else {
+            CycleNettingOutcome::Skipped
+        })
     }
 
     pub async fn commit_due_clearing_batches(&self) -> crate::error::ServiceResult<Vec<String>> {
@@ -116,7 +177,10 @@ impl CoreService {
         let mut committed = Vec::new();
         for cycle in due {
             let cycle_id = cycle.id.clone();
-            self.commit_cycle_to_chain(&cycle_id).await?;
+            if let Err(err) = self.commit_cycle_to_chain(&cycle_id).await {
+                warn!("failed to commit clearing batch for settlement cycle {cycle_id}: {err:?}");
+                continue;
+            }
             committed.push(cycle_id);
         }
         Ok(committed)
@@ -132,32 +196,46 @@ impl CoreService {
         let mut defaulted = Vec::new();
         for cycle in due {
             let cycle_id = cycle.id.clone();
-            let unpaid = repo::list_unpaid_debtors_for_cycle_on(
-                self.inner.persist_ctx.db.as_ref(),
-                &cycle_id,
-            )
-            .await?;
-            if unpaid.is_empty() {
-                info!(
-                    "settlement cycle {} passed finality with no unpaid debtors; waiting for ClearingHouse finalization event",
-                    cycle_id
-                );
-                continue;
-            }
-
-            let changed =
-                repo::mark_cycle_defaulted_on(self.inner.persist_ctx.db.as_ref(), &cycle_id, now)
-                    .await?;
-            if changed {
-                info!(
-                    "settlement cycle {} entered default handling with {} unpaid debtors",
-                    cycle_id,
-                    unpaid.len()
-                );
-                defaulted.push(cycle_id);
+            match self.process_cycle_finality(&cycle_id, now).await {
+                Ok(true) => defaulted.push(cycle_id),
+                Ok(false) => {}
+                Err(err) => {
+                    warn!("failed to process finality for settlement cycle {cycle_id}: {err:?}")
+                }
             }
         }
         Ok(defaulted)
+    }
+
+    /// Evaluate finality for a single payment-window cycle. Returns whether the
+    /// cycle transitioned into default handling.
+    async fn process_cycle_finality(
+        &self,
+        cycle_id: &str,
+        now: chrono::NaiveDateTime,
+    ) -> crate::error::ServiceResult<bool> {
+        let unpaid =
+            repo::list_unpaid_debtors_for_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
+                .await?;
+        if unpaid.is_empty() {
+            info!(
+                "settlement cycle {} passed finality with no unpaid debtors; waiting for ClearingHouse finalization event",
+                cycle_id
+            );
+            return Ok(false);
+        }
+
+        let changed =
+            repo::mark_cycle_defaulted_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now)
+                .await?;
+        if changed {
+            info!(
+                "settlement cycle {} entered default handling with {} unpaid debtors",
+                cycle_id,
+                unpaid.len()
+            );
+        }
+        Ok(changed)
     }
 
     pub(crate) async fn supported_settlement_assets(
