@@ -39,7 +39,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   build-and-test:
     name: Build, run services, and test
@@ -137,10 +137,10 @@ jobs:
           echo "ETHEREUM_CLEARING_HOUSE_ADDRESS=$CLEARING_HOUSE_ADDR" >> "$GITHUB_ENV"
 
       - name: Run cargo check
-        run: cargo check --workspace --all-targets --all-features
+        run: cargo check --workspace --all-targets --all-features --locked
 
       - name: Build workspace
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --locked
 
       - name: Run migrations
         working-directory: crates/migration

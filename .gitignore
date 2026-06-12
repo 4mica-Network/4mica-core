@@ -9,7 +9,6 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
-Cargo.lock
 package-lock.json
 node_modules/
 yarn.lock
