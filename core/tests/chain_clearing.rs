@@ -316,11 +316,15 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
     mine(&provider, 2).await?;
     poll_position_status(ctx, cycle_id, &lower(&d2), ParticipantCycleStatus::Paid).await?;
 
-    // c cannot claim yet: the cycle is not fully funded (d1 still owes).
+    // c cannot claim yet: the cycle is not fully funded (d1 still owes). Send the
+    // rejected attempt from a throwaway provider: a failed send still advances the
+    // wallet's cached nonce, which would leave c's later real claim stuck behind a
+    // nonce gap.
     let c_proof = svc
         .get_participant_clearing_proof(cycle_id, &lower(&c))
         .await?;
-    let premature = ClearingHouse::new(*env.clearing_house.address(), c_provider.clone())
+    let (_, c_throwaway) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
+    let premature = ClearingHouse::new(*env.clearing_house.address(), c_throwaway)
         .claimNetCredit(c_proof.cycle_id, c_proof.amount, c_proof.proof.clone())
         .send()
         .await;
