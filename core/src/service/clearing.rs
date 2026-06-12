@@ -362,16 +362,53 @@ impl CoreService {
         Ok(())
     }
 
+    /// Finalize a fully-offsetting cycle without an on-chain commit: settle its
+    /// netted guarantees and release the collateral they locked. Returns whether
+    /// the cycle transitioned to `Finalized`.
+    pub async fn short_circuit_offsetting_cycle(&self, cycle_id: &str) -> ServiceResult<bool> {
+        let now = Utc::now().naive_utc();
+        let cycle_id_owned = cycle_id.to_string();
+        let (finalized, settled) = self
+            .inner
+            .persist_ctx
+            .db
+            .transaction::<_, _, ServiceError>(|txn| {
+                let cycle_id = cycle_id_owned.clone();
+                Box::pin(async move {
+                    let finalized =
+                        repo::short_circuit_frozen_cycle_on(txn, &cycle_id, now).await?;
+                    let settled = if finalized {
+                        repo::mark_cycle_guarantees_netted_on(txn, &cycle_id, now).await?;
+                        settle_remaining_netted_guarantees_for_cycle(txn, &cycle_id, now).await?
+                    } else {
+                        0
+                    };
+                    Ok((finalized, settled))
+                })
+            })
+            .await
+            .map_err(map_transaction_error)?;
+        if finalized {
+            info!(
+                "short-circuited fully-offsetting settlement cycle {} (settled {} netted guarantee(s), no on-chain commit)",
+                cycle_id, settled
+            );
+        }
+        Ok(finalized)
+    }
+
     async fn resolve_onchain_cycle_id(
         &self,
         onchain_cycle_id: B256,
     ) -> ServiceResult<Option<String>> {
-        let cycles =
-            repo::list_cycles_for_onchain_resolution_on(self.inner.persist_ctx.db.as_ref()).await?;
-        Ok(cycles
-            .into_iter()
-            .find(|cycle| evm::cycle_id_hash(&cycle.id) == onchain_cycle_id)
-            .map(|cycle| cycle.id))
+        // Indexed point lookup on the persisted on-chain cycle-id hash, replacing
+        // a full-table scan (removing both the DoS surface and the silent-drop
+        // risk when a cycle leaves a candidate window).
+        let hash = evm::bytes32_hex(onchain_cycle_id);
+        Ok(
+            repo::get_cycle_id_by_onchain_hash_on(self.inner.persist_ctx.db.as_ref(), &hash)
+                .await?,
+        )
     }
 }
 

@@ -128,11 +128,10 @@ impl CoreService {
 
     /// Run the netting pipeline for a single frozen cycle.
     ///
-    /// A cycle with no `FinalizedPayable` guarantees has nothing to net and no
-    /// batch to commit, so it is short-circuited straight to `Finalized` instead
-    /// of emitting an empty ClearingHouse commit. A fully-offsetting cycle (which
-    /// does have payable guarantees, even if they net flat) follows the normal
-    /// path and is committed on-chain.
+    /// A cycle with no `FinalizedPayable` guarantees has nothing to net, and a
+    /// fully-offsetting cycle (payable guarantees that all net flat) produces an
+    /// empty batch; both are short-circuited straight to `Finalized` instead of
+    /// emitting a zero ClearingHouse commit that would revert on-chain.
     async fn compute_cycle_netting(
         &self,
         cycle_id: &str,
@@ -159,6 +158,26 @@ impl CoreService {
 
         self.compute_cycle_exposure_edges(cycle_id).await?;
         self.compute_cycle_participant_positions(cycle_id).await?;
+
+        // A fully-offsetting cycle (everyone's exposure nets flat) has no net
+        // debtors or creditors. Committing its empty batch would revert on-chain
+        // (commitCycle rejects zero totals), so finalize it off-chain and release
+        // the netted collateral instead.
+        let cycle = repo::get_cycle_by_id_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::ServiceError::NotFound(format!("Settlement cycle {cycle_id}"))
+            })?;
+        if crate::evm::parse_u256("cycle net settlement amount", &cycle.net_settlement_amount)?
+            == alloy::primitives::U256::ZERO
+        {
+            return Ok(if self.short_circuit_offsetting_cycle(cycle_id).await? {
+                CycleNettingOutcome::ShortCircuited
+            } else {
+                CycleNettingOutcome::Skipped
+            });
+        }
+
         self.build_clearing_batch(cycle_id).await?;
         Ok(if self.mark_cycle_netting_computed(cycle_id).await? {
             CycleNettingOutcome::Computed

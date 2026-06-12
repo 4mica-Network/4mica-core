@@ -16,7 +16,11 @@ use common::cycle_fixtures::{
     build_three_party_cycle, create_frozen_cycle, setup_cycle_service, store_payable_guarantee,
     store_pending_guarantee,
 };
-use common::fixtures::{ensure_user, normalize_address, random_address};
+use common::fixtures::{
+    ensure_user, ensure_user_with_collateral, normalize_address, random_address,
+    read_locked_collateral, set_locked_collateral,
+};
+use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::persist::{CycleGuaranteeData, repo};
 
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
@@ -239,13 +243,15 @@ async fn empty_cycle_is_short_circuited_without_chain_commit() -> anyhow::Result
     Ok(())
 }
 
-/// A fully-offsetting cycle still has payable guarantees, so it must follow the
-/// normal path — netted, batch built, NettingComputed — not short-circuited.
+/// A fully-offsetting cycle (payable guarantees that all net flat) has an empty
+/// batch, so it is short-circuited to Finalized off-chain — never committed —
+/// and the collateral its guarantees locked is released.
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn fully_offsetting_cycle_follows_normal_commit_path() -> anyhow::Result<()> {
+async fn fully_offsetting_cycle_is_short_circuited_without_chain_commit() -> anyhow::Result<()> {
     let service = setup_cycle_service().await?;
     let ctx = service.persist_ctx();
+    let asset = DEFAULT_ASSET_ADDRESS;
     let cycle_id = create_frozen_cycle(ctx, "fully-offsetting-cycle").await?;
 
     // a->b 10 and b->a 10 net flat, but both are FinalizedPayable.
@@ -253,24 +259,43 @@ async fn fully_offsetting_cycle_follows_normal_commit_path() -> anyhow::Result<(
     let b = random_address();
     store_payable_guarantee(ctx, &cycle_id, &a, &b, 10, 0).await?;
     store_payable_guarantee(ctx, &cycle_id, &b, &a, 10, 1).await?;
+    let a = normalize_address(&a)?;
+    let b = normalize_address(&b)?;
+    for who in [&a, &b] {
+        ensure_user_with_collateral(ctx, who, U256::from(10u64)).await?;
+        set_locked_collateral(ctx, who, asset, U256::from(10u64)).await?;
+    }
 
     let computed = service.compute_due_cycle_netting().await?;
-    assert_eq!(
-        computed,
-        vec![cycle_id.clone()],
-        "a fully-offsetting cycle must net normally, not short-circuit"
+    assert!(
+        computed.is_empty(),
+        "a fully-offsetting cycle must be short-circuited, not netted/committed"
     );
 
     let cycle = repo::get_cycle_by_id(ctx, &cycle_id)
         .await?
         .expect("cycle exists");
-    assert_eq!(cycle.status, SettlementCycleStatus::NettingComputed);
+    assert_eq!(cycle.status, SettlementCycleStatus::Finalized);
+    assert!(
+        repo::get_clearing_batch_by_cycle_on(ctx.db.as_ref(), &cycle_id)
+            .await?
+            .is_none(),
+        "no clearing batch should be built for a fully-offsetting cycle"
+    );
 
-    let batch = repo::get_clearing_batch_by_cycle_on(ctx.db.as_ref(), &cycle_id)
-        .await?
-        .expect("clearing batch built");
-    assert_eq!(batch.total_net_debit, "0");
-    assert_eq!(batch.total_net_credit, "0");
+    for who in [&a, &b] {
+        assert_eq!(
+            read_locked_collateral(ctx, who, asset).await?,
+            U256::ZERO,
+            "offsetting participant {who} collateral not released"
+        );
+    }
+    assert!(
+        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), &cycle_id)
+            .await?
+            .is_empty(),
+        "short-circuit should settle all netted guarantees"
+    );
 
     Ok(())
 }

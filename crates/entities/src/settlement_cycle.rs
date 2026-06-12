@@ -27,6 +27,8 @@ pub struct Model {
     pub clearing_batch_hash: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub commit_tx_hash: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub onchain_cycle_id_hash: Option<String>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }

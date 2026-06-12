@@ -29,6 +29,7 @@ mod m20260423_000009_cycle_native_guarantee_storage;
 mod m20260423_000010_make_guarantee_cycle_native;
 mod m20260423_000011_drop_tabs;
 mod m20260507_000007_collateral_event_identity_unique;
+mod m20260612_000012_settlement_cycle_onchain_hash;
 
 pub struct Migrator;
 
@@ -65,6 +66,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260423_000010_make_guarantee_cycle_native::Migration),
             Box::new(m20260423_000011_drop_tabs::Migration),
             Box::new(m20260507_000007_collateral_event_identity_unique::Migration),
+            Box::new(m20260612_000012_settlement_cycle_onchain_hash::Migration),
         ]
     }
 }

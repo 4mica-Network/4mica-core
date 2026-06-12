@@ -272,16 +272,15 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Interleaved settlement: a creditor claims — funded by a *different* debtor's
-/// payment via the contract's pooled liquidity — before its own debtor pays. The
-/// claim must NOT settle the `debtor->creditor` guarantee, so when that debtor
-/// finally pays, its collateral is still released. Regression guard for the leak
-/// where an early creditor claim flipped the guarantee to Settled and blocked the
-/// debtor's release.
+/// Interleaved settlement under the full-funding claim gate: a creditor cannot
+/// claim until the cycle's entire debit side is funded. A partial payment leaves
+/// the claim blocked; the remaining debtor's own payment settles its guarantee
+/// and releases its collateral, after which the creditor can finally claim.
+/// Regression guard that a debtor's collateral is released by its own payment,
+/// not by a creditor claim.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
-async fn creditor_claim_before_its_debtor_pays_still_releases_debtor_collateral()
--> anyhow::Result<()> {
+async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<()> {
     let env = setup_e2e_environment()
         .await
         .context("setup_e2e_environment")?;
@@ -291,7 +290,7 @@ async fn creditor_claim_before_its_debtor_pays_still_releases_debtor_collateral(
     let http = env.cfg.ethereum_config.http_rpc_url.clone();
     let asset = core_service::config::DEFAULT_ASSET_ADDRESS;
 
-    // d1 -> c is the guarantee under test; d2 -> e independently funds the pool.
+    // d1 -> c is the guarantee under test; d2 -> e is the other half of the cycle.
     let (d1, d1_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
     let (c, c_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
     let (d2, d2_provider) = common::chain::wallet_provider(&http, SECOND_DEBTOR_KEY)?;
@@ -301,7 +300,7 @@ async fn creditor_claim_before_its_debtor_pays_still_releases_debtor_collateral(
     let g_d1c = commit_interleaved_cycle(&svc, cycle_id, &d1, &c, &d2, &e).await?;
     mine(&provider, 2).await?;
 
-    // d2 pays first, funding the cycle's pooled liquidity (d2 owes e, not c).
+    // Only d2 pays: the cycle is half-funded (d2 owes e, not c).
     let d2_proof = svc
         .get_participant_clearing_proof(cycle_id, &lower(&d2))
         .await?;
@@ -317,38 +316,32 @@ async fn creditor_claim_before_its_debtor_pays_still_releases_debtor_collateral(
     mine(&provider, 2).await?;
     poll_position_status(ctx, cycle_id, &lower(&d2), ParticipantCycleStatus::Paid).await?;
 
-    // c claims now — funded by d2's payment — BEFORE its own debtor d1 pays.
+    // c cannot claim yet: the cycle is not fully funded (d1 still owes).
     let c_proof = svc
         .get_participant_clearing_proof(cycle_id, &lower(&c))
         .await?;
-    ClearingHouse::new(*env.clearing_house.address(), c_provider)
-        .claimNetCredit(c_proof.cycle_id, c_proof.amount, c_proof.proof)
+    let premature = ClearingHouse::new(*env.clearing_house.address(), c_provider.clone())
+        .claimNetCredit(c_proof.cycle_id, c_proof.amount, c_proof.proof.clone())
         .send()
-        .await
-        .context("c claimNetCredit send")?
-        .watch()
-        .await
-        .context("c claimNetCredit confirm")?;
-    mine(&provider, 2).await?;
-    poll_position_status(ctx, cycle_id, &lower(&c), ParticipantCycleStatus::Claimed).await?;
+        .await;
+    assert!(
+        premature.is_err(),
+        "creditor claim must be rejected while the cycle is underfunded"
+    );
 
-    // The early claim must leave d1->c untouched: still Netted, d1 still locked.
+    // d1->c stays Netted and d1 stays locked until d1 itself pays.
     let g = guarantee::Entity::find_by_id(g_d1c.clone())
         .one(ctx.db.as_ref())
         .await?
         .expect("d1->c guarantee exists");
-    assert_eq!(
-        g.settlement_status,
-        GuaranteeSettlementStatus::Netted,
-        "creditor claim must not settle its debtor's guarantee"
-    );
+    assert_eq!(g.settlement_status, GuaranteeSettlementStatus::Netted);
     assert_eq!(
         read_locked_collateral(ctx, &lower(&d1), asset).await?,
         U256::from(NET_AMOUNT),
         "d1 collateral must stay locked until d1 itself pays"
     );
 
-    // d1 pays last; its payment settles d1->c and releases its collateral.
+    // d1 pays: settles d1->c, releases d1's collateral, and completes funding.
     let d1_proof = svc
         .get_participant_clearing_proof(cycle_id, &lower(&d1))
         .await?;
@@ -364,12 +357,23 @@ async fn creditor_claim_before_its_debtor_pays_still_releases_debtor_collateral(
     mine(&provider, 2).await?;
     poll_position_status(ctx, cycle_id, &lower(&d1), ParticipantCycleStatus::Paid).await?;
     poll_guarantee_status(ctx, &g_d1c, GuaranteeSettlementStatus::Settled).await?;
-
     assert_eq!(
         read_locked_collateral(ctx, &lower(&d1), asset).await?,
         U256::ZERO,
-        "d1 collateral must be released once it pays, despite the earlier creditor claim"
+        "d1 collateral released by its own payment"
     );
+
+    // Fully funded now, so the creditor's claim succeeds.
+    ClearingHouse::new(*env.clearing_house.address(), c_provider)
+        .claimNetCredit(c_proof.cycle_id, c_proof.amount, c_proof.proof)
+        .send()
+        .await
+        .context("c claimNetCredit send")?
+        .watch()
+        .await
+        .context("c claimNetCredit confirm")?;
+    mine(&provider, 2).await?;
+    poll_position_status(ctx, cycle_id, &lower(&c), ParticipantCycleStatus::Claimed).await?;
 
     Ok(())
 }

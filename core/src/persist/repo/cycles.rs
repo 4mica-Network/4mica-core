@@ -110,6 +110,7 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
 ) -> Result<settlement_cycle::Model, PersistDbError> {
     let now = chrono::Utc::now().naive_utc();
     let asset_address = parse_address(&input.asset_address)?.into_inner();
+    let onchain_cycle_id_hash = crate::evm::bytes32_hex(crate::evm::cycle_id_hash(&input.id));
     let active_model = settlement_cycle::ActiveModel {
         id: Set(input.id.clone()),
         asset_address: Set(asset_address),
@@ -125,6 +126,7 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
         net_settlement_amount: Set("0".to_string()),
         clearing_batch_hash: Set(None),
         commit_tx_hash: Set(None),
+        onchain_cycle_id_hash: Set(Some(onchain_cycle_id_hash)),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -192,19 +194,15 @@ pub async fn list_payment_window_cycles_finality_due_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
-pub async fn list_cycles_for_onchain_resolution_on<C: ConnectionTrait>(
+pub async fn get_cycle_id_by_onchain_hash_on<C: ConnectionTrait>(
     conn: &C,
-) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
-    let rows = settlement_cycle::Entity::find()
-        .filter(settlement_cycle::Column::Status.is_in([
-            SettlementCycleStatus::NettingComputed,
-            SettlementCycleStatus::PaymentWindowOpen,
-            SettlementCycleStatus::Defaulted,
-            SettlementCycleStatus::Finalized,
-        ]))
-        .all(conn)
+    onchain_cycle_id_hash: &str,
+) -> Result<Option<String>, PersistDbError> {
+    let model = settlement_cycle::Entity::find()
+        .filter(settlement_cycle::Column::OnchainCycleIdHash.eq(onchain_cycle_id_hash))
+        .one(conn)
         .await?;
-    Ok(rows)
+    Ok(model.map(|cycle| cycle.id))
 }
 
 #[measure(record_db_time)]
