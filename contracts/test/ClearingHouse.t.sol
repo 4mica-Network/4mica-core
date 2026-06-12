@@ -103,10 +103,13 @@ contract ClearingHouseTest is Test {
         vm.deal(d1, half);
 
         bytes32[] memory leaves = new bytes32[](3);
-        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, half, ClearingHouse.ParticipantRole.NetDebtor);
-        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, half, ClearingHouse.ParticipantRole.NetDebtor);
-        leaves[2] =
-            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, creditor, total, ClearingHouse.ParticipantRole.NetCreditor);
+        leaves[0] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, half, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, half, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] = clearingHouse.participantLeaf(
+            CYCLE_ID, ETH_ASSET, creditor, total, ClearingHouse.ParticipantRole.NetCreditor
+        );
 
         (bytes32 root,) = _merkle(leaves, leaves[0]);
         (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
@@ -114,7 +117,13 @@ contract ClearingHouseTest is Test {
 
         vm.prank(OPERATOR);
         clearingHouse.commitCycle(
-            CYCLE_ID, ETH_ASSET, root, total, total, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            total,
+            total,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
         );
 
         // Only one of the two debtors pays: pool holds `half`, creditor is owed
@@ -219,8 +228,9 @@ contract ClearingHouseTest is Test {
         leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, amt, ClearingHouse.ParticipantRole.NetDebtor);
         leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, amt, ClearingHouse.ParticipantRole.NetDebtor);
         leaves[2] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d3, amt, ClearingHouse.ParticipantRole.NetDebtor);
-        leaves[3] =
-            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, creditor, total, ClearingHouse.ParticipantRole.NetCreditor);
+        leaves[3] = clearingHouse.participantLeaf(
+            CYCLE_ID, ETH_ASSET, creditor, total, ClearingHouse.ParticipantRole.NetCreditor
+        );
 
         (bytes32 root,) = _merkle(leaves, leaves[0]);
         (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
@@ -230,7 +240,13 @@ contract ClearingHouseTest is Test {
 
         vm.prank(OPERATOR);
         clearingHouse.commitCycle(
-            CYCLE_ID, ETH_ASSET, root, total, total, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            total,
+            total,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
         );
 
         // One debtor pays; the other two will default.
