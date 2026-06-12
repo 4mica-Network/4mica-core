@@ -329,7 +329,7 @@ sol! {
         function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable;
         function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
         function markDefaulted(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof) external;
-        function settleDefaultFromCollateral(bytes32 cycleId, address debtor, uint256 amount, bytes calldata authorization) external payable;
+        function settleDefaultFromCollateral(bytes32 cycleId, address debtor, uint256 amount) external payable;
         function finalizeCycle(bytes32 cycleId) external;
     }
 }

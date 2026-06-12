@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, U256};
 use alloy::providers::DynProvider;
 use alloy::providers::ext::AnvilApi;
 use anyhow::Context;
@@ -428,7 +428,7 @@ async fn defaulted_cycle_is_covered_and_finalized() -> anyhow::Result<()> {
 
     // Operator covers the default from collateral.
     ClearingHouse::new(*env.clearing_house.address(), op_provider.clone())
-        .settleDefaultFromCollateral(debtor_proof.cycle_id, debtor, amount, Bytes::new())
+        .settleDefaultFromCollateral(debtor_proof.cycle_id, debtor, amount)
         .value(amount)
         .send()
         .await

@@ -48,6 +48,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     }
 
     error AmountZero();
+    error CycleNotZeroSum(uint256 totalNetDebit, uint256 totalNetCredit);
     error CycleAlreadyCommitted(bytes32 cycleId);
     error CycleNotFound(bytes32 cycleId);
     error InvalidCycleStatus(bytes32 cycleId, CycleStatus status);
@@ -98,6 +99,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (cycleId == bytes32(0) || merkleRoot == bytes32(0) || totalNetDebit == 0 || totalNetCredit == 0) {
             revert AmountZero();
         }
+        if (totalNetDebit != totalNetCredit) revert CycleNotZeroSum(totalNetDebit, totalNetCredit);
         if (paymentSubmissionDeadline == 0 || paymentFinalityDeadline < paymentSubmissionDeadline) {
             revert InvalidDeadline();
         }
@@ -152,6 +154,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external nonReentrant {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
+        // Only pay out once the cycle is fully funded
+        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
+        if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
         if (netCredit == 0) revert AmountZero();
         if (participantStates[cycleId][msg.sender].claimed) revert AlreadyClaimed(cycleId, msg.sender);
         _verifyParticipant(cycle, cycleId, msg.sender, netCredit, ParticipantRole.NetCreditor, proof);
@@ -171,7 +176,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
     function markDefaulted(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof) external {
         OnchainCycle storage cycle = _requireCycle(cycleId);
-        _requirePaymentWindowOpen(cycleId, cycle);
+        if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
+            revert InvalidCycleStatus(cycleId, cycle.status);
+        }
         if (block.timestamp <= cycle.paymentFinalityDeadline) {
             revert PaymentFinalityPending(cycle.paymentFinalityDeadline);
         }
@@ -185,18 +192,19 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         participant.netDebit = netDebit;
         participant.defaulted = true;
         cycle.totalResolvedDebit += netDebit;
-        cycle.status = CycleStatus.Defaulted;
+        if (cycle.status != CycleStatus.Defaulted) {
+            cycle.status = CycleStatus.Defaulted;
+        }
 
         emit DebtorDefaulted(cycleId, debtor, netDebit);
     }
 
-    function settleDefaultFromCollateral(bytes32 cycleId, address debtor, uint256 amount, bytes calldata authorization)
+    function settleDefaultFromCollateral(bytes32 cycleId, address debtor, uint256 amount)
         external
         payable
         restricted
         nonReentrant
     {
-        authorization;
         OnchainCycle storage cycle = _requireCycle(cycleId);
         if (cycle.status != CycleStatus.Defaulted) revert InvalidCycleStatus(cycleId, cycle.status);
         if (!participantStates[cycleId][debtor].defaulted) revert InvalidProof();
