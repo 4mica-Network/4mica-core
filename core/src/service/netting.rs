@@ -117,6 +117,22 @@ pub fn participant_leaves_for_positions(
     Ok(leaves)
 }
 
+/// Build the clearing Merkle tree from participant leaves, rejecting any leaf
+/// collision.
+fn build_participant_merkle_tree(
+    participant_leaves: &[ParticipantLeaf],
+) -> ServiceResult<MerkleTree> {
+    let tree = MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf));
+    if tree.len() != participant_leaves.len() {
+        return Err(ServiceError::Other(anyhow!(
+            "clearing leaf collision: {} participant positions produced only {} distinct leaves",
+            participant_leaves.len(),
+            tree.len()
+        )));
+    }
+    Ok(tree)
+}
+
 impl CoreService {
     pub async fn compute_cycle_exposure_edges(&self, cycle_id: &str) -> ServiceResult<()> {
         self.require_cycle_status(cycle_id, SettlementCycleStatus::Frozen)
@@ -339,8 +355,7 @@ impl CoreService {
             )));
         }
 
-        let merkle_root =
-            MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf)).root();
+        let merkle_root = build_participant_merkle_tree(&participant_leaves)?.root();
         let batch_hash = evm::bytes32_hex(evm::length_prefixed_keccak(&[
             cycle.id.as_bytes(),
             cycle.asset_address.as_bytes(),
@@ -404,7 +419,7 @@ impl CoreService {
             &cycle.id,
             positions,
         )?;
-        let tree = MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf));
+        let tree = build_participant_merkle_tree(&participant_leaves)?;
         let computed_root = tree.root();
         if computed_root != stored_root {
             return Err(ServiceError::InvalidParams(format!(

@@ -9,12 +9,12 @@ use crate::{
     error::{ServiceError, ServiceResult},
     persist::repo,
 };
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use chrono::Utc;
 use crypto::bls::{BLSCert, BlsClaims};
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
-use log::info;
+use log::{info, warn};
 use rpc::{
     GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
     PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
@@ -205,23 +205,53 @@ impl CoreService {
             });
         }
 
-        let cert = self
+        let max_attempts = self
             .inner
+            .config
+            .database_config
+            .conflict_retries
+            .saturating_add(1);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self
+                .issue_payment_guarantee_in_txn(
+                    &req,
+                    &active_cycle.id,
+                    signed_cycle_id,
+                    &guarantee_id,
+                    request_version,
+                )
+                .await
+            {
+                Ok(cert) => return Ok(cert),
+                Err(ServiceError::OptimisticLockConflict) if attempt < max_attempts => {
+                    warn!(
+                        "guarantee issuance hit balance lock conflict (attempt {attempt}/{max_attempts}); retrying"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn issue_payment_guarantee_in_txn(
+        &self,
+        req: &PaymentGuaranteeRequest,
+        cycle_id: &str,
+        signed_cycle_id: U256,
+        guarantee_id: &str,
+        request_version: u64,
+    ) -> ServiceResult<BLSCert> {
+        self.inner
             .persist_ctx
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let self_clone = self.clone();
-                let cycle_id = active_cycle.id.clone();
-                let guarantee_id = guarantee_id.clone();
+                let req = req.clone();
+                let cycle_id = cycle_id.to_string();
+                let guarantee_id = guarantee_id.to_string();
                 Box::pin(async move {
-                    if repo::get_guarantee_by_id_on(txn, &guarantee_id)
-                        .await?
-                        .is_some()
-                    {
-                        return Err(ServiceError::DuplicateGuarantee {
-                            req_id: req.claims.req_id(),
-                        });
-                    }
                     self_clone
                         .process_guarantee_request_claims_on(txn, &req.claims)
                         .await?;
@@ -256,9 +286,7 @@ impl CoreService {
                 sea_orm::TransactionError::Connection(err) => {
                     PersistDbError::DatabaseFailure(err).into()
                 }
-            })?;
-
-        Ok(cert)
+            })
     }
 
     pub async fn finalize_guarantee_payable(&self, guarantee_id: &str) -> ServiceResult<bool> {

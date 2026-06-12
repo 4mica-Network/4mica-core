@@ -20,6 +20,22 @@
 //! produced here verify directly in Solidity. When a level has an odd number of
 //! nodes, the final node is paired with itself.
 //!
+//! ## Second-preimage safety — a load-bearing caller invariant
+//!
+//! Leaves and internal nodes are both bare [`B256`] hashes, so this tree gives
+//! no *structural* protection against second-preimage attacks: an internal node
+//! value handed to [`verify_proof`] as a `leaf` verifies just fine, because the
+//! verifier cannot tell a leaf apart from an interior node. Safety therefore
+//! depends entirely on **consumers deriving every leaf from typed, fixed-shape
+//! arguments and never accepting a caller-supplied 64-byte leaf**. The
+//! ClearingHouse upholds this: its leaf preimage is a fixed 224-byte tuple
+//! `(chainId, clearingHouse, cycleId, asset, participant, amount, role)`, which
+//! can never collide with a 64-byte node preimage, and on-chain verification
+//! recomputes the leaf from those arguments rather than trusting the caller.
+//!
+//! Do not add an API that verifies an externally supplied leaf hash, and keep
+//! leaf derivation longer than 64 bytes; either change reintroduces the attack.
+//!
 //! ## Proofs
 //!
 //! [`MerkleTree::proof`] returns the sibling hashes needed to recompute the root

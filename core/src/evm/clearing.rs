@@ -17,6 +17,10 @@ pub fn claim_cycle_id(cycle_id: &str) -> U256 {
 /// The pre-image is the ABI-style concatenation of 32-byte words
 /// `(chainId, clearingHouse, cycleId, asset, participant, amount, role)`, which
 /// must stay byte-for-byte identical to the ClearingHouse contract.
+///
+/// This fixed 224-byte preimage is also what makes the Merkle tree
+/// second-preimage safe: it can never equal a 64-byte internal-node preimage.
+/// See the load-bearing caller invariant documented in [`crypto::merkle`].
 pub fn hash_participant_leaf(
     chain_id: u64,
     clearing_house_address: Address,
