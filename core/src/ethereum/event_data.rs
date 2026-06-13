@@ -220,12 +220,6 @@ impl TryInto<StoredEventData> for &Log {
             Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
                 name: "WithdrawalGracePeriodUpdated".to_string(),
             }),
-            Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
-                name: "TabExpirationTimeUpdated".to_string(),
-            }),
-            Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
-                name: "SynchronizationDelayUpdated".to_string(),
-            }),
             _ => Ok(StoredEventData::Unknown {
                 name: "unknown".to_string(),
             }),

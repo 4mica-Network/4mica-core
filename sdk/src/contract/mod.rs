@@ -14,7 +14,6 @@ sol! {
         error DirectTransferNotAllowed();
         error InvalidSignature();
         error InvalidRecipient();
-        error IllegalValue();
         error UnsupportedAsset(address asset);
         error InvalidAsset(address asset);
         error UnsupportedGuaranteeVersion(uint64 version);
@@ -34,8 +33,6 @@ sol! {
 
         // ========= Storage =========
         function withdrawalGracePeriod() external view returns (uint256);
-        function tabExpirationTime() external view returns (uint256);
-        function synchronizationDelay() external view returns (uint256);
         function aaveAddressesProvider() external view returns (address);
         function yieldFeeBps() external view returns (uint256);
 
@@ -50,8 +47,6 @@ sol! {
         event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
         event WithdrawalCanceled(address indexed user, address indexed asset);
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
-        event TabExpirationTimeUpdated(uint256 newExpirationTime);
-        event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
         event GuaranteeVersionUpdated(
             uint64 indexed version,
@@ -136,10 +131,7 @@ sol! {
 
         // ========= Admin / Manager =========
         function setWithdrawalGracePeriod(uint256 _gracePeriod) external;
-        function setTabExpirationTime(uint256 _expirationTime) external;
-        function setSynchronizationDelay(uint256 _synchronizationDelay) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
-        function setTimingParameters(uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
         function configureAave(address poolAddressesProvider, address[] calldata aTokens) external;
         function addStablecoinAsset(address asset, address aToken) external;

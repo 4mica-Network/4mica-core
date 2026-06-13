@@ -397,16 +397,6 @@ impl EthereumEventScanner {
                             .handle_admin_event(log.clone(), "WithdrawalGracePeriodUpdated")
                             .await
                     }
-                    Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => {
-                        handler
-                            .handle_admin_event(log.clone(), "TabExpirationTimeUpdated")
-                            .await
-                    }
-                    Some(&SynchronizationDelayUpdated::SIGNATURE_HASH) => {
-                        handler
-                            .handle_admin_event(log.clone(), "SynchronizationDelayUpdated")
-                            .await
-                    }
                     Some(&VerificationKeyUpdated::SIGNATURE_HASH) => {
                         handler
                             .handle_admin_event(log.clone(), "VerificationKeyUpdated")

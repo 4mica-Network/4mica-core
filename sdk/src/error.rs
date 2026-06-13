@@ -162,8 +162,6 @@ pub enum DepositError {
     AmountZero,
     #[error("unsupported asset: {0}")]
     UnsupportedAsset(Address),
-    #[error("illegal value")]
-    IllegalValue,
     #[error("Aave is not configured")]
     AaveNotConfigured,
 
@@ -399,7 +397,6 @@ impl_from_alloy_error!(CancelWithdrawalError, {
 impl_from_alloy_error!(DepositError, {
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
     Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
-    Core4Mica::Core4MicaErrors::IllegalValue(_) => Self::IllegalValue,
     Core4Mica::Core4MicaErrors::AaveNotConfigured(_) => Self::AaveNotConfigured,
 });
 

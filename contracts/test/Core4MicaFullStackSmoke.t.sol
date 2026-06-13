@@ -12,8 +12,6 @@ import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
 
 contract Core4MicaFullStackSmokeTest is Test {
-    bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
-        bytes4(keccak256("setTimingParameters(uint256,uint256,uint256)"));
     uint64 private constant GOVERNANCE_ROLE = 1;
     uint64 private constant TREASURY_ROLE = 2;
     uint64 private constant GUARDIAN_ROLE = 3;
@@ -119,16 +117,13 @@ contract Core4MicaFullStackSmokeTest is Test {
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
-        bytes4[] memory governanceSelectors = new bytes4[](9);
+        bytes4[] memory governanceSelectors = new bytes4[](6);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
-        governanceSelectors[1] = Core4Mica.setTabExpirationTime.selector;
-        governanceSelectors[2] = Core4Mica.setGuaranteeVerificationKey.selector;
-        governanceSelectors[3] = SET_TIMING_PARAMETERS_SELECTOR;
-        governanceSelectors[4] = Core4Mica.setSynchronizationDelay.selector;
-        governanceSelectors[5] = Core4Mica.configureGuaranteeVersion.selector;
-        governanceSelectors[6] = Core4Mica.configureAave.selector;
-        governanceSelectors[7] = Core4Mica.addStablecoinAsset.selector;
-        governanceSelectors[8] = Core4Mica.setYieldFeeBps.selector;
+        governanceSelectors[1] = Core4Mica.setGuaranteeVerificationKey.selector;
+        governanceSelectors[2] = Core4Mica.configureGuaranteeVersion.selector;
+        governanceSelectors[3] = Core4Mica.configureAave.selector;
+        governanceSelectors[4] = Core4Mica.addStablecoinAsset.selector;
+        governanceSelectors[5] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(

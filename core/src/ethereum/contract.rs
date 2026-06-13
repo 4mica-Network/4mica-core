@@ -33,12 +33,6 @@ pub mod abi {
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
 
         #[derive(Debug)]
-        event TabExpirationTimeUpdated(uint256 newExpirationTime);
-
-        #[derive(Debug)]
-        event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
-
-        #[derive(Debug)]
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
 
         #[derive(Debug)]
@@ -97,20 +91,17 @@ pub mod abi {
 pub use abi::{
     AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
     CycleFinalized, DebtorDefaulted, DebtorPaid, DefaultCovered, GuaranteeVersionUpdated,
-    ProtocolYieldClaimed, StablecoinAssetUpdated, SurplusATokensClaimed,
-    SynchronizationDelayUpdated, TabExpirationTimeUpdated, VerificationKeyUpdated,
+    ProtocolYieldClaimed, StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated,
     WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 20] = [
+pub const EVENT_SIGNATURES: [&str; 18] = [
     CollateralDeposited::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
     WithdrawalRequested::SIGNATURE,
     WithdrawalCanceled::SIGNATURE,
     WithdrawalGracePeriodUpdated::SIGNATURE,
-    TabExpirationTimeUpdated::SIGNATURE,
-    SynchronizationDelayUpdated::SIGNATURE,
     VerificationKeyUpdated::SIGNATURE,
     GuaranteeVersionUpdated::SIGNATURE,
     StablecoinAssetUpdated::SIGNATURE,
@@ -127,14 +118,12 @@ pub const EVENT_SIGNATURES: [&str; 20] = [
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 20] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     CollateralDeposited::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
     WithdrawalRequested::SIGNATURE_HASH,
     WithdrawalCanceled::SIGNATURE_HASH,
     WithdrawalGracePeriodUpdated::SIGNATURE_HASH,
-    TabExpirationTimeUpdated::SIGNATURE_HASH,
-    SynchronizationDelayUpdated::SIGNATURE_HASH,
     VerificationKeyUpdated::SIGNATURE_HASH,
     GuaranteeVersionUpdated::SIGNATURE_HASH,
     StablecoinAssetUpdated::SIGNATURE_HASH,
@@ -199,7 +188,8 @@ pub mod contract_abi {
                     bool enabled
                 );
 
-            function tabExpirationTime() external view returns (uint256);
+            /// View: delayed-withdrawal grace period (seconds).
+            function withdrawalGracePeriod() external view returns (uint256);
 
             /// View: current BLS verification key.
             function GUARANTEE_VERIFICATION_KEY() external view returns (bytes32,bytes32,bytes32,bytes32);
@@ -242,14 +232,12 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
-    const EXPECTED_EVENT_SIGNATURES: [&str; 20] = [
+    const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
         "CollateralDeposited(address,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
         "WithdrawalRequested(address,address,uint256,uint256)",
         "WithdrawalCanceled(address,address)",
         "WithdrawalGracePeriodUpdated(uint256)",
-        "TabExpirationTimeUpdated(uint256)",
-        "SynchronizationDelayUpdated(uint256)",
         "VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32))",
         "GuaranteeVersionUpdated(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
         "StablecoinAssetUpdated(address,bool)",
@@ -275,17 +263,17 @@ mod tests {
             EVENT_SIGNATURE_HASHES[0],
             CollateralDeposited::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[8], GuaranteeVersionUpdated::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURES[6], GuaranteeVersionUpdated::SIGNATURE);
         assert_eq!(
-            EVENT_SIGNATURE_HASHES[8],
+            EVENT_SIGNATURE_HASHES[6],
             GuaranteeVersionUpdated::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[13], SurplusATokensClaimed::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURES[11], SurplusATokensClaimed::SIGNATURE);
         assert_eq!(
-            EVENT_SIGNATURE_HASHES[13],
+            EVENT_SIGNATURE_HASHES[11],
             SurplusATokensClaimed::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[14], CycleCommitted::SIGNATURE);
-        assert_eq!(EVENT_SIGNATURE_HASHES[19], CycleFinalized::SIGNATURE_HASH);
+        assert_eq!(EVENT_SIGNATURES[12], CycleCommitted::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURE_HASHES[17], CycleFinalized::SIGNATURE_HASH);
     }
 }

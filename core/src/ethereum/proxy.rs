@@ -66,7 +66,7 @@ pub trait CoreContractApi: Send + Sync {
         Ok(cfg.domain_separator)
     }
 
-    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError>;
+    async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError>;
 
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError>;
 
@@ -150,10 +150,10 @@ impl CoreContractApi for CoreContractProxy {
         })
     }
 
-    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
+    async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError> {
         let contract = self.build_contract();
-        let expiration = contract.tabExpirationTime().call().await?;
-        Ok(expiration.to())
+        let grace_period = contract.withdrawalGracePeriod().call().await?;
+        Ok(grace_period.to())
     }
 
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {

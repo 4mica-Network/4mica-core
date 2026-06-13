@@ -70,14 +70,14 @@ contract Core4MicaAaveForkTest is Test {
         _grantGovernance(Core4Mica.setYieldFeeBps.selector);
         _grantGovernance(Core4Mica.claimProtocolYield.selector);
         _grantGovernance(Core4Mica.claimSurplusATokens.selector);
-        _grantGovernance(Core4Mica.setTimingParameters.selector);
+        _grantGovernance(Core4Mica.setWithdrawalGracePeriod.selector);
 
         address[] memory configuredATokens = new address[](2);
         configuredATokens[0] = aTokens[0];
         configuredATokens[1] = aTokens[1];
         core4Mica.configureAave(providerAddress, configuredATokens);
 
-        core4Mica.setTimingParameters(2 hours, 1 hours, 4 hours);
+        core4Mica.setWithdrawalGracePeriod(4 hours);
 
         _fundAndApprove(USER1, stablecoins[0], _depositAmount(stablecoins[0]) * 3);
         _fundAndApprove(USER1, stablecoins[1], _depositAmount(stablecoins[1]) * 3);

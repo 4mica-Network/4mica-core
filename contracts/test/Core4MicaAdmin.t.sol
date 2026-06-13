@@ -33,77 +33,6 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
-    function test_SetWithdrawalGracePeriod_Revert_IllegalValue() public {
-        uint256 invalid = core4Mica.synchronizationDelay() + core4Mica.tabExpirationTime();
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setWithdrawalGracePeriod(invalid);
-    }
-
-    function test_SetTabExpirationTime() public {
-        uint256 newGrace = 20 days;
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.TabExpirationTimeUpdated(newGrace);
-        core4Mica.setTabExpirationTime(newGrace);
-
-        assertEq(core4Mica.tabExpirationTime(), newGrace);
-    }
-
-    function test_SetTabExpirationTime_Revert_Zero() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTabExpirationTime(0);
-    }
-
-    function test_SetTabExpirationTime_Revert_User_Unauthorized() public {
-        vm.prank(USER1);
-        vm.expectRevert(accessUnauthorizedError(USER1));
-        core4Mica.setTabExpirationTime(2 days);
-    }
-
-    function test_SetTabExpirationTime_Revert_Operator_Unauthorized() public {
-        vm.prank(OPERATOR);
-        vm.expectRevert(accessUnauthorizedError(OPERATOR));
-        core4Mica.setTabExpirationTime(2 days);
-    }
-
-    function test_SetTabExpirationTime_Revert_IllegalValue() public {
-        uint256 invalidHigh = core4Mica.withdrawalGracePeriod() - core4Mica.synchronizationDelay();
-
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTabExpirationTime(invalidHigh);
-    }
-
-    function test_SetSynchronizationDelay() public {
-        uint256 newDelay = 5 hours;
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.SynchronizationDelayUpdated(newDelay);
-        core4Mica.setSynchronizationDelay(newDelay);
-
-        assertEq(core4Mica.synchronizationDelay(), newDelay);
-    }
-
-    function test_SetSynchronizationDelay_Revert_Zero() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setSynchronizationDelay(0);
-    }
-
-    function test_SetSynchronizationDelay_Revert_User_Unauthorized() public {
-        vm.prank(USER1);
-        vm.expectRevert(accessUnauthorizedError(USER1));
-        core4Mica.setSynchronizationDelay(5 hours);
-    }
-
-    function test_SetSynchronizationDelay_Revert_Operator_Unauthorized() public {
-        vm.prank(OPERATOR);
-        vm.expectRevert(accessUnauthorizedError(OPERATOR));
-        core4Mica.setSynchronizationDelay(5 hours);
-    }
-
-    function test_SetSynchronizationDelay_Revert_IllegalValue() public {
-        uint256 invalid = core4Mica.withdrawalGracePeriod() - core4Mica.tabExpirationTime();
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setSynchronizationDelay(invalid);
-    }
-
     function test_SetVerificationKey() public {
         BLS.G1Point memory newKey = BLS.G1Point(
             bytes32(0x1000000000000000000000000000000000000000000000000000000000000001),
@@ -228,41 +157,6 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
             abi.encodeWithSelector(Core4Mica.InvalidAToken.selector, address(eurc), address(mockEurcAToken))
         );
         core4Mica.addStablecoinAsset(address(eurc), address(mockEurcAToken));
-    }
-
-    function test_SetTimingParameters_Revert_ZeroValues() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTimingParameters(0, 1 days, 25 days);
-
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTimingParameters(15 days, 0, 25 days);
-
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTimingParameters(15 days, 1 days, 0);
-    }
-
-    function test_SetTimingParameters() public {
-        uint256 newTab = 15 days;
-        uint256 newSync = 1 days;
-        uint256 newWithdrawal = 25 days;
-
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.TabExpirationTimeUpdated(newTab);
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.SynchronizationDelayUpdated(newSync);
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.WithdrawalGracePeriodUpdated(newWithdrawal);
-
-        core4Mica.setTimingParameters(newTab, newSync, newWithdrawal);
-
-        assertEq(core4Mica.tabExpirationTime(), newTab);
-        assertEq(core4Mica.synchronizationDelay(), newSync);
-        assertEq(core4Mica.withdrawalGracePeriod(), newWithdrawal);
-    }
-
-    function test_SetTimingParameters_Revert_InvalidOrdering() public {
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTimingParameters(10 days, 15 days, 20 days);
     }
 
     function _prepareNewStablecoin(string memory name, string memory symbol)

@@ -415,8 +415,6 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
     // Map Core4Mica config functions to USER_ADMIN_ROLE = 4
     let selectors = vec![
         fn_selector("setWithdrawalGracePeriod(uint256)"),
-        fn_selector("setTabExpirationTime(uint256)"),
-        fn_selector("setSynchronizationDelay(uint256)"),
         fn_selector(
             "configureGuaranteeVersion(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
         ),
@@ -436,23 +434,9 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
         .watch()
         .await?;
 
-    // Should now succeed and emit eSome(chrono::Utc::now().timestamp() as u64),vents
+    // Should now succeed and emit events without crashing the scanner.
     contract
         .setWithdrawalGracePeriod(U256::from(30 * 24 * 60 * 60))
-        .send()
-        .await?
-        .watch()
-        .await?;
-    mine_confirmations(&provider, 1).await?;
-    contract
-        .setTabExpirationTime(U256::from(20 * 24 * 60 * 60))
-        .send()
-        .await?
-        .watch()
-        .await?;
-    mine_confirmations(&provider, 1).await?;
-    contract
-        .setSynchronizationDelay(U256::from(12 * 60 * 60))
         .send()
         .await?
         .watch()

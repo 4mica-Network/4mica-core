@@ -1,7 +1,7 @@
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
-use log::info;
+use log::{info, warn};
 use metrics_4mica::measure;
 
 use crate::metrics::misc::record_event_handler_time;
@@ -178,21 +178,21 @@ impl EthereumEventHandler for CoreService {
     ) -> Result<(), BlockchainListenerError> {
         match event_name {
             "WithdrawalGracePeriodUpdated" => {
-                let ev = log.log_decode::<WithdrawalGracePeriodUpdated>()?;
-                info!("{:?}", ev);
-            }
-            "TabExpirationTimeUpdated" => {
-                let TabExpirationTimeUpdated {
-                    newExpirationTime: new_expiration_time,
+                let WithdrawalGracePeriodUpdated {
+                    newGracePeriod: new_grace_period,
                     ..
                 } = *log.log_decode()?.data();
-                let new_expiration = new_expiration_time.to();
-                info!("TabExpirationTimeUpdated: {}", new_expiration);
-                self.set_tab_expiration_time(new_expiration);
-            }
-            "SynchronizationDelayUpdated" => {
-                let ev = log.log_decode::<SynchronizationDelayUpdated>()?;
-                info!("{:?}", ev);
+                let new_grace_period = new_grace_period.to();
+                info!("WithdrawalGracePeriodUpdated: {}s", new_grace_period);
+                self.set_withdrawal_grace_period(new_grace_period);
+
+                // Surface a governance change that breaks the
+                // delayed-withdrawal solvency invariant; health checks will report it.
+                if let Err(err) = self.check_settlement_timing_invariant() {
+                    warn!(
+                        "settlement timing invariant violated after grace-period update: {err:#}"
+                    );
+                }
             }
             "VerificationKeyUpdated" => {
                 let ev = log.log_decode::<VerificationKeyUpdated>()?;

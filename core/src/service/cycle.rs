@@ -391,6 +391,7 @@ mod tests {
             clearing_commit_delay_secs: 900,
             payment_submission_window_secs: 7_200,
             payment_finality_window_secs: 14_400,
+            seizure_margin_secs: 21_600,
         };
         let now = Utc.with_ymd_and_hms(2026, 4, 27, 14, 37, 11).unwrap();
 

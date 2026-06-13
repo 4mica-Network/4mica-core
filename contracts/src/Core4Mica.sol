@@ -48,7 +48,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error DirectTransferNotAllowed();
     error InvalidSignature();
     error InvalidRecipient();
-    error IllegalValue();
     error UnsupportedAsset(address asset);
     error InvalidAsset(address asset);
     error UnsupportedGuaranteeVersion(uint64 version);
@@ -67,9 +66,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error SurplusClaimExceedsAvailable();
 
     // ========= Storage =========
+    /// @notice Delay between `requestWithdrawal` and `finalizeWithdrawal`.
+    /// @dev This is the window the operator has to seize a defaulting user's collateral
+    /// before it can leave. The operator is responsible for keeping it long enough
+    /// to cover the off-chain settlement cycle's worst-case time-to-finality
+    /// plus its seizure margin.
     uint256 public withdrawalGracePeriod = 22 days;
-    uint256 public tabExpirationTime = 21 days;
-    uint256 public synchronizationDelay = 6 hours;
 
     // forge-lint: disable-next-line(mixed-case-variable)
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
@@ -129,8 +131,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
     event WithdrawalCanceled(address indexed user, address indexed asset);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
-    event TabExpirationTimeUpdated(uint256 newExpirationTime);
-    event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
     event GuaranteeVersionUpdated(
         uint64 indexed version, BLS.G1Point verificationKey, bytes32 domainSeparator, address decoder, bool enabled
@@ -209,47 +209,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     function setWithdrawalGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
-        if (synchronizationDelay + tabExpirationTime >= _gracePeriod) {
-            revert IllegalValue();
-        }
         withdrawalGracePeriod = _gracePeriod;
         emit WithdrawalGracePeriodUpdated(_gracePeriod);
-    }
-
-    function setTabExpirationTime(uint256 _expirationTime) external restricted nonZero(_expirationTime) {
-        if (synchronizationDelay + _expirationTime >= withdrawalGracePeriod) {
-            revert IllegalValue();
-        }
-        tabExpirationTime = _expirationTime;
-        emit TabExpirationTimeUpdated(_expirationTime);
-    }
-
-    function setSynchronizationDelay(uint256 _synchronizationDelay) external restricted nonZero(_synchronizationDelay) {
-        if (_synchronizationDelay + tabExpirationTime >= withdrawalGracePeriod) {
-            revert IllegalValue();
-        }
-        synchronizationDelay = _synchronizationDelay;
-        emit SynchronizationDelayUpdated(_synchronizationDelay);
-    }
-
-    function setTimingParameters(
-        uint256 _tabExpirationTime,
-        uint256 _synchronizationDelay,
-        uint256 _withdrawalGracePeriod
-    ) external restricted {
-        if (_tabExpirationTime == 0 || _synchronizationDelay == 0 || _withdrawalGracePeriod == 0) {
-            revert AmountZero();
-        }
-
-        if (_synchronizationDelay + _tabExpirationTime >= _withdrawalGracePeriod) revert IllegalValue();
-
-        tabExpirationTime = _tabExpirationTime;
-        synchronizationDelay = _synchronizationDelay;
-        withdrawalGracePeriod = _withdrawalGracePeriod;
-
-        emit TabExpirationTimeUpdated(_tabExpirationTime);
-        emit SynchronizationDelayUpdated(_synchronizationDelay);
-        emit WithdrawalGracePeriodUpdated(_withdrawalGracePeriod);
     }
 
     function setGuaranteeVerificationKey(BLS.G1Point calldata verificationKey) external restricted {

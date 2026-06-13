@@ -13,7 +13,7 @@ use crate::{
 };
 use alloy::primitives::Address;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use crypto::bls::KeyMaterial;
 use log::{error, info};
 use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
@@ -33,7 +33,8 @@ pub struct Inner {
     trusted_validation_registry_set: HashSet<Address>,
     accepted_guarantee_versions: HashSet<u64>,
     guarantee_domains: HashMap<u64, [u8; 32]>,
-    tab_expiration_time: AtomicU64,
+    /// On-chain `withdrawalGracePeriod` (seconds)
+    withdrawal_grace_period: AtomicU64,
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
@@ -50,7 +51,7 @@ pub struct CoreServiceDeps {
     pub chain_id: u64,
     pub read_provider: DynProvider,
     pub guarantee_domains: HashMap<u64, [u8; 32]>,
-    pub tab_expiration_time: u64,
+    pub withdrawal_grace_period: u64,
 }
 
 impl CoreService {
@@ -92,8 +93,20 @@ impl CoreService {
             );
             guarantee_domains.insert(version, version_config.domain_separator);
         }
-        let tab_expiration_time = contract_api.get_tab_expiration_time().await?;
-        info!("on-chain tab expiration time: {}s", tab_expiration_time);
+        let withdrawal_grace_period = contract_api.get_withdrawal_grace_period().await?;
+        info!(
+            "on-chain withdrawal grace period: {}s",
+            withdrawal_grace_period
+        );
+
+        // Fail fast if the settlement-cycle timeline does not leave the operator
+        // enough margin to seize a defaulter's collateral before it can be withdrawn.
+        config
+            .settlement_cycle
+            .validate_against_withdrawal_grace_period(withdrawal_grace_period)
+            .context(
+                "settlement cycle timing is incompatible with on-chain withdrawalGracePeriod",
+            )?;
 
         Self::new_with_dependencies(
             config,
@@ -103,7 +116,7 @@ impl CoreService {
                 chain_id: actual_chain_id,
                 read_provider,
                 guarantee_domains,
-                tab_expiration_time,
+                withdrawal_grace_period,
             },
         )
     }
@@ -176,7 +189,7 @@ impl CoreService {
             trusted_validation_registry_set,
             accepted_guarantee_versions,
             guarantee_domains: deps.guarantee_domains,
-            tab_expiration_time: AtomicU64::new(deps.tab_expiration_time),
+            withdrawal_grace_period: AtomicU64::new(deps.withdrawal_grace_period),
             persist_ctx: deps.persist_ctx,
             read_provider: deps.read_provider,
             contract_api: deps.contract_api,
@@ -211,10 +224,23 @@ impl CoreService {
             .clone()
     }
 
-    fn set_tab_expiration_time(&self, tab_expiration_time: u64) {
+    pub(crate) fn set_withdrawal_grace_period(&self, withdrawal_grace_period: u64) {
         self.inner
-            .tab_expiration_time
-            .store(tab_expiration_time, Ordering::Relaxed);
+            .withdrawal_grace_period
+            .store(withdrawal_grace_period, Ordering::Relaxed);
+    }
+
+    pub(crate) fn withdrawal_grace_period(&self) -> u64 {
+        self.inner.withdrawal_grace_period.load(Ordering::Relaxed)
+    }
+
+    /// Re-evaluate the settlement-cycle solvency invariant against the currently
+    /// known on-chain `withdrawalGracePeriod`.
+    pub(crate) fn check_settlement_timing_invariant(&self) -> anyhow::Result<()> {
+        self.inner
+            .config
+            .settlement_cycle
+            .validate_against_withdrawal_grace_period(self.withdrawal_grace_period())
     }
 
     pub async fn build_ws_provider(config: EthereumConfig) -> ServiceResult<DynProvider> {
