@@ -37,21 +37,6 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
-    #[measure(record_event_handler_time, name = "recipient_remunerated")]
-    async fn handle_recipient_remunerated(&self, log: Log) -> Result<(), BlockchainListenerError> {
-        let RecipientRemunerated {
-            tab_id,
-            amount,
-            asset: _,
-            ..
-        } = *log.log_decode()?.data();
-        info!("Recipient remunerated: tab={tab_id}, amount={amount}");
-
-        // Tab-bound Core4Mica remuneration is legacy; cycle settlement events now drive
-        // runtime settlement accounting through the clearing handlers below.
-        Ok(())
-    }
-
     #[measure(record_event_handler_time, name = "collateral_withdrawn")]
     async fn handle_collateral_withdrawn(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CollateralWithdrawn {
@@ -126,44 +111,6 @@ impl EthereumEventHandler for CoreService {
         Ok(())
     }
 
-    #[measure(record_event_handler_time, name = "payment_recorded")]
-    async fn handle_payment_recorded(&self, log: Log) -> Result<(), BlockchainListenerError> {
-        let PaymentRecorded {
-            tab_id,
-            amount,
-            asset,
-            ..
-        } = *log.log_decode()?.data();
-        info!(
-            "PaymentRecorded: tab={}, amount={}, asset={}",
-            crate::util::u256_to_string(tab_id),
-            amount,
-            asset
-        );
-
-        // Unlocking collateral is handled after record-payment finalization.
-        Ok(())
-    }
-
-    #[measure(record_event_handler_time, name = "tab_paid")]
-    async fn handle_tab_paid(&self, log: Log) -> Result<(), BlockchainListenerError> {
-        let TabPaid {
-            tab_id,
-            asset,
-            user,
-            recipient,
-            amount,
-            ..
-        } = *log.log_decode()?.data();
-
-        info!(
-            "Ignoring legacy TabPaid event: tab={}, user={user}, recipient={recipient}, amount={amount}, asset={asset}",
-            crate::util::u256_to_string(tab_id)
-        );
-
-        Ok(())
-    }
-
     #[measure(record_event_handler_time, name = "cycle_committed")]
     async fn handle_cycle_committed(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CycleCommitted { cycleId, .. } = *log.log_decode()?.data();
@@ -232,10 +179,6 @@ impl EthereumEventHandler for CoreService {
         match event_name {
             "WithdrawalGracePeriodUpdated" => {
                 let ev = log.log_decode::<WithdrawalGracePeriodUpdated>()?;
-                info!("{:?}", ev);
-            }
-            "RemunerationGracePeriodUpdated" => {
-                let ev = log.log_decode::<RemunerationGracePeriodUpdated>()?;
                 info!("{:?}", ev);
             }
             "TabExpirationTimeUpdated" => {

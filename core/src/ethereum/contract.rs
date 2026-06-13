@@ -21,9 +21,6 @@ pub mod abi {
         event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
-        event RecipientRemunerated(uint256 indexed tab_id, address indexed asset, uint256 amount);
-
-        #[derive(Debug)]
         event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
@@ -36,9 +33,6 @@ pub mod abi {
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
 
         #[derive(Debug)]
-        event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
-
-        #[derive(Debug)]
         event TabExpirationTimeUpdated(uint256 newExpirationTime);
 
         #[derive(Debug)]
@@ -46,18 +40,6 @@ pub mod abi {
 
         #[derive(Debug)]
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
-
-        #[derive(Debug)]
-        event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
-
-        #[derive(Debug)]
-        event TabPaid(
-            uint256 indexed tab_id,
-            address indexed asset,
-            address indexed user,
-            address recipient,
-            uint256 amount
-        );
 
         #[derive(Debug)]
         event GuaranteeVersionUpdated(
@@ -115,26 +97,21 @@ pub mod abi {
 pub use abi::{
     AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
     CycleFinalized, DebtorDefaulted, DebtorPaid, DefaultCovered, GuaranteeVersionUpdated,
-    PaymentRecorded, ProtocolYieldClaimed, RecipientRemunerated, RemunerationGracePeriodUpdated,
-    StablecoinAssetUpdated, SurplusATokensClaimed, SynchronizationDelayUpdated,
-    TabExpirationTimeUpdated, TabPaid, VerificationKeyUpdated, WithdrawalCanceled,
-    WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
+    ProtocolYieldClaimed, StablecoinAssetUpdated, SurplusATokensClaimed,
+    SynchronizationDelayUpdated, TabExpirationTimeUpdated, VerificationKeyUpdated,
+    WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 24] = [
+pub const EVENT_SIGNATURES: [&str; 20] = [
     CollateralDeposited::SIGNATURE,
-    RecipientRemunerated::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
     WithdrawalRequested::SIGNATURE,
     WithdrawalCanceled::SIGNATURE,
     WithdrawalGracePeriodUpdated::SIGNATURE,
-    RemunerationGracePeriodUpdated::SIGNATURE,
     TabExpirationTimeUpdated::SIGNATURE,
     SynchronizationDelayUpdated::SIGNATURE,
     VerificationKeyUpdated::SIGNATURE,
-    PaymentRecorded::SIGNATURE,
-    TabPaid::SIGNATURE,
     GuaranteeVersionUpdated::SIGNATURE,
     StablecoinAssetUpdated::SIGNATURE,
     AaveConfigured::SIGNATURE,
@@ -150,19 +127,15 @@ pub const EVENT_SIGNATURES: [&str; 24] = [
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 24] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 20] = [
     CollateralDeposited::SIGNATURE_HASH,
-    RecipientRemunerated::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
     WithdrawalRequested::SIGNATURE_HASH,
     WithdrawalCanceled::SIGNATURE_HASH,
     WithdrawalGracePeriodUpdated::SIGNATURE_HASH,
-    RemunerationGracePeriodUpdated::SIGNATURE_HASH,
     TabExpirationTimeUpdated::SIGNATURE_HASH,
     SynchronizationDelayUpdated::SIGNATURE_HASH,
     VerificationKeyUpdated::SIGNATURE_HASH,
-    PaymentRecorded::SIGNATURE_HASH,
-    TabPaid::SIGNATURE_HASH,
     GuaranteeVersionUpdated::SIGNATURE_HASH,
     StablecoinAssetUpdated::SIGNATURE_HASH,
     AaveConfigured::SIGNATURE_HASH,
@@ -269,19 +242,15 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
-    const EXPECTED_EVENT_SIGNATURES: [&str; 24] = [
+    const EXPECTED_EVENT_SIGNATURES: [&str; 20] = [
         "CollateralDeposited(address,address,uint256)",
-        "RecipientRemunerated(uint256,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
         "WithdrawalRequested(address,address,uint256,uint256)",
         "WithdrawalCanceled(address,address)",
         "WithdrawalGracePeriodUpdated(uint256)",
-        "RemunerationGracePeriodUpdated(uint256)",
         "TabExpirationTimeUpdated(uint256)",
         "SynchronizationDelayUpdated(uint256)",
         "VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32))",
-        "PaymentRecorded(uint256,address,uint256)",
-        "TabPaid(uint256,address,address,address,uint256)",
         "GuaranteeVersionUpdated(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
         "StablecoinAssetUpdated(address,bool)",
         "AaveConfigured(address,address)",
@@ -306,17 +275,17 @@ mod tests {
             EVENT_SIGNATURE_HASHES[0],
             CollateralDeposited::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[12], GuaranteeVersionUpdated::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURES[8], GuaranteeVersionUpdated::SIGNATURE);
         assert_eq!(
-            EVENT_SIGNATURE_HASHES[12],
+            EVENT_SIGNATURE_HASHES[8],
             GuaranteeVersionUpdated::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[17], SurplusATokensClaimed::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURES[13], SurplusATokensClaimed::SIGNATURE);
         assert_eq!(
-            EVENT_SIGNATURE_HASHES[17],
+            EVENT_SIGNATURE_HASHES[13],
             SurplusATokensClaimed::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[18], CycleCommitted::SIGNATURE);
-        assert_eq!(EVENT_SIGNATURE_HASHES[23], CycleFinalized::SIGNATURE_HASH);
+        assert_eq!(EVENT_SIGNATURES[14], CycleCommitted::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURE_HASHES[19], CycleFinalized::SIGNATURE_HASH);
     }
 }

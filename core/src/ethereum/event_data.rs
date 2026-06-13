@@ -13,11 +13,6 @@ pub enum StoredEventData {
         asset: String,
         amount: String,
     },
-    RecipientRemunerated {
-        tab_id: String,
-        asset: String,
-        amount: String,
-    },
     CollateralWithdrawn {
         user: String,
         asset: String,
@@ -32,14 +27,6 @@ pub enum StoredEventData {
     WithdrawalCanceled {
         user: String,
         asset: String,
-    },
-    TabPaid {
-        tab_id: String,
-        user: String,
-        recipient: String,
-        asset: String,
-        amount: String,
-        tx_hash: String,
     },
     CycleCommitted {
         cycle_id: String,
@@ -106,19 +93,6 @@ impl TryInto<StoredEventData> for &Log {
                     amount: amount.to_string(),
                 })
             }
-            Some(&RecipientRemunerated::SIGNATURE_HASH) => {
-                let RecipientRemunerated {
-                    tab_id,
-                    asset,
-                    amount,
-                    ..
-                } = *self.log_decode()?.data();
-                Ok(StoredEventData::RecipientRemunerated {
-                    tab_id: format!("{:#x}", tab_id),
-                    asset: asset.to_string(),
-                    amount: amount.to_string(),
-                })
-            }
             Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
                 let CollateralWithdrawn {
                     user,
@@ -152,28 +126,6 @@ impl TryInto<StoredEventData> for &Log {
                 Ok(StoredEventData::WithdrawalCanceled {
                     user: user.to_string(),
                     asset: asset.to_string(),
-                })
-            }
-            Some(&TabPaid::SIGNATURE_HASH) => {
-                let TabPaid {
-                    tab_id,
-                    asset,
-                    user,
-                    recipient,
-                    amount,
-                    ..
-                } = *self.log_decode()?.data();
-                let tx_hash = self
-                    .transaction_hash
-                    .map(|h| format!("{:#x}", h))
-                    .unwrap_or_default();
-                Ok(StoredEventData::TabPaid {
-                    tab_id: format!("{:#x}", tab_id),
-                    user: user.to_string(),
-                    recipient: recipient.to_string(),
-                    asset: asset.to_string(),
-                    amount: amount.to_string(),
-                    tx_hash,
                 })
             }
             Some(&CycleCommitted::SIGNATURE_HASH) => {
@@ -267,9 +219,6 @@ impl TryInto<StoredEventData> for &Log {
             }
             Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
                 name: "WithdrawalGracePeriodUpdated".to_string(),
-            }),
-            Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
-                name: "RemunerationGracePeriodUpdated".to_string(),
             }),
             Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
                 name: "TabExpirationTimeUpdated".to_string(),

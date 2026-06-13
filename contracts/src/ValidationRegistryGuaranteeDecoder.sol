@@ -165,14 +165,7 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
     function _computeValidationSubjectHash(GuaranteeV2 memory g) internal pure returns (bytes32) {
         return _computeHash(
             abi.encode(
-                VALIDATION_SUBJECT_BINDING_DOMAIN_HASH,
-                g.tabId,
-                g.reqId,
-                g.client,
-                g.recipient,
-                g.amount,
-                g.asset,
-                g.timestamp
+                VALIDATION_SUBJECT_BINDING_DOMAIN_HASH, g.reqId, g.client, g.recipient, g.amount, g.asset, g.timestamp
             )
         );
     }

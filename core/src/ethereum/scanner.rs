@@ -365,9 +365,6 @@ impl EthereumEventScanner {
                     Some(&CollateralDeposited::SIGNATURE_HASH) => {
                         handler.handle_collateral_deposited(log.clone()).await
                     }
-                    Some(&RecipientRemunerated::SIGNATURE_HASH) => {
-                        handler.handle_recipient_remunerated(log.clone()).await
-                    }
                     Some(&CollateralWithdrawn::SIGNATURE_HASH) => {
                         handler.handle_collateral_withdrawn(log.clone()).await
                     }
@@ -377,10 +374,6 @@ impl EthereumEventScanner {
                     Some(&WithdrawalCanceled::SIGNATURE_HASH) => {
                         handler.handle_withdrawal_canceled(log.clone()).await
                     }
-                    Some(&PaymentRecorded::SIGNATURE_HASH) => {
-                        handler.handle_payment_recorded(log.clone()).await
-                    }
-                    Some(&TabPaid::SIGNATURE_HASH) => handler.handle_tab_paid(log.clone()).await,
                     Some(&CycleCommitted::SIGNATURE_HASH) => {
                         handler.handle_cycle_committed(log.clone()).await
                     }
@@ -402,11 +395,6 @@ impl EthereumEventScanner {
                     Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
                         handler
                             .handle_admin_event(log.clone(), "WithdrawalGracePeriodUpdated")
-                            .await
-                    }
-                    Some(&RemunerationGracePeriodUpdated::SIGNATURE_HASH) => {
-                        handler
-                            .handle_admin_event(log.clone(), "RemunerationGracePeriodUpdated")
                             .await
                     }
                     Some(&TabExpirationTimeUpdated::SIGNATURE_HASH) => {

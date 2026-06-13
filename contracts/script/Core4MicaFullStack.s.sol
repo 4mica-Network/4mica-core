@@ -39,11 +39,8 @@ contract Core4MicaFullStackScript is Script {
     error AaveReadbackMismatch(string field);
     error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
 
-    bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
-    bytes4 private constant RECORD_PAYMENT_BY_ID_SELECTOR =
-        bytes4(keccak256("recordPaymentById(bytes32,uint256,address,uint256)"));
     bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
-        bytes4(keccak256("setTimingParameters(uint256,uint256,uint256,uint256)"));
+        bytes4(keccak256("setTimingParameters(uint256,uint256,uint256)"));
 
     // Delayed governance role for protocol policy, trust roots, and Aave configuration.
     uint64 public constant GOVERNANCE_ROLE = 1;
@@ -175,17 +172,16 @@ contract Core4MicaFullStackScript is Script {
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
-        bytes4[] memory governanceSelectors = new bytes4[](10);
+        bytes4[] memory governanceSelectors = new bytes4[](9);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
-        governanceSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
-        governanceSelectors[2] = Core4Mica.setTabExpirationTime.selector;
-        governanceSelectors[3] = Core4Mica.setGuaranteeVerificationKey.selector;
-        governanceSelectors[4] = SET_TIMING_PARAMETERS_SELECTOR;
-        governanceSelectors[5] = Core4Mica.setSynchronizationDelay.selector;
-        governanceSelectors[6] = Core4Mica.configureGuaranteeVersion.selector;
-        governanceSelectors[7] = Core4Mica.configureAave.selector;
-        governanceSelectors[8] = Core4Mica.addStablecoinAsset.selector;
-        governanceSelectors[9] = Core4Mica.setYieldFeeBps.selector;
+        governanceSelectors[1] = Core4Mica.setTabExpirationTime.selector;
+        governanceSelectors[2] = Core4Mica.setGuaranteeVerificationKey.selector;
+        governanceSelectors[3] = SET_TIMING_PARAMETERS_SELECTOR;
+        governanceSelectors[4] = Core4Mica.setSynchronizationDelay.selector;
+        governanceSelectors[5] = Core4Mica.configureGuaranteeVersion.selector;
+        governanceSelectors[6] = Core4Mica.configureAave.selector;
+        governanceSelectors[7] = Core4Mica.addStablecoinAsset.selector;
+        governanceSelectors[8] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(
@@ -200,12 +196,6 @@ contract Core4MicaFullStackScript is Script {
             address(core4Mica), _asSingletonArray(Core4Mica.claimSurplusATokens.selector), TREASURY_ROLE
         );
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(Core4Mica.pause.selector), GUARDIAN_ROLE);
-        manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), FOURMICA_OPERATOR_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), FOURMICA_OPERATOR_ROLE
-        );
         manager.setTargetFunctionRole(
             address(core4Mica), _asSingletonArray(Core4Mica.unpause.selector), GOVERNANCE_ROLE
         );

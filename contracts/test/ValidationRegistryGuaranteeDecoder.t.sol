@@ -267,14 +267,7 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
     {
         return keccak256(
             abi.encode(
-                VALIDATION_SUBJECT_BINDING_DOMAIN_HASH,
-                g.tabId,
-                g.reqId,
-                g.client,
-                g.recipient,
-                g.amount,
-                g.asset,
-                g.timestamp
+                VALIDATION_SUBJECT_BINDING_DOMAIN_HASH, g.reqId, g.client, g.recipient, g.amount, g.asset, g.timestamp
             )
         );
     }

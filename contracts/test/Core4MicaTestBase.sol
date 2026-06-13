@@ -86,10 +86,6 @@ abstract contract Core4MicaTestBase is Test {
     uint64 internal constant OPERATOR_ROLE = 9;
     address internal constant ETH_ASSET = address(0);
 
-    bytes4 internal constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
-    bytes4 internal constant RECORD_PAYMENT_BY_ID_SELECTOR =
-        bytes4(keccak256("recordPaymentById(bytes32,uint256,address,uint256)"));
-
     bytes32 internal constant TEST_PRIVATE_KEY =
         bytes32(0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3);
 
@@ -124,11 +120,6 @@ abstract contract Core4MicaTestBase is Test {
         usdc.approve(address(core4Mica), type(uint256).max);
         usdt.approve(address(core4Mica), type(uint256).max);
         vm.stopPrank();
-
-        manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
-        manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), OPERATOR_ROLE
-        );
 
         bytes4[] memory adminSelectors = new bytes4[](8);
         adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;

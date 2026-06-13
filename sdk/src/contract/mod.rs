@@ -12,11 +12,6 @@ sol! {
         error GracePeriodNotElapsed();
         error NoWithdrawalRequested();
         error DirectTransferNotAllowed();
-        error DoubleSpendingDetected();
-        error TabNotYetOverdue();
-        error TabExpired();
-        error TabPreviouslyRemunerated();
-        error TabAlreadyPaid();
         error InvalidSignature();
         error InvalidRecipient();
         error IllegalValue();
@@ -38,7 +33,6 @@ sol! {
         error SurplusClaimExceedsAvailable();
 
         // ========= Storage =========
-        function remunerationGracePeriod() external view returns (uint256);
         function withdrawalGracePeriod() external view returns (uint256);
         function tabExpirationTime() external view returns (uint256);
         function synchronizationDelay() external view returns (uint256);
@@ -52,23 +46,13 @@ sol! {
 
         // ========= Events =========
         event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
-        event RecipientRemunerated(uint256 indexed tabId, address indexed asset, uint256 amount);
         event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
         event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
         event WithdrawalCanceled(address indexed user, address indexed asset);
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
-        event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
         event TabExpirationTimeUpdated(uint256 newExpirationTime);
         event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
-        event PaymentRecorded(uint256 indexed tabId, address indexed asset, uint256 amount);
-        event TabPaid(
-            uint256 indexed tabId,
-            address indexed asset,
-            address indexed user,
-            address recipient,
-            uint256 amount
-        );
         event GuaranteeVersionUpdated(
             uint64 indexed version,
             (bytes32,bytes32,bytes32,bytes32) verificationKey,
@@ -151,12 +135,11 @@ sol! {
         function finalizeWithdrawal(address asset) external;
 
         // ========= Admin / Manager =========
-        function setRemunerationGracePeriod(uint256 _gracePeriod) external;
         function setWithdrawalGracePeriod(uint256 _gracePeriod) external;
         function setTabExpirationTime(uint256 _expirationTime) external;
         function setSynchronizationDelay(uint256 _synchronizationDelay) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
-        function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
+        function setTimingParameters(uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
         function configureAave(address poolAddressesProvider, address[] calldata aTokens) external;
         function addStablecoinAsset(address asset, address aToken) external;

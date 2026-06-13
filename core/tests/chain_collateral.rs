@@ -415,7 +415,6 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
     // Map Core4Mica config functions to USER_ADMIN_ROLE = 4
     let selectors = vec![
         fn_selector("setWithdrawalGracePeriod(uint256)"),
-        fn_selector("setRemunerationGracePeriod(uint256)"),
         fn_selector("setTabExpirationTime(uint256)"),
         fn_selector("setSynchronizationDelay(uint256)"),
         fn_selector(
@@ -440,13 +439,6 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
     // Should now succeed and emit eSome(chrono::Utc::now().timestamp() as u64),vents
     contract
         .setWithdrawalGracePeriod(U256::from(30 * 24 * 60 * 60))
-        .send()
-        .await?
-        .watch()
-        .await?;
-    mine_confirmations(&provider, 1).await?;
-    contract
-        .setRemunerationGracePeriod(U256::from(7 * 24 * 60 * 60))
         .send()
         .await?
         .watch()
