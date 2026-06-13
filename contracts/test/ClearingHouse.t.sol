@@ -23,7 +23,7 @@ contract ClearingHouseTest is Test {
     function setUp() public {
         manager = new AccessManager(address(this));
         clearingHouse = new ClearingHouse(address(manager));
-        usdc = new MockERC20("USD Coin", "USDC");
+        usdc = new MockERC20("USD Coin", "USDC", 6);
 
         bytes4[] memory operatorSelectors = new bytes4[](2);
         operatorSelectors[0] = ClearingHouse.commitCycle.selector;

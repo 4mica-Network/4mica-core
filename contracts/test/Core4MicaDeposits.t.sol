@@ -68,7 +68,7 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
     }
 
     function test_DepositStablecoin_RevertUnsupportedAsset() public {
-        MockERC20 fake = new MockERC20("Fake", "FAKE");
+        MockERC20 fake = new MockERC20("Fake", "FAKE", 6);
         fake.mint(USER1, 100 ether);
         vm.prank(USER1);
         fake.approve(address(core4Mica), type(uint256).max);

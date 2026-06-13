@@ -10,6 +10,7 @@ import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
+import {MockERC20} from "../test/Core4MicaTestBase.sol";
 
 /// @notice Deploys full guarantee stack:
 /// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder + ClearingHouse.
@@ -23,6 +24,8 @@ import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 ///
 /// Stablecoin configuration (optional):
 /// - STABLECOINS_COUNT=<n> and STABLECOIN_0..n-1
+/// - DEPLOY_MOCK_STABLECOINS=true deploys STABLECOINS_COUNT fresh
+///   ERC20s and registers those instead of reading STABLECOIN_* (local dev only).
 ///
 /// Validation registry allowlist:
 /// - TRUSTED_VALIDATION_REGISTRY=<address>
@@ -80,6 +83,11 @@ contract Core4MicaFullStackScript is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
+        if (vm.envOr("DEPLOY_MOCK_STABLECOINS", false)) {
+            config.stablecoins = _deployMockStablecoins();
+            _validateStablecoins(config.stablecoins);
+        }
+
         FullStackDeployment memory deployment = _deployFullStack(
             config.baseSalt,
             config.managerAdmin,
@@ -103,8 +111,12 @@ contract Core4MicaFullStackScript is Script {
     }
 
     function _loadDeploymentConfig(address deployer) internal view returns (DeploymentConfig memory config) {
-        address[] memory stablecoins = _loadStablecoinAssets();
-        _validateStablecoins(stablecoins);
+        // In mock mode the stablecoins are deployed after broadcast starts; leave them empty here.
+        address[] memory stablecoins;
+        if (!vm.envOr("DEPLOY_MOCK_STABLECOINS", false)) {
+            stablecoins = _loadStablecoinAssets();
+            _validateStablecoins(stablecoins);
+        }
 
         config.deployer = deployer;
         config.managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
@@ -268,6 +280,21 @@ contract Core4MicaFullStackScript is Script {
             return assets;
         }
         revert("set STABLECOINS_COUNT and STABLECOIN_0..n");
+    }
+
+    /// @dev Local-dev only: deploys STABLECOINS_COUNT fresh ERC20 mocks
+    function _deployMockStablecoins() internal returns (address[] memory assets) {
+        uint256 count = vm.envOr("STABLECOINS_COUNT", uint256(0));
+        require(count > 0, "set STABLECOINS_COUNT for mock stablecoins");
+        assets = new address[](count);
+        for (uint256 i = 0; i < count; i++) {
+            // First token is a USDC stand-in; any extras get a distinct suffixed symbol.
+            string memory name = i == 0 ? "USD Coin" : string.concat("USD Coin ", vm.toString(i));
+            string memory symbol = i == 0 ? "USDC" : string.concat("USDC", vm.toString(i));
+            MockERC20 token = new MockERC20(name, symbol, 6);
+            assets[i] = address(token);
+            console.log(string.concat("MockERC20 ", symbol, " deployed:"), assets[i]);
+        }
     }
 
     function _validateStablecoins(address[] memory assets) internal pure {

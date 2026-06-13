@@ -190,7 +190,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
     }
 
     function test_AddStablecoinAsset_Revert_AaveNotConfigured() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
         MockAToken mockEurcAToken = new MockAToken(address(eurc), address(mockPool), "Aave EURC", "aEURC");
 
         address[] memory stablecoins = new address[](1);
@@ -205,14 +205,14 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
     }
 
     function test_AddStablecoinAsset_Revert_ZeroAToken() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
 
         vm.expectRevert(Core4Mica.ZeroAddress.selector);
         core4Mica.addStablecoinAsset(address(eurc), address(0));
     }
 
     function test_AddStablecoinAsset_Revert_InvalidATokenUnderlying() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
 
         vm.expectRevert(
             abi.encodeWithSelector(Core4Mica.InvalidAToken.selector, address(eurc), address(mockUsdcAToken))
@@ -221,7 +221,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
     }
 
     function test_AddStablecoinAsset_Revert_InvalidATokenDataProvider() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
         MockAToken mockEurcAToken = new MockAToken(address(eurc), address(mockPool), "Aave EURC", "aEURC");
 
         vm.expectRevert(
@@ -269,7 +269,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         internal
         returns (MockERC20 token, MockAToken aToken)
     {
-        token = new MockERC20(name, symbol);
+        token = new MockERC20(name, symbol, 6);
         aToken = new MockAToken(
             address(token), address(mockPool), string.concat("Aave ", symbol), string.concat("a", symbol)
         );

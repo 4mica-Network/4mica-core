@@ -17,7 +17,7 @@ import {
 contract MockERC20 {
     string public name;
     string public symbol;
-    uint8 public constant DECIMALS = 18;
+    uint8 public immutable decimals;
     uint256 public totalSupply;
 
     mapping(address => uint256) public balanceOf;
@@ -26,9 +26,10 @@ contract MockERC20 {
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 
-    constructor(string memory name_, string memory symbol_) {
+    constructor(string memory name_, string memory symbol_, uint8 decimals_) {
         name = name_;
         symbol = symbol_;
+        decimals = decimals_;
     }
 
     function mint(address to, uint256 amount) external {
@@ -93,8 +94,8 @@ abstract contract Core4MicaTestBase is Test {
 
     function setUp() public virtual {
         manager = new AccessManager(address(this));
-        usdc = new MockERC20("USD Coin", "USDC");
-        usdt = new MockERC20("Tether USD", "USDT");
+        usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdt = new MockERC20("Tether USD", "USDT", 6);
         testPublicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY);
         mockPool = new MockAavePool();
         mockDataProvider = new MockAaveProtocolDataProvider();
