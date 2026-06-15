@@ -89,30 +89,53 @@ This repository includes the ERC-8004 validation-gated remuneration flow (V2).
 
 ### Requirements
 
-- [Docker](https://www.docker.com/)
+- [Docker](https://www.docker.com/) (your user must be able to reach the Docker daemon)
 - [Rust](https://www.rust-lang.org/) `stable`
-- [Foundry](https://book.getfoundry.sh/) (for contract deployment)
+- [Foundry](https://book.getfoundry.sh/) (`anvil`, `forge`)
 
 ### Running the Project
 
-1. Start the local database:
+The local stack — Postgres, an Anvil node, forge-deployed contracts, database
+migrations, and `core-service` — is orchestrated through the `Makefile` (which wraps
+[deployment/dev_stack.sh](deployment/dev_stack.sh)). Every step generates a complete
+`.env` for you, including the deployed contract and ClearingHouse addresses and a BLS
+verification key derived from `BLS_PRIVATE_KEY`, so there are no env vars to wire by hand.
 
-   ```bash
-   docker compose up -d
-   ```
+To run the full stack (for development or the SDK e2e tests):
 
-2. Copy and configure the environment:
+```bash
+make dev-up
+```
 
-   ```bash
-   cp contracts/.env.example contracts/.env
-   # fill in required values
-   ```
+#### Running the tests
 
-3. Run the core service:
+The two suites need different amounts of the stack, so they are **not** run the same way:
 
-   ```bash
-   cargo run --bin core-service
-   ```
+- **Core tests** must run with **no external `core-service` running** — each test builds
+  its own in-process `CoreService` (and the chain tests spawn their own Anvil), so a
+  second long-lived service would race the in-process event scanner on the shared
+  database. They only need infra (Postgres + Anvil + deployed contracts):
+
+  ```bash
+  make infra-up     # pg + anvil + contracts + migrations, but NOT core-service
+  make test-core
+  ```
+
+- **SDK e2e tests** talk to a running `core-service` on `:3000`, so they need the full
+  stack up:
+
+  ```bash
+  make dev-up
+  make test-sdk
+  ```
+
+`make test` chains both correctly: infra → `test-core` (core down) → full stack →
+`test-sdk` (core up).
+
+Other useful targets: `make status`, `make logs`, `make deploy` (redeploy contracts),
+`make dev-down` (stop core + anvil), `make dev-down-all` (also stop Postgres). Run
+`make help` for the full list. See [deployment/dev_stack.sh](deployment/dev_stack.sh) for
+the underlying steps and tunables.
 
 For contract deployment and V2 activation details, refer to
 [contracts/README.md](contracts/README.md) and

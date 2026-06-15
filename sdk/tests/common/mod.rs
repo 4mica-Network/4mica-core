@@ -20,8 +20,7 @@ const LOCAL_CORE_E2E_ENV: &str = "SDK_LOCAL_E2E";
 const ROLE_USER: &str = "user";
 const ROLE_RECIPIENT: &str = "recipient";
 const WALLET_STATUS_ACTIVE: &str = "active";
-const SCOPE_TAB_CREATE: &str = "tab:create";
-const SCOPE_TAB_READ: &str = "tab:read";
+const SCOPE_PAYMENT_READ: &str = "payment:read";
 const SCOPE_GUARANTEE_ISSUE: &str = "guarantee:issue";
 
 pub fn normalize_and_decode_hex(value: &str) -> Result<Vec<u8>, DecodeHexError> {
@@ -154,15 +153,6 @@ pub async fn assert_core_contract_deployed<S>(config: &Config<S>) -> anyhow::Res
         );
     }
 
-    Ok(())
-}
-
-pub async fn close_tab(tab_id: U256) -> anyhow::Result<()> {
-    load_core_env();
-    let ctx = PersistCtx::new()
-        .await
-        .context("connect to core database")?;
-    repo::close_tab(&ctx, tab_id).await.context("close tab")?;
     Ok(())
 }
 
@@ -322,7 +312,7 @@ pub async fn build_authed_user_config(
     base_url: &str,
     private_key: &str,
 ) -> anyhow::Result<Config<PrivateKeySigner>> {
-    let scopes = vec![SCOPE_TAB_READ.to_string()];
+    let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     build_authed_config(base_url, private_key, ROLE_USER, &scopes).await
 }
 
@@ -331,8 +321,7 @@ pub async fn build_authed_recipient_config(
     private_key: &str,
 ) -> anyhow::Result<Config<PrivateKeySigner>> {
     let scopes = vec![
-        SCOPE_TAB_CREATE.to_string(),
-        SCOPE_TAB_READ.to_string(),
+        SCOPE_PAYMENT_READ.to_string(),
         SCOPE_GUARANTEE_ISSUE.to_string(),
     ];
     build_authed_config(base_url, private_key, ROLE_RECIPIENT, &scopes).await

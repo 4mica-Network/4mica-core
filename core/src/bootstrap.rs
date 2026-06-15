@@ -6,10 +6,7 @@ use core_service::{
     http,
     metrics::{HealthCheckTask, MetricsUpkeepTask, setup_metrics_recorder},
     scheduler::TaskScheduler,
-    service::{
-        CoreService,
-        payment::{ConfirmPaymentsTask, FinalizePaymentsTask, ScanPaymentsTask},
-    },
+    service::{CoreService, cycle::SettlementCycleTask},
 };
 use env_logger::Env;
 use log::info;
@@ -57,16 +54,8 @@ pub async fn bootstrap() -> anyhow::Result<()> {
     let mut scheduler = TaskScheduler::new().await?;
 
     scheduler.add_task(ethereum_scanner).await?;
-    if app_config.ethereum_config.payment_legacy_scan_enabled {
-        scheduler
-            .add_task(Arc::new(ScanPaymentsTask::new(service.clone())))
-            .await?;
-    }
     scheduler
-        .add_task(Arc::new(ConfirmPaymentsTask::new(service.clone())))
-        .await?;
-    scheduler
-        .add_task(Arc::new(FinalizePaymentsTask::new(service.clone())))
+        .add_task(Arc::new(SettlementCycleTask::new(service.clone())))
         .await?;
     scheduler
         .add_task(Arc::new(MetricsUpkeepTask::new(

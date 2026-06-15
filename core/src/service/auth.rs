@@ -162,7 +162,7 @@ impl CoreService {
 
     pub async fn verify_auth(&self, req: AuthVerifyRequest) -> ServiceResult<AuthVerifyResponse> {
         let auth_cfg = &self.inner.config.auth;
-        let parsed = auth::siwe::parse_siwe_message(&req.message)?;
+        let parsed = crate::evm::siwe::parse_siwe_message(&req.message)?;
         let expected_address = auth::utils::parse_wallet_address(&req.address)?;
 
         if parsed.address != expected_address {
@@ -218,7 +218,7 @@ impl CoreService {
             return Err(ServiceError::Unauthorized("nonce not valid".into()));
         }
 
-        auth::siwe::verify_siwe_message(
+        crate::evm::siwe::verify_siwe_message(
             &self.inner.read_provider,
             &address,
             &req.message,

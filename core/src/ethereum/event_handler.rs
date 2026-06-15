@@ -7,17 +7,23 @@ use crate::error::BlockchainListenerError;
 pub trait EthereumEventHandler: Send + Sync {
     async fn handle_collateral_deposited(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
-    async fn handle_recipient_remunerated(&self, log: Log) -> Result<(), BlockchainListenerError>;
-
     async fn handle_collateral_withdrawn(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
     async fn handle_withdrawal_requested(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
     async fn handle_withdrawal_canceled(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
-    async fn handle_payment_recorded(&self, log: Log) -> Result<(), BlockchainListenerError>;
+    async fn handle_cycle_committed(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
-    async fn handle_tab_paid(&self, log: Log) -> Result<(), BlockchainListenerError>;
+    async fn handle_debtor_paid(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
+    async fn handle_creditor_claimed(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
+    async fn handle_debtor_defaulted(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
+    async fn handle_default_covered(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
+    async fn handle_cycle_finalized(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
     async fn handle_admin_event(
         &self,

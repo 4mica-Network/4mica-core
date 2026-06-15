@@ -141,7 +141,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     }
 
     function test_Constructor_SupportsThreeStablecoins() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
         MockAToken mockEurcAToken = new MockAToken(address(eurc), address(mockPool), "Aave EURC", "aEURC");
         mockPool.setReserve(address(eurc), address(mockEurcAToken), 1e27);
         mockDataProvider.setReserveAToken(address(eurc), address(mockEurcAToken));

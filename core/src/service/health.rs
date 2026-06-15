@@ -27,6 +27,9 @@ pub struct HealthReport {
     pub status: CheckStatus,
     pub db: CheckStatus,
     pub chain_rpc: CheckStatus,
+    /// Whether the settlement-cycle timeline still leaves enough seizure margin
+    /// under the current on-chain `withdrawalGracePeriod`.
+    pub settlement_timing: CheckStatus,
 }
 
 impl HealthReport {
@@ -39,12 +42,26 @@ impl CoreService {
     pub async fn run_health_checks(&self) -> HealthReport {
         let db_status = self.check_db().await;
         let rpc_status = self.check_rpc().await;
-        let overall_ok = db_status == CheckStatus::Ok && rpc_status == CheckStatus::Ok;
+        let timing_status = self.check_settlement_timing();
+        let overall_ok = db_status == CheckStatus::Ok
+            && rpc_status == CheckStatus::Ok
+            && timing_status == CheckStatus::Ok;
 
         HealthReport {
             status: overall_ok.into(),
             db: db_status,
             chain_rpc: rpc_status,
+            settlement_timing: timing_status,
+        }
+    }
+
+    fn check_settlement_timing(&self) -> CheckStatus {
+        match self.check_settlement_timing_invariant() {
+            Ok(()) => CheckStatus::Ok,
+            Err(e) => {
+                error!("settlement timing health check failed: {e:#}");
+                CheckStatus::Fail
+            }
         }
     }
 

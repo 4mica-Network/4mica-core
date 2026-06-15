@@ -21,9 +21,6 @@ pub mod abi {
         event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
-        event RecipientRemunerated(uint256 indexed tab_id, address indexed asset, uint256 amount);
-
-        #[derive(Debug)]
         event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
@@ -36,28 +33,7 @@ pub mod abi {
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
 
         #[derive(Debug)]
-        event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
-
-        #[derive(Debug)]
-        event TabExpirationTimeUpdated(uint256 newExpirationTime);
-
-        #[derive(Debug)]
-        event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
-
-        #[derive(Debug)]
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
-
-        #[derive(Debug)]
-        event PaymentRecorded(uint256 indexed tab_id, address indexed asset, uint256 amount);
-
-        #[derive(Debug)]
-        event TabPaid(
-            uint256 indexed tab_id,
-            address indexed asset,
-            address indexed user,
-            address recipient,
-            uint256 amount
-        );
 
         #[derive(Debug)]
         event GuaranteeVersionUpdated(
@@ -82,60 +58,85 @@ pub mod abi {
 
         #[derive(Debug)]
         event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
+
+        #[derive(Debug)]
+        event CycleCommitted(
+            bytes32 indexed cycleId,
+            address indexed asset,
+            bytes32 merkleRoot,
+            uint256 totalNetDebit,
+            uint256 totalNetCredit,
+            uint64 paymentSubmissionDeadline,
+            uint64 paymentFinalityDeadline
+        );
+
+        #[derive(Debug)]
+        event DebtorPaid(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+
+        #[derive(Debug)]
+        event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, uint256 amount);
+
+        #[derive(Debug)]
+        event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+
+        #[derive(Debug)]
+        event DefaultCovered(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+
+        #[derive(Debug)]
+        event CycleFinalized(bytes32 indexed cycleId);
     }
 }
 
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
-    AaveConfigured, CollateralDeposited, CollateralWithdrawn, GuaranteeVersionUpdated,
-    PaymentRecorded, ProtocolYieldClaimed, RecipientRemunerated, RemunerationGracePeriodUpdated,
-    StablecoinAssetUpdated, SurplusATokensClaimed, SynchronizationDelayUpdated,
-    TabExpirationTimeUpdated, TabPaid, VerificationKeyUpdated, WithdrawalCanceled,
-    WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
+    AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
+    CycleFinalized, DebtorDefaulted, DebtorPaid, DefaultCovered, GuaranteeVersionUpdated,
+    ProtocolYieldClaimed, StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated,
+    WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
 pub const EVENT_SIGNATURES: [&str; 18] = [
     CollateralDeposited::SIGNATURE,
-    RecipientRemunerated::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
     WithdrawalRequested::SIGNATURE,
     WithdrawalCanceled::SIGNATURE,
     WithdrawalGracePeriodUpdated::SIGNATURE,
-    RemunerationGracePeriodUpdated::SIGNATURE,
-    TabExpirationTimeUpdated::SIGNATURE,
-    SynchronizationDelayUpdated::SIGNATURE,
     VerificationKeyUpdated::SIGNATURE,
-    PaymentRecorded::SIGNATURE,
-    TabPaid::SIGNATURE,
     GuaranteeVersionUpdated::SIGNATURE,
     StablecoinAssetUpdated::SIGNATURE,
     AaveConfigured::SIGNATURE,
     YieldFeeBpsUpdated::SIGNATURE,
     ProtocolYieldClaimed::SIGNATURE,
     SurplusATokensClaimed::SIGNATURE,
+    CycleCommitted::SIGNATURE,
+    DebtorPaid::SIGNATURE,
+    CreditorClaimed::SIGNATURE,
+    DebtorDefaulted::SIGNATURE,
+    DefaultCovered::SIGNATURE,
+    CycleFinalized::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
 pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     CollateralDeposited::SIGNATURE_HASH,
-    RecipientRemunerated::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
     WithdrawalRequested::SIGNATURE_HASH,
     WithdrawalCanceled::SIGNATURE_HASH,
     WithdrawalGracePeriodUpdated::SIGNATURE_HASH,
-    RemunerationGracePeriodUpdated::SIGNATURE_HASH,
-    TabExpirationTimeUpdated::SIGNATURE_HASH,
-    SynchronizationDelayUpdated::SIGNATURE_HASH,
     VerificationKeyUpdated::SIGNATURE_HASH,
-    PaymentRecorded::SIGNATURE_HASH,
-    TabPaid::SIGNATURE_HASH,
     GuaranteeVersionUpdated::SIGNATURE_HASH,
     StablecoinAssetUpdated::SIGNATURE_HASH,
     AaveConfigured::SIGNATURE_HASH,
     YieldFeeBpsUpdated::SIGNATURE_HASH,
     ProtocolYieldClaimed::SIGNATURE_HASH,
     SurplusATokensClaimed::SIGNATURE_HASH,
+    CycleCommitted::SIGNATURE_HASH,
+    DebtorPaid::SIGNATURE_HASH,
+    CreditorClaimed::SIGNATURE_HASH,
+    DebtorDefaulted::SIGNATURE_HASH,
+    DefaultCovered::SIGNATURE_HASH,
+    CycleFinalized::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -162,6 +163,8 @@ pub fn is_known_event_topic(topic0: &B256) -> bool {
 // function in `contracts/src/Core4Mica.sol`.
 
 pub mod contract_abi {
+    #![allow(clippy::too_many_arguments)]
+
     use alloy::sol;
     sol! {
         struct G1Point {
@@ -173,21 +176,6 @@ pub mod contract_abi {
 
         #[sol(rpc)]
         contract Core4Mica {
-            /// Records a successful off-chain payment for a given tab.
-            /// Only callable by an AccessManager-restricted operator.
-            function recordPayment(
-                uint256 tab_id,
-                address asset,
-                uint256 amount
-            ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant;
-
-            function recordPaymentById(
-                bytes32 payment_id,
-                uint256 tab_id,
-                address asset,
-                uint256 amount
-            ) external restricted supportedAsset(asset) nonZero(amount) nonReentrant;
-
             function getGuaranteeVersionConfig(
                 uint64 version
             )
@@ -200,7 +188,8 @@ pub mod contract_abi {
                     bool enabled
                 );
 
-            function tabExpirationTime() external view returns (uint256);
+            /// View: delayed-withdrawal grace period (seconds).
+            function withdrawalGracePeriod() external view returns (uint256);
 
             /// View: current BLS verification key.
             function GUARANTEE_VERIFICATION_KEY() external view returns (bytes32,bytes32,bytes32,bytes32);
@@ -211,9 +200,6 @@ pub mod contract_abi {
             /// View: cached aToken for a configured stablecoin asset.
             function stablecoinAToken(address asset) external view returns (address);
 
-            /// Governance: add a new stablecoin asset and its configured Aave aToken.
-            function addStablecoinAsset(address asset, address aToken) external;
-
             /// View: guaranteeable collateral for a user/asset pair.
             function guaranteeCapacity(address user, address asset) external view returns (uint256);
         }
@@ -222,6 +208,19 @@ pub mod contract_abi {
         contract ERC20Metadata {
             function symbol() external view returns (string memory);
             function decimals() external view returns (uint8);
+        }
+
+        #[sol(rpc)]
+        contract ClearingHouse {
+            function commitCycle(
+                bytes32 cycleId,
+                address asset,
+                bytes32 merkleRoot,
+                uint256 totalNetDebit,
+                uint256 totalNetCredit,
+                uint64 paymentSubmissionDeadline,
+                uint64 paymentFinalityDeadline
+            ) external;
         }
     }
 }
@@ -235,23 +234,23 @@ mod tests {
 
     const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
         "CollateralDeposited(address,address,uint256)",
-        "RecipientRemunerated(uint256,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
         "WithdrawalRequested(address,address,uint256,uint256)",
         "WithdrawalCanceled(address,address)",
         "WithdrawalGracePeriodUpdated(uint256)",
-        "RemunerationGracePeriodUpdated(uint256)",
-        "TabExpirationTimeUpdated(uint256)",
-        "SynchronizationDelayUpdated(uint256)",
         "VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32))",
-        "PaymentRecorded(uint256,address,uint256)",
-        "TabPaid(uint256,address,address,address,uint256)",
         "GuaranteeVersionUpdated(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
         "StablecoinAssetUpdated(address,bool)",
         "AaveConfigured(address,address)",
         "YieldFeeBpsUpdated(uint256,uint256)",
         "ProtocolYieldClaimed(address,address,uint256)",
         "SurplusATokensClaimed(address,address,uint256,uint256)",
+        "CycleCommitted(bytes32,address,bytes32,uint256,uint256,uint64,uint64)",
+        "DebtorPaid(bytes32,address,uint256)",
+        "CreditorClaimed(bytes32,address,uint256)",
+        "DebtorDefaulted(bytes32,address,uint256)",
+        "DefaultCovered(bytes32,address,uint256)",
+        "CycleFinalized(bytes32)",
     ];
 
     #[test]
@@ -264,15 +263,17 @@ mod tests {
             EVENT_SIGNATURE_HASHES[0],
             CollateralDeposited::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[12], GuaranteeVersionUpdated::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURES[6], GuaranteeVersionUpdated::SIGNATURE);
         assert_eq!(
-            EVENT_SIGNATURE_HASHES[12],
+            EVENT_SIGNATURE_HASHES[6],
             GuaranteeVersionUpdated::SIGNATURE_HASH
         );
-        assert_eq!(EVENT_SIGNATURES[17], SurplusATokensClaimed::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURES[11], SurplusATokensClaimed::SIGNATURE);
         assert_eq!(
-            EVENT_SIGNATURE_HASHES[17],
+            EVENT_SIGNATURE_HASHES[11],
             SurplusATokensClaimed::SIGNATURE_HASH
         );
+        assert_eq!(EVENT_SIGNATURES[12], CycleCommitted::SIGNATURE);
+        assert_eq!(EVENT_SIGNATURE_HASHES[17], CycleFinalized::SIGNATURE_HASH);
     }
 }

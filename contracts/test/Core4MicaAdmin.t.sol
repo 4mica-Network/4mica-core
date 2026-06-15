@@ -33,113 +33,6 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         core4Mica.setWithdrawalGracePeriod(2 days);
     }
 
-    function test_SetWithdrawalGracePeriod_Revert_IllegalValue() public {
-        uint256 invalid = core4Mica.synchronizationDelay() + core4Mica.tabExpirationTime();
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setWithdrawalGracePeriod(invalid);
-    }
-
-    function test_SetRemunerationGracePeriod() public {
-        uint256 newGrace = 2 days;
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.RemunerationGracePeriodUpdated(newGrace);
-        core4Mica.setRemunerationGracePeriod(newGrace);
-
-        assertEq(core4Mica.remunerationGracePeriod(), newGrace);
-    }
-
-    function test_SetRemunerationGracePeriod_Revert_Zero() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setRemunerationGracePeriod(0);
-    }
-
-    function test_SetRemunerationGracePeriod_Revert_User_Unauthorized() public {
-        vm.prank(USER1);
-        vm.expectRevert(accessUnauthorizedError(USER1));
-        core4Mica.setRemunerationGracePeriod(2 days);
-    }
-
-    function test_SetRemunerationGracePeriod_Revert_Operator_Unauthorized() public {
-        vm.prank(OPERATOR);
-        vm.expectRevert(accessUnauthorizedError(OPERATOR));
-        core4Mica.setRemunerationGracePeriod(2 days);
-    }
-
-    function test_SetRemunerationGracePeriod_Revert_IllegalValue() public {
-        uint256 invalid = core4Mica.tabExpirationTime();
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setRemunerationGracePeriod(invalid);
-    }
-
-    function test_SetTabExpirationTime() public {
-        uint256 newGrace = 20 days;
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.TabExpirationTimeUpdated(newGrace);
-        core4Mica.setTabExpirationTime(newGrace);
-
-        assertEq(core4Mica.tabExpirationTime(), newGrace);
-    }
-
-    function test_SetTabExpirationTime_Revert_Zero() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTabExpirationTime(0);
-    }
-
-    function test_SetTabExpirationTime_Revert_User_Unauthorized() public {
-        vm.prank(USER1);
-        vm.expectRevert(accessUnauthorizedError(USER1));
-        core4Mica.setTabExpirationTime(2 days);
-    }
-
-    function test_SetTabExpirationTime_Revert_Operator_Unauthorized() public {
-        vm.prank(OPERATOR);
-        vm.expectRevert(accessUnauthorizedError(OPERATOR));
-        core4Mica.setTabExpirationTime(2 days);
-    }
-
-    function test_SetTabExpirationTime_Revert_IllegalValue() public {
-        uint256 invalidLow = core4Mica.remunerationGracePeriod();
-        uint256 invalidHigh = core4Mica.withdrawalGracePeriod() - core4Mica.synchronizationDelay();
-
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTabExpirationTime(invalidLow);
-
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTabExpirationTime(invalidHigh);
-    }
-
-    function test_SetSynchronizationDelay() public {
-        uint256 newDelay = 5 hours;
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.SynchronizationDelayUpdated(newDelay);
-        core4Mica.setSynchronizationDelay(newDelay);
-
-        assertEq(core4Mica.synchronizationDelay(), newDelay);
-    }
-
-    function test_SetSynchronizationDelay_Revert_Zero() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setSynchronizationDelay(0);
-    }
-
-    function test_SetSynchronizationDelay_Revert_User_Unauthorized() public {
-        vm.prank(USER1);
-        vm.expectRevert(accessUnauthorizedError(USER1));
-        core4Mica.setSynchronizationDelay(5 hours);
-    }
-
-    function test_SetSynchronizationDelay_Revert_Operator_Unauthorized() public {
-        vm.prank(OPERATOR);
-        vm.expectRevert(accessUnauthorizedError(OPERATOR));
-        core4Mica.setSynchronizationDelay(5 hours);
-    }
-
-    function test_SetSynchronizationDelay_Revert_IllegalValue() public {
-        uint256 invalid = core4Mica.withdrawalGracePeriod() - core4Mica.tabExpirationTime();
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setSynchronizationDelay(invalid);
-    }
-
     function test_SetVerificationKey() public {
         BLS.G1Point memory newKey = BLS.G1Point(
             bytes32(0x1000000000000000000000000000000000000000000000000000000000000001),
@@ -226,7 +119,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
     }
 
     function test_AddStablecoinAsset_Revert_AaveNotConfigured() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
         MockAToken mockEurcAToken = new MockAToken(address(eurc), address(mockPool), "Aave EURC", "aEURC");
 
         address[] memory stablecoins = new address[](1);
@@ -241,14 +134,14 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
     }
 
     function test_AddStablecoinAsset_Revert_ZeroAToken() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
 
         vm.expectRevert(Core4Mica.ZeroAddress.selector);
         core4Mica.addStablecoinAsset(address(eurc), address(0));
     }
 
     function test_AddStablecoinAsset_Revert_InvalidATokenUnderlying() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
 
         vm.expectRevert(
             abi.encodeWithSelector(Core4Mica.InvalidAToken.selector, address(eurc), address(mockUsdcAToken))
@@ -257,7 +150,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
     }
 
     function test_AddStablecoinAsset_Revert_InvalidATokenDataProvider() public {
-        MockERC20 eurc = new MockERC20("Euro Coin", "EURC");
+        MockERC20 eurc = new MockERC20("Euro Coin", "EURC", 6);
         MockAToken mockEurcAToken = new MockAToken(address(eurc), address(mockPool), "Aave EURC", "aEURC");
 
         vm.expectRevert(
@@ -266,56 +159,11 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         core4Mica.addStablecoinAsset(address(eurc), address(mockEurcAToken));
     }
 
-    function test_SetTimingParameters_Revert_ZeroValues() public {
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTimingParameters(0, 15 days, 1 days, 25 days);
-
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTimingParameters(10 days, 0, 1 days, 25 days);
-
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTimingParameters(10 days, 15 days, 0, 25 days);
-
-        vm.expectRevert(Core4Mica.AmountZero.selector);
-        core4Mica.setTimingParameters(10 days, 15 days, 1 days, 0);
-    }
-
-    function test_SetTimingParameters() public {
-        uint256 newRem = 10 days;
-        uint256 newTab = 15 days;
-        uint256 newSync = 1 days;
-        uint256 newWithdrawal = 25 days;
-
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.RemunerationGracePeriodUpdated(newRem);
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.TabExpirationTimeUpdated(newTab);
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.SynchronizationDelayUpdated(newSync);
-        vm.expectEmit(false, false, false, true);
-        emit Core4Mica.WithdrawalGracePeriodUpdated(newWithdrawal);
-
-        core4Mica.setTimingParameters(newRem, newTab, newSync, newWithdrawal);
-
-        assertEq(core4Mica.remunerationGracePeriod(), newRem);
-        assertEq(core4Mica.tabExpirationTime(), newTab);
-        assertEq(core4Mica.synchronizationDelay(), newSync);
-        assertEq(core4Mica.withdrawalGracePeriod(), newWithdrawal);
-    }
-
-    function test_SetTimingParameters_Revert_InvalidOrdering() public {
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTimingParameters(15 days, 10 days, 1 days, 40 days);
-
-        vm.expectRevert(Core4Mica.IllegalValue.selector);
-        core4Mica.setTimingParameters(5 days, 10 days, 15 days, 20 days);
-    }
-
     function _prepareNewStablecoin(string memory name, string memory symbol)
         internal
         returns (MockERC20 token, MockAToken aToken)
     {
-        token = new MockERC20(name, symbol);
+        token = new MockERC20(name, symbol, 6);
         aToken = new MockAToken(
             address(token), address(mockPool), string.concat("Aave ", symbol), string.concat("a", symbol)
         );

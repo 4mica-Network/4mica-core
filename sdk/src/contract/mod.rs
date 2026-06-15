@@ -12,14 +12,8 @@ sol! {
         error GracePeriodNotElapsed();
         error NoWithdrawalRequested();
         error DirectTransferNotAllowed();
-        error DoubleSpendingDetected();
-        error TabNotYetOverdue();
-        error TabExpired();
-        error TabPreviouslyRemunerated();
-        error TabAlreadyPaid();
         error InvalidSignature();
         error InvalidRecipient();
-        error IllegalValue();
         error UnsupportedAsset(address asset);
         error InvalidAsset(address asset);
         error UnsupportedGuaranteeVersion(uint64 version);
@@ -38,10 +32,7 @@ sol! {
         error SurplusClaimExceedsAvailable();
 
         // ========= Storage =========
-        function remunerationGracePeriod() external view returns (uint256);
         function withdrawalGracePeriod() external view returns (uint256);
-        function tabExpirationTime() external view returns (uint256);
-        function synchronizationDelay() external view returns (uint256);
         function aaveAddressesProvider() external view returns (address);
         function yieldFeeBps() external view returns (uint256);
 
@@ -52,23 +43,11 @@ sol! {
 
         // ========= Events =========
         event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
-        event RecipientRemunerated(uint256 indexed tabId, address indexed asset, uint256 amount);
         event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
         event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
         event WithdrawalCanceled(address indexed user, address indexed asset);
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
-        event RemunerationGracePeriodUpdated(uint256 newGracePeriod);
-        event TabExpirationTimeUpdated(uint256 newExpirationTime);
-        event SynchronizationDelayUpdated(uint256 newSynchronizationDelay);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
-        event PaymentRecorded(uint256 indexed tabId, address indexed asset, uint256 amount);
-        event TabPaid(
-            uint256 indexed tabId,
-            address indexed asset,
-            address indexed user,
-            address recipient,
-            uint256 amount
-        );
         event GuaranteeVersionUpdated(
             uint64 indexed version,
             (bytes32,bytes32,bytes32,bytes32) verificationKey,
@@ -91,12 +70,6 @@ sol! {
         struct WithdrawalRequest {
             uint256 timestamp;
             uint256 amount;
-        }
-
-        struct PaymentStatus {
-            uint256 paid;
-            bool remunerated;
-            address asset;
         }
 
         struct UserAssetInfo {
@@ -156,26 +129,9 @@ sol! {
         function finalizeWithdrawal() external;
         function finalizeWithdrawal(address asset) external;
 
-        function payTabInERC20Token(
-            uint256 tab_id,
-            address asset,
-            uint256 amount,
-            address recipient
-        ) external;
-
-        /// Remunerate a recipient based on a signed guarantee
-        function remunerate(
-            bytes calldata guaranteeData,
-            G2Point calldata signature
-        ) external;
-
         // ========= Admin / Manager =========
-        function setRemunerationGracePeriod(uint256 _gracePeriod) external;
         function setWithdrawalGracePeriod(uint256 _gracePeriod) external;
-        function setTabExpirationTime(uint256 _expirationTime) external;
-        function setSynchronizationDelay(uint256 _synchronizationDelay) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
-        function setTimingParameters(uint256 _remunerationGracePeriod, uint256 _tabExpirationTime, uint256 _synchronizationDelay, uint256 _withdrawalGracePeriod) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
         function configureAave(address poolAddressesProvider, address[] calldata aTokens) external;
         function addStablecoinAsset(address asset, address aToken) external;
@@ -191,18 +147,11 @@ sol! {
                 address decoder,
                 bool enabled
             );
-        function recordPayment(uint256 tabId, address asset, uint256 amount) external;
-
         // ========= Views =========
         function getUserAllAssets(address userAddr)
             external
             view
             returns (UserAssetInfo[] memory);
-
-        function getPaymentStatus(uint256 tabId)
-            external
-            view
-            returns (uint256 paid, bool remunerated, address asset);
 
         function getERC20Tokens() external view returns (address[] memory);
 
@@ -252,5 +201,14 @@ sol! {
         function approve(address spender, uint256 amount) external returns (bool);
         function transfer(address to, uint256 amount) external returns (bool);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    }
+}
+
+sol! {
+    #[sol(rpc)]
+    contract ClearingHouse {
+        function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable;
+        function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
+        function markDefaulted(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof) external;
     }
 }

@@ -17,7 +17,7 @@ import {
 contract MockERC20 {
     string public name;
     string public symbol;
-    uint8 public constant DECIMALS = 18;
+    uint8 public immutable decimals;
     uint256 public totalSupply;
 
     mapping(address => uint256) public balanceOf;
@@ -26,9 +26,10 @@ contract MockERC20 {
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 
-    constructor(string memory name_, string memory symbol_) {
+    constructor(string memory name_, string memory symbol_, uint8 decimals_) {
         name = name_;
         symbol = symbol_;
+        decimals = decimals_;
     }
 
     function mint(address to, uint256 amount) external {
@@ -86,10 +87,6 @@ abstract contract Core4MicaTestBase is Test {
     uint64 internal constant OPERATOR_ROLE = 9;
     address internal constant ETH_ASSET = address(0);
 
-    bytes4 internal constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
-    bytes4 internal constant RECORD_PAYMENT_BY_ID_SELECTOR =
-        bytes4(keccak256("recordPaymentById(bytes32,uint256,address,uint256)"));
-
     bytes32 internal constant TEST_PRIVATE_KEY =
         bytes32(0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3);
 
@@ -97,8 +94,8 @@ abstract contract Core4MicaTestBase is Test {
 
     function setUp() public virtual {
         manager = new AccessManager(address(this));
-        usdc = new MockERC20("USD Coin", "USDC");
-        usdt = new MockERC20("Tether USD", "USDT");
+        usdc = new MockERC20("USD Coin", "USDC", 6);
+        usdt = new MockERC20("Tether USD", "USDT", 6);
         testPublicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY);
         mockPool = new MockAavePool();
         mockDataProvider = new MockAaveProtocolDataProvider();
@@ -125,13 +122,8 @@ abstract contract Core4MicaTestBase is Test {
         usdt.approve(address(core4Mica), type(uint256).max);
         vm.stopPrank();
 
-        manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), OPERATOR_ROLE);
-        manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), OPERATOR_ROLE
-        );
-
         bytes4[] memory adminSelectors = new bytes4[](8);
-        adminSelectors[0] = Core4Mica.setSynchronizationDelay.selector;
+        adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
         adminSelectors[3] = Core4Mica.unpause.selector;

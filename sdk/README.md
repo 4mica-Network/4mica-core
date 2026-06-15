@@ -27,7 +27,7 @@ sdk-4mica = "0.6.0"
 The SDK supports both V1 and V2 guarantee flows.
 
 - V1 is the original signed payment-intent flow.
-- V2 adds ERC-8004 validation policy fields and gates `remunerate()` on on-chain validation.
+- V2 adds ERC-8004 validation policy fields gating guarantee verification on on-chain validation.
 - Core advertises the accepted guarantee versions and trusted validation registries through
   `/core/public-params`.
 - `GUARANTEE_REQUEST_VERSION` on the core service controls which versions core accepts by default.
@@ -55,10 +55,10 @@ The SDK requires a signer and can use sensible defaults for the rest:
 
 Hosted networks:
 
-| Shorthand | CAIP-2 | Core API URL |
-| --- | --- | --- |
-| `base` | `eip155:8453` | `https://base.api.4mica.xyz/` |
-| `base-sepolia` | `eip155:84532` | `https://base.sepolia.api.4mica.xyz/` |
+| Shorthand          | CAIP-2            | Core API URL                              |
+| ------------------ | ----------------- | ----------------------------------------- |
+| `base`             | `eip155:8453`     | `https://base.api.4mica.xyz/`             |
+| `base-sepolia`     | `eip155:84532`    | `https://base.sepolia.api.4mica.xyz/`     |
 | `ethereum-sepolia` | `eip155:11155111` | `https://ethereum.sepolia.api.4mica.xyz/` |
 
 The following parameters are **optional** and will be automatically fetched from the server if not provided.
@@ -150,14 +150,16 @@ The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Requir
 #### What the SDK expects from `paymentRequirements`
 
 `sdk-4mica` accepts the canonical X402 JSON (camelCase). At minimum you need:
+
 - `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
-`X402Flow` will refresh the tab by calling `extra.tabEndpoint` before signing. 
+  `X402Flow` will refresh the tab by calling `extra.tabEndpoint` before signing.
 
 #### End-to-end client flow
 
 ##### X402 Version 1
 
 Version 1 returns payment requirements in the JSON response body:
+
 - GET the protected endpoint; parse the JSON body to get the response with `accepts` array.
 - Select a payment option from `accepts` array.
 - Call `X402Flow::sign_payment` to get the base64 `X-PAYMENT` header.
@@ -221,6 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ##### X402 Version 2
 
 Version 2 uses the `PAYMENT-REQUIRED` header (base64-encoded) instead of a JSON response body:
+
 - GET the protected endpoint; extract and decode the `payment-required` header to get `X402PaymentRequiredV2`.
 - Select a payment option from `accepts` array.
 - Call `X402Flow::sign_payment_v2` to get the base64 `PAYMENT-SIGNATURE` header.
@@ -314,6 +317,7 @@ async fn settle(
 ```
 
 Notes:
+
 - `sign_payment` and `sign_payment_v2` always use EIP-712 signing and will error if the scheme is not 4mica.
 - `settle_payment` only hits `/settle`; resource servers should still call the facilitator `/verify` first when enforcing access (see the Python example for the end-to-end pattern).
 
@@ -324,11 +328,9 @@ Notes:
 - `approve_erc20(token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the 4Mica contract to spend ERC20 tokens on behalf of the user
 - `deposit(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, DepositError>`: Deposit collateral in ETH or ERC20 token
 - `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
-- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V1 payment (`PaymentGuaranteeRequestClaims` is the SDK alias for V1 claims)
 - `sign_payment_v2(claims: PaymentGuaranteeRequestClaimsV2, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V2 payment with validation policy fields
 - `sign_payment_auto(intent: PaymentGuaranteeIntent, validation: Option<PaymentGuaranteeValidationInput>, scheme: SigningScheme) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>`: Build and sign either V1 or V2 claims using core metadata
-- `pay_tab(tab_id: U256, req_id: U256, amount: U256, recipient_address: String, erc20_token: Option<String>) -> Result<TransactionReceipt, PayTabError>`: Pay a tab directly on-chain in ETH or ERC20 token
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
 - `finalize_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, FinalizeWithdrawalError>`: Finalize withdrawal after waiting period
@@ -336,14 +338,11 @@ Notes:
 #### RecipientClient Methods
 
 - `create_tab(user_address: String, recipient_address: String, erc20_token: Option<String>, ttl: Option<u64>, guarantee_version: u64) -> Result<CreateTabResult, CreateTabError>`: Create or reuse a payment tab for a specific guarantee version in ETH or ERC20 token
-- `get_tab_payment_status(tab_id: U256) -> Result<TabPaymentStatus, TabPaymentStatusError>`: Get payment status for a tab
 - `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
 - `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
 - `issue_payment_guarantee_v2(claims: PaymentGuaranteeRequestClaimsV2, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a V2 payment guarantee
 - `issue_prepared_payment_guarantee(request: PreparedPaymentGuaranteeRequest) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a guarantee from the output of `sign_payment_auto`
-- `remunerate(cert: BLSCert) -> Result<TransactionReceipt, RemunerateError>`: Claim from user collateral using BLS certificate
 - `list_settled_tabs() -> Result<Vec<TabInfo>, RecipientQueryError>`: List all settled tabs for the recipient
-- `list_pending_remunerations() -> Result<Vec<PendingRemunerationInfo>, RecipientQueryError>`: List pending remunerations for the recipient
 - `get_tab(tab_id: U256) -> Result<Option<TabInfo>, RecipientQueryError>`: Get tab information by ID
 - `list_recipient_tabs(settlement_statuses: Option<Vec<String>>) -> Result<Vec<TabInfo>, RecipientQueryError>`: List tabs for the recipient with optional status filter
 - `get_tab_guarantees(tab_id: U256) -> Result<Vec<GuaranteeInfo>, RecipientQueryError>`: Get all guarantees for a tab
@@ -417,18 +416,6 @@ for user_info in user_assets {
 }
 ```
 
-#### Get Tab Payment Status
-
-```rust
-use sdk_4mica::U256;
-
-let tab_id = U256::from(1);
-let status = client.user.get_tab_payment_status(tab_id).await?;
-println!("Paid: {}", status.paid);
-println!("Remunerated: {}", status.remunerated);
-println!("Asset: {}", status.asset);
-```
-
 #### Sign a Payment
 
 ```rust
@@ -471,34 +458,6 @@ let claims_usdc = PaymentGuaranteeRequestClaims::new(
     Some(usdc_token),
 );
 let payment_sig_usdc = client.user.sign_payment(claims_usdc, SigningScheme::Eip712).await?;
-```
-
-#### Pay a Tab
-
-```rust
-use sdk_4mica::U256;
-
-// Pay 1 ETH to a tab
-let tab_id = U256::from(1);
-// Use the req_id that came back with the guarantee certificate (placeholder value shown)
-let req_id = U256::from(1);
-let amount = U256::from(1_000_000_000_000_000_000u128);
-let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
-
-let receipt = client.user.pay_tab(tab_id, req_id, amount, recipient_address.clone(), None).await?;
-println!("Payment successful: {:?}", receipt.transaction_hash);
-
-// Or pay 1000 USDC to a tab (make sure to approve the 4Mica contract first!)
-let token_address = "0x1234567890123456789012345678901234567890".to_string();
-let amount_usdc = U256::from(1000_000_000u128);
-let receipt = client.user.pay_tab(
-    tab_id,
-    req_id,
-    amount_usdc,
-    recipient_address,
-    Some(token_address)
-).await?;
-println!("USDC payment successful: {:?}", receipt.transaction_hash);
 ```
 
 #### Request Withdrawal
@@ -590,18 +549,6 @@ An active tab is reused only when all of these match:
 
 That means V1 and V2 tabs for the same user, recipient, and asset remain distinct.
 
-#### Get Tab Payment Status
-
-```rust
-use sdk_4mica::U256;
-
-let tab_id = U256::from(1);
-let status = client.recipient.get_tab_payment_status(tab_id).await?;
-println!("Paid: {}", status.paid);
-println!("Remunerated: {}", status.remunerated);
-println!("Asset: {}", status.asset);
-```
-
 #### Issue Payment Guarantee
 
 ```rust
@@ -626,16 +573,6 @@ let bls_cert = client.recipient.issue_payment_guarantee(
     payment_sig.scheme,
 ).await?;
 println!("BLS Certificate: {:?}", bls_cert);
-```
-
-#### Remunerate (Claim from Collateral)
-
-```rust
-// If the user doesn't fulfill the payment guarantee,
-// the recipient can claim from the user's collateral on-chain
-let receipt = client.recipient.remunerate(bls_cert).await?;
-println!("Claimed from user collateral successfully!");
-println!("Transaction hash: {:?}", receipt.transaction_hash);
 ```
 
 ## Complete Example
@@ -703,11 +640,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
     println!("Guarantee issued");
-
-    // 6. If user doesn't pay, recipient can claim from user's collateral
-    let receipt = recipient_client.recipient.remunerate(bls_cert).await?;
-    println!("Claimed from user collateral!");
-    println!("Transaction hash: {:?}", receipt.transaction_hash);
 
     Ok(())
 }
@@ -786,11 +718,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("Guarantee issued");
 
-    // 6. If user doesn't pay, recipient can claim from user's USDC collateral
-    let receipt = recipient_client.recipient.remunerate(bls_cert).await?;
-    println!("Claimed USDC from user collateral!");
-    println!("Transaction hash: {:?}", receipt.transaction_hash);
-
     Ok(())
 }
 ```
@@ -804,8 +731,8 @@ The SDK provides comprehensive, type-safe error handling with specific error typ
 ```rust
 // Import specific error types when needed
 use sdk_4mica::error::{
-    ApproveErc20Error, DepositError, RemunerateError, RequestWithdrawalError,
-    SignPaymentError, FinalizeWithdrawalError, CreateTabError, PayTabError,
+    ApproveErc20Error, DepositError, RequestWithdrawalError,
+    SignPaymentError, FinalizeWithdrawalError, CreateTabError,
     IssuePaymentGuaranteeError, VerifyGuaranteeError, RecipientQueryError,
     // ... other error types as needed
 };
@@ -891,19 +818,6 @@ use sdk_4mica::error::{
 - `InvalidParams(String)`: Invalid parameters (e.g., signer address mismatch)
 - `Rpc(rpc::ApiClientError)`: RPC communication error
 
-**`PayTabError`**
-
-- `InvalidParams(String)`: Invalid parameters provided
-- `InvalidAsset`: Asset does not match the tab asset
-- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
-- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
-- `Transport(String)`: Provider or transport error
-
-**`TabPaymentStatusError`**
-
-- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
-- `Transport(String)`: Provider or transport error
-
 #### Payment Guarantee Errors
 
 **`IssuePaymentGuaranteeError`**
@@ -931,31 +845,6 @@ use sdk_4mica::error::{
 **`RecipientQueryError`**
 
 - `Rpc(rpc::ApiClientError)`: RPC communication error
-
-**`RemunerateError`**
-
-- `InvalidParams(String)`: Invalid parameters provided
-- `ClaimsHex(anyhow::Error)`: Failed to decode the hex-encoded guarantee claims blob
-- `ClaimsDecode(anyhow::Error)`: Failed to deserialize guarantee claims after decoding
-- `GuaranteeConversion(anyhow::Error)`: Failed to convert decoded claims into the contract call type
-- `SignatureHex(FromHexError)`: Failed to decode the hex-encoded BLS signature
-- `SignatureDecode(anyhow::Error)`: Failed to parse the decoded BLS signature bytes
-- `TabNotYetOverdue`: Tab has not reached its due date yet
-- `TabExpired`: Tab has expired and can no longer be remunerated
-- `TabPreviouslyRemunerated`: Tab has already been remunerated
-- `TabAlreadyPaid`: Tab has already been paid by user
-- `InvalidSignature`: BLS signature verification failed
-- `DoubleSpendingDetected`: Attempt to spend same guarantee twice
-- `InvalidRecipient`: Caller is not the recipient of this tab
-- `AmountZero`: Guarantee amount is zero
-- `TransferFailed`: Transfer of funds failed
-- `CertificateInvalid(anyhow::Error)`: Certificate verification failed
-- `CertificateMismatch`: Certificate signature mismatch before submission
-- `GuaranteeDomainMismatch`: Guarantee domain mismatch
-- `UnsupportedGuaranteeVersion(u64)`: Unsupported guarantee version
-- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
-- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
-- `Transport(String)`: Provider or transport error
 
 **`GetUserError`**
 

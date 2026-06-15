@@ -2,7 +2,6 @@ use crate::contract::Core4Mica;
 use alloy::contract as alloy_contract;
 use alloy::primitives::{Address, Bytes};
 use anyhow::Error;
-use crypto::hex::DecodeHexError;
 use reqwest::StatusCode;
 use rpc::ApiClientError;
 use serde_json::Value;
@@ -92,80 +91,6 @@ pub enum SignPaymentError {
 }
 
 #[derive(Debug, Error)]
-pub enum RemunerateError {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-    #[error("failed to decode guarantee claims hex")]
-    ClaimsHex(#[source] Error),
-    #[error("failed to decode guarantee claims")]
-    ClaimsDecode(#[source] Error),
-    #[error("failed to convert guarantee claims into contract type")]
-    GuaranteeConversion(#[source] Error),
-    #[error("failed to decode signature hex")]
-    SignatureHex(#[source] DecodeHexError),
-    #[error("failed to decode BLS signature")]
-    SignatureDecode(#[source] Error),
-    #[error("tab not yet overdue")]
-    TabNotYetOverdue,
-    #[error("tab expired")]
-    TabExpired,
-    #[error("tab previously remunerated")]
-    TabPreviouslyRemunerated,
-    #[error("tab already paid")]
-    TabAlreadyPaid,
-    #[error("invalid signature")]
-    InvalidSignature,
-    #[error("double spending detected")]
-    DoubleSpendingDetected,
-    #[error("invalid recipient")]
-    InvalidRecipient,
-    #[error("amount is zero")]
-    AmountZero,
-    #[error("transfer failed")]
-    TransferFailed,
-    #[error("certificate verification failed: {0}")]
-    CertificateInvalid(#[source] Error),
-    #[error("certificate signature mismatch before submission")]
-    CertificateMismatch,
-    #[error("guarantee version mismatch: expected {expected}, got {actual}")]
-    GuaranteeVersionMismatch { expected: u64, actual: u64 },
-    #[error("guarantee domain mismatch")]
-    GuaranteeDomainMismatch,
-    #[error("unsupported guarantee version: {0}")]
-    UnsupportedGuaranteeVersion(u64),
-    #[error("invalid min validation score")]
-    InvalidMinValidationScore,
-    #[error("invalid validation chain id")]
-    InvalidValidationChainId,
-    #[error("untrusted validation registry: {0}")]
-    UntrustedValidationRegistry(Address),
-    #[error("validation subject hash mismatch")]
-    ValidationSubjectHashMismatch,
-    #[error("validation request hash mismatch")]
-    ValidationRequestHashMismatch,
-    #[error("validation lookup failed")]
-    ValidationLookupFailed,
-    #[error("validation pending")]
-    ValidationPending,
-    #[error("validation score too low")]
-    ValidationScoreTooLow,
-    #[error("validation validator mismatch")]
-    ValidationValidatorMismatch,
-    #[error("validation agent mismatch")]
-    ValidationAgentMismatch,
-    #[error("validation tag mismatch")]
-    ValidationTagMismatch,
-
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
-    #[error("unknown revert (selector {selector:#x})")]
-    UnknownRevert { selector: u32, data: Vec<u8> },
-    #[error("provider/transport error: {0}")]
-    Transport(String),
-}
-
-#[derive(Debug, Error)]
 pub enum FinalizeWithdrawalError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
@@ -237,8 +162,6 @@ pub enum DepositError {
     AmountZero,
     #[error("unsupported asset: {0}")]
     UnsupportedAsset(Address),
-    #[error("illegal value")]
-    IllegalValue,
     #[error("Aave is not configured")]
     AaveNotConfigured,
 
@@ -266,13 +189,9 @@ pub enum ApproveErc20Error {
 }
 
 #[derive(Debug, Error)]
-pub enum PayTabError {
+pub enum ClearingSettlementError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
-    #[error("invalid asset")]
-    InvalidAsset,
-    #[error("unsupported asset: {0}")]
-    UnsupportedAsset(Address),
 
     #[error(transparent)]
     Rpc(#[from] ApiClientError),
@@ -292,14 +211,6 @@ pub enum GetUserError {
     UnsupportedAsset(Address),
     #[error("Aave is not configured")]
     AaveNotConfigured,
-    #[error("unknown revert (selector {selector:#x})")]
-    UnknownRevert { selector: u32, data: Vec<u8> },
-    #[error("provider/transport error: {0}")]
-    Transport(String),
-}
-
-#[derive(Debug, Error)]
-pub enum TabPaymentStatusError {
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
@@ -391,18 +302,6 @@ impl RevertDetails {
     }
 }
 
-const INVALID_MIN_VALIDATION_SCORE_SELECTOR: u32 = 0x940e8e0e;
-const INVALID_VALIDATION_CHAIN_ID_SELECTOR: u32 = 0xabe8d799;
-const UNTRUSTED_VALIDATION_REGISTRY_SELECTOR: u32 = 0x6098bbe0;
-const VALIDATION_SUBJECT_HASH_MISMATCH_SELECTOR: u32 = 0xd7201f6e;
-const VALIDATION_REQUEST_HASH_MISMATCH_SELECTOR: u32 = 0x95ce60ab;
-const VALIDATION_LOOKUP_FAILED_SELECTOR: u32 = 0x105163d4;
-const VALIDATION_PENDING_SELECTOR: u32 = 0x860263f8;
-const VALIDATION_SCORE_TOO_LOW_SELECTOR: u32 = 0xf44670f9;
-const VALIDATION_VALIDATOR_MISMATCH_SELECTOR: u32 = 0x9e8eb320;
-const VALIDATION_AGENT_MISMATCH_SELECTOR: u32 = 0xe474a924;
-const VALIDATION_TAG_MISMATCH_SELECTOR: u32 = 0x0604e144;
-
 trait ContractErrorTarget {
     fn from_unknown_revert(revert: RevertDetails) -> Self;
     fn from_transport(err: alloy_contract::Error) -> Self;
@@ -465,81 +364,13 @@ macro_rules! impl_contract_error_target {
     };
 }
 
-impl_contract_error_target!(RemunerateError);
 impl_contract_error_target!(FinalizeWithdrawalError);
 impl_contract_error_target!(RequestWithdrawalError);
 impl_contract_error_target!(CancelWithdrawalError);
 impl_contract_error_target!(DepositError);
 impl_contract_error_target!(ApproveErc20Error);
-impl_contract_error_target!(PayTabError);
+impl_contract_error_target!(ClearingSettlementError);
 impl_contract_error_target!(GetUserError);
-impl_contract_error_target!(TabPaymentStatusError);
-
-impl From<alloy_contract::Error> for RemunerateError {
-    fn from(error: alloy_contract::Error) -> Self {
-        if let Some(decoded) = error.as_decoded_interface_error::<Core4Mica::Core4MicaErrors>() {
-            match decoded {
-                Core4Mica::Core4MicaErrors::TabNotYetOverdue(_) => return Self::TabNotYetOverdue,
-                Core4Mica::Core4MicaErrors::TabExpired(_) => return Self::TabExpired,
-                Core4Mica::Core4MicaErrors::TabPreviouslyRemunerated(_) => {
-                    return Self::TabPreviouslyRemunerated;
-                }
-                Core4Mica::Core4MicaErrors::TabAlreadyPaid(_) => return Self::TabAlreadyPaid,
-                Core4Mica::Core4MicaErrors::InvalidSignature(_) => return Self::InvalidSignature,
-                Core4Mica::Core4MicaErrors::DoubleSpendingDetected(_) => {
-                    return Self::DoubleSpendingDetected;
-                }
-                Core4Mica::Core4MicaErrors::InvalidRecipient(_) => return Self::InvalidRecipient,
-                Core4Mica::Core4MicaErrors::AmountZero(_) => return Self::AmountZero,
-                Core4Mica::Core4MicaErrors::TransferFailed(_) => return Self::TransferFailed,
-                Core4Mica::Core4MicaErrors::InvalidGuaranteeDomain(_) => {
-                    return Self::GuaranteeDomainMismatch;
-                }
-                Core4Mica::Core4MicaErrors::UnsupportedGuaranteeVersion(err) => {
-                    return Self::UnsupportedGuaranteeVersion(err.version);
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(revert) = RevertDetails::from_error(&error) {
-            return match revert.selector {
-                INVALID_MIN_VALIDATION_SCORE_SELECTOR => Self::InvalidMinValidationScore,
-                INVALID_VALIDATION_CHAIN_ID_SELECTOR => Self::InvalidValidationChainId,
-                UNTRUSTED_VALIDATION_REGISTRY_SELECTOR => decode_address_argument(&revert.data)
-                    .map(Self::UntrustedValidationRegistry)
-                    .unwrap_or(Self::UnknownRevert {
-                        selector: revert.selector,
-                        data: revert.data,
-                    }),
-                VALIDATION_SUBJECT_HASH_MISMATCH_SELECTOR => Self::ValidationSubjectHashMismatch,
-                VALIDATION_REQUEST_HASH_MISMATCH_SELECTOR => Self::ValidationRequestHashMismatch,
-                VALIDATION_LOOKUP_FAILED_SELECTOR => Self::ValidationLookupFailed,
-                VALIDATION_PENDING_SELECTOR => Self::ValidationPending,
-                VALIDATION_SCORE_TOO_LOW_SELECTOR => Self::ValidationScoreTooLow,
-                VALIDATION_VALIDATOR_MISMATCH_SELECTOR => Self::ValidationValidatorMismatch,
-                VALIDATION_AGENT_MISMATCH_SELECTOR => Self::ValidationAgentMismatch,
-                VALIDATION_TAG_MISMATCH_SELECTOR => Self::ValidationTagMismatch,
-                _ => Self::UnknownRevert {
-                    selector: revert.selector,
-                    data: revert.data,
-                },
-            };
-        }
-
-        Self::Transport(error.to_string())
-    }
-}
-
-fn decode_address_argument(data: &[u8]) -> Option<Address> {
-    if data.len() < 36 {
-        return None;
-    }
-
-    let mut address = [0u8; 20];
-    address.copy_from_slice(&data[16..36]);
-    Some(Address::from(address))
-}
 
 impl_from_alloy_error!(FinalizeWithdrawalError, {
     Core4Mica::Core4MicaErrors::NoWithdrawalRequested(_) => Self::NoWithdrawalRequested,
@@ -566,14 +397,10 @@ impl_from_alloy_error!(CancelWithdrawalError, {
 impl_from_alloy_error!(DepositError, {
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
     Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
-    Core4Mica::Core4MicaErrors::IllegalValue(_) => Self::IllegalValue,
     Core4Mica::Core4MicaErrors::AaveNotConfigured(_) => Self::AaveNotConfigured,
 });
 
-impl_from_alloy_error!(PayTabError, {
-    Core4Mica::Core4MicaErrors::InvalidAsset(_) => Self::InvalidAsset,
-    Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
-});
+impl_from_alloy_error!(ClearingSettlementError);
 
 impl_from_alloy_error!(ApproveErc20Error);
 
@@ -581,5 +408,3 @@ impl_from_alloy_error!(GetUserError, {
     Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
     Core4Mica::Core4MicaErrors::AaveNotConfigured(_) => Self::AaveNotConfigured,
 });
-
-impl_from_alloy_error!(TabPaymentStatusError);

@@ -2,8 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
-import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
-import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
 
 contract RevertingWithdrawalUser {
     Core4Mica internal immutable CORE;
@@ -231,74 +230,6 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
         assertEq(withdrawalAmount, 0);
     }
 
-    function test_FinalizeWithdrawal_NotFullAmount() public {
-        vm.prank(USER1);
-        core4Mica.deposit{value: 5 ether}();
-
-        uint256 tabTimestamp = 1;
-        uint256 withdrawalTimestamp = 1;
-        vm.prank(USER1);
-        core4Mica.requestWithdrawal(4 ether);
-
-        vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
-        Guarantee memory g = _ethGuarantee(0x1234, tabTimestamp, USER1, USER2, 17, 3 ether);
-        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
-        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
-
-        core4Mica.remunerate(guaranteeData, signature);
-        (uint256 collateral, uint256 storedTimestamp, uint256 storedAmount) = core4Mica.getUser(USER1);
-        assertEq(collateral, 2 ether);
-        assertEq(storedTimestamp, withdrawalTimestamp);
-        assertEq(storedAmount, 1 ether);
-
-        vm.warp(tabTimestamp + core4Mica.withdrawalGracePeriod());
-
-        vm.expectEmit(true, true, false, true);
-        emit Core4Mica.CollateralWithdrawn(USER1, ETH_ASSET, 1 ether);
-
-        assertEq(USER1.balance, 0 ether);
-        vm.prank(USER1);
-        core4Mica.finalizeWithdrawal();
-        assertEq(USER1.balance, 1 ether);
-
-        (collateral, storedTimestamp, storedAmount) = core4Mica.getUser(USER1);
-        assertEq(collateral, 1 ether);
-        assertEq(storedTimestamp, 0);
-        assertEq(storedAmount, 0);
-    }
-
-    function test_FinalizeWithdrawal_CollateralGone() public {
-        vm.prank(USER1);
-        core4Mica.deposit{value: 5 ether}();
-
-        uint256 tabTimestamp = 1;
-
-        vm.prank(USER1);
-        core4Mica.requestWithdrawal(2 ether);
-
-        (, uint256 requestTimestamp,) = core4Mica.getUser(USER1);
-        tabTimestamp = requestTimestamp + core4Mica.synchronizationDelay() + 1;
-        vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 5);
-
-        Guarantee memory g = _ethGuarantee(0x1234, tabTimestamp, USER1, USER2, 17, 5 ether);
-        BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
-        bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
-
-        core4Mica.remunerate(guaranteeData, signature);
-
-        vm.warp(tabTimestamp + core4Mica.withdrawalGracePeriod());
-
-        assertEq(USER1.balance, 0 ether);
-        vm.prank(USER1);
-        core4Mica.finalizeWithdrawal();
-        assertEq(USER1.balance, 0 ether);
-
-        (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
-        assertEq(collateral, 0);
-        assertEq(withdrawalTimestamp, 0);
-        assertEq(withdrawalAmount, 0);
-    }
-
     function test_FinalizeWithdrawal_FullCollateral() public {
         vm.prank(USER1);
         core4Mica.deposit{value: 1 ether}();
@@ -317,6 +248,71 @@ contract Core4MicaWithdrawalsTest is Core4MicaTestBase {
         (uint256 collateral,,) = core4Mica.getUser(USER1);
         assertEq(collateral, 0);
         assertEq(USER1.balance, 5 ether);
+    }
+
+    // NOTE: The two tests below cover finalizeWithdrawal's
+    // `Math.min(available, request.amount)` clamp (Core4Mica `_finalizeEthWithdrawal` /
+    // `_finalizeStablecoinWithdrawal`) for the case where a user's collateral is reduced
+    // BELOW a pending withdrawal request before finalization. The only mechanism that
+    // reduced collateral was the legacy `remunerate` flow, which has been removed, so today
+    // no API can seize a user's collateral and this branch is unreachable. They are kept,
+    // skipped, as a reminder: when a collateral-reducing path is added (e.g. clearing-cycle
+    // default seizure from collateral), re-enable these and point the seizure step at the
+    // new API. The commented bodies preserve the original assertions to restore.
+    function test_FinalizeWithdrawal_NotFullAmount() public {
+        vm.skip(true, "no collateral-seizure API yet; re-enable when one lands");
+        // USER1 deposits 5 ETH, requests withdrawal of 4 ETH (request timestamp = 1).
+        // A seizure path then takes 3 ETH (collateral -> 2 ETH), clamping the pending
+        // request to the remaining collateral.
+        //
+        // vm.prank(USER1);
+        // core4Mica.deposit{value: 5 ether}();
+        // vm.prank(USER1);
+        // core4Mica.requestWithdrawal(4 ether);
+        //
+        // <seize 3 ETH of USER1 collateral via the future collateral-reducing API>
+        //
+        // (uint256 collateral, uint256 storedTimestamp, uint256 storedAmount) = core4Mica.getUser(USER1);
+        // assertEq(collateral, 2 ether);
+        // assertEq(storedTimestamp, 1);
+        // assertEq(storedAmount, 1 ether); // request clamped to remaining collateral
+        //
+        // vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+        // vm.expectEmit(true, true, false, true);
+        // emit Core4Mica.CollateralWithdrawn(USER1, ETH_ASSET, 1 ether);
+        // assertEq(USER1.balance, 0 ether);
+        // vm.prank(USER1);
+        // core4Mica.finalizeWithdrawal();
+        // assertEq(USER1.balance, 1 ether); // pays out only the clamped remainder
+        //
+        // (collateral, storedTimestamp, storedAmount) = core4Mica.getUser(USER1);
+        // assertEq(collateral, 1 ether);
+        // assertEq(storedTimestamp, 0);
+        // assertEq(storedAmount, 0);
+    }
+
+    function test_FinalizeWithdrawal_CollateralGone() public {
+        vm.skip(true, "no collateral-seizure API yet; re-enable when one lands");
+        // USER1 deposits 5 ETH, requests withdrawal of 2 ETH, then a seizure path takes all
+        // 5 ETH of collateral. finalizeWithdrawal should pay out 0 and clear the request.
+        //
+        // vm.prank(USER1);
+        // core4Mica.deposit{value: 5 ether}();
+        // vm.prank(USER1);
+        // core4Mica.requestWithdrawal(2 ether);
+        //
+        // <seize all 5 ETH of USER1 collateral via the future collateral-reducing API>
+        //
+        // vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+        // assertEq(USER1.balance, 0 ether);
+        // vm.prank(USER1);
+        // core4Mica.finalizeWithdrawal();
+        // assertEq(USER1.balance, 0 ether);
+        //
+        // (uint256 collateral, uint256 withdrawalTimestamp, uint256 withdrawalAmount) = core4Mica.getUser(USER1);
+        // assertEq(collateral, 0);
+        // assertEq(withdrawalTimestamp, 0);
+        // assertEq(withdrawalAmount, 0);
     }
 
     function test_FinalizeWithdrawal_Revert_NoWithdrawalRequested() public {

@@ -32,7 +32,6 @@ pub fn eip712_digest_for_claims(
             let message = SolGuaranteeRequestClaimsV1 {
                 user: parse_addr("claims.user_address", &c.user_address)?,
                 recipient: parse_addr("claims.recipient_address", &c.recipient_address)?,
-                tabId: c.tab_id,
                 reqId: c.req_id,
                 amount: c.amount,
                 asset: parse_addr("claims.asset_address", &c.asset_address)?,
@@ -44,7 +43,6 @@ pub fn eip712_digest_for_claims(
             let message = SolGuaranteeRequestClaimsV2 {
                 user: parse_addr("claims.user_address", &c.user_address)?,
                 recipient: parse_addr("claims.recipient_address", &c.recipient_address)?,
-                tabId: c.tab_id,
                 reqId: c.req_id,
                 amount: c.amount,
                 asset: parse_addr("claims.asset_address", &c.asset_address)?,
@@ -75,7 +73,6 @@ pub fn eip191_digest_for_claims(
         PaymentGuaranteeRequestClaims::V1(c) => SolGuaranteeRequestClaimsV1 {
             user,
             recipient,
-            tabId: c.tab_id,
             reqId: c.req_id,
             amount: c.amount,
             asset: parse_addr("claims.asset_address", &c.asset_address)?,
@@ -85,7 +82,6 @@ pub fn eip191_digest_for_claims(
         PaymentGuaranteeRequestClaims::V2(c) => SolGuaranteeRequestClaimsV2 {
             user,
             recipient,
-            tabId: c.tab_id,
             reqId: c.req_id,
             amount: c.amount,
             asset: parse_addr("claims.asset_address", &c.asset_address)?,

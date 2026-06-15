@@ -1,457 +1,76 @@
-use alloy::signers::Signer;
-use rpc::RpcProxy;
-use sdk_4mica::client::recipient::RecipientClient;
+use alloy::primitives::{Address, B256, U256};
+use rpc::{CorePublicParameters, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestEssentials};
 use sdk_4mica::{
-    BLSCert, Client, PaymentGuaranteeIntent, SigningScheme, U256, error::VerifyGuaranteeError,
+    PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
+    guarantee::prepare_payment_guarantee_claims,
 };
-use std::time::Duration;
 
-mod common;
-
-use crate::common::{
-    ETH_ASSET_ADDRESS, build_authed_recipient_config, build_authed_user_config, mine_confirmations,
-    wait_for_collateral_increase,
-};
-use crypto::bls::BlsClaims;
-
-async fn resolve_start_timestamp<S>(
-    recipient: &RecipientClient<S>,
-    tab_id: U256,
-) -> anyhow::Result<u64>
-where
-    S: Signer + Sync,
-{
-    if let Some(latest) = recipient.get_latest_guarantee(tab_id).await? {
-        return Ok(latest.timestamp);
+fn public_params() -> CorePublicParameters {
+    CorePublicParameters {
+        public_key: vec![],
+        contract_address: Address::ZERO.to_string(),
+        ethereum_http_rpc_url: "http://localhost:8545".to_string(),
+        eip712_name: "4mica".to_string(),
+        eip712_version: "1".to_string(),
+        chain_id: 84532,
+        max_accepted_guarantee_version: 2,
+        accepted_guarantee_versions: vec![1, 2],
+        active_guarantee_domain_separator:
+            "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        trusted_validation_registries: vec![Address::repeat_byte(0x44).to_string()],
+        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
     }
-
-    if let Some(tab) = recipient.get_tab(tab_id).await?
-        && tab.start_timestamp > 0
-    {
-        return Ok(tab.start_timestamp as u64);
-    }
-
-    Ok(common::get_now().as_secs())
 }
 
-async fn resolve_next_req_id<S>(
-    recipient: &RecipientClient<S>,
-    tab_id: U256,
-) -> anyhow::Result<U256>
-where
-    S: Signer + Sync,
-{
-    if let Some(latest) = recipient.get_latest_guarantee(tab_id).await? {
-        return Ok(latest.req_id + U256::from(1u64));
-    }
-
-    Ok(U256::ZERO)
-}
-
-fn guarantee_intent(
-    guarantee_version: u64,
-    user_address: String,
-    recipient_address: String,
-    tab_id: U256,
-    req_id: U256,
-    amount: U256,
-    timestamp: u64,
-) -> PaymentGuaranteeIntent {
+fn intent(version: u64) -> PaymentGuaranteeIntent {
     PaymentGuaranteeIntent {
-        guarantee_version,
-        user_address,
-        recipient_address,
-        tab_id,
-        req_id,
-        amount,
-        asset_address: ETH_ASSET_ADDRESS.to_string(),
-        timestamp,
+        guarantee_version: version,
+        user_address: Address::repeat_byte(0x11).to_string(),
+        recipient_address: Address::repeat_byte(0x22).to_string(),
+        req_id: U256::from(7u64),
+        amount: U256::from(13u64),
+        asset_address: Address::ZERO.to_string(),
+        timestamp: 1_800_000_000,
     }
 }
 
-async fn fetch_accepted_guarantee_versions<S>(
-    config: &sdk_4mica::Config<S>,
-) -> anyhow::Result<Vec<u64>>
-where
-    S: Signer + Sync,
-{
-    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
-    if let Some(token) = &config.bearer_token {
-        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
-    }
-    Ok(rpc_proxy
-        .get_public_params()
-        .await?
-        .accepted_guarantee_versions_or_default())
-}
-
-#[tokio::test]
-#[serial_test::file_serial]
-async fn test_payment_flow_with_guarantee() -> anyhow::Result<()> {
-    if common::skip_without_local_core_stack() {
-        return Ok(());
-    }
-
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
-    )
-    .await?;
-
-    let user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config.clone()).await?;
-
-    let recipient_config = build_authed_recipient_config(
-        "http://localhost:3000",
-        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
-    )
-    .await?;
-
-    let recipient_address = recipient_config.signer.address().to_string();
-    let recipient_client = Client::new(recipient_config.clone()).await?;
-
-    let core_total_before = recipient_client
-        .recipient
-        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
-        .await?
-        .map(|info| info.total)
-        .unwrap_or(U256::ZERO);
-
-    let user_info = user_client.user.get_user().await?;
-    let eth_asset_before =
-        common::extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
-
-    let deposit_amount = U256::from(2_000_000_000_000_000_000u128);
-    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
-    mine_confirmations(&user_config, 1).await?;
-
-    let user_info_after = user_client.user.get_user().await?;
-    let eth_asset = common::extract_asset_info(&user_info_after, ETH_ASSET_ADDRESS)
-        .expect("ETH asset not found");
-    assert_eq!(
-        eth_asset.collateral,
-        eth_asset_before.collateral + deposit_amount
-    );
-
-    wait_for_collateral_increase(
-        &recipient_client.recipient,
-        &user_address,
-        ETH_ASSET_ADDRESS,
-        core_total_before,
-        deposit_amount,
-    )
-    .await?;
-
-    let tab = recipient_client
-        .recipient
-        .create_tab(
-            user_address.clone(),
-            recipient_address.clone(),
-            None,
-            Some(3600),
-            1,
-        )
-        .await?;
-    let tab_id = tab.tab_id;
-
-    let start_timestamp = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
-    let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
-    let request = user_client
-        .user
-        .sign_payment_auto(
-            guarantee_intent(
-                tab.guarantee_version,
-                user_address.clone(),
-                recipient_address.clone(),
-                tab_id,
-                req_id,
-                U256::from(1_000_000_000_000_000_000u128),
-                start_timestamp,
-            ),
-            None,
-            SigningScheme::Eip712,
-        )
-        .await?;
-
-    let bls_cert = recipient_client
-        .recipient
-        .issue_prepared_payment_guarantee(request)
-        .await?;
-
-    let recipient = &recipient_client.recipient;
-
-    let verified_claims = recipient.verify_payment_guarantee(&bls_cert)?;
-    assert_eq!(verified_claims.user_address, user_address);
-    assert_eq!(verified_claims.recipient_address, recipient_address);
-    assert_eq!(verified_claims.tab_id, tab_id);
-    assert_eq!(
-        verified_claims.amount,
-        U256::from(1_000_000_000_000_000_000u128)
-    );
-    assert_eq!(verified_claims.asset_address, ETH_ASSET_ADDRESS.to_string());
-    let assigned_req_id = verified_claims.req_id;
-
-    let mut tampered_hex = bls_cert.claims().to_hex();
-    if let Some(last) = tampered_hex.pop() {
-        let replacement = match last {
-            '0' => '1',
-            '1' => '2',
-            '2' => '3',
-            '3' => '4',
-            '4' => '5',
-            '5' => '6',
-            '6' => '7',
-            '7' => '8',
-            '8' => '9',
-            '9' => 'a',
-            'a' => 'b',
-            'b' => 'c',
-            'c' => 'd',
-            'd' => 'e',
-            'e' => 'f',
-            _ => '0',
-        };
-        tampered_hex.push(replacement);
-    } else {
-        panic!("certificate claims unexpectedly empty");
-    }
-
-    let tampered = BLSCert {
-        claims: BlsClaims::from_hex(&tampered_hex)?,
-        signature: bls_cert.signature().clone(),
+#[test]
+fn sdk_prepares_cycle_native_v1_claims_without_tab_fields() {
+    let claims =
+        prepare_payment_guarantee_claims(&public_params(), intent(1), None).expect("claims");
+    let PreparedPaymentGuaranteeClaims::V1(claims) = claims else {
+        panic!("expected v1 claims");
     };
-    let err = recipient.verify_payment_guarantee(&tampered).unwrap_err();
-    assert!(
-        matches!(err, VerifyGuaranteeError::CertificateMismatch),
-        "tampered certificate should fail verification"
-    );
 
-    let mut malformed_hex = bls_cert.signature().to_hex();
-    malformed_hex.pop();
-    assert!(
-        crypto::bls::BlsSignature::from_hex(&malformed_hex).is_err(),
-        "malformed signature should be rejected"
-    );
-
-    let _receipt = user_client
-        .user
-        .pay_tab(
-            tab_id,
-            assigned_req_id,
-            U256::from(1_000_000_000_000_000_000u128),
-            recipient_address.clone(),
-            None,
-        )
-        .await?;
-
-    let expected_paid = U256::from(1_000_000_000_000_000_000u128);
-    let mut tab_status = recipient_client
-        .recipient
-        .get_tab_payment_status(tab_id)
-        .await?;
-
-    if tab_status.paid != expected_paid {
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            tab_status = recipient_client
-                .recipient
-                .get_tab_payment_status(tab_id)
-                .await?;
-            if tab_status.paid == expected_paid {
-                break;
-            }
-        }
-    }
-
-    assert!(
-        tab_status.paid == expected_paid || tab_status.paid.is_zero(),
-        "unexpected tab paid amount: expected {expected_paid:?} or 0, got {:?}",
-        tab_status.paid
-    );
-    assert!(!tab_status.remunerated);
-    assert_eq!(tab_status.asset, ETH_ASSET_ADDRESS.to_string());
-
-    Ok(())
+    assert_eq!(claims.req_id, U256::from(7u64));
+    assert_eq!(claims.amount, U256::from(13u64));
+    let envelope = PaymentGuaranteeRequestClaims::V1(claims);
+    assert_eq!(envelope.req_id(), U256::from(7u64));
+    assert_eq!(envelope.amount(), U256::from(13u64));
 }
 
-#[tokio::test]
-#[serial_test::file_serial]
-async fn create_tab_returns_distinct_ids_for_v1_and_v2() -> anyhow::Result<()> {
-    if common::skip_without_local_core_stack() {
-        return Ok(());
-    }
+#[test]
+fn sdk_prepares_validation_gated_cycle_native_v2_claims() {
+    let validation = PaymentGuaranteeValidationInput {
+        validation_registry_address: None,
+        validator_address: Address::repeat_byte(0x55),
+        validator_agent_id: U256::from(99u64),
+        min_validation_score: 80,
+        required_validation_tag: "risk:approved".to_string(),
+        job_hash: B256::repeat_byte(0x66),
+    };
 
-    let recipient_config = build_authed_recipient_config(
-        "http://localhost:3000",
-        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
-    )
-    .await?;
-    let recipient_client = Client::new(recipient_config.clone()).await?;
+    let claims = prepare_payment_guarantee_claims(&public_params(), intent(2), Some(validation))
+        .expect("claims");
+    let PreparedPaymentGuaranteeClaims::V2(claims) = claims else {
+        panic!("expected v2 claims");
+    };
 
-    let accepted_versions = fetch_accepted_guarantee_versions(&recipient_config).await?;
-    if !accepted_versions.contains(&2) {
-        return Ok(());
-    }
-
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
-    )
-    .await?;
-    let user_address = user_config.signer.address().to_string();
-    let recipient_address = recipient_config.signer.address().to_string();
-
-    let v1_tab = recipient_client
-        .recipient
-        .create_tab(
-            user_address.clone(),
-            recipient_address.clone(),
-            None,
-            Some(3600),
-            1,
-        )
-        .await?;
-    let v2_tab = recipient_client
-        .recipient
-        .create_tab(user_address, recipient_address, None, Some(3600), 2)
-        .await?;
-
-    assert_ne!(v1_tab.tab_id, v2_tab.tab_id);
-    assert_eq!(v1_tab.guarantee_version, 1);
-    assert_eq!(v2_tab.guarantee_version, 2);
-    Ok(())
-}
-
-#[tokio::test]
-#[serial_test::file_serial]
-async fn test_multiple_guarantees_increment_req_id() -> anyhow::Result<()> {
-    if common::skip_without_local_core_stack() {
-        return Ok(());
-    }
-
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
-    )
-    .await?;
-    let user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config.clone()).await?;
-
-    let recipient_config = build_authed_recipient_config(
-        "http://localhost:3000",
-        "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
-    )
-    .await?;
-    let recipient_address = recipient_config.signer.address().to_string();
-    let recipient_client = Client::new(recipient_config.clone()).await?;
-
-    let core_total_before = recipient_client
-        .recipient
-        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
-        .await?
-        .map(|info| info.total)
-        .unwrap_or(U256::ZERO);
-
-    let deposit_amount = U256::from(3_000_000_000_000_000_000u128);
-    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
-    mine_confirmations(&user_config, 1).await?;
-
-    wait_for_collateral_increase(
-        &recipient_client.recipient,
-        &user_address,
-        ETH_ASSET_ADDRESS,
-        core_total_before,
-        deposit_amount,
-    )
-    .await?;
-
-    let tab = recipient_client
-        .recipient
-        .create_tab(
-            user_address.clone(),
-            recipient_address.clone(),
-            None,
-            Some(3600),
-            1,
-        )
-        .await?;
-    let tab_id = tab.tab_id;
-
-    let guarantees_before = recipient_client
-        .recipient
-        .get_tab_guarantees(tab_id)
-        .await?;
-    let guarantees_before_len = guarantees_before.len();
-
-    let base_ts = resolve_start_timestamp(&recipient_client.recipient, tab_id).await?;
-
-    let req_id = resolve_next_req_id(&recipient_client.recipient, tab_id).await?;
-    let cert_first = recipient_client
-        .recipient
-        .issue_prepared_payment_guarantee(
-            user_client
-                .user
-                .sign_payment_auto(
-                    guarantee_intent(
-                        tab.guarantee_version,
-                        user_address.clone(),
-                        recipient_address.clone(),
-                        tab_id,
-                        req_id,
-                        U256::from(1_000_000_000_000_000_000u128),
-                        base_ts,
-                    ),
-                    None,
-                    SigningScheme::Eip712,
-                )
-                .await?,
-        )
-        .await?;
-    let parsed_first = recipient_client
-        .recipient
-        .verify_payment_guarantee(&cert_first)?;
-    let first_req_id = parsed_first.req_id;
-
-    let cert_second = recipient_client
-        .recipient
-        .issue_prepared_payment_guarantee(
-            user_client
-                .user
-                .sign_payment_auto(
-                    guarantee_intent(
-                        tab.guarantee_version,
-                        user_address.clone(),
-                        recipient_address.clone(),
-                        tab_id,
-                        first_req_id + U256::from(1u64),
-                        U256::from(1_500_000_000_000_000_000u128),
-                        base_ts,
-                    ),
-                    None,
-                    SigningScheme::Eip712,
-                )
-                .await?,
-        )
-        .await?;
-    let parsed_second = recipient_client
-        .recipient
-        .verify_payment_guarantee(&cert_second)?;
+    assert_eq!(claims.req_id, U256::from(7u64));
+    assert_eq!(claims.amount, U256::from(13u64));
+    assert_eq!(claims.validation_policy.validation_chain_id, 84532);
     assert_eq!(
-        parsed_second.req_id,
-        first_req_id + U256::from(1u64),
-        "next guarantee must increment req_id"
+        claims.validation_policy.validation_registry_address,
+        Address::repeat_byte(0x44)
     );
-
-    let guarantees = recipient_client
-        .recipient
-        .get_tab_guarantees(tab_id)
-        .await?;
-    assert_eq!(guarantees.len(), guarantees_before_len + 2);
-    assert_eq!(guarantees[guarantees_before_len].req_id, first_req_id);
-    assert_eq!(
-        guarantees[guarantees_before_len + 1].req_id,
-        parsed_second.req_id
-    );
-
-    Ok(())
 }

@@ -173,7 +173,7 @@ Optional env:
    - expected decoder
    - `enabled=true`
 4. SDK/issuer can produce valid payload/signature for that version.
-5. Foundry integration tests for `verifyAndDecodeGuarantee` and `remunerate` pass.
+5. Foundry integration tests for `verifyAndDecodeGuarantee` pass.
 
 ## Test matrix in this repo
 

@@ -45,6 +45,11 @@ pub struct EthereumConfig {
     pub public_http_rpc_url: String,
     #[envconfig(from = "ETHEREUM_CONTRACT_ADDRESS")]
     pub contract_address: String,
+    #[envconfig(
+        from = "ETHEREUM_CLEARING_HOUSE_ADDRESS",
+        default = "0x0000000000000000000000000000000000000000"
+    )]
+    pub clearing_house_address: String,
     #[envconfig(from = "CRON_JOB_SETTINGS", default = "0 */1 * * * *")]
     pub cron_job_settings: String,
     #[envconfig(from = "ETHEREUM_EVENT_SCANNER_CRON", default = "*/5 * * * * *")]
@@ -234,6 +239,96 @@ impl GuaranteeConfig {
     }
 }
 
+/// Configuration for the off-chain clearing/settlement cycle.
+///
+/// # Relationship to the on-chain delayed-withdrawal invariant
+///
+/// `Core4Mica` lets a user finalize a collateral withdrawal only after
+/// `withdrawalGracePeriod` has elapsed since the request. That window is the
+/// operator's only opportunity to seize a defaulting user's collateral before it
+/// can leave. The contract cannot observe the settlement-cycle timeline, so it
+/// only enforces that the grace period is non-zero — core-service owns the safety
+/// relationship, because it is the only component that knows the cycle timing.
+///
+/// The worst case for an obligation accrued at the start of a cycle is that it
+/// cannot be enforced as an on-chain default until that cycle reaches payment
+/// finality, i.e. after [`cycle_to_finality_secs`](Self::cycle_to_finality_secs).
+/// The operator then needs `seizure_margin_secs` of slack to actually land the
+/// seizure transaction. Hence the invariant
+/// (`validate_against_withdrawal_grace_period`):
+///
+/// ```text
+/// cycle_to_finality_secs + seizure_margin_secs < withdrawalGracePeriod
+/// ```
+#[derive(Debug, Clone, Envconfig)]
+pub struct SettlementCycleConfig {
+    #[envconfig(from = "SETTLEMENT_CYCLE_SECS", default = "86400")]
+    pub cycle_secs: u64,
+    #[envconfig(from = "SETTLEMENT_RESOLUTION_CUTOFF_SECS", default = "21600")]
+    pub resolution_cutoff_secs: u64,
+    #[envconfig(from = "SETTLEMENT_CLEARING_COMMIT_DELAY_SECS", default = "900")]
+    pub clearing_commit_delay_secs: u64,
+    #[envconfig(from = "SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS", default = "7200")]
+    pub payment_submission_window_secs: u64,
+    #[envconfig(from = "SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS", default = "14400")]
+    pub payment_finality_window_secs: u64,
+    #[envconfig(from = "SETTLEMENT_SEIZURE_MARGIN_SECS", default = "21600")]
+    pub seizure_margin_secs: u64,
+}
+
+impl SettlementCycleConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.cycle_secs == 0 {
+            bail!("SETTLEMENT_CYCLE_SECS must be > 0");
+        }
+        if self.resolution_cutoff_secs == 0 {
+            bail!("SETTLEMENT_RESOLUTION_CUTOFF_SECS must be > 0");
+        }
+        if self.clearing_commit_delay_secs == 0 {
+            bail!("SETTLEMENT_CLEARING_COMMIT_DELAY_SECS must be > 0");
+        }
+        if self.payment_submission_window_secs == 0 {
+            bail!("SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS must be > 0");
+        }
+        if self.seizure_margin_secs == 0 {
+            bail!("SETTLEMENT_SEIZURE_MARGIN_SECS must be > 0");
+        }
+        if self.payment_finality_window_secs < self.payment_submission_window_secs {
+            bail!(
+                "SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS must be >= SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS"
+            );
+        }
+        Ok(())
+    }
+
+    /// Mirrors the deadline chain built in `SettlementCycleWindow::for_instant`.
+    pub fn cycle_to_finality_secs(&self) -> u64 {
+        self.cycle_secs
+            .saturating_add(self.resolution_cutoff_secs)
+            .saturating_add(self.clearing_commit_delay_secs)
+            .saturating_add(self.payment_finality_window_secs)
+    }
+
+    /// cycle_to_finality_secs + seizure_margin_secs < withdrawal_grace_period
+    pub fn validate_against_withdrawal_grace_period(
+        &self,
+        withdrawal_grace_period: u64,
+    ) -> anyhow::Result<()> {
+        let cycle_to_finality = self.cycle_to_finality_secs();
+        let required = cycle_to_finality.saturating_add(self.seizure_margin_secs);
+        if required >= withdrawal_grace_period {
+            bail!(
+                "settlement cycle time-to-finality ({cycle_to_finality}s) + seizure margin \
+                 ({}s) = {required}s must be < on-chain withdrawalGracePeriod \
+                 ({withdrawal_grace_period}s) to preserve the delayed-withdrawal solvency \
+                 invariant; increase withdrawalGracePeriod or shorten the settlement cycle windows",
+                self.seizure_margin_secs
+            );
+        }
+        Ok(())
+    }
+}
+
 fn validate_guarantee_version(version: u64, field: &str) -> anyhow::Result<()> {
     if !is_supported_guarantee_version(version) {
         let supported = SUPPORTED_GUARANTEE_VERSIONS
@@ -348,6 +443,7 @@ pub struct AppConfig {
     pub database_config: DatabaseConfig,
     pub eip712: Eip712Config,
     pub guarantee: GuaranteeConfig,
+    pub settlement_cycle: SettlementCycleConfig,
     pub auth: AuthConfig,
     pub monitoring: MonitoringConfig,
     /// Secrets are loaded into an Arc to avoid multiple allocations of the same secret.
@@ -369,6 +465,11 @@ impl AppConfig {
         let guarantee =
             GuaranteeConfig::init_from_env().context("Failed to load guarantee config")?;
         guarantee.validate().context("Invalid guarantee config")?;
+        let settlement_cycle = SettlementCycleConfig::init_from_env()
+            .context("Failed to load settlement cycle config")?;
+        settlement_cycle
+            .validate()
+            .context("Invalid settlement cycle config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
         let monitoring =
             MonitoringConfig::init_from_env().context("Failed to load monitoring config")?;
@@ -380,6 +481,7 @@ impl AppConfig {
             database_config,
             eip712,
             guarantee,
+            settlement_cycle,
             auth,
             monitoring,
             secrets,
@@ -389,7 +491,7 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::GuaranteeConfig;
+    use super::{GuaranteeConfig, SettlementCycleConfig};
 
     #[test]
     fn guarantee_config_accepts_valid_v1_and_v2() {
@@ -527,5 +629,97 @@ mod tests {
             .accepted_request_versions()
             .expect("accepted versions should resolve");
         assert_eq!(versions, vec![2]);
+    }
+
+    fn default_settlement_cycle_config() -> SettlementCycleConfig {
+        SettlementCycleConfig {
+            cycle_secs: 86_400,
+            resolution_cutoff_secs: 21_600,
+            clearing_commit_delay_secs: 900,
+            payment_submission_window_secs: 7_200,
+            payment_finality_window_secs: 14_400,
+            seizure_margin_secs: 21_600,
+        }
+    }
+
+    #[test]
+    fn settlement_cycle_config_accepts_defaults() {
+        default_settlement_cycle_config()
+            .validate()
+            .expect("default settlement cycle config must be valid");
+    }
+
+    #[test]
+    fn settlement_cycle_config_rejects_zero_cycle_length() {
+        let cfg = SettlementCycleConfig {
+            cycle_secs: 0,
+            ..default_settlement_cycle_config()
+        };
+
+        let err = cfg
+            .validate()
+            .expect_err("zero cycle length must be rejected");
+        assert!(err.to_string().contains("SETTLEMENT_CYCLE_SECS"));
+    }
+
+    #[test]
+    fn settlement_cycle_config_rejects_zero_seizure_margin() {
+        let cfg = SettlementCycleConfig {
+            seizure_margin_secs: 0,
+            ..default_settlement_cycle_config()
+        };
+
+        let err = cfg
+            .validate()
+            .expect_err("zero seizure margin must be rejected");
+        assert!(err.to_string().contains("SETTLEMENT_SEIZURE_MARGIN_SECS"));
+    }
+
+    #[test]
+    fn settlement_cycle_config_rejects_finality_before_submission() {
+        let cfg = SettlementCycleConfig {
+            payment_finality_window_secs: 3_600,
+            ..default_settlement_cycle_config()
+        };
+
+        let err = cfg
+            .validate()
+            .expect_err("finality before submission must be rejected");
+        assert!(
+            err.to_string()
+                .contains("SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS")
+        );
+    }
+
+    #[test]
+    fn cycle_to_finality_sums_the_deadline_chain() {
+        let cfg = default_settlement_cycle_config();
+        // 86_400 + 21_600 + 900 + 14_400
+        assert_eq!(cfg.cycle_to_finality_secs(), 123_300);
+    }
+
+    #[test]
+    fn grace_period_invariant_accepts_onchain_defaults() {
+        // On-chain default withdrawalGracePeriod is 22 days.
+        let cfg = default_settlement_cycle_config();
+        cfg.validate_against_withdrawal_grace_period(22 * 24 * 60 * 60)
+            .expect("default cycle config must satisfy the 22-day grace period");
+    }
+
+    #[test]
+    fn grace_period_invariant_rejects_too_short_grace() {
+        let cfg = default_settlement_cycle_config();
+        // required = cycle_to_finality (123_300) + seizure_margin (21_600) = 144_900.
+        let required = cfg.cycle_to_finality_secs() + cfg.seizure_margin_secs;
+
+        // Exactly equal must be rejected (strict inequality).
+        let err = cfg
+            .validate_against_withdrawal_grace_period(required)
+            .expect_err("grace period equal to required margin must be rejected");
+        assert!(err.to_string().contains("withdrawalGracePeriod"));
+
+        // One second above the requirement is accepted.
+        cfg.validate_against_withdrawal_grace_period(required + 1)
+            .expect("grace period one second above the requirement must be accepted");
     }
 }

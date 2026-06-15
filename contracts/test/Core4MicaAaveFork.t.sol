@@ -70,14 +70,14 @@ contract Core4MicaAaveForkTest is Test {
         _grantGovernance(Core4Mica.setYieldFeeBps.selector);
         _grantGovernance(Core4Mica.claimProtocolYield.selector);
         _grantGovernance(Core4Mica.claimSurplusATokens.selector);
-        _grantGovernance(Core4Mica.setTimingParameters.selector);
+        _grantGovernance(Core4Mica.setWithdrawalGracePeriod.selector);
 
         address[] memory configuredATokens = new address[](2);
         configuredATokens[0] = aTokens[0];
         configuredATokens[1] = aTokens[1];
         core4Mica.configureAave(providerAddress, configuredATokens);
 
-        core4Mica.setTimingParameters(1 hours, 2 hours, 1 hours, 4 hours);
+        core4Mica.setWithdrawalGracePeriod(4 hours);
 
         _fundAndApprove(USER1, stablecoins[0], _depositAmount(stablecoins[0]) * 3);
         _fundAndApprove(USER1, stablecoins[1], _depositAmount(stablecoins[1]) * 3);
@@ -122,27 +122,6 @@ contract Core4MicaAaveForkTest is Test {
         assertEq(core4Mica.principalBalance(USER1, stablecoins[0]), 0);
         assertEq(core4Mica.totalUserScaledBalance(stablecoins[0]), 0);
         assertGe(IERC20(stablecoins[0]).balanceOf(USER1), userBalanceBefore);
-    }
-
-    function testFork_Remunerate_WithdrawsUnderlyingFromRealAavePool() public onlyIfForkConfigured {
-        uint256 depositAmount = _depositAmount(stablecoins[0]);
-        uint256 remuneratedAmount = depositAmount / 2;
-
-        vm.prank(USER1);
-        core4Mica.depositStablecoin(stablecoins[0], depositAmount);
-
-        uint256 tabTimestamp = block.timestamp;
-        Guarantee memory g = _guarantee(0xABCD, tabTimestamp, USER1, USER2, 1, remuneratedAmount, stablecoins[0]);
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(g, TEST_PRIVATE_KEY);
-
-        vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 1);
-
-        uint256 recipientBalanceBefore = IERC20(stablecoins[0]).balanceOf(USER2);
-        vm.prank(USER2);
-        core4Mica.remunerate(_encodeGuaranteeWithVersion(g), signature);
-
-        assertEq(IERC20(stablecoins[0]).balanceOf(USER2), recipientBalanceBefore + remuneratedAmount);
-        assertEq(core4Mica.principalBalance(USER1, stablecoins[0]), depositAmount - remuneratedAmount);
     }
 
     function testFork_ClaimProtocolYield_AfterLiveIndexAccrual() public onlyIfForkConfigured {
@@ -214,55 +193,6 @@ contract Core4MicaAaveForkTest is Test {
 
         vm.prank(USER1);
         core4Mica.finalizeWithdrawal(asset);
-        _assertScaledReconciliationWithinTolerance(asset);
-    }
-
-    function testFork_RemunerationWithdrawalAndTreasuryClaim_ReconcileWithinDustTolerance()
-        public
-        onlyIfForkConfigured
-    {
-        address asset = stablecoins[0];
-        uint256 depositAmount = _largeDepositAmount(asset);
-        uint256 remuneratedAmount = depositAmount / 4;
-
-        vm.prank(USER1);
-        core4Mica.depositStablecoin(asset, depositAmount);
-
-        core4Mica.setYieldFeeBps(2_000);
-        _assertScaledReconciliationWithinTolerance(asset);
-
-        vm.warp(block.timestamp + 30 days);
-
-        uint256 tabTimestamp = block.timestamp;
-        Guarantee memory g = _guarantee(0xDCBA, tabTimestamp, USER1, USER2, 2, remuneratedAmount, asset);
-        BLS.G2Point memory signature = BlsHelper.signGuarantee(g, TEST_PRIVATE_KEY);
-
-        vm.warp(tabTimestamp + core4Mica.remunerationGracePeriod() + 1);
-        vm.prank(USER2);
-        core4Mica.remunerate(_encodeGuaranteeWithVersion(g), signature);
-        _assertScaledReconciliationWithinTolerance(asset);
-
-        vm.warp(block.timestamp + 30 days);
-
-        uint256 withdrawable = core4Mica.withdrawableBalance(USER1, asset);
-        if (withdrawable == 0) {
-            return;
-        }
-
-        vm.prank(USER1);
-        core4Mica.requestWithdrawal(asset, withdrawable);
-        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
-
-        vm.prank(USER1);
-        core4Mica.finalizeWithdrawal(asset);
-        _assertScaledReconciliationWithinTolerance(asset);
-
-        uint256 protocolScaled = core4Mica.protocolScaledBalance(asset);
-        if (protocolScaled == 0) {
-            return;
-        }
-
-        core4Mica.claimProtocolYield(asset, USER2, type(uint256).max);
         _assertScaledReconciliationWithinTolerance(asset);
     }
 

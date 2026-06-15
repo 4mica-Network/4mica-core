@@ -31,7 +31,34 @@ We welcome all kinds of contributions: bug reports, feature requests, code, docu
 
 - **Formatting:** Run `cargo fmt` before committing.  
 - **Linting:** Run `cargo clippy --workspace --all-targets --all-features` and fix warnings.  
-- **Testing:** Run `cargo test --workspace -- --test-threads=1` to ensure all tests pass.  
+
+#### Testing
+
+The integration tests need a local stack (Postgres + Anvil + deployed contracts),
+which is orchestrated through the `Makefile`. The two suites require different setups,
+so don't run them with a single `cargo test`:
+
+- **Core tests** must run with **no external `core-service` running** — each test builds
+  its own in-process `CoreService` (and chain tests spawn their own Anvil), so a
+  long-lived service would race the in-process event scanner on the shared database.
+  They only need infra:
+
+  ```bash
+  make infra-up     # pg + anvil + contracts + migrations, NOT core-service
+  make test-core
+  ```
+
+- **SDK e2e tests** talk to a running `core-service` on `:3000`, so bring the full
+  stack up first:
+
+  ```bash
+  make dev-up
+  make test-sdk
+  ```
+
+`make test` runs both in the correct order (infra → `test-core` with core down → full
+stack → `test-sdk` with core up). Use `make dev-down` (or `dev-down-all`) to tear the
+stack back down, and `make help` for the full list of targets.
 
 Solidity contracts should be tested with Foundry:
 
@@ -51,8 +78,8 @@ forge test -vvvv
     ```bash
     cargo fmt
     cargo clippy
-    cargo test
-    forge test   # for contracts
+    make test       # core tests (core down) + sdk e2e (core up)
+    forge test      # for contracts (run from contracts/)
     ```
 3. Commit with clear messages following [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)Conventional Commits
     ```scss

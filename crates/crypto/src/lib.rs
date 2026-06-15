@@ -4,3 +4,4 @@
 
 pub mod bls;
 pub mod hex;
+pub mod merkle;

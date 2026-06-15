@@ -8,10 +8,12 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
+import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
+import {MockERC20} from "../test/Core4MicaTestBase.sol";
 
 /// @notice Deploys full guarantee stack:
-/// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder.
+/// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder + ClearingHouse.
 ///
 /// Required env:
 /// - DEPLOYER_PRIVATE_KEY
@@ -22,6 +24,8 @@ import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 ///
 /// Stablecoin configuration (optional):
 /// - STABLECOINS_COUNT=<n> and STABLECOIN_0..n-1
+/// - DEPLOY_MOCK_STABLECOINS=true deploys STABLECOINS_COUNT fresh
+///   ERC20s and registers those instead of reading STABLECOIN_* (local dev only).
 ///
 /// Validation registry allowlist:
 /// - TRUSTED_VALIDATION_REGISTRY=<address>
@@ -37,12 +41,6 @@ contract Core4MicaFullStackScript is Script {
     error StablecoinReadbackMismatch();
     error AaveReadbackMismatch(string field);
     error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
-
-    bytes4 private constant RECORD_PAYMENT_SELECTOR = bytes4(keccak256("recordPayment(uint256,address,uint256)"));
-    bytes4 private constant RECORD_PAYMENT_BY_ID_SELECTOR =
-        bytes4(keccak256("recordPaymentById(bytes32,uint256,address,uint256)"));
-    bytes4 private constant SET_TIMING_PARAMETERS_SELECTOR =
-        bytes4(keccak256("setTimingParameters(uint256,uint256,uint256,uint256)"));
 
     // Delayed governance role for protocol policy, trust roots, and Aave configuration.
     uint64 public constant GOVERNANCE_ROLE = 1;
@@ -64,6 +62,7 @@ contract Core4MicaFullStackScript is Script {
         Core4Mica core4Mica;
         GuaranteeDecoderRouter router;
         ValidationRegistryGuaranteeDecoder validationDecoder;
+        ClearingHouse clearingHouse;
     }
 
     struct DeploymentConfig {
@@ -81,6 +80,11 @@ contract Core4MicaFullStackScript is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
+        if (vm.envOr("DEPLOY_MOCK_STABLECOINS", false)) {
+            config.stablecoins = _deployMockStablecoins();
+            _validateStablecoins(config.stablecoins);
+        }
+
         FullStackDeployment memory deployment = _deployFullStack(
             config.baseSalt,
             config.managerAdmin,
@@ -96,6 +100,7 @@ contract Core4MicaFullStackScript is Script {
         console.log("Core4Mica:", address(deployment.core4Mica));
         console.log("GuaranteeDecoderRouter:", address(deployment.router));
         console.log("ValidationRegistryGuaranteeDecoder:", address(deployment.validationDecoder));
+        console.log("ClearingHouse:", address(deployment.clearingHouse));
         console.log("Trusted registries count:", config.trustedRegistries.length);
         console.log("AccessManager admin:", config.managerAdmin);
         console.log("CREATE2 base salt:");
@@ -103,8 +108,12 @@ contract Core4MicaFullStackScript is Script {
     }
 
     function _loadDeploymentConfig(address deployer) internal view returns (DeploymentConfig memory config) {
-        address[] memory stablecoins = _loadStablecoinAssets();
-        _validateStablecoins(stablecoins);
+        // In mock mode the stablecoins are deployed after broadcast starts; leave them empty here.
+        address[] memory stablecoins;
+        if (!vm.envOr("DEPLOY_MOCK_STABLECOINS", false)) {
+            stablecoins = _loadStablecoinAssets();
+            _validateStablecoins(stablecoins);
+        }
 
         config.deployer = deployer;
         config.managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
@@ -131,6 +140,7 @@ contract Core4MicaFullStackScript is Script {
             );
         _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
         _configureRouterRoles(deployment.manager, deployment.router);
+        _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse);
     }
 
     function _deployFullStack(
@@ -158,25 +168,26 @@ contract Core4MicaFullStackScript is Script {
             _deriveSalt(baseSalt, "VALIDATION_REGISTRY_GUARANTEE_DECODER"),
             abi.encodePacked(type(ValidationRegistryGuaranteeDecoder).creationCode, abi.encode(trustedRegistries))
         );
+        address clearingHouseAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "CLEARING_HOUSE"),
+            abi.encodePacked(type(ClearingHouse).creationCode, abi.encode(managerAddress))
+        );
 
         deployment.manager = AccessManager(managerAddress);
         deployment.core4Mica = Core4Mica(payable(core4MicaAddress));
         deployment.router = GuaranteeDecoderRouter(routerAddress);
         deployment.validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
+        deployment.clearingHouse = ClearingHouse(clearingHouseAddress);
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
-        bytes4[] memory governanceSelectors = new bytes4[](10);
+        bytes4[] memory governanceSelectors = new bytes4[](6);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
-        governanceSelectors[1] = Core4Mica.setRemunerationGracePeriod.selector;
-        governanceSelectors[2] = Core4Mica.setTabExpirationTime.selector;
-        governanceSelectors[3] = Core4Mica.setGuaranteeVerificationKey.selector;
-        governanceSelectors[4] = SET_TIMING_PARAMETERS_SELECTOR;
-        governanceSelectors[5] = Core4Mica.setSynchronizationDelay.selector;
-        governanceSelectors[6] = Core4Mica.configureGuaranteeVersion.selector;
-        governanceSelectors[7] = Core4Mica.configureAave.selector;
-        governanceSelectors[8] = Core4Mica.addStablecoinAsset.selector;
-        governanceSelectors[9] = Core4Mica.setYieldFeeBps.selector;
+        governanceSelectors[1] = Core4Mica.setGuaranteeVerificationKey.selector;
+        governanceSelectors[2] = Core4Mica.configureGuaranteeVersion.selector;
+        governanceSelectors[3] = Core4Mica.configureAave.selector;
+        governanceSelectors[4] = Core4Mica.addStablecoinAsset.selector;
+        governanceSelectors[5] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(
@@ -191,12 +202,6 @@ contract Core4MicaFullStackScript is Script {
             address(core4Mica), _asSingletonArray(Core4Mica.claimSurplusATokens.selector), TREASURY_ROLE
         );
         manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(Core4Mica.pause.selector), GUARDIAN_ROLE);
-        manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_SELECTOR), FOURMICA_OPERATOR_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(RECORD_PAYMENT_BY_ID_SELECTOR), FOURMICA_OPERATOR_ROLE
-        );
         manager.setTargetFunctionRole(
             address(core4Mica), _asSingletonArray(Core4Mica.unpause.selector), GOVERNANCE_ROLE
         );
@@ -215,6 +220,18 @@ contract Core4MicaFullStackScript is Script {
         );
         manager.setTargetFunctionRole(
             address(router), _asSingletonArray(router.freezeVersion.selector), GOVERNANCE_ROLE
+        );
+    }
+
+    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse) internal {
+        // Cycle commitment and default settlement are 4mica operator-driven settlement bookkeeping.
+        manager.setTargetFunctionRole(
+            address(clearingHouse), _asSingletonArray(ClearingHouse.commitCycle.selector), FOURMICA_OPERATOR_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(clearingHouse),
+            _asSingletonArray(ClearingHouse.settleDefaultFromCollateral.selector),
+            FOURMICA_OPERATOR_ROLE
         );
     }
 
@@ -257,6 +274,21 @@ contract Core4MicaFullStackScript is Script {
             return assets;
         }
         revert("set STABLECOINS_COUNT and STABLECOIN_0..n");
+    }
+
+    /// @dev Local-dev only: deploys STABLECOINS_COUNT fresh ERC20 mocks
+    function _deployMockStablecoins() internal returns (address[] memory assets) {
+        uint256 count = vm.envOr("STABLECOINS_COUNT", uint256(0));
+        require(count > 0, "set STABLECOINS_COUNT for mock stablecoins");
+        assets = new address[](count);
+        for (uint256 i = 0; i < count; i++) {
+            // First token is a USDC stand-in; any extras get a distinct suffixed symbol.
+            string memory name = i == 0 ? "USD Coin" : string.concat("USD Coin ", vm.toString(i));
+            string memory symbol = i == 0 ? "USDC" : string.concat("USDC", vm.toString(i));
+            MockERC20 token = new MockERC20(name, symbol, 6);
+            assets[i] = address(token);
+            console.log(string.concat("MockERC20 ", symbol, " deployed:"), assets[i]);
+        }
     }
 
     function _validateStablecoins(address[] memory assets) internal pure {

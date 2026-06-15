@@ -1,3 +1,4 @@
+use crate::auth::utils::normalize_legacy_scope;
 use crate::config::AuthConfig;
 use crate::error::{ServiceError, ServiceResult};
 use anyhow::anyhow;
@@ -70,7 +71,13 @@ pub fn validate_access_token(
         return Err(ServiceError::Unauthorized("invalid chain id".into()));
     }
 
-    Ok(data.claims)
+    let mut claims = data.claims;
+    claims.scopes = claims
+        .scopes
+        .iter()
+        .map(|s| normalize_legacy_scope(s).to_string())
+        .collect();
+    Ok(claims)
 }
 
 fn unix_timestamp() -> ServiceResult<u64> {

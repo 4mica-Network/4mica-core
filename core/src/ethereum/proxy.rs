@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 pub struct CoreContractProxy {
     provider: DynProvider,
     contract_address: Address,
+    clearing_house_address: Address,
     tx_write_lock: Mutex<()>,
 }
 
@@ -25,7 +26,18 @@ pub struct GuaranteeVersionConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct RecordPaymentTx {
+pub struct ClearingCommitInput {
+    pub cycle_id: B256,
+    pub asset: Address,
+    pub merkle_root: B256,
+    pub total_net_debit: U256,
+    pub total_net_credit: U256,
+    pub payment_submission_deadline: u64,
+    pub payment_finality_deadline: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClearingCommitTx {
     pub tx_hash: B256,
     pub block_number: Option<u64>,
     pub block_hash: Option<B256>,
@@ -54,17 +66,14 @@ pub trait CoreContractApi: Send + Sync {
         Ok(cfg.domain_separator)
     }
 
-    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError>;
+    async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError>;
 
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError>;
 
-    async fn record_payment(
+    async fn commit_clearing_cycle(
         &self,
-        payment_id: B256,
-        tab_id: U256,
-        asset: Address,
-        amount: U256,
-    ) -> Result<RecordPaymentTx, CoreContractApiError>;
+        input: ClearingCommitInput,
+    ) -> Result<ClearingCommitTx, CoreContractApiError>;
 }
 
 impl CoreContractProxy {
@@ -89,16 +98,33 @@ impl CoreContractProxy {
                         config.ethereum_config.contract_address
                     ))
                 })?;
+        let clearing_house_address: Address = config
+            .ethereum_config
+            .clearing_house_address
+            .parse()
+            .map_err(|_| {
+                CoreContractApiError::InvalidAddress(
+                    config.ethereum_config.clearing_house_address.clone(),
+                )
+            })?;
 
         Ok(Self {
             provider,
             contract_address,
+            clearing_house_address,
             tx_write_lock: Mutex::new(()),
         })
     }
 
     fn build_contract(&self) -> Core4Mica::Core4MicaInstance<DynProvider> {
         Core4Mica::Core4MicaInstance::new(self.contract_address, self.provider.clone())
+    }
+
+    fn build_clearing_house(&self) -> ClearingHouse::ClearingHouseInstance<DynProvider> {
+        ClearingHouse::ClearingHouseInstance::new(
+            self.clearing_house_address,
+            self.provider.clone(),
+        )
     }
 }
 
@@ -124,10 +150,10 @@ impl CoreContractApi for CoreContractProxy {
         })
     }
 
-    async fn get_tab_expiration_time(&self) -> Result<u64, CoreContractApiError> {
+    async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError> {
         let contract = self.build_contract();
-        let expiration = contract.tabExpirationTime().call().await?;
-        Ok(expiration.to())
+        let grace_period = contract.withdrawalGracePeriod().call().await?;
+        Ok(grace_period.to())
     }
 
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {
@@ -147,32 +173,29 @@ impl CoreContractApi for CoreContractProxy {
         Ok(tokens)
     }
 
-    async fn record_payment(
+    async fn commit_clearing_cycle(
         &self,
-        payment_id: B256,
-        tab_id: U256,
-        asset: Address,
-        amount: U256,
-    ) -> Result<RecordPaymentTx, CoreContractApiError> {
-        // Serialize contract writes for the shared signer to avoid nonce races between
-        // overlapping payment-confirmation tasks.
+        input: ClearingCommitInput,
+    ) -> Result<ClearingCommitTx, CoreContractApiError> {
         let _guard = self.tx_write_lock.lock().await;
-        let contract = self.build_contract();
-        let tx = contract.recordPaymentById(payment_id, tab_id, asset, amount);
+        let contract = self.build_clearing_house();
+        let tx = contract.commitCycle(
+            input.cycle_id,
+            input.asset,
+            input.merkle_root,
+            input.total_net_debit,
+            input.total_net_credit,
+            input.payment_submission_deadline,
+            input.payment_finality_deadline,
+        );
 
         let receipt = tx.send().await?.get_receipt().await?;
-        if !receipt.status() {
-            return Err(CoreContractApiError::Other(anyhow!(
-                "recordPayment tx reverted: {:?}",
-                receipt.transaction_hash
-            )));
-        }
 
         info!(
-            "recordPayment confirmed in tx {:?}",
+            "ClearingHouse.commitCycle confirmed in tx {:?}",
             receipt.transaction_hash
         );
-        Ok(RecordPaymentTx {
+        Ok(ClearingCommitTx {
             tx_hash: receipt.transaction_hash,
             block_number: receipt.block_number,
             block_hash: receipt.block_hash,
