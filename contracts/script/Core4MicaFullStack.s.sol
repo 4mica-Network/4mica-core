@@ -50,6 +50,8 @@ contract Core4MicaFullStackScript is Script {
     uint64 public constant GUARDIAN_ROLE = 3;
     // Immediate 4mica operator role for settlement bookkeeping only.
     uint64 public constant FOURMICA_OPERATOR_ROLE = 4;
+    // Immediate role held only by the ClearingHouse so it can move collateral in Core4Mica.
+    uint64 public constant CLEARING_HOUSE_ROLE = 5;
     uint64 public constant GUARANTEE_V2 = 2;
 
     uint32 public constant DEFAULT_GOVERNANCE_EXECUTION_DELAY = 72 hours;
@@ -140,7 +142,7 @@ contract Core4MicaFullStackScript is Script {
             );
         _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
         _configureRouterRoles(deployment.manager, deployment.router);
-        _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse);
+        _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse, deployment.core4Mica);
     }
 
     function _deployFullStack(
@@ -170,14 +172,14 @@ contract Core4MicaFullStackScript is Script {
         );
         address clearingHouseAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CLEARING_HOUSE"),
-            abi.encodePacked(type(ClearingHouse).creationCode, abi.encode(managerAddress))
+            abi.encodePacked(type(ClearingHouse).creationCode, abi.encode(managerAddress, core4MicaAddress))
         );
 
         deployment.manager = AccessManager(managerAddress);
         deployment.core4Mica = Core4Mica(payable(core4MicaAddress));
         deployment.router = GuaranteeDecoderRouter(routerAddress);
         deployment.validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
-        deployment.clearingHouse = ClearingHouse(clearingHouseAddress);
+        deployment.clearingHouse = ClearingHouse(payable(clearingHouseAddress));
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
@@ -223,16 +225,31 @@ contract Core4MicaFullStackScript is Script {
         );
     }
 
-    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse) internal {
+    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse, Core4Mica core4Mica)
+        internal
+    {
         // Cycle commitment and default settlement are 4mica operator-driven settlement bookkeeping.
-        manager.setTargetFunctionRole(
-            address(clearingHouse), _asSingletonArray(ClearingHouse.commitCycle.selector), FOURMICA_OPERATOR_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(clearingHouse),
-            _asSingletonArray(ClearingHouse.settleDefaultFromCollateral.selector),
-            FOURMICA_OPERATOR_ROLE
-        );
+        bytes4[] memory operatorSelectors = new bytes4[](4);
+        operatorSelectors[0] = ClearingHouse.commitCycle.selector;
+        operatorSelectors[1] = ClearingHouse.settleDefaultFromCollateral.selector;
+        operatorSelectors[2] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
+        operatorSelectors[3] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        for (uint256 i = 0; i < operatorSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(clearingHouse), _asSingletonArray(operatorSelectors[i]), FOURMICA_OPERATOR_ROLE
+            );
+        }
+
+        // The ClearingHouse alone may move collateral inside Core4Mica during settlement.
+        bytes4[] memory collateralSelectors = new bytes4[](2);
+        collateralSelectors[0] = Core4Mica.seizeCollateral.selector;
+        collateralSelectors[1] = Core4Mica.creditCollateral.selector;
+        for (uint256 i = 0; i < collateralSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica), _asSingletonArray(collateralSelectors[i]), CLEARING_HOUSE_ROLE
+            );
+        }
+        manager.grantRole(CLEARING_HOUSE_ROLE, address(clearingHouse), 0);
     }
 
     function _loadTrustedValidationRegistries() internal view returns (address[] memory registries) {
