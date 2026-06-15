@@ -356,6 +356,7 @@ impl Task for SettlementCycleTask {
         let netted = self.0.compute_due_cycle_netting().await?;
         let committed = self.0.commit_due_clearing_batches().await?;
         let finalized = self.0.process_due_cycle_finality().await?;
+        let settled = self.0.settle_due_cycle_defaults().await?;
         let opened = self.0.ensure_active_cycles().await?;
 
         if !opened.is_empty() {
@@ -372,6 +373,9 @@ impl Task for SettlementCycleTask {
         }
         if !finalized.is_empty() {
             info!("finalized {} settlement cycle(s)", finalized.len());
+        }
+        if !settled.is_empty() {
+            info!("settled defaults for {} settlement cycle(s)", settled.len());
         }
 
         Ok(())
@@ -392,6 +396,7 @@ mod tests {
             payment_submission_window_secs: 7_200,
             payment_finality_window_secs: 14_400,
             seizure_margin_secs: 21_600,
+            default_batch_size: 50,
         };
         let now = Utc.with_ymd_and_hms(2026, 4, 27, 14, 37, 11).unwrap();
 

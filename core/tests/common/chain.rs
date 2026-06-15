@@ -267,17 +267,22 @@ async fn deploy_contracts(
 async fn deploy_clearing_house(
     provider: DynProvider,
     access_manager: &AccessManagerInstance<DynProvider>,
+    core4mica: &Core4MicaInstance<DynProvider>,
     operator: Address,
 ) -> anyhow::Result<ClearingHouseInstance<DynProvider>> {
     const OPERATOR_ROLE: u64 = 9;
+    const CLEARING_HOUSE_ROLE: u64 = 10;
 
-    let clearing_house = ClearingHouse::deploy(provider, *access_manager.address())
-        .await
-        .context("ClearingHouse::deploy")?;
+    let clearing_house =
+        ClearingHouse::deploy(provider, *access_manager.address(), *core4mica.address())
+            .await
+            .context("ClearingHouse::deploy")?;
 
     let selectors = vec![
         FixedBytes::<4>::from(ClearingHouse::commitCycleCall::SELECTOR),
         FixedBytes::<4>::from(ClearingHouse::settleDefaultFromCollateralCall::SELECTOR),
+        FixedBytes::<4>::from(ClearingHouse::settleDefaultsFromCollateralBatchCall::SELECTOR),
+        FixedBytes::<4>::from(ClearingHouse::fundCreditorsFromPoolBatchCall::SELECTOR),
     ];
     access_manager
         .setTargetFunctionRole(*clearing_house.address(), selectors, OPERATOR_ROLE)
@@ -296,6 +301,32 @@ async fn deploy_clearing_house(
         .await
         .context("grantRole confirm")?;
 
+    // Let the ClearingHouse move collateral inside Core4Mica during settlement.
+    let collateral_selectors = vec![
+        FixedBytes::<4>::from(Core4Mica::seizeCollateralCall::SELECTOR),
+        FixedBytes::<4>::from(Core4Mica::creditCollateralCall::SELECTOR),
+    ];
+    access_manager
+        .setTargetFunctionRole(
+            *core4mica.address(),
+            collateral_selectors,
+            CLEARING_HOUSE_ROLE,
+        )
+        .send()
+        .await
+        .context("setTargetFunctionRole(core4mica) send")?
+        .watch()
+        .await
+        .context("setTargetFunctionRole(core4mica) confirm")?;
+    access_manager
+        .grantRole(CLEARING_HOUSE_ROLE, *clearing_house.address(), 0)
+        .send()
+        .await
+        .context("grantRole(clearing_house) send")?
+        .watch()
+        .await
+        .context("grantRole(clearing_house) confirm")?;
+
     Ok(clearing_house)
 }
 
@@ -310,7 +341,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     let (contract, usdc, usdt, access_manager) =
         deploy_contracts(op_provider.clone(), op_addr).await?;
     let clearing_house =
-        deploy_clearing_house(op_provider.clone(), &access_manager, op_addr).await?;
+        deploy_clearing_house(op_provider.clone(), &access_manager, &contract, op_addr).await?;
 
     cfg.ethereum_config = EthereumConfig {
         chain_id: op_provider.get_chain_id().await?,

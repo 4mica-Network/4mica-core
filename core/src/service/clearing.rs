@@ -1,15 +1,17 @@
-use alloy::primitives::{Address, B256};
+use std::collections::HashMap;
+
+use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::{NaiveDateTime, Utc};
 use entities::sea_orm_active_enums::{
-    GuaranteeSettlementStatus, ParticipantCycleStatus, SettlementCycleStatus,
+    GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
 };
 use log::{info, warn};
 use sea_orm::TransactionTrait;
 
 use crate::{
     error::{ServiceError, ServiceResult},
-    ethereum::ClearingCommitInput,
+    ethereum::{ClearingCommitInput, CreditorSettlement, DebtorSettlement},
     evm,
     persist::repo::{self, common::parse_address},
     service::CoreService,
@@ -102,6 +104,128 @@ impl CoreService {
             );
         }
         Ok(())
+    }
+
+    /// Settle every cycle that passed finality with unpaid debtors. For each cycle this
+    /// seizes unpaid debtors' collateral into the pool, funds unclaimed creditors back
+    /// into their collateral, and finalizes once the off-chain ledger is fully resolved.
+    pub async fn settle_due_cycle_defaults(&self) -> ServiceResult<Vec<String>> {
+        let cycles = repo::list_defaulted_cycles_on(self.inner.persist_ctx.db.as_ref()).await?;
+        let mut settled = Vec::new();
+        for cycle in cycles {
+            let cycle_id = cycle.id.clone();
+            match self.settle_cycle_defaults(&cycle_id).await {
+                Ok(true) => settled.push(cycle_id),
+                Ok(false) => {}
+                Err(err) => {
+                    warn!("failed to settle defaults for settlement cycle {cycle_id}: {err:?}")
+                }
+            }
+        }
+        Ok(settled)
+    }
+
+    /// Returns whether any on-chain transaction was sent for this cycle.
+    async fn settle_cycle_defaults(&self, cycle_id: &str) -> ServiceResult<bool> {
+        let batch_size = self.inner.config.settlement_cycle.default_batch_size.max(1) as usize;
+        let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
+
+        let proofs = self.get_cycle_participant_proofs(cycle_id).await?;
+        let mut debtor_proofs: HashMap<Address, (U256, Vec<B256>)> = HashMap::new();
+        let mut creditor_proofs: HashMap<Address, (U256, Vec<B256>)> = HashMap::new();
+        for (leaf, proof) in proofs {
+            match leaf.role {
+                ParticipantCycleRole::NetDebtor => {
+                    debtor_proofs.insert(leaf.participant, (leaf.amount, proof));
+                }
+                ParticipantCycleRole::NetCreditor => {
+                    creditor_proofs.insert(leaf.participant, (leaf.amount, proof));
+                }
+                ParticipantCycleRole::Flat => {}
+            }
+        }
+
+        let unpaid =
+            repo::list_unpaid_debtors_for_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
+                .await?;
+        let mut debtor_entries = Vec::with_capacity(unpaid.len());
+        for pos in &unpaid {
+            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
+            match debtor_proofs.get(&participant) {
+                Some((amount, proof)) => debtor_entries.push(DebtorSettlement {
+                    debtor: participant,
+                    net_debit: *amount,
+                    proof: proof.clone(),
+                }),
+                None => warn!(
+                    "missing debtor proof for {participant} in settlement cycle {cycle_id}; skipping"
+                ),
+            }
+        }
+
+        let claimable = repo::list_claimable_creditors_for_cycle_on(
+            self.inner.persist_ctx.db.as_ref(),
+            cycle_id,
+        )
+        .await?;
+        let mut creditor_entries = Vec::with_capacity(claimable.len());
+        for pos in &claimable {
+            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
+            match creditor_proofs.get(&participant) {
+                Some((amount, proof)) => creditor_entries.push(CreditorSettlement {
+                    creditor: participant,
+                    net_credit: *amount,
+                    proof: proof.clone(),
+                }),
+                None => warn!(
+                    "missing creditor proof for {participant} in settlement cycle {cycle_id}; skipping"
+                ),
+            }
+        }
+
+        let mut acted = false;
+        for chunk in debtor_entries.chunks(batch_size) {
+            self.inner
+                .contract_api
+                .settle_defaults_from_collateral_batch(onchain_cycle_id, chunk.to_vec())
+                .await
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+            acted = true;
+        }
+        for chunk in creditor_entries.chunks(batch_size) {
+            self.inner
+                .contract_api
+                .fund_creditors_from_pool_batch(onchain_cycle_id, chunk.to_vec())
+                .await
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+            acted = true;
+        }
+
+        // Once the off-chain ledger shows no outstanding debtors or creditors (their
+        // role events have landed), the on-chain cycle is fully resolved and can be
+        // finalized. Attempting it only when both lists are empty avoids reverting
+        // finalizations while events are still catching up.
+        if debtor_entries.is_empty() && creditor_entries.is_empty() {
+            match self
+                .inner
+                .contract_api
+                .finalize_clearing_cycle(onchain_cycle_id)
+                .await
+            {
+                Ok(tx) => {
+                    info!(
+                        "finalized defaulted settlement cycle {cycle_id} on-chain in tx {:?}",
+                        tx.tx_hash
+                    );
+                    acted = true;
+                }
+                Err(err) => {
+                    info!("defaulted settlement cycle {cycle_id} not yet finalizable: {err}")
+                }
+            }
+        }
+
+        Ok(acted)
     }
 
     pub async fn process_cycle_committed(

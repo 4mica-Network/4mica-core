@@ -37,10 +37,26 @@ pub struct ClearingCommitInput {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClearingCommitTx {
+pub struct ClearingTxResult {
     pub tx_hash: B256,
     pub block_number: Option<u64>,
     pub block_hash: Option<B256>,
+}
+
+/// One defaulting debtor in a batch collateral-settlement call.
+#[derive(Debug, Clone)]
+pub struct DebtorSettlement {
+    pub debtor: Address,
+    pub net_debit: U256,
+    pub proof: Vec<B256>,
+}
+
+/// One net creditor in a batch pool-funding call.
+#[derive(Debug, Clone)]
+pub struct CreditorSettlement {
+    pub creditor: Address,
+    pub net_credit: U256,
+    pub proof: Vec<B256>,
 }
 
 #[async_trait]
@@ -73,7 +89,24 @@ pub trait CoreContractApi: Send + Sync {
     async fn commit_clearing_cycle(
         &self,
         input: ClearingCommitInput,
-    ) -> Result<ClearingCommitTx, CoreContractApiError>;
+    ) -> Result<ClearingTxResult, CoreContractApiError>;
+
+    async fn settle_defaults_from_collateral_batch(
+        &self,
+        cycle_id: B256,
+        entries: Vec<DebtorSettlement>,
+    ) -> Result<ClearingTxResult, CoreContractApiError>;
+
+    async fn fund_creditors_from_pool_batch(
+        &self,
+        cycle_id: B256,
+        entries: Vec<CreditorSettlement>,
+    ) -> Result<ClearingTxResult, CoreContractApiError>;
+
+    async fn finalize_clearing_cycle(
+        &self,
+        cycle_id: B256,
+    ) -> Result<ClearingTxResult, CoreContractApiError>;
 }
 
 impl CoreContractProxy {
@@ -176,7 +209,7 @@ impl CoreContractApi for CoreContractProxy {
     async fn commit_clearing_cycle(
         &self,
         input: ClearingCommitInput,
-    ) -> Result<ClearingCommitTx, CoreContractApiError> {
+    ) -> Result<ClearingTxResult, CoreContractApiError> {
         let _guard = self.tx_write_lock.lock().await;
         let contract = self.build_clearing_house();
         let tx = contract.commitCycle(
@@ -195,7 +228,100 @@ impl CoreContractApi for CoreContractProxy {
             "ClearingHouse.commitCycle confirmed in tx {:?}",
             receipt.transaction_hash
         );
-        Ok(ClearingCommitTx {
+        Ok(ClearingTxResult {
+            tx_hash: receipt.transaction_hash,
+            block_number: receipt.block_number,
+            block_hash: receipt.block_hash,
+        })
+    }
+
+    async fn settle_defaults_from_collateral_batch(
+        &self,
+        cycle_id: B256,
+        entries: Vec<DebtorSettlement>,
+    ) -> Result<ClearingTxResult, CoreContractApiError> {
+        let _guard = self.tx_write_lock.lock().await;
+        let contract = self.build_clearing_house();
+        let entries: Vec<DebtorEntry> = entries
+            .into_iter()
+            .map(|e| DebtorEntry {
+                debtor: e.debtor,
+                netDebit: e.net_debit,
+                proof: e.proof,
+            })
+            .collect();
+
+        let receipt = contract
+            .settleDefaultsFromCollateralBatch(cycle_id, entries)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
+        info!(
+            "ClearingHouse.settleDefaultsFromCollateralBatch confirmed in tx {:?}",
+            receipt.transaction_hash
+        );
+        Ok(ClearingTxResult {
+            tx_hash: receipt.transaction_hash,
+            block_number: receipt.block_number,
+            block_hash: receipt.block_hash,
+        })
+    }
+
+    async fn fund_creditors_from_pool_batch(
+        &self,
+        cycle_id: B256,
+        entries: Vec<CreditorSettlement>,
+    ) -> Result<ClearingTxResult, CoreContractApiError> {
+        let _guard = self.tx_write_lock.lock().await;
+        let contract = self.build_clearing_house();
+        let entries: Vec<CreditorEntry> = entries
+            .into_iter()
+            .map(|e| CreditorEntry {
+                creditor: e.creditor,
+                netCredit: e.net_credit,
+                proof: e.proof,
+            })
+            .collect();
+
+        let receipt = contract
+            .fundCreditorsFromPoolBatch(cycle_id, entries)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
+        info!(
+            "ClearingHouse.fundCreditorsFromPoolBatch confirmed in tx {:?}",
+            receipt.transaction_hash
+        );
+        Ok(ClearingTxResult {
+            tx_hash: receipt.transaction_hash,
+            block_number: receipt.block_number,
+            block_hash: receipt.block_hash,
+        })
+    }
+
+    async fn finalize_clearing_cycle(
+        &self,
+        cycle_id: B256,
+    ) -> Result<ClearingTxResult, CoreContractApiError> {
+        let _guard = self.tx_write_lock.lock().await;
+        let contract = self.build_clearing_house();
+
+        let receipt = contract
+            .finalizeCycle(cycle_id)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
+        info!(
+            "ClearingHouse.finalizeCycle confirmed in tx {:?}",
+            receipt.transaction_hash
+        );
+        Ok(ClearingTxResult {
             tx_hash: receipt.transaction_hash,
             block_number: receipt.block_number,
             block_hash: receipt.block_hash,

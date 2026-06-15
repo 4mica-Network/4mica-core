@@ -274,6 +274,9 @@ pub struct SettlementCycleConfig {
     pub payment_finality_window_secs: u64,
     #[envconfig(from = "SETTLEMENT_SEIZURE_MARGIN_SECS", default = "21600")]
     pub seizure_margin_secs: u64,
+    /// Maximum number of participants settled per on-chain batch transaction.
+    #[envconfig(from = "SETTLEMENT_DEFAULT_BATCH_SIZE", default = "50")]
+    pub default_batch_size: u64,
 }
 
 impl SettlementCycleConfig {
@@ -639,6 +642,7 @@ mod tests {
             payment_submission_window_secs: 7_200,
             payment_finality_window_secs: 14_400,
             seizure_margin_secs: 21_600,
+            default_batch_size: 50,
         }
     }
 

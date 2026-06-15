@@ -210,6 +210,18 @@ pub mod contract_abi {
             function decimals() external view returns (uint8);
         }
 
+        struct DebtorEntry {
+            address debtor;
+            uint256 netDebit;
+            bytes32[] proof;
+        }
+
+        struct CreditorEntry {
+            address creditor;
+            uint256 netCredit;
+            bytes32[] proof;
+        }
+
         #[sol(rpc)]
         contract ClearingHouse {
             function commitCycle(
@@ -221,6 +233,15 @@ pub mod contract_abi {
                 uint64 paymentSubmissionDeadline,
                 uint64 paymentFinalityDeadline
             ) external;
+
+            /// Operator batch: seize collateral for unpaid debtors after finality.
+            function settleDefaultsFromCollateralBatch(bytes32 cycleId, DebtorEntry[] entries) external;
+
+            /// Operator batch: fund unclaimed creditors back into their Core4Mica collateral.
+            function fundCreditorsFromPoolBatch(bytes32 cycleId, CreditorEntry[] entries) external;
+
+            /// Finalize a fully-resolved cycle.
+            function finalizeCycle(bytes32 cycleId) external;
         }
     }
 }

@@ -456,6 +456,61 @@ impl CoreService {
         })
     }
 
+    /// Build the clearing Merkle tree once and return every participant leaf paired with
+    /// its proof.
+    pub async fn get_cycle_participant_proofs(
+        &self,
+        cycle_id: &str,
+    ) -> ServiceResult<Vec<(ParticipantLeaf, Vec<B256>)>> {
+        let cycle = repo::get_cycle_by_id(&self.inner.persist_ctx, cycle_id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("Settlement cycle {cycle_id}")))?;
+        let batch =
+            repo::get_clearing_batch_by_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
+                .await?
+                .ok_or_else(|| {
+                    ServiceError::InvalidParams(format!(
+                        "settlement cycle {cycle_id} has no clearing batch"
+                    ))
+                })?;
+        let stored_root = evm::parse_bytes32("clearing batch Merkle root", &batch.merkle_root)?;
+        let chain_id = self.inner.public_params.chain_id;
+        let clearing_house_address = evm::parse_optional_address(
+            "ETHEREUM_CLEARING_HOUSE_ADDRESS",
+            &self.inner.config.ethereum_config.clearing_house_address,
+        )?;
+        let positions = repo::list_participant_positions_for_cycle_on(
+            self.inner.persist_ctx.db.as_ref(),
+            cycle_id,
+        )
+        .await?;
+        let participant_leaves = participant_leaves_for_positions(
+            chain_id,
+            clearing_house_address,
+            &cycle.id,
+            positions,
+        )?;
+        let tree = build_participant_merkle_tree(&participant_leaves)?;
+        let computed_root = tree.root();
+        if computed_root != stored_root {
+            return Err(ServiceError::InvalidParams(format!(
+                "clearing batch Merkle root mismatch for cycle {cycle_id}: stored {stored_root:#x}, computed {computed_root:#x}"
+            )));
+        }
+
+        let mut proofs = Vec::with_capacity(participant_leaves.len());
+        for leaf in participant_leaves {
+            let proof = tree.proof(leaf.leaf).ok_or_else(|| {
+                ServiceError::NotFound(format!(
+                    "Clearing proof for participant {} in settlement cycle {cycle_id}",
+                    leaf.participant
+                ))
+            })?;
+            proofs.push((leaf, proof));
+        }
+        Ok(proofs)
+    }
+
     pub async fn mark_cycle_netting_computed(&self, cycle_id: &str) -> ServiceResult<bool> {
         let now = Utc::now().naive_utc();
         let cycle_id = cycle_id.to_string();

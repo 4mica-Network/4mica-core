@@ -22,7 +22,7 @@ use test_log::test;
 
 mod common;
 use common::chain::{OPERATOR_KEY, setup_e2e_environment};
-use common::contract::ClearingHouse;
+use common::contract::{ClearingHouse, Core4Mica};
 use common::cycle_fixtures::{create_frozen_cycle, store_payable_guarantee};
 use common::fixtures::{
     ensure_user_with_collateral, read_locked_collateral, set_locked_collateral,
@@ -485,6 +485,154 @@ async fn defaulted_cycle_is_covered_and_finalized() -> anyhow::Result<()> {
         .watch()
         .await
         .context("finalizeCycle confirm")?;
+    mine(&provider, 2).await?;
+    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Finalized).await?;
+
+    Ok(())
+}
+
+/// Like [`commit_two_party_cycle`] but with submission/finality deadlines already in
+/// the past, so the off-chain finality job marks the cycle defaulted and the on-chain
+/// batch settlement is allowed immediately.
+async fn commit_two_party_cycle_past_finality(
+    svc: &core_service::service::CoreService,
+    cycle_id: &str,
+    debtor: &Address,
+    creditor: &Address,
+) -> anyhow::Result<String> {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use core_service::config::DEFAULT_ASSET_ADDRESS;
+
+    let ctx = svc.persist_ctx();
+    let now = Utc::now().naive_utc();
+    repo::create_settlement_cycle_on(
+        ctx.db.as_ref(),
+        repo::CreateSettlementCycleInput {
+            id: cycle_id.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            period_start: now - ChronoDuration::hours(6),
+            period_end: now - ChronoDuration::hours(5),
+            resolution_cutoff: now - ChronoDuration::hours(4),
+            clearing_commit_deadline: now - ChronoDuration::hours(3),
+            payment_submission_deadline: now - ChronoDuration::hours(2),
+            payment_finality_deadline: now - ChronoDuration::hours(1),
+        },
+    )
+    .await?;
+    assert!(repo::freeze_cycle_on(ctx.db.as_ref(), cycle_id, now).await?);
+
+    let guarantee_id = store_payable_guarantee(
+        ctx,
+        cycle_id,
+        &lower(debtor),
+        &lower(creditor),
+        NET_AMOUNT,
+        0,
+    )
+    .await?;
+    ensure_user_with_collateral(ctx, &lower(debtor), U256::from(NET_AMOUNT)).await?;
+    set_locked_collateral(
+        ctx,
+        &lower(debtor),
+        DEFAULT_ASSET_ADDRESS,
+        U256::from(NET_AMOUNT),
+    )
+    .await?;
+
+    svc.compute_cycle_exposure_edges(cycle_id).await?;
+    svc.compute_cycle_participant_positions(cycle_id).await?;
+    svc.build_clearing_batch(cycle_id).await?;
+    assert!(svc.mark_cycle_netting_computed(cycle_id).await?);
+    svc.commit_cycle_to_chain(cycle_id)
+        .await
+        .context("commit_cycle_to_chain")?;
+
+    Ok(guarantee_id)
+}
+
+/// Default path driven entirely by the off-chain settlement job: after finality the
+/// job seizes the unpaid debtor's on-chain collateral into the pool, funds the
+/// unclaimed creditor's collateral back out of the pool, and finalizes the cycle.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
+    let env = setup_e2e_environment()
+        .await
+        .context("setup_e2e_environment")?;
+    let provider = env.provider.clone();
+    let svc = env.core_service.clone();
+    let ctx = svc.persist_ctx();
+    let http = env.cfg.ethereum_config.http_rpc_url.clone();
+
+    let (debtor, debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
+    let (creditor, _creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
+
+    let cycle_id = "clearing-e2e-batch-default";
+    let guarantee_id =
+        commit_two_party_cycle_past_finality(&svc, cycle_id, &debtor, &creditor).await?;
+
+    // The debtor's collateral lives on-chain in Core4Mica so the pool can seize it.
+    let amount = U256::from(NET_AMOUNT);
+    Core4Mica::new(*env.contract.address(), debtor_provider)
+        .deposit()
+        .value(amount)
+        .send()
+        .await
+        .context("debtor deposit send")?
+        .watch()
+        .await
+        .context("debtor deposit confirm")?;
+    mine(&provider, 2).await?;
+
+    // Off-chain finality marks the cycle defaulted (the debtor never paid).
+    let defaulted = svc.process_due_cycle_finality().await?;
+    assert!(
+        defaulted.iter().any(|c| c == cycle_id),
+        "cycle should enter default handling"
+    );
+    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Defaulted).await?;
+
+    // First job pass: seize the debtor's collateral and fund the creditor's collateral.
+    let settled = svc.settle_due_cycle_defaults().await?;
+    assert!(settled.iter().any(|c| c == cycle_id));
+    mine(&provider, 2).await?;
+
+    poll_position_status(
+        ctx,
+        cycle_id,
+        &lower(&debtor),
+        ParticipantCycleStatus::Defaulted,
+    )
+    .await?;
+    poll_position_status(
+        ctx,
+        cycle_id,
+        &lower(&creditor),
+        ParticipantCycleStatus::Claimed,
+    )
+    .await?;
+    poll_guarantee_status(
+        ctx,
+        &guarantee_id,
+        GuaranteeSettlementStatus::DefaultRemunerated,
+    )
+    .await?;
+
+    // The debtor's collateral was seized; the creditor's collateral was funded.
+    let core = Core4Mica::new(*env.contract.address(), provider.clone());
+    let debtor_balance = core
+        .withdrawableBalance(debtor, Address::ZERO)
+        .call()
+        .await?;
+    let creditor_balance = core
+        .withdrawableBalance(creditor, Address::ZERO)
+        .call()
+        .await?;
+    assert_eq!(debtor_balance, U256::ZERO, "debtor collateral fully seized");
+    assert_eq!(creditor_balance, amount, "creditor collateral funded");
+
+    // Second job pass: the off-chain ledger is fully resolved, so the cycle finalizes.
+    svc.settle_due_cycle_defaults().await?;
     mine(&provider, 2).await?;
     poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Finalized).await?;
 

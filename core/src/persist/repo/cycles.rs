@@ -194,6 +194,32 @@ pub async fn list_payment_window_cycles_finality_due_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
+pub async fn list_defaulted_cycles_on<C: ConnectionTrait>(
+    conn: &C,
+) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
+    let rows = settlement_cycle::Entity::find()
+        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Defaulted))
+        .order_by_asc(settlement_cycle::Column::PaymentFinalityDeadline)
+        .all(conn)
+        .await?;
+    Ok(rows)
+}
+
+#[measure(record_db_time)]
+pub async fn list_claimable_creditors_for_cycle_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+) -> Result<Vec<cycle_participant_position::Model>, PersistDbError> {
+    let rows = cycle_participant_position::Entity::find()
+        .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
+        .filter(cycle_participant_position::Column::Status.eq(ParticipantCycleStatus::Claimable))
+        .filter(cycle_participant_position::Column::Role.eq(ParticipantCycleRole::NetCreditor))
+        .all(conn)
+        .await?;
+    Ok(rows)
+}
+
+#[measure(record_db_time)]
 pub async fn get_cycle_id_by_onchain_hash_on<C: ConnectionTrait>(
     conn: &C,
     onchain_cycle_id_hash: &str,
