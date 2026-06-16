@@ -9,7 +9,6 @@ fn clearing_claim_action_response_carries_cycle_native_claim_payload() {
         participant: Address::repeat_byte(0x22).to_string(),
         function_name: "claimNetCredit".to_string(),
         asset_address: Address::ZERO.to_string(),
-        debtor: None,
         amount: U256::from(42u64).to_string(),
         action: ClearingSettlementAction::ClaimNetCredit,
         contract_address: Address::repeat_byte(0x33).to_string(),

@@ -132,20 +132,6 @@ impl<S> UserClient<S> {
             .await?)
     }
 
-    pub async fn get_clearing_mark_defaulted_action(
-        &self,
-        cycle_id: String,
-        debtor: String,
-    ) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>
-    where
-        S: Signer + Sync,
-    {
-        let proxy = self.ctx.rpc_proxy().await?;
-        Ok(proxy
-            .get_clearing_mark_defaulted_action(cycle_id, debtor)
-            .await?)
-    }
-
     /// Pays the caller's committed net debit for a clearing cycle.
     ///
     /// For ERC20 cycles, approve the returned ClearingHouse address before calling this method.
@@ -166,45 +152,6 @@ impl<S> UserClient<S> {
         let send_result = contract
             .payNetDebit(call.cycle_id, call.amount, call.proof)
             .value(call.payable_value)
-            .send()
-            .await
-            .map_err(ClearingSettlementError::from)?;
-        let receipt = send_result
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(ClearingSettlementError::from)?;
-
-        Ok(receipt)
-    }
-
-    /// Marks a debtor defaulted after the clearing payment finality deadline.
-    pub async fn mark_defaulted(
-        &self,
-        cycle_id: String,
-        debtor: String,
-    ) -> Result<TransactionReceipt, ClearingSettlementError>
-    where
-        S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let action = self
-            .get_clearing_mark_defaulted_action(cycle_id, debtor)
-            .await?;
-        let call = parse_clearing_action_call(&action)?;
-        let debtor = validate_address(
-            action
-                .debtor
-                .as_deref()
-                .unwrap_or(action.participant.as_str()),
-        )
-        .map_err(|err| ClearingSettlementError::InvalidParams(err.to_string()))?;
-        let contract = self
-            .ctx
-            .get_clearing_house_write_contract(call.contract_address)
-            .await?;
-
-        let send_result = contract
-            .markDefaulted(call.cycle_id, debtor, call.amount, call.proof)
             .send()
             .await
             .map_err(ClearingSettlementError::from)?;

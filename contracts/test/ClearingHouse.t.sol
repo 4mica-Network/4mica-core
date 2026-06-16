@@ -63,11 +63,10 @@ contract ClearingHouseTest is Test {
         clearingHouse = new ClearingHouse(address(manager), address(core4Mica));
         usdc = new MockERC20("USD Coin", "USDC", 6);
 
-        bytes4[] memory operatorSelectors = new bytes4[](4);
+        bytes4[] memory operatorSelectors = new bytes4[](3);
         operatorSelectors[0] = ClearingHouse.commitCycle.selector;
-        operatorSelectors[1] = ClearingHouse.settleDefaultFromCollateral.selector;
-        operatorSelectors[2] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
-        operatorSelectors[3] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        operatorSelectors[1] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
+        operatorSelectors[2] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
         manager.setTargetFunctionRole(address(clearingHouse), operatorSelectors, OPERATOR_ROLE);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
 
@@ -208,26 +207,32 @@ contract ClearingHouseTest is Test {
         assertEq(cycle.totalClaimedOut, NET_AMOUNT);
     }
 
-    function test_DefaultedCycleRequiresCoverageBeforeFinalization() public {
+    function test_DefaultedCycleRequiresResolutionBeforeFinalization() public {
         (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        core4Mica.setCollateral(DEBTOR, ETH_ASSET, NET_AMOUNT);
+        vm.deal(address(core4Mica), NET_AMOUNT);
 
         vm.warp(block.timestamp + 2 hours + 1);
 
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.DebtorDefaulted(CYCLE_ID, DEBTOR, NET_AMOUNT);
-        clearingHouse.markDefaulted(CYCLE_ID, DEBTOR, NET_AMOUNT, debtorProof);
-
-        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleUnderfunded.selector, 0, NET_AMOUNT));
+        // Before any settlement the debt is unresolved, so finalization reverts.
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleDebtUnresolved.selector, 0, NET_AMOUNT));
         clearingHouse.finalizeCycle(CYCLE_ID);
 
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.DefaultCovered(CYCLE_ID, DEBTOR, NET_AMOUNT);
-
+        // Seizing the debtor's collateral both resolves and funds the debt.
+        ClearingHouse.DebtorEntry[] memory debtors = new ClearingHouse.DebtorEntry[](1);
+        debtors[0] = ClearingHouse.DebtorEntry({debtor: DEBTOR, netDebit: NET_AMOUNT, proof: debtorProof});
         vm.prank(OPERATOR);
-        clearingHouse.settleDefaultFromCollateral{value: NET_AMOUNT}(CYCLE_ID, DEBTOR, NET_AMOUNT);
+        clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 
-        vm.prank(CREDITOR);
-        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+        // The pool is funded but the creditor has not been paid out yet.
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleClaimsUnresolved.selector, 0, NET_AMOUNT));
+        clearingHouse.finalizeCycle(CYCLE_ID);
+
+        ClearingHouse.CreditorEntry[] memory creditors = new ClearingHouse.CreditorEntry[](1);
+        creditors[0] = ClearingHouse.CreditorEntry({creditor: CREDITOR, netCredit: NET_AMOUNT, proof: creditorProof});
+        vm.prank(OPERATOR);
+        clearingHouse.fundCreditorsFromPoolBatch(CYCLE_ID, creditors);
 
         clearingHouse.finalizeCycle(CYCLE_ID);
 
@@ -253,7 +258,7 @@ contract ClearingHouseTest is Test {
         assertEq(usdc.balanceOf(CREDITOR), creditorBalanceBefore + NET_AMOUNT);
     }
 
-    function test_MultiDebtorDefaultCanAllBeMarked() public {
+    function test_MultiDebtorDefaultSettledInOneBatch() public {
         address d1 = address(0xD1);
         address d2 = address(0xD2);
         address d3 = address(0xD3);
@@ -289,25 +294,26 @@ contract ClearingHouseTest is Test {
             uint64(block.timestamp + 2 hours)
         );
 
-        // One debtor pays; the other two will default.
+        // One debtor pays; the other two will default and be seized from collateral.
         vm.prank(d1);
         clearingHouse.payNetDebit{value: amt}(CYCLE_ID, amt, p1);
 
+        core4Mica.setCollateral(d2, ETH_ASSET, amt);
+        core4Mica.setCollateral(d3, ETH_ASSET, amt);
+        vm.deal(address(core4Mica), 2 * amt);
+
         vm.warp(block.timestamp + 2 hours + 1);
 
-        // Both unpaid debtors must be markable even though the first flips the
-        // cycle to Defaulted. (Regression: previously only one could be marked.)
-        clearingHouse.markDefaulted(CYCLE_ID, d2, amt, p2);
-        clearingHouse.markDefaulted(CYCLE_ID, d3, amt, p3);
+        // Both unpaid debtors are settled in a single batch even though the first
+        // entry flips the cycle to Defaulted. (Regression: previously only one could be marked.)
+        ClearingHouse.DebtorEntry[] memory debtors = new ClearingHouse.DebtorEntry[](2);
+        debtors[0] = ClearingHouse.DebtorEntry({debtor: d2, netDebit: amt, proof: p2});
+        debtors[1] = ClearingHouse.DebtorEntry({debtor: d3, netDebit: amt, proof: p3});
+        vm.prank(OPERATOR);
+        clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 
         ClearingHouse.OnchainCycle memory afterDefault = clearingHouse.getCycle(CYCLE_ID);
         assertEq(afterDefault.totalResolvedDebit, total, "all debit resolved");
-
-        // Cover both defaults from collateral, then let the creditor claim.
-        vm.startPrank(OPERATOR);
-        clearingHouse.settleDefaultFromCollateral{value: amt}(CYCLE_ID, d2, amt);
-        clearingHouse.settleDefaultFromCollateral{value: amt}(CYCLE_ID, d3, amt);
-        vm.stopPrank();
 
         vm.prank(creditor);
         clearingHouse.claimNetCredit(CYCLE_ID, total, pc);
@@ -333,8 +339,6 @@ contract ClearingHouseTest is Test {
 
         vm.expectEmit(true, true, false, true);
         emit ClearingHouse.DebtorDefaulted(CYCLE_ID, DEBTOR, NET_AMOUNT);
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.DefaultCovered(CYCLE_ID, DEBTOR, NET_AMOUNT);
         vm.prank(OPERATOR);
         clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 
@@ -426,7 +430,7 @@ contract ClearingHouseTest is Test {
         vm.expectEmit(true, true, false, true);
         emit ClearingHouse.SettlementSkipped(CYCLE_ID, d2, "seize failed");
         vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.DefaultCovered(CYCLE_ID, d3, amt);
+        emit ClearingHouse.DebtorDefaulted(CYCLE_ID, d3, amt);
         vm.prank(OPERATOR);
         clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 

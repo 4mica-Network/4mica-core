@@ -79,7 +79,6 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error ExactPaymentRequired(uint256 expected, uint256 actual);
     error AlreadyPaid(bytes32 cycleId, address debtor);
     error AlreadyClaimed(bytes32 cycleId, address creditor);
-    error AlreadyDefaulted(bytes32 cycleId, address debtor);
     error PaymentFinalityPending(uint64 deadline);
     error PaymentWindowElapsed(uint64 deadline);
     error ClaimExceedsFundedLiquidity(uint256 available, uint256 requested);
@@ -104,8 +103,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     );
     event DebtorPaid(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
     event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, uint256 amount);
+    /// Emitted when an unpaid debtor's collateral is seized into the pool at finality.
+    /// `amount` is both the resolved net debit and the seized collateral (they are always equal).
     event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
-    event DefaultCovered(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
     event CycleFinalized(bytes32 indexed cycleId);
     event SettlementSkipped(bytes32 indexed cycleId, address indexed participant, string reason);
 
@@ -207,48 +207,6 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         emit CreditorClaimed(cycleId, msg.sender, netCredit);
     }
 
-    function markDefaulted(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof) external {
-        OnchainCycle storage cycle = _requireCycle(cycleId);
-        if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
-            revert InvalidCycleStatus(cycleId, cycle.status);
-        }
-        if (block.timestamp <= cycle.paymentFinalityDeadline) {
-            revert PaymentFinalityPending(cycle.paymentFinalityDeadline);
-        }
-        if (netDebit == 0) revert AmountZero();
-
-        ParticipantState storage participant = participantStates[cycleId][debtor];
-        if (participant.paid) revert AlreadyPaid(cycleId, debtor);
-        if (participant.defaulted) revert AlreadyDefaulted(cycleId, debtor);
-        _verifyParticipant(cycle, cycleId, debtor, netDebit, ParticipantRole.NetDebtor, proof);
-
-        participant.netDebit = netDebit;
-        participant.defaulted = true;
-        cycle.totalResolvedDebit += netDebit;
-        if (cycle.status != CycleStatus.Defaulted) {
-            cycle.status = CycleStatus.Defaulted;
-        }
-
-        emit DebtorDefaulted(cycleId, debtor, netDebit);
-    }
-
-    function settleDefaultFromCollateral(bytes32 cycleId, address debtor, uint256 amount)
-        external
-        payable
-        restricted
-        nonReentrant
-    {
-        OnchainCycle storage cycle = _requireCycle(cycleId);
-        if (cycle.status != CycleStatus.Defaulted) revert InvalidCycleStatus(cycleId, cycle.status);
-        if (!participantStates[cycleId][debtor].defaulted) revert InvalidProof();
-        if (amount == 0) revert AmountZero();
-
-        _collect(cycle.asset, amount);
-        cycle.totalDefaultCovered += amount;
-
-        emit DefaultCovered(cycleId, debtor, amount);
-    }
-
     /// Operator batch: seize collateral for unpaid debtors after finality.
     function settleDefaultsFromCollateralBatch(bytes32 cycleId, DebtorEntry[] calldata entries)
         external
@@ -285,8 +243,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 participant.defaulted = true;
                 cycle.totalResolvedDebit += entry.netDebit;
                 cycle.totalDefaultCovered += seized;
-                emit DebtorDefaulted(cycleId, entry.debtor, entry.netDebit);
-                emit DefaultCovered(cycleId, entry.debtor, seized);
+                emit DebtorDefaulted(cycleId, entry.debtor, seized);
             } catch {
                 emit SettlementSkipped(cycleId, entry.debtor, "seize failed");
             }

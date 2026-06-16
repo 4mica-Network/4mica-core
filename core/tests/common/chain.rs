@@ -280,7 +280,6 @@ async fn deploy_clearing_house(
 
     let selectors = vec![
         FixedBytes::<4>::from(ClearingHouse::commitCycleCall::SELECTOR),
-        FixedBytes::<4>::from(ClearingHouse::settleDefaultFromCollateralCall::SELECTOR),
         FixedBytes::<4>::from(ClearingHouse::settleDefaultsFromCollateralBatchCall::SELECTOR),
         FixedBytes::<4>::from(ClearingHouse::fundCreditorsFromPoolBatchCall::SELECTOR),
     ];

@@ -80,9 +80,6 @@ pub mod abi {
         event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
 
         #[derive(Debug)]
-        event DefaultCovered(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
-
-        #[derive(Debug)]
         event CycleFinalized(bytes32 indexed cycleId);
     }
 }
@@ -90,13 +87,13 @@ pub mod abi {
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
     AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
-    CycleFinalized, DebtorDefaulted, DebtorPaid, DefaultCovered, GuaranteeVersionUpdated,
+    CycleFinalized, DebtorDefaulted, DebtorPaid, GuaranteeVersionUpdated,
     ProtocolYieldClaimed, StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated,
     WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 18] = [
+pub const EVENT_SIGNATURES: [&str; 17] = [
     CollateralDeposited::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
     WithdrawalRequested::SIGNATURE,
@@ -113,12 +110,11 @@ pub const EVENT_SIGNATURES: [&str; 18] = [
     DebtorPaid::SIGNATURE,
     CreditorClaimed::SIGNATURE,
     DebtorDefaulted::SIGNATURE,
-    DefaultCovered::SIGNATURE,
     CycleFinalized::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 17] = [
     CollateralDeposited::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
     WithdrawalRequested::SIGNATURE_HASH,
@@ -135,7 +131,6 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     DebtorPaid::SIGNATURE_HASH,
     CreditorClaimed::SIGNATURE_HASH,
     DebtorDefaulted::SIGNATURE_HASH,
-    DefaultCovered::SIGNATURE_HASH,
     CycleFinalized::SIGNATURE_HASH,
 ];
 
@@ -253,7 +248,7 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
-    const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
+    const EXPECTED_EVENT_SIGNATURES: [&str; 17] = [
         "CollateralDeposited(address,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
         "WithdrawalRequested(address,address,uint256,uint256)",
@@ -270,7 +265,6 @@ mod tests {
         "DebtorPaid(bytes32,address,uint256)",
         "CreditorClaimed(bytes32,address,uint256)",
         "DebtorDefaulted(bytes32,address,uint256)",
-        "DefaultCovered(bytes32,address,uint256)",
         "CycleFinalized(bytes32)",
     ];
 
@@ -295,6 +289,6 @@ mod tests {
             SurplusATokensClaimed::SIGNATURE_HASH
         );
         assert_eq!(EVENT_SIGNATURES[12], CycleCommitted::SIGNATURE);
-        assert_eq!(EVENT_SIGNATURE_HASHES[17], CycleFinalized::SIGNATURE_HASH);
+        assert_eq!(EVENT_SIGNATURE_HASHES[16], CycleFinalized::SIGNATURE_HASH);
     }
 }

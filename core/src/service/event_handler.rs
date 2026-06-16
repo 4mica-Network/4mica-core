@@ -152,16 +152,6 @@ impl EthereumEventHandler for CoreService {
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
 
-    #[measure(record_event_handler_time, name = "default_covered")]
-    async fn handle_default_covered(&self, log: Log) -> Result<(), BlockchainListenerError> {
-        let DefaultCovered {
-            cycleId, debtor, ..
-        } = *log.log_decode()?.data();
-        self.process_default_covered(cycleId, &debtor.to_string())
-            .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
-    }
-
     #[measure(record_event_handler_time, name = "cycle_finalized")]
     async fn handle_cycle_finalized(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CycleFinalized { cycleId, .. } = *log.log_decode()?.data();

@@ -283,8 +283,7 @@ async fn get_clearing_participant_action(
     Query(query): Query<ClearingActionQuery>,
 ) -> Result<Json<ClearingSettlementActionResponse>, ApiError> {
     access::require_scope(&auth, SCOPE_PAYMENT_READ)?;
-    if query.action != ClearingSettlementAction::MarkDefaulted
-        && !access::addresses_match(&auth.wallet_address, &participant)
+    if !access::addresses_match(&auth.wallet_address, &participant)
         && access::require_admin_role(&auth).is_err()
         && access::require_facilitator_role(&auth).is_err()
     {
@@ -329,18 +328,11 @@ fn clearing_action_response(
     proof: crate::service::netting::ClearingParticipantProof,
 ) -> Result<ClearingSettlementActionResponse, ApiError> {
     let role = participant_role_to_response(proof.role)?;
-    let (required_role, function_name, debtor) = match action {
-        ClearingSettlementAction::PayNetDebit => {
-            (ClearingParticipantRole::NetDebtor, "payNetDebit", None)
-        }
+    let (required_role, function_name) = match action {
+        ClearingSettlementAction::PayNetDebit => (ClearingParticipantRole::NetDebtor, "payNetDebit"),
         ClearingSettlementAction::ClaimNetCredit => {
-            (ClearingParticipantRole::NetCreditor, "claimNetCredit", None)
+            (ClearingParticipantRole::NetCreditor, "claimNetCredit")
         }
-        ClearingSettlementAction::MarkDefaulted => (
-            ClearingParticipantRole::NetDebtor,
-            "markDefaulted",
-            Some(proof.participant.to_string()),
-        ),
     };
     if role != required_role {
         return Err(ApiError::new(
@@ -365,7 +357,6 @@ fn clearing_action_response(
         cycle_id_text: proof.cycle_id_text,
         asset_address: proof.asset_address.to_string(),
         participant: proof.participant.to_string(),
-        debtor,
         amount: proof.amount.to_string(),
         payable_value,
         proof: proof.proof.into_iter().map(bytes32_hex).collect(),

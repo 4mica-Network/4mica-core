@@ -157,19 +157,6 @@ impl RpcProxy {
         .await
     }
 
-    pub async fn get_clearing_mark_defaulted_action(
-        &self,
-        cycle_id: String,
-        debtor: String,
-    ) -> Result<ClearingSettlementActionResponse, ApiClientError> {
-        self.get_clearing_settlement_action(
-            cycle_id,
-            debtor,
-            ClearingSettlementAction::MarkDefaulted,
-        )
-        .await
-    }
-
     pub async fn issue_guarantee(
         &self,
         req: PaymentGuaranteeRequest,
@@ -213,7 +200,6 @@ fn clearing_action_query_value(action: &ClearingSettlementAction) -> &'static st
     match action {
         ClearingSettlementAction::PayNetDebit => "pay_net_debit",
         ClearingSettlementAction::ClaimNetCredit => "claim_net_credit",
-        ClearingSettlementAction::MarkDefaulted => "mark_defaulted",
     }
 }
 

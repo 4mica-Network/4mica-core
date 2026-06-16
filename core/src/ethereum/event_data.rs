@@ -54,11 +54,6 @@ pub enum StoredEventData {
         debtor: String,
         amount: String,
     },
-    DefaultCovered {
-        cycle_id: String,
-        debtor: String,
-        amount: String,
-    },
     CycleFinalized {
         cycle_id: String,
     },
@@ -193,19 +188,6 @@ impl TryInto<StoredEventData> for &Log {
                     ..
                 } = *self.log_decode()?.data();
                 Ok(StoredEventData::DebtorDefaulted {
-                    cycle_id: format!("{:#x}", cycleId),
-                    debtor: debtor.to_string(),
-                    amount: amount.to_string(),
-                })
-            }
-            Some(&DefaultCovered::SIGNATURE_HASH) => {
-                let DefaultCovered {
-                    cycleId,
-                    debtor,
-                    amount,
-                    ..
-                } = *self.log_decode()?.data();
-                Ok(StoredEventData::DefaultCovered {
                     cycle_id: format!("{:#x}", cycleId),
                     debtor: debtor.to_string(),
                     amount: amount.to_string(),

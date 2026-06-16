@@ -48,7 +48,6 @@ pub struct ClearingParticipantProofResponse {
 pub enum ClearingSettlementAction {
     PayNetDebit,
     ClaimNetCredit,
-    MarkDefaulted,
 }
 
 /// Response from `GET /core/cycles/{cycle_id}/participants/{participant}/clearing-action`.
@@ -67,8 +66,6 @@ pub struct ClearingSettlementActionResponse {
     pub asset_address: String,
     /// Participant whose committed Merkle leaf is proven.
     pub participant: String,
-    /// Alias for `participant` when `action = mark_defaulted`.
-    pub debtor: Option<String>,
     /// Amount argument for the selected ClearingHouse function.
     pub amount: String,
     /// Native value to attach. This is non-zero only for native-asset debtor payments.
@@ -151,8 +148,8 @@ mod tests {
         assert_eq!(value, serde_json::json!("pay_net_debit"));
 
         let action: ClearingSettlementAction =
-            serde_json::from_value(serde_json::json!("mark_defaulted")).unwrap();
-        assert_eq!(action, ClearingSettlementAction::MarkDefaulted);
+            serde_json::from_value(serde_json::json!("claim_net_credit")).unwrap();
+        assert_eq!(action, ClearingSettlementAction::ClaimNetCredit);
     }
 
     #[test]
@@ -165,14 +162,13 @@ mod tests {
     fn clearing_action_response_contains_contract_call_payload() {
         let response = ClearingSettlementActionResponse {
             contract_address: "0x1111111111111111111111111111111111111111".to_string(),
-            function_name: "markDefaulted".to_string(),
-            action: ClearingSettlementAction::MarkDefaulted,
+            function_name: "payNetDebit".to_string(),
+            action: ClearingSettlementAction::PayNetDebit,
             cycle_id: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
             cycle_id_text: "cycle".to_string(),
             asset_address: "0x2222222222222222222222222222222222222222".to_string(),
             participant: "0x3333333333333333333333333333333333333333".to_string(),
-            debtor: Some("0x3333333333333333333333333333333333333333".to_string()),
             amount: "10".to_string(),
             payable_value: "0".to_string(),
             proof: vec![
@@ -181,10 +177,10 @@ mod tests {
         };
 
         let value = serde_json::to_value(response).unwrap();
-        assert_eq!(value["action"], "mark_defaulted");
-        assert_eq!(value["function_name"], "markDefaulted");
+        assert_eq!(value["action"], "pay_net_debit");
+        assert_eq!(value["function_name"], "payNetDebit");
         assert_eq!(
-            value["debtor"],
+            value["participant"],
             "0x3333333333333333333333333333333333333333"
         );
     }

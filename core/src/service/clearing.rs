@@ -373,6 +373,10 @@ impl CoreService {
         Ok(())
     }
 
+    /// Mirror a `DebtorDefaulted` event: the debtor's collateral has been seized into
+    /// the pool, so mark the position defaulted, flip the cycle to defaulted, and
+    /// remunerate the netted guarantees from the seized collateral — all in one step
+    /// (seizure and coverage are now atomic on-chain).
     pub async fn process_defaulted_debtor(
         &self,
         onchain_cycle_id: B256,
@@ -384,6 +388,7 @@ impl CoreService {
             warn!("debtor default event for unknown on-chain cycle id {onchain_cycle_id:#x}");
             return Ok(());
         };
+        let now = Utc::now().naive_utc();
         repo::mark_participant_position_status_on(
             self.inner.persist_ctx.db.as_ref(),
             &cycle_id,
@@ -391,36 +396,14 @@ impl CoreService {
             ParticipantCycleStatus::Unpaid,
             ParticipantCycleStatus::Defaulted,
             None,
-            Utc::now().naive_utc(),
+            now,
         )
         .await?;
-        let changed = repo::mark_cycle_defaulted_on(
-            self.inner.persist_ctx.db.as_ref(),
-            &cycle_id,
-            Utc::now().naive_utc(),
-        )
-        .await?;
-        if changed {
-            info!(
-                "default event bridge received: cycle={}, debtor={}",
-                cycle_id, debtor
-            );
-        }
-        Ok(())
-    }
+        let cycle_changed =
+            repo::mark_cycle_defaulted_on(self.inner.persist_ctx.db.as_ref(), &cycle_id, now)
+                .await?;
 
-    pub async fn process_default_covered(
-        &self,
-        onchain_cycle_id: B256,
-        debtor: &str,
-    ) -> ServiceResult<()> {
-        let Some(cycle_id) = self.resolve_onchain_cycle_id(onchain_cycle_id).await? else {
-            warn!("default covered event for unknown on-chain cycle id {onchain_cycle_id:#x}");
-            return Ok(());
-        };
-        let now = Utc::now().naive_utc();
-        let debtor = parse_address(debtor)?.into_inner();
-        let changed = self
+        let guarantees = self
             .inner
             .persist_ctx
             .db
@@ -441,10 +424,13 @@ impl CoreService {
             })
             .await
             .map_err(map_transaction_error)?;
-        info!(
-            "mirrored DefaultCovered: cycle={}, debtor={}, guarantees={}",
-            cycle_id, debtor, changed
-        );
+
+        if cycle_changed || guarantees > 0 {
+            info!(
+                "mirrored DebtorDefaulted: cycle={}, debtor={}, guarantees={}",
+                cycle_id, debtor, guarantees
+            );
+        }
         Ok(())
     }
 

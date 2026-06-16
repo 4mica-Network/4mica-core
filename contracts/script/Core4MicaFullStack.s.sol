@@ -229,11 +229,10 @@ contract Core4MicaFullStackScript is Script {
         internal
     {
         // Cycle commitment and default settlement are 4mica operator-driven settlement bookkeeping.
-        bytes4[] memory operatorSelectors = new bytes4[](4);
+        bytes4[] memory operatorSelectors = new bytes4[](3);
         operatorSelectors[0] = ClearingHouse.commitCycle.selector;
-        operatorSelectors[1] = ClearingHouse.settleDefaultFromCollateral.selector;
-        operatorSelectors[2] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
-        operatorSelectors[3] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        operatorSelectors[1] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
+        operatorSelectors[2] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
         for (uint256 i = 0; i < operatorSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(clearingHouse), _asSingletonArray(operatorSelectors[i]), FOURMICA_OPERATOR_ROLE
