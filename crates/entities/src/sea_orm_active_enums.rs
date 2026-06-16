@@ -99,8 +99,8 @@ pub enum SettlementCycleStatus {
     PaymentWindowOpen,
     #[sea_orm(string_value = "FINALIZED")]
     Finalized,
-    #[sea_orm(string_value = "DEFAULTED")]
-    Defaulted,
+    #[sea_orm(string_value = "SETTLING")]
+    Settling,
     #[sea_orm(string_value = "CANCELLED")]
     Cancelled,
 }

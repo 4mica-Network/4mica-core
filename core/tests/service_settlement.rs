@@ -228,9 +228,9 @@ async fn finalize_cycle_sweeps_residual_netted_collateral() -> anyhow::Result<()
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn unpaid_debtors_move_payment_window_cycle_to_defaulted() -> anyhow::Result<()> {
+async fn marking_payment_window_cycle_moves_it_to_settling() -> anyhow::Result<()> {
     let service = setup_cycle_service().await?;
-    let cycle_id = "defaulted-cycle";
+    let cycle_id = "settling-cycle";
     build_three_party_cycle(&service, cycle_id).await?;
     let ctx = service.persist_ctx();
 
@@ -250,14 +250,14 @@ async fn unpaid_debtors_move_payment_window_cycle_to_defaulted() -> anyhow::Resu
         .await?
     );
     assert!(
-        repo::mark_cycle_defaulted_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?
+        repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?
     );
 
     let cycle = settlement_cycle::Entity::find_by_id(cycle_id.to_string())
         .one(ctx.db.as_ref())
         .await?
         .expect("cycle exists");
-    assert_eq!(cycle.status, SettlementCycleStatus::Defaulted);
+    assert_eq!(cycle.status, SettlementCycleStatus::Settling);
 
     Ok(())
 }

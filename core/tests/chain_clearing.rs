@@ -13,11 +13,11 @@ use alloy::primitives::{Address, U256};
 use alloy::providers::DynProvider;
 use alloy::providers::ext::AnvilApi;
 use anyhow::Context;
-use entities::guarantee;
 use entities::sea_orm_active_enums::{
     GuaranteeSettlementStatus, ParticipantCycleStatus, SettlementCycleStatus,
 };
-use sea_orm::EntityTrait;
+use entities::{guarantee, settlement_cycle};
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use test_log::test;
 
 mod common;
@@ -441,6 +441,105 @@ async fn commit_two_party_cycle_past_finality(
     Ok(guarantee_id)
 }
 
+/// Backdate a cycle's off-chain finality deadline into the past so the settlement
+/// job treats it as due. On-chain deadlines are advanced separately via anvil time.
+async fn backdate_cycle_finality(ctx: &PersistCtx, cycle_id: &str) -> anyhow::Result<()> {
+    let now = chrono::Utc::now().naive_utc();
+    let cycle = settlement_cycle::Entity::find_by_id(cycle_id.to_string())
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("cycle exists");
+    let mut model: settlement_cycle::ActiveModel = cycle.into();
+    model.payment_submission_deadline = Set(now - chrono::Duration::hours(2));
+    model.payment_finality_deadline = Set(now - chrono::Duration::hours(1));
+    model.update(ctx.db.as_ref()).await?;
+    Ok(())
+}
+
+/// Paid-debtor / unclaimed-creditor path: every debtor pays voluntarily but a
+/// creditor never claims. After finality the job funds the creditor from the pool
+/// and finalizes — no defaults involved.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn fully_paid_cycle_with_unclaimed_creditor_is_settled_by_job() -> anyhow::Result<()> {
+    let env = setup_e2e_environment()
+        .await
+        .context("setup_e2e_environment")?;
+    let provider = env.provider.clone();
+    let svc = env.core_service.clone();
+    let ctx = svc.persist_ctx();
+    let http = env.cfg.ethereum_config.http_rpc_url.clone();
+
+    let (debtor, debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
+    let (creditor, _creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
+
+    let cycle_id = "clearing-e2e-unclaimed-creditor";
+    // Future deadlines so the debtor can pay voluntarily on-chain.
+    let guarantee_id = commit_two_party_cycle(&svc, cycle_id, &debtor, &creditor).await?;
+    mine(&provider, 2).await?;
+
+    // The debtor pays; the creditor never claims.
+    let debtor_proof = svc
+        .get_participant_clearing_proof(cycle_id, &lower(&debtor))
+        .await?;
+    ClearingHouse::new(*env.clearing_house.address(), debtor_provider)
+        .payNetDebit(
+            debtor_proof.cycle_id,
+            debtor_proof.amount,
+            debtor_proof.proof,
+        )
+        .value(debtor_proof.amount)
+        .send()
+        .await
+        .context("payNetDebit send")?
+        .watch()
+        .await
+        .context("payNetDebit confirm")?;
+    mine(&provider, 2).await?;
+    poll_position_status(ctx, cycle_id, &lower(&debtor), ParticipantCycleStatus::Paid).await?;
+    poll_guarantee_status(ctx, &guarantee_id, GuaranteeSettlementStatus::Settled).await?;
+
+    // Push on-chain time past finality (so finalizeCycle is allowed) and backdate the
+    // off-chain finality deadline (so the job sees the cycle as due).
+    provider
+        .anvil_set_block_timestamp_interval(3 * 60 * 60)
+        .await?;
+    backdate_cycle_finality(ctx, cycle_id).await?;
+
+    // First job pass: no debtors to seize, but the unclaimed creditor is funded.
+    let settled = svc.settle_due_cycles().await?;
+    assert!(settled.iter().any(|c| c == cycle_id));
+    mine(&provider, 2).await?;
+
+    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Settling).await?;
+    poll_position_status(
+        ctx,
+        cycle_id,
+        &lower(&creditor),
+        ParticipantCycleStatus::Claimed,
+    )
+    .await?;
+
+    // The creditor's collateral was funded from the pool.
+    let core = Core4Mica::new(*env.contract.address(), provider.clone());
+    let creditor_balance = core
+        .withdrawableBalance(creditor, Address::ZERO)
+        .call()
+        .await?;
+    assert_eq!(
+        creditor_balance,
+        U256::from(NET_AMOUNT),
+        "creditor collateral funded"
+    );
+
+    // Second job pass: the off-chain ledger is fully resolved, so the cycle finalizes.
+    svc.settle_due_cycles().await?;
+    mine(&provider, 2).await?;
+    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Finalized).await?;
+
+    Ok(())
+}
+
 /// Default path driven entirely by the off-chain settlement job: after finality the
 /// job seizes the unpaid debtor's on-chain collateral into the pool, funds the
 /// unclaimed creditor's collateral back out of the pool, and finalizes the cycle.
@@ -475,19 +574,14 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
         .context("debtor deposit confirm")?;
     mine(&provider, 2).await?;
 
-    // Off-chain finality marks the cycle defaulted (the debtor never paid).
-    let defaulted = svc.process_due_cycle_finality().await?;
-    assert!(
-        defaulted.iter().any(|c| c == cycle_id),
-        "cycle should enter default handling"
-    );
-    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Defaulted).await?;
-
-    // First job pass: seize the debtor's collateral and fund the creditor's collateral.
-    let settled = svc.settle_due_cycle_defaults().await?;
+    // First job pass: the debtor never paid, so finality handling seizes the
+    // debtor's collateral, funds the creditor's collateral, and marks the cycle
+    // settling (one-shot — finality and submission are folded into one phase).
+    let settled = svc.settle_due_cycles().await?;
     assert!(settled.iter().any(|c| c == cycle_id));
     mine(&provider, 2).await?;
 
+    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Settling).await?;
     poll_position_status(
         ctx,
         cycle_id,
@@ -523,7 +617,7 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
     assert_eq!(creditor_balance, amount, "creditor collateral funded");
 
     // Second job pass: the off-chain ledger is fully resolved, so the cycle finalizes.
-    svc.settle_due_cycle_defaults().await?;
+    svc.settle_due_cycles().await?;
     mine(&provider, 2).await?;
     poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Finalized).await?;
 

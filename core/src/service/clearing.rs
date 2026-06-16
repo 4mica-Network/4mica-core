@@ -106,27 +106,76 @@ impl CoreService {
         Ok(())
     }
 
-    /// Settle every cycle that passed finality with unpaid debtors. For each cycle this
-    /// seizes unpaid debtors' collateral into the pool, funds unclaimed creditors back
-    /// into their collateral, and finalizes once the off-chain ledger is fully resolved.
-    pub async fn settle_due_cycle_defaults(&self) -> ServiceResult<Vec<String>> {
-        let cycles = repo::list_defaulted_cycles_on(self.inner.persist_ctx.db.as_ref()).await?;
-        let mut settled = Vec::new();
-        for cycle in cycles {
+    /// Settle every cycle past its finality deadline: open settlement for
+    /// payment-window cycles (mark `Settling`), then finalize `Settling` cycles whose
+    /// ledger is fully resolved. Returns cycle ids that had an on-chain tx submitted.
+    pub async fn settle_due_cycles(&self) -> ServiceResult<Vec<String>> {
+        let now = Utc::now().naive_utc();
+        let mut acted = Vec::new();
+
+        let due = repo::list_payment_window_cycles_finality_due_on(
+            self.inner.persist_ctx.db.as_ref(),
+            now,
+        )
+        .await?;
+        for cycle in due {
             let cycle_id = cycle.id.clone();
-            match self.settle_cycle_defaults(&cycle_id).await {
-                Ok(true) => settled.push(cycle_id),
+            match self.open_cycle_settlement(&cycle_id, now).await {
+                Ok(true) => acted.push(cycle_id),
                 Ok(false) => {}
                 Err(err) => {
-                    warn!("failed to settle defaults for settlement cycle {cycle_id}: {err:?}")
+                    warn!("failed to open settlement for settlement cycle {cycle_id}: {err:?}")
                 }
             }
         }
-        Ok(settled)
+
+        let settling = repo::list_settling_cycles_on(self.inner.persist_ctx.db.as_ref()).await?;
+        for cycle in settling {
+            let cycle_id = cycle.id.clone();
+            match self.finalize_settling_cycle(&cycle_id).await {
+                Ok(true) => {
+                    if !acted.contains(&cycle_id) {
+                        acted.push(cycle_id);
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!("failed to finalize settling settlement cycle {cycle_id}: {err:?}")
+                }
+            }
+        }
+
+        Ok(acted)
     }
 
-    /// Returns whether any on-chain transaction was sent for this cycle.
-    async fn settle_cycle_defaults(&self, cycle_id: &str) -> ServiceResult<bool> {
+    /// Seize unpaid debtors' collateral and fund unclaimed creditors on-chain, then
+    /// mark the cycle `Settling`.
+    async fn open_cycle_settlement(
+        &self,
+        cycle_id: &str,
+        now: NaiveDateTime,
+    ) -> ServiceResult<bool> {
+        let unpaid =
+            repo::list_unpaid_debtors_for_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
+                .await?;
+        let claimable = repo::list_claimable_creditors_for_cycle_on(
+            self.inner.persist_ctx.db.as_ref(),
+            cycle_id,
+        )
+        .await?;
+        if unpaid.is_empty() && claimable.is_empty() {
+            // Fully resolved on-chain; nothing to submit, just hand off to finalize.
+            let marked =
+                repo::mark_cycle_settling_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now)
+                    .await?;
+            if marked {
+                info!(
+                    "settlement cycle {cycle_id} fully resolved at finality; awaiting finalization"
+                );
+            }
+            return Ok(marked);
+        }
+
         let batch_size = self.inner.config.settlement_cycle.default_batch_size.max(1) as usize;
         let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
 
@@ -145,9 +194,6 @@ impl CoreService {
             }
         }
 
-        let unpaid =
-            repo::list_unpaid_debtors_for_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
-                .await?;
         let mut debtor_entries = Vec::with_capacity(unpaid.len());
         for pos in &unpaid {
             let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
@@ -163,11 +209,6 @@ impl CoreService {
             }
         }
 
-        let claimable = repo::list_claimable_creditors_for_cycle_on(
-            self.inner.persist_ctx.db.as_ref(),
-            cycle_id,
-        )
-        .await?;
         let mut creditor_entries = Vec::with_capacity(claimable.len());
         for pos in &claimable {
             let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
@@ -183,14 +224,25 @@ impl CoreService {
             }
         }
 
-        let mut acted = false;
+        // A missing proof can never finalize on-chain; defer and surface it rather
+        // than half-settling into a stuck state.
+        if debtor_entries.len() != unpaid.len() || creditor_entries.len() != claimable.len() {
+            warn!(
+                "incomplete clearing proofs for settlement cycle {cycle_id} (debtors {}/{}, creditors {}/{}); deferring settlement",
+                debtor_entries.len(),
+                unpaid.len(),
+                creditor_entries.len(),
+                claimable.len()
+            );
+            return Ok(false);
+        }
+
         for chunk in debtor_entries.chunks(batch_size) {
             self.inner
                 .contract_api
                 .settle_defaults_from_collateral_batch(onchain_cycle_id, chunk.to_vec())
                 .await
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-            acted = true;
         }
         for chunk in creditor_entries.chunks(batch_size) {
             self.inner
@@ -198,34 +250,51 @@ impl CoreService {
                 .fund_creditors_from_pool_batch(onchain_cycle_id, chunk.to_vec())
                 .await
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-            acted = true;
         }
 
-        // Once the off-chain ledger shows no outstanding debtors or creditors (their
-        // role events have landed), the on-chain cycle is fully resolved and can be
-        // finalized. Attempting it only when both lists are empty avoids reverting
-        // finalizations while events are still catching up.
-        if debtor_entries.is_empty() && creditor_entries.is_empty() {
-            match self
-                .inner
-                .contract_api
-                .finalize_clearing_cycle(onchain_cycle_id)
-                .await
-            {
-                Ok(tx) => {
-                    info!(
-                        "finalized defaulted settlement cycle {cycle_id} on-chain in tx {:?}",
-                        tx.tx_hash
-                    );
-                    acted = true;
-                }
-                Err(err) => {
-                    info!("defaulted settlement cycle {cycle_id} not yet finalizable: {err}")
-                }
+        repo::mark_cycle_settling_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now).await?;
+        info!(
+            "opened settlement for cycle {cycle_id}: {} debtor seizure(s), {} creditor funding(s)",
+            debtor_entries.len(),
+            creditor_entries.len()
+        );
+        Ok(true)
+    }
+
+    /// Finalize a `Settling` cycle on-chain once its ledger shows no outstanding
+    /// debtors or creditors (events mirrored), so the tx won't revert.
+    async fn finalize_settling_cycle(&self, cycle_id: &str) -> ServiceResult<bool> {
+        let unpaid =
+            repo::list_unpaid_debtors_for_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
+                .await?;
+        let claimable = repo::list_claimable_creditors_for_cycle_on(
+            self.inner.persist_ctx.db.as_ref(),
+            cycle_id,
+        )
+        .await?;
+        if !unpaid.is_empty() || !claimable.is_empty() {
+            return Ok(false);
+        }
+
+        let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
+        match self
+            .inner
+            .contract_api
+            .finalize_clearing_cycle(onchain_cycle_id)
+            .await
+        {
+            Ok(tx) => {
+                info!(
+                    "finalized settlement cycle {cycle_id} on-chain in tx {:?}",
+                    tx.tx_hash
+                );
+                Ok(true)
+            }
+            Err(err) => {
+                info!("settlement cycle {cycle_id} not yet finalizable: {err}");
+                Ok(false)
             }
         }
-
-        Ok(acted)
     }
 
     pub async fn process_cycle_committed(
@@ -374,9 +443,8 @@ impl CoreService {
     }
 
     /// Mirror a `DebtorDefaulted` event: the debtor's collateral has been seized into
-    /// the pool, so mark the position defaulted, flip the cycle to defaulted, and
-    /// remunerate the netted guarantees from the seized collateral — all in one step
-    /// (seizure and coverage are now atomic on-chain).
+    /// the pool, so mark the position defaulted and remunerate the netted guarantees
+    /// from the seized collateral.
     pub async fn process_defaulted_debtor(
         &self,
         onchain_cycle_id: B256,
@@ -399,9 +467,6 @@ impl CoreService {
             now,
         )
         .await?;
-        let cycle_changed =
-            repo::mark_cycle_defaulted_on(self.inner.persist_ctx.db.as_ref(), &cycle_id, now)
-                .await?;
 
         let guarantees = self
             .inner
@@ -425,7 +490,7 @@ impl CoreService {
             .await
             .map_err(map_transaction_error)?;
 
-        if cycle_changed || guarantees > 0 {
+        if guarantees > 0 {
             info!(
                 "mirrored DebtorDefaulted: cycle={}, debtor={}, guarantees={}",
                 cycle_id, debtor, guarantees

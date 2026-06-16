@@ -205,58 +205,6 @@ impl CoreService {
         Ok(committed)
     }
 
-    pub async fn process_due_cycle_finality(&self) -> crate::error::ServiceResult<Vec<String>> {
-        let now = Utc::now().naive_utc();
-        let due = repo::list_payment_window_cycles_finality_due_on(
-            self.inner.persist_ctx.db.as_ref(),
-            now,
-        )
-        .await?;
-        let mut defaulted = Vec::new();
-        for cycle in due {
-            let cycle_id = cycle.id.clone();
-            match self.process_cycle_finality(&cycle_id, now).await {
-                Ok(true) => defaulted.push(cycle_id),
-                Ok(false) => {}
-                Err(err) => {
-                    warn!("failed to process finality for settlement cycle {cycle_id}: {err:?}")
-                }
-            }
-        }
-        Ok(defaulted)
-    }
-
-    /// Evaluate finality for a single payment-window cycle. Returns whether the
-    /// cycle transitioned into default handling.
-    async fn process_cycle_finality(
-        &self,
-        cycle_id: &str,
-        now: chrono::NaiveDateTime,
-    ) -> crate::error::ServiceResult<bool> {
-        let unpaid =
-            repo::list_unpaid_debtors_for_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
-                .await?;
-        if unpaid.is_empty() {
-            info!(
-                "settlement cycle {} passed finality with no unpaid debtors; waiting for ClearingHouse finalization event",
-                cycle_id
-            );
-            return Ok(false);
-        }
-
-        let changed =
-            repo::mark_cycle_defaulted_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now)
-                .await?;
-        if changed {
-            info!(
-                "settlement cycle {} entered default handling with {} unpaid debtors",
-                cycle_id,
-                unpaid.len()
-            );
-        }
-        Ok(changed)
-    }
-
     pub(crate) async fn supported_settlement_assets(
         &self,
     ) -> crate::error::ServiceResult<Vec<String>> {
@@ -355,8 +303,7 @@ impl Task for SettlementCycleTask {
         let frozen = self.0.freeze_elapsed_cycles().await?;
         let netted = self.0.compute_due_cycle_netting().await?;
         let committed = self.0.commit_due_clearing_batches().await?;
-        let finalized = self.0.process_due_cycle_finality().await?;
-        let settled = self.0.settle_due_cycle_defaults().await?;
+        let settled = self.0.settle_due_cycles().await?;
         let opened = self.0.ensure_active_cycles().await?;
 
         if !opened.is_empty() {
@@ -371,11 +318,8 @@ impl Task for SettlementCycleTask {
         if !committed.is_empty() {
             info!("committed {} clearing batch(es)", committed.len());
         }
-        if !finalized.is_empty() {
-            info!("finalized {} settlement cycle(s)", finalized.len());
-        }
         if !settled.is_empty() {
-            info!("settled defaults for {} settlement cycle(s)", settled.len());
+            info!("settled {} settlement cycle(s) at finality", settled.len());
         }
 
         Ok(())
