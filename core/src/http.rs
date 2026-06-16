@@ -329,7 +329,9 @@ fn clearing_action_response(
 ) -> Result<ClearingSettlementActionResponse, ApiError> {
     let role = participant_role_to_response(proof.role)?;
     let (required_role, function_name) = match action {
-        ClearingSettlementAction::PayNetDebit => (ClearingParticipantRole::NetDebtor, "payNetDebit"),
+        ClearingSettlementAction::PayNetDebit => {
+            (ClearingParticipantRole::NetDebtor, "payNetDebit")
+        }
         ClearingSettlementAction::ClaimNetCredit => {
             (ClearingParticipantRole::NetCreditor, "claimNetCredit")
         }

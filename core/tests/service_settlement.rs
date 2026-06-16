@@ -249,9 +249,7 @@ async fn marking_payment_window_cycle_moves_it_to_settling() -> anyhow::Result<(
         )
         .await?
     );
-    assert!(
-        repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?
-    );
+    assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
 
     let cycle = settlement_cycle::Entity::find_by_id(cycle_id.to_string())
         .one(ctx.db.as_ref())

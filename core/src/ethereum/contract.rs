@@ -87,9 +87,9 @@ pub mod abi {
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
     AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
-    CycleFinalized, DebtorDefaulted, DebtorPaid, GuaranteeVersionUpdated,
-    ProtocolYieldClaimed, StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated,
-    WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
+    CycleFinalized, DebtorDefaulted, DebtorPaid, GuaranteeVersionUpdated, ProtocolYieldClaimed,
+    StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated, WithdrawalCanceled,
+    WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
