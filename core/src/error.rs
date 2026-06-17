@@ -167,14 +167,16 @@ pub enum ServiceError {
     #[error("promise timestamp is in the future")]
     FutureTimestamp,
 
+    #[error(
+        "request timestamp {timestamp} predates the active settlement cycle that started at {cycle_start}; the request is stale or replayed from an earlier cycle"
+    )]
+    StaleTimestamp { timestamp: u64, cycle_start: i64 },
+
     #[error("req_id not valid")]
     InvalidRequestID,
 
     #[error("another guarantee with req_id {req_id} already exists")]
     DuplicateGuarantee { req_id: U256 },
-
-    #[error("start timestamp modified")]
-    ModifiedStartTs,
 
     #[error("database error: {0}")]
     Db(PersistDbError),

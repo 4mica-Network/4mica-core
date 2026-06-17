@@ -9,25 +9,24 @@ use crate::{
     error::{ServiceError, ServiceResult},
     persist::repo,
 };
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 use anyhow::anyhow;
 use chrono::Utc;
 use crypto::bls::{BLSCert, BlsClaims};
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use log::{info, warn};
 use rpc::{
-    GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
-    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
-    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeRequestEssentials,
+    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
+    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
+    PaymentGuaranteeRequestEssentials,
 };
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use std::str::FromStr;
 
 impl CoreService {
-    pub async fn verify_guarantee_request_claims_v1(
+    pub fn verify_guarantee_request_claims_v1(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV1,
-        _claims_version: u64,
     ) -> ServiceResult<()> {
         let now_i64 = chrono::Utc::now().timestamp();
         if now_i64 < 0 {
@@ -39,24 +38,22 @@ impl CoreService {
             return Err(ServiceError::FutureTimestamp);
         }
 
-        let claim_user = Address::from_str(&claims.user_address)
+        let _claim_user = Address::from_str(&claims.user_address)
             .map_err(|_| ServiceError::InvalidParams("Invalid user address".into()))?;
-        let claim_recipient = Address::from_str(&claims.recipient_address)
+        let _claim_recipient = Address::from_str(&claims.recipient_address)
             .map_err(|_| ServiceError::InvalidParams("Invalid recipient address".into()))?;
-        let claim_asset = Address::from_str(&claims.asset_address)
+        let _claim_asset = Address::from_str(&claims.asset_address)
             .map_err(|_| ServiceError::InvalidParams("Invalid asset address".into()))?;
-        let _ = (claim_user, claim_recipient, claim_asset);
 
         Ok(())
     }
 
-    pub async fn verify_guarantee_request_claims_v2(
+    pub fn verify_guarantee_request_claims_v2(
         &self,
         claims: &PaymentGuaranteeRequestClaimsV2,
     ) -> ServiceResult<()> {
         let base_claims = Self::v2_to_v1_claims(claims);
-        self.verify_guarantee_request_claims_v1(&base_claims, GUARANTEE_CLAIMS_VERSION_V2)
-            .await?;
+        self.verify_guarantee_request_claims_v1(&base_claims)?;
 
         claims
             .validate()
@@ -117,18 +114,16 @@ impl CoreService {
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 
-    pub async fn verify_guarantee_request_claims(
+    pub fn verify_guarantee_request_claims(
         &self,
         claims: &PaymentGuaranteeRequestClaims,
     ) -> ServiceResult<()> {
-        let version = claims.version();
         match claims {
             PaymentGuaranteeRequestClaims::V1(claims) => {
-                self.verify_guarantee_request_claims_v1(claims, version)
-                    .await
+                self.verify_guarantee_request_claims_v1(claims)
             }
             PaymentGuaranteeRequestClaims::V2(claims) => {
-                self.verify_guarantee_request_claims_v2(claims).await
+                self.verify_guarantee_request_claims_v2(claims)
             }
         }
     }
@@ -138,7 +133,6 @@ impl CoreService {
         conn: &C,
         claims: &PaymentGuaranteeRequestClaims,
     ) -> ServiceResult<()> {
-        self.verify_guarantee_request_claims(claims).await?;
         repo::lock_user_balance_for_guarantee_on(conn, claims)
             .await
             .map_err(Into::into)
@@ -183,6 +177,7 @@ impl CoreService {
         );
 
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
+        self.verify_guarantee_request_claims(&req.claims)?;
 
         repo::ensure_user_is_active(&self.inner.persist_ctx, req.claims.user_address()).await?;
         repo::ensure_user_is_active_if_exists(
@@ -193,7 +188,15 @@ impl CoreService {
         let active_cycle = self
             .get_or_create_active_cycle(req.claims.asset_address(), Utc::now())
             .await?;
-        let signed_cycle_id = crate::evm::clearing::claim_cycle_id(&active_cycle.id);
+
+        if req.claims.timestamp() < (active_cycle.period_start.and_utc().timestamp() as u64) {
+            return Err(ServiceError::StaleTimestamp {
+                timestamp: req.claims.timestamp(),
+                cycle_start: active_cycle.period_start.and_utc().timestamp(),
+            });
+        }
+
+        let cycle_id_hash = crate::evm::clearing::claim_cycle_id(&active_cycle.id);
         let guarantee_id = guarantee_id_for_cycle(&active_cycle.id, &req.claims);
 
         if repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), &guarantee_id)
@@ -205,6 +208,10 @@ impl CoreService {
             });
         }
 
+        let guarantee_domain = self.guarantee_domain_for_version(request_version)?;
+        let claims =
+            PaymentGuaranteeClaims::from_request(&req.claims, guarantee_domain, cycle_id_hash);
+
         let max_attempts = self
             .inner
             .config
@@ -215,13 +222,7 @@ impl CoreService {
         loop {
             attempt += 1;
             match self
-                .issue_payment_guarantee_in_txn(
-                    &req,
-                    &active_cycle.id,
-                    signed_cycle_id,
-                    &guarantee_id,
-                    request_version,
-                )
+                .issue_payment_guarantee_in_txn(&req, &active_cycle.id, &guarantee_id, &claims)
                 .await
             {
                 Ok(cert) => return Ok(cert),
@@ -239,9 +240,8 @@ impl CoreService {
         &self,
         req: &PaymentGuaranteeRequest,
         cycle_id: &str,
-        signed_cycle_id: U256,
         guarantee_id: &str,
-        request_version: u64,
+        claims: &PaymentGuaranteeClaims,
     ) -> ServiceResult<BLSCert> {
         self.inner
             .persist_ctx
@@ -251,18 +251,12 @@ impl CoreService {
                 let req = req.clone();
                 let cycle_id = cycle_id.to_string();
                 let guarantee_id = guarantee_id.to_string();
+                let claims = claims.clone();
                 Box::pin(async move {
                     self_clone
                         .process_guarantee_request_claims_on(txn, &req.claims)
                         .await?;
-                    let guarantee_domain =
-                        self_clone.guarantee_domain_for_version(request_version)?;
 
-                    let claims = PaymentGuaranteeClaims::from_request(
-                        &req.claims,
-                        guarantee_domain,
-                        signed_cycle_id,
-                    );
                     let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;
                     repo::prepare_and_store_cycle_guarantee_on(
                         txn,

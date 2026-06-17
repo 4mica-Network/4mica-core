@@ -143,9 +143,10 @@ impl From<ServiceError> for ApiError {
                 StatusCode::BAD_REQUEST,
                 format!("another guarantee with req_id {req_id} already exists"),
             ),
-            ServiceError::ModifiedStartTs => {
-                ApiError::new(StatusCode::BAD_REQUEST, "start timestamp modified")
-            }
+            ServiceError::StaleTimestamp { .. } => ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "request timestamp is outside the active settlement cycle",
+            ),
             ServiceError::Db(e) => {
                 log::error!("database error: {e}");
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
