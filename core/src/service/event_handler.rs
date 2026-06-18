@@ -1,6 +1,7 @@
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
+use entities::sea_orm_active_enums::CollateralEventType;
 use log::{info, warn};
 use metrics_4mica::measure;
 
@@ -24,13 +25,14 @@ impl EthereumEventHandler for CoreService {
         } = *log.log_decode()?.data();
         info!("Deposit by {user:?} of {amount}, asset={asset}");
 
-        let meta = event_meta_from_log(self, &log)?;
-        repo::deposit_with_event(
-            &self.inner.persist_ctx,
+        let meta = self.event_meta_from_log(&log)?;
+        repo::credit_collateral_with_event_on(
+            self.inner.persist_ctx.db.as_ref(),
             user.to_string(),
             asset.to_string(),
             amount,
-            Some(&meta),
+            CollateralEventType::Deposit,
+            Some(meta),
         )
         .await?;
         self.sync_stablecoin_balance_from_chain(user, asset).await?;
@@ -47,7 +49,7 @@ impl EthereumEventHandler for CoreService {
         } = *log.log_decode()?.data();
         info!("Collateral withdrawn by {user:?}: {amount}");
 
-        let meta = event_meta_from_log(self, &log)?;
+        let meta = self.event_meta_from_log(&log)?;
         if self.stablecoin_a_token(asset).await?.is_some() {
             repo::mark_withdrawal_executed_with_event(
                 &self.inner.persist_ctx,
@@ -82,7 +84,7 @@ impl EthereumEventHandler for CoreService {
         } = *log.log_decode()?.data();
         info!("Withdrawal requested: {user:?}, asset={asset}, when={when}, amount={amount}");
 
-        let meta = event_meta_from_log(self, &log)?;
+        let meta = self.event_meta_from_log(&log)?;
         repo::request_withdrawal_with_event(
             &self.inner.persist_ctx,
             user.to_string(),
@@ -100,7 +102,7 @@ impl EthereumEventHandler for CoreService {
         let WithdrawalCanceled { user, asset, .. } = *log.log_decode()?.data();
         info!("Withdrawal canceled by {user:?}, asset={asset}");
 
-        let meta = event_meta_from_log(self, &log)?;
+        let meta = self.event_meta_from_log(&log)?;
         repo::cancel_withdrawal_with_event(
             &self.inner.persist_ctx,
             user.to_string(),
@@ -134,20 +136,35 @@ impl EthereumEventHandler for CoreService {
     #[measure(record_event_handler_time, name = "creditor_claimed")]
     async fn handle_creditor_claimed(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CreditorClaimed {
-            cycleId, creditor, ..
+            cycleId,
+            creditor,
+            asset,
+            amount,
         } = *log.log_decode()?.data();
-        let tx_hash = tx_hash_from_log(&log)?;
-        self.process_credit_claim(cycleId, &creditor.to_string(), &tx_hash)
-            .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+
+        let meta = self.event_meta_from_log(&log)?;
+        self.process_credit_claim(
+            cycleId,
+            creditor.to_string(),
+            asset.to_string(),
+            amount,
+            meta,
+        )
+        .await
+        .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
 
     #[measure(record_event_handler_time, name = "debtor_defaulted")]
     async fn handle_debtor_defaulted(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let DebtorDefaulted {
-            cycleId, debtor, ..
+            cycleId,
+            debtor,
+            asset,
+            amount,
         } = *log.log_decode()?.data();
-        self.process_defaulted_debtor(cycleId, &debtor.to_string())
+
+        let meta = self.event_meta_from_log(&log)?;
+        self.process_defaulted_debtor(cycleId, debtor.to_string(), asset.to_string(), amount, meta)
             .await
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
@@ -304,33 +321,30 @@ impl CoreService {
             Ok(Some(a_token))
         }
     }
-}
 
-fn event_meta_from_log(
-    service: &CoreService,
-    log: &Log,
-) -> Result<EventMeta, BlockchainListenerError> {
-    let chain_id = service.inner.config.ethereum_config.chain_id;
-    let Some(block_hash) = log.block_hash else {
-        return Err(BlockchainListenerError::EventHandlerError(
-            "log missing block_hash".to_owned(),
-        ));
-    };
-    let Some(tx_hash) = log.transaction_hash else {
-        return Err(BlockchainListenerError::EventHandlerError(
-            "log missing tx_hash".to_owned(),
-        ));
-    };
-    let Some(log_index) = log.log_index else {
-        return Err(BlockchainListenerError::EventHandlerError(
-            "log missing log_index".to_owned(),
-        ));
-    };
+    fn event_meta_from_log(&self, log: &Log) -> Result<EventMeta, BlockchainListenerError> {
+        let chain_id = self.inner.config.ethereum_config.chain_id;
+        let Some(block_hash) = log.block_hash else {
+            return Err(BlockchainListenerError::EventHandlerError(
+                "log missing block_hash".to_owned(),
+            ));
+        };
+        let Some(tx_hash) = log.transaction_hash else {
+            return Err(BlockchainListenerError::EventHandlerError(
+                "log missing tx_hash".to_owned(),
+            ));
+        };
+        let Some(log_index) = log.log_index else {
+            return Err(BlockchainListenerError::EventHandlerError(
+                "log missing log_index".to_owned(),
+            ));
+        };
 
-    Ok(EventMeta {
-        chain_id,
-        block_hash: format!("{:#x}", block_hash),
-        tx_hash: format!("{:#x}", tx_hash),
-        log_index,
-    })
+        Ok(EventMeta {
+            chain_id,
+            block_hash: format!("{:#x}", block_hash),
+            tx_hash: format!("{:#x}", tx_hash),
+            log_index,
+        })
+    }
 }

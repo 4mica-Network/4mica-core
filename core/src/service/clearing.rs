@@ -4,14 +4,15 @@ use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::{NaiveDateTime, Utc};
 use entities::sea_orm_active_enums::{
-    GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
+    CollateralEventType, GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus,
+    SettlementCycleStatus,
 };
 use log::{info, warn};
 use sea_orm::TransactionTrait;
 
 use crate::{
     error::{ServiceError, ServiceResult},
-    ethereum::{ClearingCommitInput, CreditorSettlement, DebtorSettlement},
+    ethereum::{ClearingCommitInput, CreditorSettlement, DebtorSettlement, event_data::EventMeta},
     evm,
     persist::repo::{self, common::parse_address},
     service::CoreService,
@@ -365,7 +366,6 @@ impl CoreService {
                             &debtor,
                             GuaranteeSettlementStatus::Settled,
                             now,
-                            true,
                         )
                         .await?;
                     }
@@ -383,8 +383,10 @@ impl CoreService {
     pub async fn process_credit_claim(
         &self,
         onchain_cycle_id: B256,
-        creditor: &str,
-        tx_hash: &str,
+        creditor: String,
+        asset: String,
+        amount: U256,
+        tx_meta: EventMeta,
     ) -> ServiceResult<()> {
         let Some(cycle_id) = self.resolve_onchain_cycle_id(onchain_cycle_id).await? else {
             warn!("credit claim event for unknown on-chain cycle id {onchain_cycle_id:#x}");
@@ -392,6 +394,9 @@ impl CoreService {
         };
         let now = Utc::now().naive_utc();
         let creditor = parse_address(creditor)?.into_inner();
+        let asset = parse_address(asset)?.into_inner();
+        let tx_hash = tx_meta.tx_hash.clone();
+
         let changed = self
             .inner
             .persist_ctx
@@ -399,7 +404,6 @@ impl CoreService {
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
                 let creditor = creditor.clone();
-                let tx_hash = tx_hash.to_string();
                 Box::pin(async move {
                     let changed = repo::mark_participant_position_status_on(
                         txn,
@@ -407,27 +411,29 @@ impl CoreService {
                         &creditor,
                         ParticipantCycleStatus::Claimable,
                         ParticipantCycleStatus::Claimed,
-                        Some(tx_hash),
+                        Some(tx_meta.tx_hash.clone()),
                         now,
                     )
                     .await?;
                     if changed {
                         // A net creditor's own outgoing guarantees were fully
                         // offset by its incoming exposure, so settling its claim
-                        // also discharges those obligations: settle the
-                        // creditor's payer-side (`from = creditor`) guarantees and
-                        // release the collateral they locked. Settlement is always
-                        // keyed on the payer so each participant's locked
-                        // collateral is released exactly once, by its own role
-                        // event (debtor payment, creditor claim, default cover, or
-                        // the finalization sweep for flat participants).
+                        // also discharges those obligations.
                         settle_netted_guarantees_for_payer(
                             txn,
                             &cycle_id,
                             &creditor,
                             GuaranteeSettlementStatus::Settled,
                             now,
-                            true,
+                        )
+                        .await?;
+                        repo::credit_collateral_with_event_on(
+                            txn,
+                            creditor,
+                            asset.to_owned(),
+                            amount,
+                            CollateralEventType::Credit,
+                            Some(tx_meta),
                         )
                         .await?;
                     }
@@ -443,30 +449,25 @@ impl CoreService {
     }
 
     /// Mirror a `DebtorDefaulted` event: the debtor's collateral has been seized into
-    /// the pool, so mark the position defaulted and remunerate the netted guarantees
-    /// from the seized collateral.
+    /// the pool, so mark the position defaulted, remunerate the netted guarantees
+    /// and debit the collateral
     pub async fn process_defaulted_debtor(
         &self,
         onchain_cycle_id: B256,
-        debtor: &str,
+        debtor: String,
+        asset: String,
+        amount: U256,
+        tx_meta: EventMeta,
     ) -> ServiceResult<()> {
         let debtor = parse_address(debtor)?.into_inner();
+        let asset = parse_address(asset)?.into_inner();
+        let tx_hash = tx_meta.tx_hash.clone();
 
         let Some(cycle_id) = self.resolve_onchain_cycle_id(onchain_cycle_id).await? else {
             warn!("debtor default event for unknown on-chain cycle id {onchain_cycle_id:#x}");
             return Ok(());
         };
         let now = Utc::now().naive_utc();
-        repo::mark_participant_position_status_on(
-            self.inner.persist_ctx.db.as_ref(),
-            &cycle_id,
-            &debtor,
-            ParticipantCycleStatus::Unpaid,
-            ParticipantCycleStatus::Defaulted,
-            None,
-            now,
-        )
-        .await?;
 
         let guarantees = self
             .inner
@@ -476,15 +477,41 @@ impl CoreService {
                 let cycle_id = cycle_id.clone();
                 let debtor = debtor.clone();
                 Box::pin(async move {
-                    settle_netted_guarantees_for_payer(
+                    repo::mark_participant_position_status_on(
+                        txn,
+                        &cycle_id,
+                        &debtor,
+                        ParticipantCycleStatus::Unpaid,
+                        ParticipantCycleStatus::Defaulted,
+                        Some(tx_meta.tx_hash.clone()),
+                        now,
+                    )
+                    .await?;
+
+                    let guarantees = settle_netted_guarantees_for_payer(
                         txn,
                         &cycle_id,
                         &debtor,
                         GuaranteeSettlementStatus::DefaultRemunerated,
                         now,
-                        true,
                     )
-                    .await
+                    .await?;
+
+                    // Settling the netted guarantees above released the collateral
+                    // those guarantees had locked. The seized amount equals the
+                    // resolved net debit, which never exceeds that locked (now
+                    // unlocked) balance, so this debit always succeeds.
+                    repo::debit_collateral_with_event_on(
+                        txn,
+                        debtor,
+                        asset,
+                        amount,
+                        CollateralEventType::Default,
+                        Some(tx_meta),
+                    )
+                    .await?;
+
+                    Ok(guarantees)
                 })
             })
             .await
@@ -492,8 +519,8 @@ impl CoreService {
 
         if guarantees > 0 {
             info!(
-                "mirrored DebtorDefaulted: cycle={}, debtor={}, guarantees={}",
-                cycle_id, debtor, guarantees
+                "mirrored DebtorDefaulted: cycle={}, debtor={}, guarantees={}, tx_hash={}",
+                cycle_id, debtor, guarantees, tx_hash
             );
         }
         Ok(())
@@ -593,18 +620,13 @@ async fn settle_netted_guarantees_for_payer<C: sea_orm::ConnectionTrait>(
     payer: &str,
     target: GuaranteeSettlementStatus,
     now: NaiveDateTime,
-    release_locked_collateral: bool,
 ) -> ServiceResult<u64> {
-    let guarantees = if release_locked_collateral {
-        repo::list_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer).await?
-    } else {
-        Vec::new()
-    };
+    let guarantees = repo::list_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer).await?;
     let changed =
         repo::transition_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer, target, now)
             .await?;
 
-    if changed > 0 && release_locked_collateral {
+    if changed > 0 {
         for guarantee in guarantees {
             repo::release_locked_collateral_for_guarantee_on(conn, &guarantee).await?;
         }

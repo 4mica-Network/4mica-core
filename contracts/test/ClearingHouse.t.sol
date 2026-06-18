@@ -186,8 +186,8 @@ contract ClearingHouseTest is Test {
 
         // Fully funded by the debtor's payment, so the creditor can claim right
         // away — no need to wait for finality.
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.CreditorClaimed(CYCLE_ID, CREDITOR, NET_AMOUNT);
+        vm.expectEmit(true, true, true, true);
+        emit ClearingHouse.CreditorClaimed(CYCLE_ID, CREDITOR, ETH_ASSET, NET_AMOUNT);
 
         vm.prank(CREDITOR);
         clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
@@ -337,8 +337,8 @@ contract ClearingHouseTest is Test {
         ClearingHouse.DebtorEntry[] memory debtors = new ClearingHouse.DebtorEntry[](1);
         debtors[0] = ClearingHouse.DebtorEntry({debtor: DEBTOR, netDebit: NET_AMOUNT, proof: debtorProof});
 
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.DebtorDefaulted(CYCLE_ID, DEBTOR, NET_AMOUNT);
+        vm.expectEmit(true, true, true, true);
+        emit ClearingHouse.DebtorDefaulted(CYCLE_ID, DEBTOR, ETH_ASSET, NET_AMOUNT);
         vm.prank(OPERATOR);
         clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 
@@ -352,8 +352,8 @@ contract ClearingHouseTest is Test {
         ClearingHouse.CreditorEntry[] memory creditors = new ClearingHouse.CreditorEntry[](1);
         creditors[0] = ClearingHouse.CreditorEntry({creditor: CREDITOR, netCredit: NET_AMOUNT, proof: creditorProof});
 
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.CreditorClaimed(CYCLE_ID, CREDITOR, NET_AMOUNT);
+        vm.expectEmit(true, true, true, true);
+        emit ClearingHouse.CreditorClaimed(CYCLE_ID, CREDITOR, ETH_ASSET, NET_AMOUNT);
         vm.prank(OPERATOR);
         clearingHouse.fundCreditorsFromPoolBatch(CYCLE_ID, creditors);
 
@@ -429,8 +429,8 @@ contract ClearingHouseTest is Test {
         emit ClearingHouse.SettlementSkipped(CYCLE_ID, d1, "already resolved");
         vm.expectEmit(true, true, false, true);
         emit ClearingHouse.SettlementSkipped(CYCLE_ID, d2, "seize failed");
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.DebtorDefaulted(CYCLE_ID, d3, amt);
+        vm.expectEmit(true, true, true, true);
+        emit ClearingHouse.DebtorDefaulted(CYCLE_ID, d3, ETH_ASSET, amt);
         vm.prank(OPERATOR);
         clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 

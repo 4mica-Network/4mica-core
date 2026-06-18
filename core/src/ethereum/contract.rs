@@ -74,10 +74,10 @@ pub mod abi {
         event DebtorPaid(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
 
         #[derive(Debug)]
-        event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, uint256 amount);
+        event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
-        event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+        event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
         event CycleFinalized(bytes32 indexed cycleId);
@@ -263,8 +263,8 @@ mod tests {
         "SurplusATokensClaimed(address,address,uint256,uint256)",
         "CycleCommitted(bytes32,address,bytes32,uint256,uint256,uint64,uint64)",
         "DebtorPaid(bytes32,address,uint256)",
-        "CreditorClaimed(bytes32,address,uint256)",
-        "DebtorDefaulted(bytes32,address,uint256)",
+        "CreditorClaimed(bytes32,address,address,uint256)",
+        "DebtorDefaulted(bytes32,address,address,uint256)",
         "CycleFinalized(bytes32)",
     ];
 

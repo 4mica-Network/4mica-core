@@ -102,10 +102,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         uint64 paymentFinalityDeadline
     );
     event DebtorPaid(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
-    event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, uint256 amount);
+    event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, address indexed asset, uint256 amount);
     /// Emitted when an unpaid debtor's collateral is seized into the pool at finality.
     /// `amount` is both the resolved net debit and the seized collateral (they are always equal).
-    event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+    event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, address indexed asset, uint256 amount);
     event CycleFinalized(bytes32 indexed cycleId);
     event SettlementSkipped(bytes32 indexed cycleId, address indexed participant, string reason);
 
@@ -204,7 +204,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
         _pay(cycle.asset, msg.sender, netCredit);
 
-        emit CreditorClaimed(cycleId, msg.sender, netCredit);
+        emit CreditorClaimed(cycleId, msg.sender, cycle.asset, netCredit);
     }
 
     /// Operator batch: seize collateral for unpaid debtors after finality.
@@ -243,7 +243,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 participant.defaulted = true;
                 cycle.totalResolvedDebit += entry.netDebit;
                 cycle.totalDefaultCovered += seized;
-                emit DebtorDefaulted(cycleId, entry.debtor, seized);
+                emit DebtorDefaulted(cycleId, entry.debtor, cycle.asset, seized);
             } catch {
                 emit SettlementSkipped(cycleId, entry.debtor, "seize failed");
             }
@@ -305,7 +305,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             participant.netCredit = entry.netCredit;
             participant.claimed = true;
             cycle.totalClaimedOut += entry.netCredit;
-            emit CreditorClaimed(cycleId, entry.creditor, entry.netCredit);
+            emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, entry.netCredit);
         }
     }
 

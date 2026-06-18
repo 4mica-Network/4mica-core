@@ -141,8 +141,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
     event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
-    event CollateralSeized(address indexed debtor, address indexed asset, uint256 amount);
-    event CollateralCredited(address indexed creditor, address indexed asset, uint256 amount);
 
     // ========= Constructor =========
     constructor(address manager, BLS.G1Point memory verificationKey, address[] memory stablecoins_)
@@ -475,7 +473,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             if (amount > _userWithdrawableStablecoinBalance(debtor, asset)) revert InsufficientAvailable();
             seized = _debitUserStablecoin(debtor, asset, amount, msg.sender);
         }
-        emit CollateralSeized(debtor, asset, seized);
     }
 
     /// Credit `amount` of `asset` to a creditor's collateral, funded by the caller
@@ -498,7 +495,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             if (msg.value != 0) revert ValueMismatch(0, msg.value);
             _creditUserStablecoin(creditor, asset, amount, msg.sender);
         }
-        emit CollateralCredited(creditor, asset, amount);
     }
 
     // ========= Views / Helpers =========

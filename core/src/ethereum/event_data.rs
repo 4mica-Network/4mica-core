@@ -46,12 +46,14 @@ pub enum StoredEventData {
     CreditorClaimed {
         cycle_id: String,
         creditor: String,
+        asset: String,
         amount: String,
         tx_hash: String,
     },
     DebtorDefaulted {
         cycle_id: String,
         debtor: String,
+        asset: String,
         amount: String,
     },
     CycleFinalized {
@@ -166,6 +168,7 @@ impl TryInto<StoredEventData> for &Log {
                 let CreditorClaimed {
                     cycleId,
                     creditor,
+                    asset,
                     amount,
                     ..
                 } = *self.log_decode()?.data();
@@ -176,6 +179,7 @@ impl TryInto<StoredEventData> for &Log {
                 Ok(StoredEventData::CreditorClaimed {
                     cycle_id: format!("{:#x}", cycleId),
                     creditor: creditor.to_string(),
+                    asset: asset.to_string(),
                     amount: amount.to_string(),
                     tx_hash,
                 })
@@ -184,12 +188,14 @@ impl TryInto<StoredEventData> for &Log {
                 let DebtorDefaulted {
                     cycleId,
                     debtor,
+                    asset,
                     amount,
                     ..
                 } = *self.log_decode()?.data();
                 Ok(StoredEventData::DebtorDefaulted {
                     cycle_id: format!("{:#x}", cycleId),
                     debtor: debtor.to_string(),
+                    asset: asset.to_string(),
                     amount: amount.to_string(),
                 })
             }

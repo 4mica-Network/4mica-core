@@ -21,6 +21,10 @@ pub enum CollateralEventType {
     Unlock,
     #[sea_orm(string_value = "REMUNERATE")]
     Remunerate,
+    #[sea_orm(string_value = "CREDIT")]
+    Credit,
+    #[sea_orm(string_value = "DEFAULT")]
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]

@@ -31,6 +31,7 @@ mod m20260423_000011_drop_tabs;
 mod m20260507_000007_collateral_event_identity_unique;
 mod m20260612_000012_settlement_cycle_onchain_hash;
 mod m20260616_000013_rename_cycle_defaulted_to_settling;
+mod m20260618_000014_collateral_event_credit_default;
 
 pub struct Migrator;
 
@@ -69,6 +70,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260507_000007_collateral_event_identity_unique::Migration),
             Box::new(m20260612_000012_settlement_cycle_onchain_hash::Migration),
             Box::new(m20260616_000013_rename_cycle_defaulted_to_settling::Migration),
+            Box::new(m20260618_000014_collateral_event_credit_default::Migration),
         ]
     }
 }
