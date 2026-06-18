@@ -6,9 +6,9 @@ pub mod revert;
 pub mod scanner;
 
 pub use contract::contract_abi;
-pub use revert::ContractRevert;
 pub use proxy::{
     ClearingCommitInput, ClearingTxResult, CoreContractApi, CoreContractProxy, CreditorSettlement,
     DebtorSettlement, GuaranteeVersionConfig,
 };
+pub use revert::ContractRevert;
 pub use scanner::EthereumEventScanner;
