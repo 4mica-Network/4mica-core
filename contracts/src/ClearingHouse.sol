@@ -238,6 +238,11 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 continue;
             }
 
+            // Shouldn't happen: each debtor locks its net debit at guarantee issuance, so
+            // collateral should always cover the seize.
+            // TODO: but if it doesn't, the skip leaves the cycle underfunded and unable to
+            // finalize, wedged in Settling forever. Needs an explicit loss policy (socialize
+            // pro-rata, partial-credit creditors, or a terminal Shortfall state) to terminate.
             try core4Mica.seizeCollateral(entry.debtor, cycle.asset, entry.netDebit) returns (uint256 seized) {
                 participant.netDebit = entry.netDebit;
                 participant.defaulted = true;
