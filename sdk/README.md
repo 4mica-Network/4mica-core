@@ -426,7 +426,7 @@ let claims = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(), // user_address
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(), // recipient_address
     U256::from(1),                                              // tab_id
-    U256::ZERO,                                                 // req_id (first request)
+    U256::ZERO,                                                 // req_id (random nonce, see note below)
     U256::from(1_000_000_000_000_000_000u128),                  // amount (1 ETH)
     1704067200,                                                 // timestamp
     None,                                                       // erc20_token (None for ETH)
@@ -459,6 +459,8 @@ let claims_usdc = PaymentGuaranteeRequestClaims::new(
 );
 let payment_sig_usdc = client.user.sign_payment(claims_usdc, SigningScheme::Eip712).await?;
 ```
+
+> **Note on `req_id`:** `req_id` is a per-request nonce, **not** a sequential counter. Use a freshly generated random `U256` for each guarantee request (the `U256::ZERO` above is only for a readable example). Replay protection comes from two independent checks: a request is bound to one settlement cycle via its signed `timestamp` (a request whose timestamp predates the active cycle is rejected as stale), and within a cycle the `(req_id, ...)` digest must be unique, so reusing a `req_id` for an otherwise-identical request is rejected as a duplicate. Random `req_id`s avoid accidental collisions; they do not need to increase or follow any order.
 
 #### Request Withdrawal
 

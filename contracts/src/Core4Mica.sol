@@ -64,6 +64,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error InvalidAToken(address asset, address aToken);
     error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
     error SurplusClaimExceedsAvailable();
+    error ValueMismatch(uint256 expected, uint256 actual);
 
     // ========= Storage =========
     /// @notice Delay between `requestWithdrawal` and `finalizeWithdrawal`.
@@ -383,20 +384,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         nonZero(amount)
         whenNotPaused
     {
-        address aToken = _requireAToken(asset);
-
-        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-
-        uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
-        _ensureDepositApproval(asset, amount);
-        _aavePool().supply(asset, amount, address(this), 0);
-        uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
-        uint256 scaledCredit = scaledAfter - scaledBefore;
-
-        scaledStablecoinBalances[msg.sender][asset] += scaledCredit;
-        totalUserScaledStablecoinBalances[asset] += scaledCredit;
-        stablecoinPrincipalBalances[msg.sender][asset] += amount;
-        _syncSurplusScaledBalance(asset);
+        _creditUserStablecoin(msg.sender, asset, amount, msg.sender);
         emit CollateralDeposited(msg.sender, asset, amount);
     }
 
@@ -459,6 +447,56 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
 
         _finalizeStablecoinWithdrawal(user, asset, request);
+    }
+
+    // ========= Settlement (ClearingHouse) =========
+    /// Seize `amount` of a defaulting debtor's collateral and route the underlying
+    /// to the caller.
+    /// Restricted to the ClearingHouse via the AccessManager. Reverts if the debtor's
+    /// withdrawable balance is insufficient so a batch caller can skip the entry.
+    function seizeCollateral(address debtor, address asset, uint256 amount)
+        external
+        restricted
+        nonReentrant
+        whenNotPaused
+        supportedAsset(asset)
+        nonZero(amount)
+        returns (uint256 seized)
+    {
+        if (asset == ETH_ASSET) {
+            uint256 available = ethCollateralBalances[debtor];
+            if (amount > available) revert InsufficientAvailable();
+            ethCollateralBalances[debtor] = available - amount;
+            seized = amount;
+            (bool ok,) = payable(msg.sender).call{value: amount}("");
+            if (!ok) revert TransferFailed();
+        } else {
+            if (amount > _userWithdrawableStablecoinBalance(debtor, asset)) revert InsufficientAvailable();
+            seized = _debitUserStablecoin(debtor, asset, amount, msg.sender);
+        }
+    }
+
+    /// Credit `amount` of `asset` to a creditor's collateral, funded by the caller
+    /// Restricted to the ClearingHouse via the AccessManager. For ETH the caller must
+    /// forward `amount` as `msg.value`; for stablecoins the caller must have approved this
+    /// contract to pull `amount` of the underlying.
+    function creditCollateral(address creditor, address asset, uint256 amount)
+        external
+        payable
+        restricted
+        nonReentrant
+        whenNotPaused
+        supportedAsset(asset)
+        validRecipient(creditor)
+        nonZero(amount)
+    {
+        if (asset == ETH_ASSET) {
+            if (msg.value != amount) revert ValueMismatch(amount, msg.value);
+            ethCollateralBalances[creditor] += amount;
+        } else {
+            if (msg.value != 0) revert ValueMismatch(0, msg.value);
+            _creditUserStablecoin(creditor, asset, amount, msg.sender);
+        }
     }
 
     // ========= Views / Helpers =========
@@ -687,10 +725,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         return Core4MicaAccounting.toScaledRoundDown(amount, index);
     }
 
-    function _toScaledRoundUp(uint256 amount, uint256 index) internal pure returns (uint256) {
-        return Core4MicaAccounting.toScaledRoundUp(amount, index);
-    }
-
     function _actualStablecoinBalance(address user, address asset) internal view returns (uint256) {
         return _toUnderlyingRoundDown(scaledStablecoinBalances[user][asset], _currentIndex(asset));
     }
@@ -776,18 +810,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         approvedPoolForAsset[asset] = pool;
     }
 
-    function _syncWithdrawalRequestAfterStablecoinBalanceChange(address user, address asset) internal {
-        WithdrawalRequest storage wr = withdrawalRequests[user][asset];
-        if (wr.timestamp == 0) return;
-        uint256 available = _userWithdrawableStablecoinBalance(user, asset);
-        if (wr.amount > available) {
-            wr.amount = available;
-            if (available == 0) {
-                delete withdrawalRequests[user][asset];
-            }
-        }
-    }
-
     function _hasOpenStablecoinPositions() internal view returns (bool) {
         uint256 len = stablecoinAssetList.length;
         for (uint256 i = 0; i < len; i++) {
@@ -818,11 +840,24 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     function _finalizeStablecoinWithdrawal(address user, address asset, WithdrawalRequest memory request) internal {
+        uint256 withdrawalAmount = Math.min(request.amount, _userWithdrawableStablecoinBalance(user, asset));
+        _debitUserStablecoin(user, asset, withdrawalAmount, user);
+        delete withdrawalRequests[user][asset];
+        emit CollateralWithdrawn(user, asset, withdrawalAmount);
+    }
+
+    /// Debits `amount` of `user`'s withdrawable stablecoin balance, routing the
+    /// underlying to `recipient`, and keeps the scaled / principal / protocol-fee
+    /// accounting and reconciliation invariants consistent. `amount` must not exceed
+    /// the user's withdrawable balance. Returns the underlying actually withdrawn.
+    function _debitUserStablecoin(address user, address asset, uint256 amount, address recipient)
+        internal
+        returns (uint256 withdrawalAmount)
+    {
         uint256 principal = stablecoinPrincipalBalances[user][asset];
         uint256 gross = _grossYield(user, asset);
         uint256 userNet = _netYieldFromGross(gross);
-        uint256 userWithdrawableBalance = principal + userNet;
-        uint256 withdrawalAmount = Math.min(request.amount, userWithdrawableBalance);
+        withdrawalAmount = amount;
         uint256 principalConsumed = Math.min(withdrawalAmount, principal);
         uint256 userYieldWithdrawn = withdrawalAmount - principalConsumed;
         uint256 remainingUserNet = userNet - userYieldWithdrawn;
@@ -831,7 +866,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, _currentIndex(asset));
 
         (uint256 scaledBurn, uint256 actualWithdrawn) =
-            _withdrawStablecoinAndMeasureScaledBurn(asset, withdrawalAmount, user);
+            _withdrawStablecoinAndMeasureScaledBurn(asset, withdrawalAmount, recipient);
         if (actualWithdrawn < withdrawalAmount) {
             revert StablecoinWithdrawShortfall(asset, withdrawalAmount, actualWithdrawn);
         }
@@ -848,8 +883,24 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         protocolScaledStablecoinBalances[asset] += protocolScaledCredit;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
-        delete withdrawalRequests[user][asset];
-        emit CollateralWithdrawn(user, asset, withdrawalAmount);
+    }
+
+    /// Supplies `amount` of `asset` (pulled from `from`) into Aave and credits it to
+    /// `user`'s collateral, mirroring [`depositStablecoin`] accounting.
+    function _creditUserStablecoin(address user, address asset, uint256 amount, address from) internal {
+        address aToken = _requireAToken(asset);
+        IERC20(asset).safeTransferFrom(from, address(this), amount);
+
+        uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
+        _ensureDepositApproval(asset, amount);
+        _aavePool().supply(asset, amount, address(this), 0);
+        uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
+        uint256 scaledCredit = scaledAfter - scaledBefore;
+
+        scaledStablecoinBalances[user][asset] += scaledCredit;
+        totalUserScaledStablecoinBalances[asset] += scaledCredit;
+        stablecoinPrincipalBalances[user][asset] += amount;
+        _syncSurplusScaledBalance(asset);
     }
 
     function _withdrawStablecoinAndMeasureScaledBurn(address asset, uint256 amount, address recipient)

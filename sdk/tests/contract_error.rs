@@ -23,7 +23,6 @@ fn debtor_payment_action_is_cycle_scoped() {
         participant: Address::repeat_byte(0xbb).to_string(),
         function_name: "payNetDebit".to_string(),
         asset_address: Address::ZERO.to_string(),
-        debtor: None,
         amount: U256::from(5u64).to_string(),
         action: ClearingSettlementAction::PayNetDebit,
         contract_address: Address::repeat_byte(0xcc).to_string(),

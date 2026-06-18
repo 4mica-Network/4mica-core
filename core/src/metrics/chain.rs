@@ -79,6 +79,46 @@ pub struct ScannedEventTxBlockMetric;
 #[gauge(labels = (), name = "blockchain_safe_head")]
 pub struct BlockchainSafeHeadMetric;
 
+/// Whether a failed contract call reverted on-chain (with decodable revert data)
+/// or failed for a transport/RPC reason.
+#[derive(Debug, Clone)]
+pub enum ContractErrorKind {
+    Revert,
+    Transport,
+}
+
+impl Display for ContractErrorKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            ContractErrorKind::Revert => f.write_str("revert"),
+            ContractErrorKind::Transport => f.write_str("transport"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, MetricLabels)]
+pub struct ContractCallErrorLabels {
+    /// The proxy method that failed, e.g. `"commitCycle"`.
+    pub method: String,
+    pub kind: ContractErrorKind,
+    /// For reverts: the error signature (or selector hex). For transport
+    /// failures: a fixed `"transport"` bucket to keep cardinality bounded.
+    pub error: String,
+}
+
+#[derive(Clone, Metric)]
+#[counter(labels = ContractCallErrorLabels, name = "contract_call_error_total")]
+pub struct ContractCallErrorTotalMetric;
+
+pub fn record_contract_call_error(method: &str, kind: ContractErrorKind, error: &str) {
+    let labels = ContractCallErrorLabels {
+        method: method.to_string(),
+        kind,
+        error: error.to_string(),
+    };
+    ContractCallErrorTotalMetric::get(&labels).increment(1);
+}
+
 pub fn record_processed_event_tx(status: EventTxStatus, signature: &str, duration_secs: f64) {
     let labels = EventTxStatusLabels {
         status,

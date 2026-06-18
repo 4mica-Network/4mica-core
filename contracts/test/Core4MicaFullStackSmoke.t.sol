@@ -16,6 +16,7 @@ contract Core4MicaFullStackSmokeTest is Test {
     uint64 private constant TREASURY_ROLE = 2;
     uint64 private constant GUARDIAN_ROLE = 3;
     uint64 private constant FOURMICA_OPERATOR_ROLE = 4;
+    uint64 private constant CLEARING_HOUSE_ROLE = 5;
     uint64 private constant GUARANTEE_V2 = 2;
     uint32 private constant GOVERNANCE_DELAY = 72 hours;
     uint32 private constant TREASURY_DELAY = 72 hours;
@@ -92,19 +93,21 @@ contract Core4MicaFullStackSmokeTest is Test {
         assertEq(manager.getTargetFunctionRole(address(router), router.setVersionModule.selector), GOVERNANCE_ROLE);
         assertEq(manager.getTargetFunctionRole(address(router), router.freezeVersion.selector), GOVERNANCE_ROLE);
 
-        ClearingHouse clearingHouse = new ClearingHouse(address(manager));
-        _configureClearingHouseRoles(manager, clearingHouse);
+        ClearingHouse clearingHouse = new ClearingHouse(address(manager), address(core4Mica));
+        _configureClearingHouseRoles(manager, clearingHouse, core4Mica);
         assertEq(
             manager.getTargetFunctionRole(address(clearingHouse), ClearingHouse.commitCycle.selector),
             FOURMICA_OPERATOR_ROLE
         );
         assertEq(
-            manager.getTargetFunctionRole(address(clearingHouse), ClearingHouse.settleDefaultFromCollateral.selector),
+            manager.getTargetFunctionRole(
+                address(clearingHouse), ClearingHouse.settleDefaultsFromCollateralBatch.selector
+            ),
             FOURMICA_OPERATOR_ROLE
         );
         _assertCanCall(manager, deployer, address(clearingHouse), ClearingHouse.commitCycle.selector, true, 0);
         _assertCanCall(
-            manager, deployer, address(clearingHouse), ClearingHouse.settleDefaultFromCollateral.selector, true, 0
+            manager, deployer, address(clearingHouse), ClearingHouse.settleDefaultsFromCollateralBatch.selector, true, 0
         );
 
         _assertCanCall(
@@ -157,15 +160,28 @@ contract Core4MicaFullStackSmokeTest is Test {
         );
     }
 
-    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse) internal {
-        manager.setTargetFunctionRole(
-            address(clearingHouse), _asSingletonArray(ClearingHouse.commitCycle.selector), FOURMICA_OPERATOR_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(clearingHouse),
-            _asSingletonArray(ClearingHouse.settleDefaultFromCollateral.selector),
-            FOURMICA_OPERATOR_ROLE
-        );
+    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse, Core4Mica core4Mica)
+        internal
+    {
+        bytes4[] memory operatorSelectors = new bytes4[](3);
+        operatorSelectors[0] = ClearingHouse.commitCycle.selector;
+        operatorSelectors[1] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
+        operatorSelectors[2] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        for (uint256 i = 0; i < operatorSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(clearingHouse), _asSingletonArray(operatorSelectors[i]), FOURMICA_OPERATOR_ROLE
+            );
+        }
+
+        bytes4[] memory collateralSelectors = new bytes4[](2);
+        collateralSelectors[0] = Core4Mica.seizeCollateral.selector;
+        collateralSelectors[1] = Core4Mica.creditCollateral.selector;
+        for (uint256 i = 0; i < collateralSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(core4Mica), _asSingletonArray(collateralSelectors[i]), CLEARING_HOUSE_ROLE
+            );
+        }
+        manager.grantRole(CLEARING_HOUSE_ROLE, address(clearingHouse), 0);
     }
 
     function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {

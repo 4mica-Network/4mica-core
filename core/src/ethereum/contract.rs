@@ -74,13 +74,10 @@ pub mod abi {
         event DebtorPaid(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
 
         #[derive(Debug)]
-        event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, uint256 amount);
+        event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
-        event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
-
-        #[derive(Debug)]
-        event DefaultCovered(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+        event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, address indexed asset, uint256 amount);
 
         #[derive(Debug)]
         event CycleFinalized(bytes32 indexed cycleId);
@@ -90,13 +87,13 @@ pub mod abi {
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
     AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
-    CycleFinalized, DebtorDefaulted, DebtorPaid, DefaultCovered, GuaranteeVersionUpdated,
-    ProtocolYieldClaimed, StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated,
-    WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
+    CycleFinalized, DebtorDefaulted, DebtorPaid, GuaranteeVersionUpdated, ProtocolYieldClaimed,
+    StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated, WithdrawalCanceled,
+    WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 18] = [
+pub const EVENT_SIGNATURES: [&str; 17] = [
     CollateralDeposited::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
     WithdrawalRequested::SIGNATURE,
@@ -113,12 +110,11 @@ pub const EVENT_SIGNATURES: [&str; 18] = [
     DebtorPaid::SIGNATURE,
     CreditorClaimed::SIGNATURE,
     DebtorDefaulted::SIGNATURE,
-    DefaultCovered::SIGNATURE,
     CycleFinalized::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 17] = [
     CollateralDeposited::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
     WithdrawalRequested::SIGNATURE_HASH,
@@ -135,7 +131,6 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     DebtorPaid::SIGNATURE_HASH,
     CreditorClaimed::SIGNATURE_HASH,
     DebtorDefaulted::SIGNATURE_HASH,
-    DefaultCovered::SIGNATURE_HASH,
     CycleFinalized::SIGNATURE_HASH,
 ];
 
@@ -202,12 +197,52 @@ pub mod contract_abi {
 
             /// View: guaranteeable collateral for a user/asset pair.
             function guaranteeCapacity(address user, address asset) external view returns (uint256);
+
+            // ---- Custom errors (mirrored from contracts/src/Core4Mica.sol) ----
+            // Declared here only so revert data can be decoded into named errors.
+            error AmountZero();
+            error InsufficientAvailable();
+            error TransferFailed();
+            error GracePeriodNotElapsed();
+            error NoWithdrawalRequested();
+            error DirectTransferNotAllowed();
+            error InvalidSignature();
+            error InvalidRecipient();
+            error UnsupportedAsset(address asset);
+            error InvalidAsset(address asset);
+            error UnsupportedGuaranteeVersion(uint64 version);
+            error InvalidGuaranteeDomain();
+            error MissingGuaranteeDecoder(uint64 version);
+            error AaveNotConfigured();
+            error FeeTooHigh();
+            error TreasuryClaimExceedsAvailable();
+            error UnsupportedTreasuryAsset(address asset);
+            error StablecoinWithdrawShortfall(address asset, uint256 requested, uint256 actual);
+            error AaveProviderReconfigurationBlocked();
+            error UserScaledBalanceUnderflow(address asset, address user, uint256 deduction, uint256 balance);
+            error ZeroAddress();
+            error InvalidAToken(address asset, address aToken);
+            error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
+            error SurplusClaimExceedsAvailable();
+            error ValueMismatch(uint256 expected, uint256 actual);
         }
 
         #[sol(rpc)]
         contract ERC20Metadata {
             function symbol() external view returns (string memory);
             function decimals() external view returns (uint8);
+        }
+
+        struct DebtorEntry {
+            address debtor;
+            uint256 netDebit;
+            bytes32[] proof;
+        }
+
+        struct CreditorEntry {
+            address creditor;
+            uint256 netCredit;
+            bytes32[] proof;
         }
 
         #[sol(rpc)]
@@ -221,6 +256,38 @@ pub mod contract_abi {
                 uint64 paymentSubmissionDeadline,
                 uint64 paymentFinalityDeadline
             ) external;
+
+            /// Operator batch: seize collateral for unpaid debtors after finality.
+            function settleDefaultsFromCollateralBatch(bytes32 cycleId, DebtorEntry[] entries) external;
+
+            /// Operator batch: fund unclaimed creditors back into their Core4Mica collateral.
+            function fundCreditorsFromPoolBatch(bytes32 cycleId, CreditorEntry[] entries) external;
+
+            /// Finalize a fully-resolved cycle.
+            function finalizeCycle(bytes32 cycleId) external;
+
+            // ---- Custom errors (mirrored from contracts/src/ClearingHouse.sol) ----
+            // `CycleStatus` is a Solidity enum; it ABI-encodes (and contributes to the
+            // selector) as `uint8`, so it is declared as `uint8` here.
+            error AmountZero();
+            error CycleNotZeroSum(uint256 totalNetDebit, uint256 totalNetCredit);
+            error CycleAlreadyCommitted(bytes32 cycleId);
+            error CycleNotFound(bytes32 cycleId);
+            error InvalidCycleStatus(bytes32 cycleId, uint8 status);
+            error InvalidDeadline();
+            error InvalidProof();
+            error ExactPaymentRequired(uint256 expected, uint256 actual);
+            error AlreadyPaid(bytes32 cycleId, address debtor);
+            error AlreadyClaimed(bytes32 cycleId, address creditor);
+            error PaymentFinalityPending(uint64 deadline);
+            error PaymentWindowElapsed(uint64 deadline);
+            error ClaimExceedsFundedLiquidity(uint256 available, uint256 requested);
+            error CycleDebtUnresolved(uint256 resolved, uint256 required);
+            error CycleUnderfunded(uint256 available, uint256 required);
+            error CycleClaimsUnresolved(uint256 claimed, uint256 required);
+            error NativeTransferFailed(address recipient, uint256 amount);
+            error ZeroAddress();
+            error UnauthorizedEthSender(address sender);
         }
     }
 }
@@ -232,7 +299,7 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
-    const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
+    const EXPECTED_EVENT_SIGNATURES: [&str; 17] = [
         "CollateralDeposited(address,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
         "WithdrawalRequested(address,address,uint256,uint256)",
@@ -247,9 +314,8 @@ mod tests {
         "SurplusATokensClaimed(address,address,uint256,uint256)",
         "CycleCommitted(bytes32,address,bytes32,uint256,uint256,uint64,uint64)",
         "DebtorPaid(bytes32,address,uint256)",
-        "CreditorClaimed(bytes32,address,uint256)",
-        "DebtorDefaulted(bytes32,address,uint256)",
-        "DefaultCovered(bytes32,address,uint256)",
+        "CreditorClaimed(bytes32,address,address,uint256)",
+        "DebtorDefaulted(bytes32,address,address,uint256)",
         "CycleFinalized(bytes32)",
     ];
 
@@ -274,6 +340,6 @@ mod tests {
             SurplusATokensClaimed::SIGNATURE_HASH
         );
         assert_eq!(EVENT_SIGNATURES[12], CycleCommitted::SIGNATURE);
-        assert_eq!(EVENT_SIGNATURE_HASHES[17], CycleFinalized::SIGNATURE_HASH);
+        assert_eq!(EVENT_SIGNATURE_HASHES[16], CycleFinalized::SIGNATURE_HASH);
     }
 }

@@ -17,7 +17,20 @@ use common::fixtures::{
     ensure_user_with_collateral, normalize_address, random_address, read_collateral,
     read_locked_collateral, set_locked_collateral,
 };
-use core_service::{config::DEFAULT_ASSET_ADDRESS, evm, persist::repo};
+use core_service::{
+    config::DEFAULT_ASSET_ADDRESS, ethereum::event_data::EventMeta, evm, persist::repo,
+};
+
+/// Minimal `EventMeta` for driving mirror handlers in tests; only `tx_hash` is
+/// consulted by the settlement paths under test.
+fn event_meta(tx_hash: &str) -> EventMeta {
+    EventMeta {
+        chain_id: 1,
+        block_hash: "0xblock".to_string(),
+        tx_hash: tx_hash.to_string(),
+        log_index: 0,
+    }
+}
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
@@ -130,27 +143,47 @@ async fn multi_party_settlement_releases_all_locked_collateral() -> anyhow::Resu
     let onchain = evm::cycle_id_hash(cycle_id);
 
     // Drive the real on-chain-event handlers: debtor pays, creditors claim.
+    // The net debtor (alice) pays from her wallet, leaving her collateral
+    // untouched; each net creditor's claim credits its net credit (bob 6,
+    // carol 3) back into collateral.
     service.process_paid_debtor(onchain, alice, "0xpay").await?;
     service
-        .process_credit_claim(onchain, bob, "0xclaim-bob")
+        .process_credit_claim(
+            onchain,
+            bob.clone(),
+            asset.to_string(),
+            U256::from(6u64),
+            event_meta("0xclaim-bob"),
+        )
         .await?;
     service
-        .process_credit_claim(onchain, carol, "0xclaim-carol")
+        .process_credit_claim(
+            onchain,
+            carol.clone(),
+            asset.to_string(),
+            U256::from(3u64),
+            event_meta("0xclaim-carol"),
+        )
         .await?;
 
     // Finalize for good measure; the sweep must be a no-op here (nothing left).
     service.finalize_cycle(cycle_id).await?;
 
-    for (who, original) in locks {
+    // All locked collateral must be released; the net creditors' totals grow by
+    // the net credit they claimed, while the net debtor's total is unchanged.
+    let expected_totals = [(alice, 10u64), (bob, 4 + 6), (carol, 1 + 3)];
+    for (who, _) in locks {
         assert_eq!(
             read_locked_collateral(ctx, who, asset).await?,
             U256::ZERO,
             "locked collateral not released for {who}"
         );
+    }
+    for (who, expected) in expected_totals {
         assert_eq!(
             read_collateral(ctx, who, asset).await?,
-            U256::from(original),
-            "total collateral changed for {who}"
+            U256::from(expected),
+            "unexpected total collateral for {who}"
         );
     }
     assert!(
@@ -158,6 +191,122 @@ async fn multi_party_settlement_releases_all_locked_collateral() -> anyhow::Resu
             .await?
             .is_empty(),
         "no guarantee should remain Netted after settlement"
+    );
+
+    Ok(())
+}
+
+/// When a net debtor does not pay, finality settlement seizes its collateral
+/// on-chain and the `DebtorDefaulted` mirror must reflect that off-chain: the
+/// debtor's position flips to `Defaulted` and its *total* collateral is debited
+/// by the seized net debit (the lock is released first, so the debit always
+/// fits). The net creditors are still funded from the pool and end up made
+/// whole, exactly as in the all-voluntary path.
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn defaulted_debtor_has_total_collateral_debited() -> anyhow::Result<()> {
+    let service = setup_cycle_service().await?;
+    let cycle_id = "debtor-default-cycle";
+    let participants = build_three_party_cycle(&service, cycle_id).await?;
+    let ctx = service.persist_ctx();
+    let asset = DEFAULT_ASSET_ADDRESS;
+
+    // Same topology as the voluntary case: alice->bob 10, bob->carol 4,
+    // carol->alice 1. alice is the net debtor (9), bob/carol net creditors
+    // (6 and 3). Each participant locked its single outgoing guarantee.
+    let alice = &participants[0];
+    let bob = &participants[1];
+    let carol = &participants[2];
+    let locks = [(alice, 10u64), (bob, 4u64), (carol, 1u64)];
+    for (who, locked) in locks {
+        ensure_user_with_collateral(ctx, who, U256::from(locked)).await?;
+        set_locked_collateral(ctx, who, asset, U256::from(locked)).await?;
+    }
+
+    service.compute_cycle_exposure_edges(cycle_id).await?;
+    service
+        .compute_cycle_participant_positions(cycle_id)
+        .await?;
+    service.build_clearing_batch(cycle_id).await?;
+    assert!(service.mark_cycle_netting_computed(cycle_id).await?);
+    assert!(
+        repo::mark_cycle_payment_window_open_on(
+            ctx.db.as_ref(),
+            cycle_id,
+            Some("0xcommit".to_string()),
+            Utc::now().naive_utc(),
+        )
+        .await?
+    );
+
+    let onchain = evm::cycle_id_hash(cycle_id);
+
+    // alice never pays: at finality her collateral is seized, surfacing as a
+    // DebtorDefaulted event for her net debit of 9. bob and carol are then
+    // funded from the pool just like the voluntary path.
+    service
+        .process_defaulted_debtor(
+            onchain,
+            alice.clone(),
+            asset.to_string(),
+            U256::from(9u64),
+            event_meta("0xdefault-alice"),
+        )
+        .await?;
+    service
+        .process_credit_claim(
+            onchain,
+            bob.clone(),
+            asset.to_string(),
+            U256::from(6u64),
+            event_meta("0xclaim-bob"),
+        )
+        .await?;
+    service
+        .process_credit_claim(
+            onchain,
+            carol.clone(),
+            asset.to_string(),
+            U256::from(3u64),
+            event_meta("0xclaim-carol"),
+        )
+        .await?;
+
+    service.finalize_cycle(cycle_id).await?;
+
+    // The defaulted debtor's position is marked Defaulted.
+    let positions =
+        repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    assert!(
+        positions
+            .iter()
+            .any(|p| &p.participant == alice && p.status == ParticipantCycleStatus::Defaulted),
+        "net debtor should be marked Defaulted"
+    );
+
+    // Every lock is released. The defaulted debtor's *total* shrinks by the
+    // seized net debit (10 - 9 = 1); the funded creditors grow by their net
+    // credit (bob 4 + 6, carol 1 + 3).
+    let expected_totals = [(alice, 10 - 9u64), (bob, 4 + 6), (carol, 1 + 3)];
+    for (who, _) in locks {
+        assert_eq!(
+            read_locked_collateral(ctx, who, asset).await?,
+            U256::ZERO,
+            "locked collateral not released for {who}"
+        );
+    }
+    for (who, expected) in expected_totals {
+        assert_eq!(
+            read_collateral(ctx, who, asset).await?,
+            U256::from(expected),
+            "unexpected total collateral for {who}"
+        );
+    }
+    assert!(
+        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+            .await?
+            .is_empty(),
+        "no guarantee should remain Netted after default settlement"
     );
 
     Ok(())
@@ -228,9 +377,9 @@ async fn finalize_cycle_sweeps_residual_netted_collateral() -> anyhow::Result<()
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn unpaid_debtors_move_payment_window_cycle_to_defaulted() -> anyhow::Result<()> {
+async fn marking_payment_window_cycle_moves_it_to_settling() -> anyhow::Result<()> {
     let service = setup_cycle_service().await?;
-    let cycle_id = "defaulted-cycle";
+    let cycle_id = "settling-cycle";
     build_three_party_cycle(&service, cycle_id).await?;
     let ctx = service.persist_ctx();
 
@@ -249,15 +398,13 @@ async fn unpaid_debtors_move_payment_window_cycle_to_defaulted() -> anyhow::Resu
         )
         .await?
     );
-    assert!(
-        repo::mark_cycle_defaulted_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?
-    );
+    assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
 
     let cycle = settlement_cycle::Entity::find_by_id(cycle_id.to_string())
         .one(ctx.db.as_ref())
         .await?
         .expect("cycle exists");
-    assert_eq!(cycle.status, SettlementCycleStatus::Defaulted);
+    assert_eq!(cycle.status, SettlementCycleStatus::Settling);
 
     Ok(())
 }

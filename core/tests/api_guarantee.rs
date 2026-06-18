@@ -83,6 +83,75 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
+async fn issue_guarantee_rejects_timestamp_before_active_cycle() -> anyhow::Result<()> {
+    let (config, core_client, ctx, auth) = setup_http_test_environment().await?;
+
+    let wallet = alloy::signers::local::PrivateKeySigner::random();
+    let user_addr = wallet.address().to_string();
+    let recipient_addr = auth.address.clone();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
+
+    let public_params = core_client.get_public_params().await.unwrap();
+
+    // The active cycle for `now` starts at the floored cycle boundary. A
+    // timestamp one second before that boundary belongs to the previous cycle:
+    // it is still `<= now` (so it clears the future-timestamp guard) but must be
+    // rejected as stale/replayed. This is the strict cross-cycle replay defense.
+    let cycle_secs = config.settlement_cycle.cycle_secs as i64;
+    let now = Utc::now().timestamp();
+    let period_start = now - now.rem_euclid(cycle_secs);
+    let stale_ts = (period_start - 1) as u64;
+
+    let stale_req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        U256::ZERO,
+        U256::from(1u64),
+        &wallet,
+        Some(stale_ts),
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+
+    let err = core_client
+        .issue_guarantee(stale_req)
+        .await
+        .expect_err("must reject a timestamp predating the active cycle");
+    match err {
+        ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+            assert!(
+                message.contains("outside the active settlement cycle"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {:?}", other),
+    }
+
+    // A timestamp exactly at the cycle boundary is in the active cycle and must
+    // be accepted — the lower bound is inclusive.
+    let fresh_req = build_signed_req(
+        &public_params,
+        &user_addr,
+        &recipient_addr,
+        U256::ZERO,
+        U256::from(1u64),
+        &wallet,
+        Some(period_start as u64),
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await;
+    core_client
+        .issue_guarantee(fresh_req)
+        .await
+        .expect("timestamp at the cycle boundary should be accepted");
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial(db)]
 async fn core_api_guarantee_queries() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_http_test_environment().await?;
 

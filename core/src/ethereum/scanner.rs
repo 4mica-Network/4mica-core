@@ -386,9 +386,6 @@ impl EthereumEventScanner {
                     Some(&DebtorDefaulted::SIGNATURE_HASH) => {
                         handler.handle_debtor_defaulted(log.clone()).await
                     }
-                    Some(&DefaultCovered::SIGNATURE_HASH) => {
-                        handler.handle_default_covered(log.clone()).await
-                    }
                     Some(&CycleFinalized::SIGNATURE_HASH) => {
                         handler.handle_cycle_finalized(log.clone()).await
                     }

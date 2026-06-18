@@ -7,10 +7,20 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+/// Minimal view of Core4Mica used by the settlement pool to move collateral.
+interface ICore4MicaSettlement {
+    function seizeCollateral(address debtor, address asset, uint256 amount) external returns (uint256 seized);
+    function creditCollateral(address creditor, address asset, uint256 amount) external payable;
+}
+
 /// @title ClearingHouse
 /// @notice Cycle-level settlement contract for net debtor payments, creditor claims, and default coverage.
 contract ClearingHouse is AccessManaged, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    /// Core4Mica collateral vault. Seized debtor collateral flows in here and
+    /// creditor funding flows back out to it.
+    ICore4MicaSettlement public immutable core4Mica;
 
     enum CycleStatus {
         Committed,
@@ -22,6 +32,18 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     enum ParticipantRole {
         NetDebtor,
         NetCreditor
+    }
+
+    struct DebtorEntry {
+        address debtor;
+        uint256 netDebit;
+        bytes32[] proof;
+    }
+
+    struct CreditorEntry {
+        address creditor;
+        uint256 netCredit;
+        bytes32[] proof;
     }
 
     struct OnchainCycle {
@@ -57,7 +79,6 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error ExactPaymentRequired(uint256 expected, uint256 actual);
     error AlreadyPaid(bytes32 cycleId, address debtor);
     error AlreadyClaimed(bytes32 cycleId, address creditor);
-    error AlreadyDefaulted(bytes32 cycleId, address debtor);
     error PaymentFinalityPending(uint64 deadline);
     error PaymentWindowElapsed(uint64 deadline);
     error ClaimExceedsFundedLiquidity(uint256 available, uint256 requested);
@@ -65,6 +86,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error CycleUnderfunded(uint256 available, uint256 required);
     error CycleClaimsUnresolved(uint256 claimed, uint256 required);
     error NativeTransferFailed(address recipient, uint256 amount);
+    error ZeroAddress();
+    error UnauthorizedEthSender(address sender);
 
     mapping(bytes32 => OnchainCycle) private cycles;
     mapping(bytes32 => mapping(address => ParticipantState)) private participantStates;
@@ -79,12 +102,22 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         uint64 paymentFinalityDeadline
     );
     event DebtorPaid(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
-    event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, uint256 amount);
-    event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
-    event DefaultCovered(bytes32 indexed cycleId, address indexed debtor, uint256 amount);
+    event CreditorClaimed(bytes32 indexed cycleId, address indexed creditor, address indexed asset, uint256 amount);
+    /// Emitted when an unpaid debtor's collateral is seized into the pool at finality.
+    /// `amount` is both the resolved net debit and the seized collateral (they are always equal).
+    event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, address indexed asset, uint256 amount);
     event CycleFinalized(bytes32 indexed cycleId);
+    event SettlementSkipped(bytes32 indexed cycleId, address indexed participant, string reason);
 
-    constructor(address manager) AccessManaged(manager) {}
+    constructor(address manager, address core4Mica_) AccessManaged(manager) {
+        if (core4Mica_ == address(0)) revert ZeroAddress();
+        core4Mica = ICore4MicaSettlement(core4Mica_);
+    }
+
+    /// Accept ETH only from Core4Mica. All other direct transfers are rejected.
+    receive() external payable {
+        if (msg.sender != address(core4Mica)) revert UnauthorizedEthSender(msg.sender);
+    }
 
     function commitCycle(
         bytes32 cycleId,
@@ -171,10 +204,15 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
         _pay(cycle.asset, msg.sender, netCredit);
 
-        emit CreditorClaimed(cycleId, msg.sender, netCredit);
+        emit CreditorClaimed(cycleId, msg.sender, cycle.asset, netCredit);
     }
 
-    function markDefaulted(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof) external {
+    /// Operator batch: seize collateral for unpaid debtors after finality.
+    function settleDefaultsFromCollateralBatch(bytes32 cycleId, DebtorEntry[] calldata entries)
+        external
+        restricted
+        nonReentrant
+    {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
             revert InvalidCycleStatus(cycleId, cycle.status);
@@ -182,38 +220,98 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (block.timestamp <= cycle.paymentFinalityDeadline) {
             revert PaymentFinalityPending(cycle.paymentFinalityDeadline);
         }
-        if (netDebit == 0) revert AmountZero();
-
-        ParticipantState storage participant = participantStates[cycleId][debtor];
-        if (participant.paid) revert AlreadyPaid(cycleId, debtor);
-        if (participant.defaulted) revert AlreadyDefaulted(cycleId, debtor);
-        _verifyParticipant(cycle, cycleId, debtor, netDebit, ParticipantRole.NetDebtor, proof);
-
-        participant.netDebit = netDebit;
-        participant.defaulted = true;
-        cycle.totalResolvedDebit += netDebit;
         if (cycle.status != CycleStatus.Defaulted) {
             cycle.status = CycleStatus.Defaulted;
         }
 
-        emit DebtorDefaulted(cycleId, debtor, netDebit);
+        for (uint256 i = 0; i < entries.length; i++) {
+            DebtorEntry calldata entry = entries[i];
+            ParticipantState storage participant = participantStates[cycleId][entry.debtor];
+            if (entry.netDebit == 0 || participant.paid || participant.defaulted) {
+                emit SettlementSkipped(cycleId, entry.debtor, "already resolved");
+                continue;
+            }
+            if (!_isValidParticipant(
+                    cycle, cycleId, entry.debtor, entry.netDebit, ParticipantRole.NetDebtor, entry.proof
+                )) {
+                emit SettlementSkipped(cycleId, entry.debtor, "invalid proof");
+                continue;
+            }
+
+            // Shouldn't happen: each debtor locks its net debit at guarantee issuance, so
+            // collateral should always cover the seize.
+            // TODO: but if it doesn't, the skip leaves the cycle underfunded and unable to
+            // finalize, wedged in Settling forever. Needs an explicit loss policy (socialize
+            // pro-rata, partial-credit creditors, or a terminal Shortfall state) to terminate.
+            try core4Mica.seizeCollateral(entry.debtor, cycle.asset, entry.netDebit) returns (uint256 seized) {
+                participant.netDebit = entry.netDebit;
+                participant.defaulted = true;
+                cycle.totalResolvedDebit += entry.netDebit;
+                cycle.totalDefaultCovered += seized;
+                emit DebtorDefaulted(cycleId, entry.debtor, cycle.asset, seized);
+            } catch {
+                emit SettlementSkipped(cycleId, entry.debtor, "seize failed");
+            }
+        }
     }
 
-    function settleDefaultFromCollateral(bytes32 cycleId, address debtor, uint256 amount)
+    /// Operator batch: fund unclaimed net creditors out of the pool, crediting the
+    /// proceeds back into their Core4Mica collateral.
+    /// Requires the cycle to be fully funded.
+    function fundCreditorsFromPoolBatch(bytes32 cycleId, CreditorEntry[] calldata entries)
         external
-        payable
         restricted
         nonReentrant
     {
         OnchainCycle storage cycle = _requireCycle(cycleId);
-        if (cycle.status != CycleStatus.Defaulted) revert InvalidCycleStatus(cycleId, cycle.status);
-        if (!participantStates[cycleId][debtor].defaulted) revert InvalidProof();
-        if (amount == 0) revert AmountZero();
+        _requireClaimableStatus(cycleId, cycle);
+        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
+        if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
 
-        _collect(cycle.asset, amount);
-        cycle.totalDefaultCovered += amount;
+        for (uint256 i = 0; i < entries.length; i++) {
+            CreditorEntry calldata entry = entries[i];
+            ParticipantState storage participant = participantStates[cycleId][entry.creditor];
+            if (entry.netCredit == 0 || participant.claimed) {
+                emit SettlementSkipped(cycleId, entry.creditor, "already resolved");
+                continue;
+            }
+            if (!_isValidParticipant(
+                    cycle, cycleId, entry.creditor, entry.netCredit, ParticipantRole.NetCreditor, entry.proof
+                )) {
+                emit SettlementSkipped(cycleId, entry.creditor, "invalid proof");
+                continue;
+            }
+            uint256 available = cycle.totalPaidIn + cycle.totalDefaultCovered - cycle.totalClaimedOut;
+            if (available < entry.netCredit) {
+                emit SettlementSkipped(cycleId, entry.creditor, "insufficient liquidity");
+                continue;
+            }
 
-        emit DefaultCovered(cycleId, debtor, amount);
+            bool credited;
+            if (cycle.asset == address(0)) {
+                try core4Mica.creditCollateral{value: entry.netCredit}(entry.creditor, cycle.asset, entry.netCredit) {
+                    credited = true;
+                } catch {
+                    credited = false;
+                }
+            } else {
+                IERC20(cycle.asset).forceApprove(address(core4Mica), entry.netCredit);
+                try core4Mica.creditCollateral(entry.creditor, cycle.asset, entry.netCredit) {
+                    credited = true;
+                } catch {
+                    credited = false;
+                }
+            }
+            if (!credited) {
+                emit SettlementSkipped(cycleId, entry.creditor, "credit failed");
+                continue;
+            }
+
+            participant.netCredit = entry.netCredit;
+            participant.claimed = true;
+            cycle.totalClaimedOut += entry.netCredit;
+            emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, entry.netCredit);
+        }
     }
 
     function finalizeCycle(bytes32 cycleId) external {
@@ -294,8 +392,21 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         ParticipantRole role,
         bytes32[] calldata proof
     ) private view {
+        if (!_isValidParticipant(cycle, cycleId, participant, amount, role, proof)) {
+            revert InvalidProof();
+        }
+    }
+
+    function _isValidParticipant(
+        OnchainCycle storage cycle,
+        bytes32 cycleId,
+        address participant,
+        uint256 amount,
+        ParticipantRole role,
+        bytes32[] calldata proof
+    ) private view returns (bool) {
         bytes32 leaf = participantLeaf(cycleId, cycle.asset, participant, amount, role);
-        if (!MerkleProof.verifyCalldata(proof, cycle.merkleRoot, leaf)) revert InvalidProof();
+        return MerkleProof.verifyCalldata(proof, cycle.merkleRoot, leaf);
     }
 
     function _collect(address asset, uint256 amount) private {

@@ -21,6 +21,10 @@ pub enum CollateralEventType {
     Unlock,
     #[sea_orm(string_value = "REMUNERATE")]
     Remunerate,
+    #[sea_orm(string_value = "CREDIT")]
+    Credit,
+    #[sea_orm(string_value = "DEFAULT")]
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
@@ -99,8 +103,8 @@ pub enum SettlementCycleStatus {
     PaymentWindowOpen,
     #[sea_orm(string_value = "FINALIZED")]
     Finalized,
-    #[sea_orm(string_value = "DEFAULTED")]
-    Defaulted,
+    #[sea_orm(string_value = "SETTLING")]
+    Settling,
     #[sea_orm(string_value = "CANCELLED")]
     Cancelled,
 }
