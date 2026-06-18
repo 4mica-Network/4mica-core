@@ -300,26 +300,40 @@ impl Task for SettlementCycleTask {
 
     #[measure(record_task_time, name = "settlement_cycles")]
     async fn run(&self) -> anyhow::Result<()> {
-        let frozen = self.0.freeze_elapsed_cycles().await?;
-        let netted = self.0.compute_due_cycle_netting().await?;
-        let committed = self.0.commit_due_clearing_batches().await?;
-        let settled = self.0.settle_due_cycles().await?;
-        let opened = self.0.ensure_active_cycles().await?;
-
-        if !opened.is_empty() {
-            info!("ensured {} active settlement cycle(s)", opened.len());
+        match self.0.freeze_elapsed_cycles().await {
+            Ok(frozen) if !frozen.is_empty() => {
+                info!("froze {} elapsed settlement cycle(s)", frozen.len())
+            }
+            Ok(_) => {}
+            Err(err) => warn!("failed to freeze elapsed settlement cycles: {err:?}"),
         }
-        if !frozen.is_empty() {
-            info!("froze {} elapsed settlement cycle(s)", frozen.len());
+        match self.0.compute_due_cycle_netting().await {
+            Ok(netted) if !netted.is_empty() => {
+                info!("computed netting for {} settlement cycle(s)", netted.len())
+            }
+            Ok(_) => {}
+            Err(err) => warn!("failed to compute due cycle netting: {err:?}"),
         }
-        if !netted.is_empty() {
-            info!("computed netting for {} settlement cycle(s)", netted.len());
+        match self.0.commit_due_clearing_batches().await {
+            Ok(committed) if !committed.is_empty() => {
+                info!("committed {} clearing batch(es)", committed.len())
+            }
+            Ok(_) => {}
+            Err(err) => warn!("failed to commit due clearing batches: {err:?}"),
         }
-        if !committed.is_empty() {
-            info!("committed {} clearing batch(es)", committed.len());
+        match self.0.settle_due_cycles().await {
+            Ok(settled) if !settled.is_empty() => {
+                info!("settled {} settlement cycle(s) at finality", settled.len())
+            }
+            Ok(_) => {}
+            Err(err) => warn!("failed to settle due cycles: {err:?}"),
         }
-        if !settled.is_empty() {
-            info!("settled {} settlement cycle(s) at finality", settled.len());
+        match self.0.ensure_active_cycles().await {
+            Ok(opened) if !opened.is_empty() => {
+                info!("ensured {} active settlement cycle(s)", opened.len())
+            }
+            Ok(_) => {}
+            Err(err) => warn!("failed to ensure active settlement cycles: {err:?}"),
         }
 
         Ok(())
