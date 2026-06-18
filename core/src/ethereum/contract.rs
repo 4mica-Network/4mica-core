@@ -197,6 +197,34 @@ pub mod contract_abi {
 
             /// View: guaranteeable collateral for a user/asset pair.
             function guaranteeCapacity(address user, address asset) external view returns (uint256);
+
+            // ---- Custom errors (mirrored from contracts/src/Core4Mica.sol) ----
+            // Declared here only so revert data can be decoded into named errors.
+            error AmountZero();
+            error InsufficientAvailable();
+            error TransferFailed();
+            error GracePeriodNotElapsed();
+            error NoWithdrawalRequested();
+            error DirectTransferNotAllowed();
+            error InvalidSignature();
+            error InvalidRecipient();
+            error UnsupportedAsset(address asset);
+            error InvalidAsset(address asset);
+            error UnsupportedGuaranteeVersion(uint64 version);
+            error InvalidGuaranteeDomain();
+            error MissingGuaranteeDecoder(uint64 version);
+            error AaveNotConfigured();
+            error FeeTooHigh();
+            error TreasuryClaimExceedsAvailable();
+            error UnsupportedTreasuryAsset(address asset);
+            error StablecoinWithdrawShortfall(address asset, uint256 requested, uint256 actual);
+            error AaveProviderReconfigurationBlocked();
+            error UserScaledBalanceUnderflow(address asset, address user, uint256 deduction, uint256 balance);
+            error ZeroAddress();
+            error InvalidAToken(address asset, address aToken);
+            error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
+            error SurplusClaimExceedsAvailable();
+            error ValueMismatch(uint256 expected, uint256 actual);
         }
 
         #[sol(rpc)]
@@ -237,6 +265,29 @@ pub mod contract_abi {
 
             /// Finalize a fully-resolved cycle.
             function finalizeCycle(bytes32 cycleId) external;
+
+            // ---- Custom errors (mirrored from contracts/src/ClearingHouse.sol) ----
+            // `CycleStatus` is a Solidity enum; it ABI-encodes (and contributes to the
+            // selector) as `uint8`, so it is declared as `uint8` here.
+            error AmountZero();
+            error CycleNotZeroSum(uint256 totalNetDebit, uint256 totalNetCredit);
+            error CycleAlreadyCommitted(bytes32 cycleId);
+            error CycleNotFound(bytes32 cycleId);
+            error InvalidCycleStatus(bytes32 cycleId, uint8 status);
+            error InvalidDeadline();
+            error InvalidProof();
+            error ExactPaymentRequired(uint256 expected, uint256 actual);
+            error AlreadyPaid(bytes32 cycleId, address debtor);
+            error AlreadyClaimed(bytes32 cycleId, address creditor);
+            error PaymentFinalityPending(uint64 deadline);
+            error PaymentWindowElapsed(uint64 deadline);
+            error ClaimExceedsFundedLiquidity(uint256 available, uint256 requested);
+            error CycleDebtUnresolved(uint256 resolved, uint256 required);
+            error CycleUnderfunded(uint256 available, uint256 required);
+            error CycleClaimsUnresolved(uint256 claimed, uint256 required);
+            error NativeTransferFailed(address recipient, uint256 amount);
+            error ZeroAddress();
+            error UnauthorizedEthSender(address sender);
         }
     }
 }

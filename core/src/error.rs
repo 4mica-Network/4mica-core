@@ -64,6 +64,12 @@ pub enum CoreContractApiError {
     #[error("Failed to sign or send transaction: {0}")]
     TransportFailure(#[from] alloy::transports::TransportError),
 
+    #[error("Contract call reverted: {0}")]
+    ContractRevert(crate::ethereum::ContractRevert),
+
+    #[error("Contract call failed: {0}")]
+    ContractCall(String),
+
     #[error("Private key error: {0}")]
     InvalidPrivateKey(String),
 
@@ -234,18 +240,25 @@ impl From<PersistDbError> for ServiceError {
 
 // ---------- Nice `From` conversions so we can use `?` everywhere ----------
 
-// 1) Private key parsing (`.parse::<PrivateKeySigner>()?`)
+// Private key parsing (`.parse::<PrivateKeySigner>()?`)
 impl From<LocalSignerError> for CoreContractApiError {
     fn from(e: LocalSignerError) -> Self {
         CoreContractApiError::InvalidPrivateKey(e.to_string())
     }
 }
 
-// 2) Contract method calls: `tx.send().await?`, `pending.get_receipt().await?`
+// Contract method calls: `tx.send().await?`, `pending.get_receipt().await?`
+//
+// Classify into a revert (the call reverted on-chain and carries decodable
+// revert data) versus a non-revert transport/RPC failure.
 impl From<alloy::contract::Error> for CoreContractApiError {
     fn from(e: alloy::contract::Error) -> Self {
-        // You can introduce a dedicated variant if you prefer.
-        CoreContractApiError::Other(anyhow!(e))
+        match e.as_revert_data() {
+            Some(data) => {
+                CoreContractApiError::ContractRevert(crate::ethereum::ContractRevert::decode(data))
+            }
+            None => CoreContractApiError::ContractCall(e.to_string()),
+        }
     }
 }
 

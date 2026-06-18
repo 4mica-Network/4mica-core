@@ -7,7 +7,7 @@ use entities::sea_orm_active_enums::{
     CollateralEventType, GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus,
     SettlementCycleStatus,
 };
-use log::{info, warn};
+use log::{error, info, warn};
 use sea_orm::TransactionTrait;
 
 use crate::{
@@ -125,7 +125,7 @@ impl CoreService {
                 Ok(true) => acted.push(cycle_id),
                 Ok(false) => {}
                 Err(err) => {
-                    warn!("failed to open settlement for settlement cycle {cycle_id}: {err:?}")
+                    error!("failed to open settlement for settlement cycle {cycle_id}: {err:?}")
                 }
             }
         }
@@ -141,7 +141,7 @@ impl CoreService {
                 }
                 Ok(false) => {}
                 Err(err) => {
-                    warn!("failed to finalize settling settlement cycle {cycle_id}: {err:?}")
+                    error!("failed to finalize settling settlement cycle {cycle_id}: {err:?}")
                 }
             }
         }
@@ -151,6 +151,7 @@ impl CoreService {
 
     /// Seize unpaid debtors' collateral and fund unclaimed creditors on-chain, then
     /// mark the cycle `Settling`.
+    /// TODO: Optimize overlapped executions
     async fn open_cycle_settlement(
         &self,
         cycle_id: &str,
@@ -292,7 +293,7 @@ impl CoreService {
                 Ok(true)
             }
             Err(err) => {
-                info!("settlement cycle {cycle_id} not yet finalizable: {err}");
+                error!("failed to finalize the settlement cycle {cycle_id}: {err}");
                 Ok(false)
             }
         }

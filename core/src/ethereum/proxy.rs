@@ -1,4 +1,9 @@
-use crate::{config::AppConfig, error::CoreContractApiError, ethereum::contract_abi::*};
+use crate::{
+    config::AppConfig,
+    error::CoreContractApiError,
+    ethereum::contract_abi::*,
+    metrics::{ContractErrorKind, record_contract_call_error},
+};
 use alloy::{
     network::EthereumWallet,
     primitives::{Address, B256, U256},
@@ -6,9 +11,45 @@ use alloy::{
 };
 use anyhow::anyhow;
 use async_trait::async_trait;
-use log::info;
+use log::{error, info};
 use rpc::SupportedTokenInfo;
 use tokio::sync::Mutex;
+
+/// Log and record a metric for a failed contract interaction.
+fn observe_contract_error(method: &'static str, err: &CoreContractApiError) {
+    match err {
+        CoreContractApiError::ContractRevert(revert) => {
+            error!("{method} reverted: {revert}");
+            record_contract_call_error(method, ContractErrorKind::Revert, &revert.label());
+        }
+        CoreContractApiError::ContractCall(msg) => {
+            error!("{method} contract call failed (transport): {msg}");
+            record_contract_call_error(method, ContractErrorKind::Transport, "transport");
+        }
+        CoreContractApiError::TransportFailure(e) => {
+            error!("{method} transport failure: {e}");
+            record_contract_call_error(method, ContractErrorKind::Transport, "transport");
+        }
+        CoreContractApiError::PendingTxFailure(msg) => {
+            error!("{method} pending transaction failed: {msg}");
+            record_contract_call_error(method, ContractErrorKind::Transport, "pending_tx");
+        }
+        _ => {}
+    }
+}
+
+/// Extension trait to observe (log + metric) a fallible contract interaction at
+/// the call site, while converting the error into [`CoreContractApiError`].
+trait ObserveContractError<T> {
+    fn observe(self, method: &'static str) -> Result<T, CoreContractApiError>;
+}
+
+impl<T, E: Into<CoreContractApiError>> ObserveContractError<T> for Result<T, E> {
+    fn observe(self, method: &'static str) -> Result<T, CoreContractApiError> {
+        self.map_err(Into::into)
+            .inspect_err(|err| observe_contract_error(method, err))
+    }
+}
 
 pub struct CoreContractProxy {
     provider: DynProvider,
@@ -164,7 +205,7 @@ impl CoreContractProxy {
 #[async_trait]
 impl CoreContractApi for CoreContractProxy {
     async fn get_chain_id(&self) -> Result<u64, CoreContractApiError> {
-        let chain_id = self.provider.get_chain_id().await?;
+        let chain_id = self.provider.get_chain_id().await.observe("get_chain_id")?;
         Ok(chain_id)
     }
 
@@ -173,7 +214,11 @@ impl CoreContractApi for CoreContractProxy {
         version: u64,
     ) -> Result<GuaranteeVersionConfig, CoreContractApiError> {
         let contract = self.build_contract();
-        let version_config = contract.getGuaranteeVersionConfig(version).call().await?;
+        let version_config = contract
+            .getGuaranteeVersionConfig(version)
+            .call()
+            .await
+            .observe("getGuaranteeVersionConfig")?;
 
         Ok(GuaranteeVersionConfig {
             version,
@@ -185,18 +230,26 @@ impl CoreContractApi for CoreContractProxy {
 
     async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError> {
         let contract = self.build_contract();
-        let grace_period = contract.withdrawalGracePeriod().call().await?;
+        let grace_period = contract
+            .withdrawalGracePeriod()
+            .call()
+            .await
+            .observe("withdrawalGracePeriod")?;
         Ok(grace_period.to())
     }
 
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {
         let contract = self.build_contract();
-        let addresses = contract.getERC20Tokens().call().await?;
+        let addresses = contract
+            .getERC20Tokens()
+            .call()
+            .await
+            .observe("getERC20Tokens")?;
         let mut tokens = Vec::with_capacity(addresses.len());
         for addr in addresses {
             let erc20 = ERC20Metadata::new(addr, self.provider.clone());
-            let symbol = erc20.symbol().call().await?;
-            let decimals = erc20.decimals().call().await?;
+            let symbol = erc20.symbol().call().await.observe("erc20.symbol")?;
+            let decimals = erc20.decimals().call().await.observe("erc20.decimals")?;
             tokens.push(SupportedTokenInfo {
                 symbol,
                 address: addr.to_string(),
@@ -222,7 +275,13 @@ impl CoreContractApi for CoreContractProxy {
             input.payment_finality_deadline,
         );
 
-        let receipt = tx.send().await?.get_receipt().await?;
+        let receipt = tx
+            .send()
+            .await
+            .observe("commitCycle")?
+            .get_receipt()
+            .await
+            .observe("commitCycle")?;
 
         info!(
             "ClearingHouse.commitCycle confirmed in tx {:?}",
@@ -254,9 +313,11 @@ impl CoreContractApi for CoreContractProxy {
         let receipt = contract
             .settleDefaultsFromCollateralBatch(cycle_id, entries)
             .send()
-            .await?
+            .await
+            .observe("settleDefaultsFromCollateralBatch")?
             .get_receipt()
-            .await?;
+            .await
+            .observe("settleDefaultsFromCollateralBatch")?;
 
         info!(
             "ClearingHouse.settleDefaultsFromCollateralBatch confirmed in tx {:?}",
@@ -288,9 +349,11 @@ impl CoreContractApi for CoreContractProxy {
         let receipt = contract
             .fundCreditorsFromPoolBatch(cycle_id, entries)
             .send()
-            .await?
+            .await
+            .observe("fundCreditorsFromPoolBatch")?
             .get_receipt()
-            .await?;
+            .await
+            .observe("fundCreditorsFromPoolBatch")?;
 
         info!(
             "ClearingHouse.fundCreditorsFromPoolBatch confirmed in tx {:?}",
@@ -313,9 +376,11 @@ impl CoreContractApi for CoreContractProxy {
         let receipt = contract
             .finalizeCycle(cycle_id)
             .send()
-            .await?
+            .await
+            .observe("finalizeCycle")?
             .get_receipt()
-            .await?;
+            .await
+            .observe("finalizeCycle")?;
 
         info!(
             "ClearingHouse.finalizeCycle confirmed in tx {:?}",
