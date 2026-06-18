@@ -4,6 +4,8 @@ pragma solidity ^0.8.29;
 import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
 import {Core4Mica} from "../src/Core4Mica.sol";
 
+error EnforcedPause();
+
 /// Tests for the ClearingHouse-only collateral seize/credit settlement hooks.
 contract Core4MicaSettlementTest is Core4MicaTestBase {
     uint256 internal constant DEPOSIT = 100e6;
@@ -133,5 +135,36 @@ contract Core4MicaSettlementTest is Core4MicaTestBase {
         assertEq(core4Mica.collateral(USER1, address(usdc)), DEPOSIT - 60e6);
         assertEq(core4Mica.collateral(USER2, address(usdc)), 60e6);
         _assertReconciled(address(usdc));
+    }
+
+    // ===================== pause =====================
+
+    /// The settlement hooks move collateral, so they must freeze while paused
+    /// like every other collateral mutation, and resume once unpaused.
+    function test_PauseBlocksSeizeAndCredit_AndUnpauseRestoresFlow() public {
+        vm.prank(USER1);
+        core4Mica.deposit{value: 3 ether}();
+
+        core4Mica.pause();
+
+        vm.prank(OPERATOR);
+        vm.expectRevert(EnforcedPause.selector);
+        core4Mica.seizeCollateral(USER1, ETH_ASSET, 2 ether);
+
+        vm.deal(OPERATOR, 2 ether);
+        vm.prank(OPERATOR);
+        vm.expectRevert(EnforcedPause.selector);
+        core4Mica.creditCollateral{value: 2 ether}(USER2, ETH_ASSET, 2 ether);
+
+        core4Mica.unpause();
+
+        // Both hooks work again once unpaused.
+        vm.prank(OPERATOR);
+        uint256 seized = core4Mica.seizeCollateral(USER1, ETH_ASSET, 2 ether);
+        assertEq(seized, 2 ether);
+
+        vm.prank(OPERATOR);
+        core4Mica.creditCollateral{value: 2 ether}(USER2, ETH_ASSET, 2 ether);
+        assertEq(core4Mica.collateral(USER2), 2 ether);
     }
 }

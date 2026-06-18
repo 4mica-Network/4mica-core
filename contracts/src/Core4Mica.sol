@@ -458,6 +458,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         external
         restricted
         nonReentrant
+        whenNotPaused
         supportedAsset(asset)
         nonZero(amount)
         returns (uint256 seized)
@@ -484,6 +485,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         payable
         restricted
         nonReentrant
+        whenNotPaused
         supportedAsset(asset)
         validRecipient(creditor)
         nonZero(amount)
