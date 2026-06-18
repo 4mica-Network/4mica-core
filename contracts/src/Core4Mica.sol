@@ -723,10 +723,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         return Core4MicaAccounting.toScaledRoundDown(amount, index);
     }
 
-    function _toScaledRoundUp(uint256 amount, uint256 index) internal pure returns (uint256) {
-        return Core4MicaAccounting.toScaledRoundUp(amount, index);
-    }
-
     function _actualStablecoinBalance(address user, address asset) internal view returns (uint256) {
         return _toUnderlyingRoundDown(scaledStablecoinBalances[user][asset], _currentIndex(asset));
     }
@@ -810,18 +806,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
         token.forceApprove(pool, type(uint256).max);
         approvedPoolForAsset[asset] = pool;
-    }
-
-    function _syncWithdrawalRequestAfterStablecoinBalanceChange(address user, address asset) internal {
-        WithdrawalRequest storage wr = withdrawalRequests[user][asset];
-        if (wr.timestamp == 0) return;
-        uint256 available = _userWithdrawableStablecoinBalance(user, asset);
-        if (wr.amount > available) {
-            wr.amount = available;
-            if (available == 0) {
-                delete withdrawalRequests[user][asset];
-            }
-        }
     }
 
     function _hasOpenStablecoinPositions() internal view returns (bool) {
