@@ -26,7 +26,6 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
         address client;
         address recipient;
         uint256 amount;
-        uint256 totalAmount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -145,7 +144,6 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
             client: g.client,
             recipient: g.recipient,
             amount: g.amount,
-            totalAmount: g.totalAmount,
             asset: g.asset,
             timestamp: g.timestamp,
             version: g.version

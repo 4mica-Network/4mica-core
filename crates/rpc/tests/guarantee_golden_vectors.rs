@@ -7,8 +7,7 @@
 //! real `Core4Mica.verifyAndDecodeGuarantee` on the Solidity side.
 //!
 //! Together they close the Rust<->Solidity boundary that previously went untested: each side
-//! used to exercise only its own half, which is why the missing `total_amount` field went
-//! unnoticed.
+//! used to exercise only its own half, so layout drift between the two could go unnoticed.
 //!
 //! By default this test REGENERATES the vectors in-memory and asserts they match the committed
 //! fixture, so a codec/layout change that drifts from the fixture fails CI automatically. BLS
@@ -90,7 +89,6 @@ fn build_v1_vector() -> Value {
             "client": CLIENT,
             "recipient": RECIPIENT,
             "amount": amount.to_string(),
-            "totalAmount": amount.to_string(),
             "asset": ASSET,
             "timestamp": claims.timestamp,
             "version": claims.version,
@@ -165,7 +163,6 @@ fn build_v2_vector() -> Value {
             "client": CLIENT,
             "recipient": RECIPIENT,
             "amount": amount.to_string(),
-            "totalAmount": amount.to_string(),
             "asset": ASSET,
             "timestamp": claims.timestamp,
             "version": claims.version,

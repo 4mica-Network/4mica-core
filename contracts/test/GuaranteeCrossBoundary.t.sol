@@ -39,8 +39,8 @@ contract MockValidationRegistry is IValidationRegistry {
 /// Proves that a guarantee ABI-encoded and BLS-signed by the Rust core
 /// (crates/rpc/tests/guarantee_golden_vectors.rs) actually verifies AND decodes on-chain.
 /// This is the cross-boundary test that the Rust-only and Solidity-only suites both missed:
-/// before `total_amount` was added to the Rust codec, the inner claims were 288 bytes and
-/// `abi.decode(..., (Guarantee))` reverted here after the BLS check passed.
+/// it ensures the inner claims encoding stays byte-compatible across the Rust and Solidity
+/// codecs so `abi.decode(..., (Guarantee))` does not revert after the BLS check passes.
 contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
     string internal vectors;
 
@@ -79,9 +79,6 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
         assertEq(g.client, vm.parseJsonAddress(vectors, ".v1.expected.client"), "client");
         assertEq(g.recipient, vm.parseJsonAddress(vectors, ".v1.expected.recipient"), "recipient");
         assertEq(g.amount, vm.parseJsonUint(vectors, ".v1.expected.amount"), "amount");
-        // The field that used to be absent on the Rust side: it must decode and mirror amount.
-        assertEq(g.totalAmount, vm.parseJsonUint(vectors, ".v1.expected.totalAmount"), "totalAmount");
-        assertEq(g.totalAmount, g.amount, "totalAmount mirrors amount");
         assertEq(g.asset, vm.parseJsonAddress(vectors, ".v1.expected.asset"), "asset");
         assertEq(g.timestamp, vm.parseJsonUint(vectors, ".v1.expected.timestamp"), "timestamp");
     }
@@ -121,8 +118,6 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
         assertEq(g.client, vm.parseJsonAddress(vectors, ".v2.expected.client"), "client");
         assertEq(g.recipient, vm.parseJsonAddress(vectors, ".v2.expected.recipient"), "recipient");
         assertEq(g.amount, vm.parseJsonUint(vectors, ".v2.expected.amount"), "amount");
-        assertEq(g.totalAmount, vm.parseJsonUint(vectors, ".v2.expected.totalAmount"), "totalAmount");
-        assertEq(g.totalAmount, g.amount, "totalAmount mirrors amount");
         assertEq(g.asset, vm.parseJsonAddress(vectors, ".v2.expected.asset"), "asset");
         assertEq(g.timestamp, vm.parseJsonUint(vectors, ".v2.expected.timestamp"), "timestamp");
     }

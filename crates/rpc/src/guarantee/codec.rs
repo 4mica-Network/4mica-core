@@ -16,7 +16,6 @@ sol! {
         address client;
         address recipient;
         uint256 amount;
-        uint256 total_amount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -29,7 +28,6 @@ sol! {
         address client;
         address recipient;
         uint256 amount;
-        uint256 total_amount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -130,7 +128,6 @@ fn encode_v1_claims(claims: &PaymentGuaranteeClaims) -> Result<Vec<u8>, CodecErr
         client: parse_address("user_address", &claims.user_address)?,
         recipient: parse_address("recipient_address", &claims.recipient_address)?,
         amount: claims.amount,
-        total_amount: claims.amount,
         asset: parse_address("asset_address", &claims.asset_address)?,
         timestamp: claims.timestamp,
         version: claims.version,
@@ -155,7 +152,6 @@ fn encode_v2_claims(claims: &PaymentGuaranteeClaims) -> Result<Vec<u8>, CodecErr
         client: parse_address("user_address", &claims.user_address)?,
         recipient: parse_address("recipient_address", &claims.recipient_address)?,
         amount: claims.amount,
-        total_amount: claims.amount,
         asset: parse_address("asset_address", &claims.asset_address)?,
         timestamp: claims.timestamp,
         version: claims.version,
@@ -389,7 +385,6 @@ mod tests {
                 .parse()
                 .expect("recipient address must parse"),
             amount: claims.amount,
-            total_amount: claims.amount,
             asset: claims
                 .asset_address
                 .parse()

@@ -249,7 +249,6 @@ contract Core4MicaAaveForkTest is Test {
             client: client,
             recipient: recipient,
             amount: amount,
-            totalAmount: amount,
             asset: asset,
             // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),

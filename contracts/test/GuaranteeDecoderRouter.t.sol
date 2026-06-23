@@ -16,7 +16,6 @@ contract MockGuaranteeModuleV3 is IGuaranteeVersionModule {
         address client;
         address recipient;
         uint256 amount;
-        uint256 totalAmount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -33,7 +32,6 @@ contract MockGuaranteeModuleV3 is IGuaranteeVersionModule {
             client: g.client,
             recipient: g.recipient,
             amount: g.amount,
-            totalAmount: g.totalAmount,
             asset: g.asset,
             timestamp: g.timestamp,
             version: g.version
@@ -50,7 +48,6 @@ contract VersionMismatchModule is IGuaranteeVersionModule {
             client: address(0x111),
             recipient: address(0x222),
             amount: 1,
-            totalAmount: 1,
             asset: address(0),
             timestamp: 1,
             version: 99
@@ -104,7 +101,6 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
         assertEq(decoded.client, g3.client);
         assertEq(decoded.recipient, g3.recipient);
         assertEq(decoded.amount, g3.amount);
-        assertEq(decoded.totalAmount, g3.totalAmount);
         assertEq(decoded.asset, g3.asset);
         assertEq(decoded.timestamp, g3.timestamp);
     }
@@ -206,7 +202,6 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
             client: USER1,
             recipient: USER2,
             amount: 450 ether,
-            totalAmount: 800 ether,
             asset: address(usdc),
             // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(block.timestamp),
