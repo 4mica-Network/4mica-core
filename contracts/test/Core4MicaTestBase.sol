@@ -17,6 +17,8 @@ import {
 contract MockERC20 {
     string public name;
     string public symbol;
+    // `decimals` must stay lowercase to conform to the ERC20 `decimals()` interface.
+    // forge-lint: disable-next-line(screaming-snake-case-immutable)
     uint8 public immutable decimals;
     uint256 public totalSupply;
 
@@ -168,7 +170,6 @@ abstract contract Core4MicaTestBase is Test {
             client: client,
             recipient: recipient,
             amount: amount,
-            totalAmount: amount,
             asset: asset,
             // forge-lint: disable-next-line(unsafe-typecast)
             timestamp: uint64(tabTimestamp),

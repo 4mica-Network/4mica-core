@@ -24,7 +24,7 @@ contract MockCore4Mica is ICore4MicaSettlement {
             (bool ok,) = payable(msg.sender).call{value: amount}("");
             require(ok, "eth send failed");
         } else {
-            IERC20(asset).transfer(msg.sender, amount);
+            require(IERC20(asset).transfer(msg.sender, amount), "transfer failed");
         }
         return amount;
     }
@@ -34,7 +34,7 @@ contract MockCore4Mica is ICore4MicaSettlement {
             require(msg.value == amount, "value mismatch");
         } else {
             require(msg.value == 0, "value mismatch");
-            IERC20(asset).transferFrom(msg.sender, address(this), amount);
+            require(IERC20(asset).transferFrom(msg.sender, address(this), amount), "transferFrom failed");
         }
         creditedOf[creditor][asset] += amount;
     }

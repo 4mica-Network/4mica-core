@@ -20,6 +20,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
     /// Core4Mica collateral vault. Seized debtor collateral flows in here and
     /// creditor funding flows back out to it.
+    // Public immutable getter is part of the ABI; keep camelCase per this codebase's
+    // public-variable convention rather than SCREAMING_SNAKE_CASE.
+    // forge-lint: disable-next-line(screaming-snake-case-immutable)
     ICore4MicaSettlement public immutable core4Mica;
 
     enum CycleStatus {

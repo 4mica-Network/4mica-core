@@ -21,7 +21,6 @@ struct Guarantee {
     address client;
     address recipient;
     uint256 amount;
-    uint256 totalAmount;
     address asset;
     uint64 timestamp;
     uint64 version;

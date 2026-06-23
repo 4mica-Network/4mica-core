@@ -53,7 +53,6 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         assertEq(decoded.client, g.client);
         assertEq(decoded.recipient, g.recipient);
         assertEq(decoded.amount, g.amount);
-        assertEq(decoded.totalAmount, g.totalAmount);
         assertEq(decoded.asset, g.asset);
         assertEq(decoded.timestamp, g.timestamp);
         assertEq(decoded.version, g.version);
@@ -233,7 +232,6 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
         g.client = address(0x1111);
         g.recipient = address(0x2222);
         g.amount = 5 ether;
-        g.totalAmount = 8 ether;
         g.asset = address(0x3333);
         g.timestamp = 1_750_000_000;
         g.version = GUARANTEE_CLAIMS_VERSION_V2;

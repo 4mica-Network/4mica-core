@@ -14,7 +14,6 @@ contract MockGuaranteeDecoder is IGuaranteeDecoder {
         address client;
         address recipient;
         uint256 amount;
-        uint256 totalAmount;
         address asset;
         uint64 timestamp;
         uint64 version;
@@ -34,7 +33,6 @@ contract MockGuaranteeDecoder is IGuaranteeDecoder {
             client: g.client,
             recipient: g.recipient,
             amount: g.amount,
-            totalAmount: g.totalAmount,
             asset: g.asset,
             timestamp: g.timestamp,
             version: g.version
@@ -86,7 +84,6 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
         assertEq(decoded.client, g2.client);
         assertEq(decoded.recipient, g2.recipient);
         assertEq(decoded.amount, g2.amount);
-        assertEq(decoded.totalAmount, g2.totalAmount);
         assertEq(decoded.asset, g2.asset);
         assertEq(decoded.timestamp, g2.timestamp);
     }
@@ -213,7 +210,6 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
             client: client,
             recipient: recipient,
             amount: amount,
-            totalAmount: amount,
             asset: asset,
             timestamp: timestamp,
             version: version,

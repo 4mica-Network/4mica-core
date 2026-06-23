@@ -246,7 +246,7 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn issue_two_guarantees_verifies_total_amount() -> anyhow::Result<()> {
+async fn issue_two_guarantees_verifies_amount() -> anyhow::Result<()> {
     let (_config, core_client, ctx, auth) = setup_http_test_environment().await?;
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
