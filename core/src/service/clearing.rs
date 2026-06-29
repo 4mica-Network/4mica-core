@@ -121,11 +121,27 @@ impl CoreService {
         .await?;
         for cycle in due {
             let cycle_id = cycle.id.clone();
-            match self.open_cycle_settlement(&cycle_id, now).await {
+            let opened = self.open_cycle_settlement(&cycle_id, now).await;
+            match opened {
+                Ok(true) => {
+                    acted.push(cycle_id);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(ref err) => {
+                    warn!("failed to open settlement for settlement cycle {cycle_id}: {err:?}");
+                }
+            }
+            // Settlement did not complete (under-funded, or a seize/fund hiccup). An under-funded
+            // cycle can never fund its creditors and would retry forever; let the shortfall driver
+            // socialize it once the grace window passes. Seizures already
+            // submitted are idempotent, and the driver no-ops unless the cycle is genuinely
+            // resolved-but-under-funded past grace.
+            match self.drive_cycle_shortfall(&cycle_id, now).await {
                 Ok(true) => acted.push(cycle_id),
                 Ok(false) => {}
-                Err(err) => {
-                    error!("failed to open settlement for settlement cycle {cycle_id}: {err:?}")
+                Err(e) => {
+                    error!("failed to evaluate shortfall for settlement cycle {cycle_id}: {e:?}")
                 }
             }
         }
@@ -139,7 +155,19 @@ impl CoreService {
                         acted.push(cycle_id);
                     }
                 }
-                Ok(false) => {}
+                Ok(false) => match self.drive_cycle_shortfall(&cycle_id, now).await {
+                    Ok(true) => {
+                        if !acted.contains(&cycle_id) {
+                            acted.push(cycle_id);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        error!(
+                            "failed to evaluate shortfall for settlement cycle {cycle_id}: {err:?}"
+                        )
+                    }
+                },
                 Err(err) => {
                     error!("failed to finalize settling settlement cycle {cycle_id}: {err:?}")
                 }
@@ -246,6 +274,26 @@ impl CoreService {
                 .await
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?;
         }
+
+        // After seizing, only fund creditors if the pool can actually cover them. Submitting a
+        // batch against an under-funded cycle would revert (CycleUnderfunded) and waste gas — and
+        // the terminal Shortfall path handles distribution instead. Defer here;
+        // the settlement job will drive the cycle to Shortfall once the grace window passes.
+        let onchain = self
+            .inner
+            .contract_api
+            .get_clearing_cycle(onchain_cycle_id)
+            .await
+            .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+        if onchain.funded() < onchain.total_net_credit {
+            info!(
+                "settlement cycle {cycle_id} under-funded (funded {} < required {}); deferring creditor funding to shortfall handling",
+                onchain.funded(),
+                onchain.total_net_credit
+            );
+            return Ok(false);
+        }
+
         for chunk in creditor_entries.chunks(batch_size) {
             self.inner
                 .contract_api
@@ -297,6 +345,116 @@ impl CoreService {
                 Ok(false)
             }
         }
+    }
+
+    /// Build the on-chain creditor-funding entries (with Merkle proofs) for a cycle's
+    /// still-claimable net creditors.
+    async fn creditor_settlements(&self, cycle_id: &str) -> ServiceResult<Vec<CreditorSettlement>> {
+        let claimable = repo::list_claimable_creditors_for_cycle_on(
+            self.inner.persist_ctx.db.as_ref(),
+            cycle_id,
+        )
+        .await?;
+        if claimable.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let proofs = self.get_cycle_participant_proofs(cycle_id).await?;
+        let mut creditor_proofs: HashMap<Address, (U256, Vec<B256>)> = HashMap::new();
+        for (leaf, proof) in proofs {
+            if leaf.role == ParticipantCycleRole::NetCreditor {
+                creditor_proofs.insert(leaf.participant, (leaf.amount, proof));
+            }
+        }
+
+        let mut entries = Vec::with_capacity(claimable.len());
+        for pos in &claimable {
+            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
+            match creditor_proofs.get(&participant) {
+                Some((amount, proof)) => entries.push(CreditorSettlement {
+                    creditor: participant,
+                    net_credit: *amount,
+                    proof: proof.clone(),
+                }),
+                None => warn!(
+                    "missing creditor proof for {participant} in settlement cycle {cycle_id}; skipping"
+                ),
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Drive an under-funded, fully-resolved cycle to the terminal Shortfall state once the
+    /// retry/grace window past payment finality has elapsed, then fund its creditors their
+    /// pro-rata share so a transient or genuine collateral shortfall can never freeze the cycle
+    /// forever. Returns true if it acted.
+    async fn drive_cycle_shortfall(
+        &self,
+        cycle_id: &str,
+        now: NaiveDateTime,
+    ) -> ServiceResult<bool> {
+        // On-chain CycleStatus enum ordinals.
+        const CYCLE_STATUS_FINALIZED: u8 = 2;
+        const CYCLE_STATUS_SHORTFALL: u8 = 4;
+
+        let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
+        let view = self
+            .inner
+            .contract_api
+            .get_clearing_cycle(onchain_cycle_id)
+            .await
+            .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+        if !view.exists || view.status == CYCLE_STATUS_FINALIZED {
+            return Ok(false);
+        }
+
+        // Stay within the retry window: keep resubmitting seizures rather than socializing a
+        // loss that may still resolve.
+        let grace_deadline = view
+            .payment_finality_deadline
+            .saturating_add(self.inner.config.settlement_cycle.shortfall_grace_secs);
+        if (now.and_utc().timestamp() as u64) <= grace_deadline {
+            return Ok(false);
+        }
+
+        // Only socialize a genuinely under-collateralised cycle: every debtor resolved but the
+        // recovered pool still can't cover creditor claims.
+        if view.status != CYCLE_STATUS_SHORTFALL && !view.is_under_funded_and_resolved() {
+            return Ok(false);
+        }
+
+        if view.status != CYCLE_STATUS_SHORTFALL {
+            warn!(
+                "settlement cycle {cycle_id} under-funded after grace window (funded {} < required {}); entering Shortfall",
+                view.funded(),
+                view.total_net_credit
+            );
+            self.inner
+                .contract_api
+                .mark_cycle_shortfall(onchain_cycle_id)
+                .await
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+        }
+
+        // Pay remaining creditors their pro-rata share (no Aave liquidity needed); creditors may
+        // also self-claim on-chain.
+        let creditor_entries = self.creditor_settlements(cycle_id).await?;
+        let batch_size = self.inner.config.settlement_cycle.default_batch_size.max(1) as usize;
+        for chunk in creditor_entries.chunks(batch_size) {
+            self.inner
+                .contract_api
+                .fund_creditors_from_pool_batch(onchain_cycle_id, chunk.to_vec())
+                .await
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?;
+        }
+
+        let marked =
+            repo::mark_cycle_shortfall_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now)
+                .await?;
+        if marked {
+            info!("settlement cycle {cycle_id} closed in Shortfall after pro-rata distribution");
+        }
+        Ok(marked)
     }
 
     pub async fn process_cycle_committed(

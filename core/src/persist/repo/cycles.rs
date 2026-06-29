@@ -331,6 +331,31 @@ pub async fn mark_cycle_settling_on<C: ConnectionTrait>(
     Ok(result.rows_affected == 1)
 }
 
+/// Mark a settling cycle terminally closed in Shortfall because recovered collateral could not
+/// cover creditor claims. The cycle is closed, creditors having been (or being)
+/// paid a pro-rata share on-chain.
+#[measure(record_db_time)]
+pub async fn mark_cycle_shortfall_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = settlement_cycle::Entity::update_many()
+        .filter(settlement_cycle::Column::Id.eq(cycle_id))
+        .filter(settlement_cycle::Column::Status.is_in([
+            SettlementCycleStatus::PaymentWindowOpen,
+            SettlementCycleStatus::Settling,
+        ]))
+        .set(settlement_cycle::ActiveModel {
+            status: Set(SettlementCycleStatus::Shortfall),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
 #[measure(record_db_time)]
 pub async fn short_circuit_frozen_cycle_on<C: ConnectionTrait>(
     conn: &C,

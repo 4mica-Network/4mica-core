@@ -277,6 +277,11 @@ pub struct SettlementCycleConfig {
     /// Maximum number of participants settled per on-chain batch transaction.
     #[envconfig(from = "SETTLEMENT_DEFAULT_BATCH_SIZE", default = "50")]
     pub default_batch_size: u64,
+    /// Grace period, past the payment-finality deadline, during which seizures are retried
+    /// before an under-funded cycle is driven to the terminal Shortfall state.
+    /// Gives transient seize failures time to clear before losses are socialized.
+    #[envconfig(from = "SETTLEMENT_SHORTFALL_GRACE_SECS", default = "21600")]
+    pub shortfall_grace_secs: u64,
 }
 
 impl SettlementCycleConfig {
@@ -643,6 +648,7 @@ mod tests {
             payment_finality_window_secs: 14_400,
             seizure_margin_secs: 21_600,
             default_batch_size: 50,
+            shortfall_grace_secs: 21_600,
         }
     }
 

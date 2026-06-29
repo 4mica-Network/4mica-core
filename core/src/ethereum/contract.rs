@@ -245,6 +245,21 @@ pub mod contract_abi {
             bytes32[] proof;
         }
 
+        struct OnchainCycle {
+            address asset;
+            bytes32 merkleRoot;
+            uint256 totalNetDebit;
+            uint256 totalNetCredit;
+            uint256 totalPaidIn;
+            uint256 totalClaimedOut;
+            uint256 totalDefaultCovered;
+            uint256 totalResolvedDebit;
+            uint64 paymentSubmissionDeadline;
+            uint64 paymentFinalityDeadline;
+            uint8 status;
+            bool exists;
+        }
+
         #[sol(rpc)]
         contract ClearingHouse {
             function commitCycle(
@@ -263,8 +278,14 @@ pub mod contract_abi {
             /// Operator batch: fund unclaimed creditors back into their Core4Mica collateral.
             function fundCreditorsFromPoolBatch(bytes32 cycleId, CreditorEntry[] entries) external;
 
+            /// Drive an under-funded cycle to the terminal Shortfall state.
+            function markCycleShortfall(bytes32 cycleId) external;
+
             /// Finalize a fully-resolved cycle.
             function finalizeCycle(bytes32 cycleId) external;
+
+            /// View: full on-chain cycle accounting/state.
+            function getCycle(bytes32 cycleId) external view returns (OnchainCycle memory);
 
             // ---- Custom errors (mirrored from contracts/src/ClearingHouse.sol) ----
             // `CycleStatus` is a Solidity enum; it ABI-encodes (and contributes to the
@@ -288,6 +309,8 @@ pub mod contract_abi {
             error NativeTransferFailed(address recipient, uint256 amount);
             error ZeroAddress();
             error UnauthorizedEthSender(address sender);
+            error ClaimConversionShortfall(uint256 requested, uint256 got);
+            error CycleFullyFunded(uint256 funded, uint256 required);
         }
     }
 }
