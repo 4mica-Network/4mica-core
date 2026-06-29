@@ -4,7 +4,7 @@ pragma solidity ^0.8.29;
 import {Test} from "forge-std/Test.sol";
 import {Core4MicaAccounting} from "../src/libraries/Core4MicaAccounting.sol";
 
-/// Regression coverage for audit 4MCA-H03: the protocol-fee reallocation in
+/// Regression coverage for: the protocol-fee reallocation in
 /// `_debitUserStablecoin` must never underflow, which reduces to
 /// `grossForNetYield` returning a preimage no larger than the original gross.
 contract Core4MicaAccountingTest is Test {

@@ -229,20 +229,27 @@ contract Core4MicaFullStackScript is Script {
         internal
     {
         // Cycle commitment and default settlement are 4mica operator-driven settlement bookkeeping.
-        bytes4[] memory operatorSelectors = new bytes4[](3);
+        bytes4[] memory operatorSelectors = new bytes4[](4);
         operatorSelectors[0] = ClearingHouse.commitCycle.selector;
         operatorSelectors[1] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
         operatorSelectors[2] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        operatorSelectors[3] = ClearingHouse.markCycleShortfall.selector;
         for (uint256 i = 0; i < operatorSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(clearingHouse), _asSingletonArray(operatorSelectors[i]), FOURMICA_OPERATOR_ROLE
             );
         }
 
-        // The ClearingHouse alone may move collateral inside Core4Mica during settlement.
-        bytes4[] memory collateralSelectors = new bytes4[](2);
+        // The ClearingHouse alone may move collateral inside Core4Mica during settlement,
+        // including the scaled-escrow hooks used for liquidity-free stablecoin settlement
+        //.
+        bytes4[] memory collateralSelectors = new bytes4[](6);
         collateralSelectors[0] = Core4Mica.seizeCollateral.selector;
         collateralSelectors[1] = Core4Mica.creditCollateral.selector;
+        collateralSelectors[2] = Core4Mica.depositToEscrow.selector;
+        collateralSelectors[3] = Core4Mica.creditFromEscrowScaled.selector;
+        collateralSelectors[4] = Core4Mica.withdrawFromEscrow.selector;
+        collateralSelectors[5] = Core4Mica.seizeUpTo.selector;
         for (uint256 i = 0; i < collateralSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica), _asSingletonArray(collateralSelectors[i]), CLEARING_HOUSE_ROLE
