@@ -164,7 +164,6 @@ pub fn extract_asset_info(assets: &[UserInfo], asset_address: Address) -> Option
 
 pub async fn wait_for_collateral_increase<S: Signer + Sync>(
     recipient_client: &RecipientClient<S>,
-    user_address: &str,
     asset_address: Address,
     starting_total: U256,
     increase_by: U256,
@@ -172,14 +171,13 @@ pub async fn wait_for_collateral_increase<S: Signer + Sync>(
     let poll_interval = Duration::from_millis(200);
     let timeout = Duration::from_secs(60);
     let start = Instant::now();
-    let user_address = user_address.to_string();
     let asset_address = asset_address.to_string();
     let target_total = starting_total + increase_by;
     let mut last_total = starting_total;
 
     loop {
         if let Some(balance) = recipient_client
-            .get_user_asset_balance(user_address.clone(), asset_address.clone())
+            .get_user_asset_balance(asset_address.clone())
             .await?
         {
             last_total = balance.total;
@@ -190,7 +188,7 @@ pub async fn wait_for_collateral_increase<S: Signer + Sync>(
 
         if start.elapsed() > timeout {
             bail!(
-                "timed out waiting for collateral increase to {target_total:?} for user {user_address}, last observed total {last_total:?}"
+                "timed out waiting for collateral increase to {target_total:?}, last observed total {last_total:?}"
             );
         }
 

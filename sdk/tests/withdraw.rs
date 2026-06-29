@@ -98,13 +98,12 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
     )
     .await?;
 
-    let user_address = user_config.signer.address().to_string();
     let user_client = Client::new(user_config.clone()).await?;
 
     // Step 1: User deposits collateral (2 ETH)
     let core_total_before = user_client
         .recipient
-        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .get_user_asset_balance(ETH_ASSET_ADDRESS.to_string())
         .await?
         .map(|info| info.total)
         .unwrap_or(U256::ZERO);
@@ -114,7 +113,6 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
 
     wait_for_collateral_increase(
         &user_client.recipient,
-        &user_address,
         ETH_ASSET_ADDRESS,
         core_total_before,
         deposit_amount,
@@ -157,13 +155,12 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     )
     .await?;
 
-    let user_address = user_config.signer.address().to_string();
     let user_client = Client::new(user_config.clone()).await?;
 
     // Step 1: User deposits collateral (0.5 ETH)
     let core_total_before = user_client
         .recipient
-        .get_user_asset_balance(user_address.clone(), ETH_ASSET_ADDRESS.to_string())
+        .get_user_asset_balance(ETH_ASSET_ADDRESS.to_string())
         .await?
         .map(|info| info.total)
         .unwrap_or(U256::ZERO);
@@ -173,7 +170,6 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
 
     wait_for_collateral_increase(
         &user_client.recipient,
-        &user_address,
         ETH_ASSET_ADDRESS,
         core_total_before,
         deposit_amount,

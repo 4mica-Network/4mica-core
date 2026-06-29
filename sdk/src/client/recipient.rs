@@ -212,12 +212,12 @@ impl<S> RecipientClient<S> {
 
     pub async fn get_user_asset_balance(
         &self,
-        user_address: String,
         asset_address: String,
     ) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>
     where
         S: Signer + Sync,
     {
+        let user_address = self.ctx.signer_address().to_string();
         let balance = self
             .ctx
             .rpc_proxy()
