@@ -35,11 +35,16 @@ library Core4MicaAccounting {
 
         uint256 denominator = BASIS_POINTS - feeBps;
         uint256 gross = Math.mulDiv(desiredNet, BASIS_POINTS, denominator, Math.Rounding.Ceil);
-        while (netYieldFromGross(gross, feeBps) > desiredNet) {
-            gross--;
-        }
-        while (netYieldFromGross(gross + 1, feeBps) <= desiredNet) {
+        // netYieldFromGross is non-decreasing but flat across fee steps, so multiple gross
+        // values can map to the same net. Return the SMALLEST such gross (per the doc above):
+        // overshooting to a larger preimage is what lets `gross - remainingGross` underflow
+        // and revert a seizure (audit 4MCA-H03). Each correction loop runs at most one
+        // iteration since the ceil estimate is within 1 unit.
+        while (netYieldFromGross(gross, feeBps) < desiredNet) {
             gross++;
+        }
+        while (gross > 0 && netYieldFromGross(gross - 1, feeBps) >= desiredNet) {
+            gross--;
         }
         return gross;
     }

@@ -861,7 +861,13 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 userYieldWithdrawn = withdrawalAmount - principalConsumed;
         uint256 remainingUserNet = userNet - userYieldWithdrawn;
         uint256 remainingGross = _grossForNetYield(remainingUserNet);
-        uint256 protocolFeeReallocatedUnderlying = gross - userYieldWithdrawn - remainingGross;
+        // Saturating subtraction: grossForNetYield now returns the smallest preimage, so
+        // remainingGross can never exceed (gross - userYieldWithdrawn); clamp anyway so a
+        // rounding edge can never underflow and revert a seizure or partial withdrawal
+        // (audit 4MCA-H03). Any under-charge is at most one unit, in the user's favour.
+        uint256 grossAfterUserWithdrawal = gross - userYieldWithdrawn;
+        uint256 protocolFeeReallocatedUnderlying =
+            grossAfterUserWithdrawal > remainingGross ? grossAfterUserWithdrawal - remainingGross : 0;
         uint256 protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, _currentIndex(asset));
 
         (uint256 scaledBurn, uint256 actualWithdrawn) =
