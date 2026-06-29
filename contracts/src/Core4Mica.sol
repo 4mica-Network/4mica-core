@@ -43,6 +43,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error InsufficientAvailable();
     error TransferFailed();
     error GracePeriodNotElapsed();
+    error GracePeriodBelowMinimum(uint256 provided, uint256 minimum);
+    error MinGracePeriodExceedsGrace(uint256 minimum, uint256 gracePeriod);
     error NoWithdrawalRequested();
     error DirectTransferNotAllowed();
     error InvalidSignature();
@@ -73,6 +75,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     /// to cover the off-chain settlement cycle's worst-case time-to-finality
     /// plus its seizure margin.
     uint256 public withdrawalGracePeriod = 22 days;
+
+    /// @notice On-chain floor for `withdrawalGracePeriod`; `setWithdrawalGracePeriod` cannot go
+    /// below it. Deployments should set this to at least the worst-case cycle time-to-finality
+    /// plus seizure margin so a governance action can never shorten the seizure window below
+    /// what settlement needs. Defaults to 0 (no floor) until configured.
+    uint256 public minWithdrawalGracePeriod;
 
     // forge-lint: disable-next-line(mixed-case-variable)
     BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
@@ -121,6 +129,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     struct WithdrawalRequest {
         uint256 timestamp;
         uint256 amount;
+        // Grace period in effect when the request was made, snapshotted so a later
+        // setWithdrawalGracePeriod reduction cannot retroactively shorten in-flight requests.
+        uint256 gracePeriod;
     }
 
     struct UserAssetInfo {
@@ -138,6 +149,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
     event WithdrawalCanceled(address indexed user, address indexed asset);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
+    event MinWithdrawalGracePeriodUpdated(uint256 newMinGracePeriod);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
     event GuaranteeVersionUpdated(
         uint64 indexed version, BLS.G1Point verificationKey, bytes32 domainSeparator, address decoder, bool enabled
@@ -216,8 +228,21 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     function setWithdrawalGracePeriod(uint256 _gracePeriod) external restricted nonZero(_gracePeriod) {
+        if (_gracePeriod < minWithdrawalGracePeriod) {
+            revert GracePeriodBelowMinimum(_gracePeriod, minWithdrawalGracePeriod);
+        }
         withdrawalGracePeriod = _gracePeriod;
         emit WithdrawalGracePeriodUpdated(_gracePeriod);
+    }
+
+    /// Set the on-chain floor for `withdrawalGracePeriod`. Cannot exceed the current grace period
+    /// (raise the grace first), keeping `withdrawalGracePeriod >= minWithdrawalGracePeriod` always.
+    function setMinWithdrawalGracePeriod(uint256 _minGracePeriod) external restricted {
+        if (_minGracePeriod > withdrawalGracePeriod) {
+            revert MinGracePeriodExceedsGrace(_minGracePeriod, withdrawalGracePeriod);
+        }
+        minWithdrawalGracePeriod = _minGracePeriod;
+        emit MinWithdrawalGracePeriodUpdated(_minGracePeriod);
     }
 
     function setGuaranteeVerificationKey(BLS.G1Point calldata verificationKey) external restricted {
@@ -412,7 +437,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             revert InsufficientAvailable();
         }
 
-        withdrawalRequests[user][asset] = WithdrawalRequest({timestamp: block.timestamp, amount: amount});
+        withdrawalRequests[user][asset] =
+            WithdrawalRequest({timestamp: block.timestamp, amount: amount, gracePeriod: withdrawalGracePeriod});
         emit WithdrawalRequested(user, asset, block.timestamp, amount);
     }
 
@@ -443,7 +469,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     function finalizeWithdrawalInternal(address user, address asset) internal {
         WithdrawalRequest memory request = withdrawalRequests[user][asset];
         if (request.timestamp == 0) revert NoWithdrawalRequested();
-        if (block.timestamp < request.timestamp + withdrawalGracePeriod) {
+        // Use the grace period snapshotted at request time, not the current global value, so a
+        // reduction applies only to new requests and never shortens an in-flight one.
+        if (block.timestamp < request.timestamp + request.gracePeriod) {
             revert GracePeriodNotElapsed();
         }
 
