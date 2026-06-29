@@ -350,7 +350,7 @@ Notes:
 - `get_guarantee(tab_id: U256, req_id: U256) -> Result<Option<GuaranteeInfo>, RecipientQueryError>`: Get a specific guarantee by tab ID and request ID
 - `list_recipient_payments() -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>`: List all payments for the recipient
 - `get_collateral_events_for_tab(tab_id: U256) -> Result<Vec<CollateralEventInfo>, RecipientQueryError>`: Get collateral events for a specific tab
-- `get_user_asset_balance(user_address: String, asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get user's asset balance
+- `get_user_asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get the authenticated signer's asset balance
 
 > **Note:** `BLSCert` now exposes typed claims and signatures. Use `cert.claims().to_hex()` or `cert.signature().to_hex()` when you need hex strings.
 

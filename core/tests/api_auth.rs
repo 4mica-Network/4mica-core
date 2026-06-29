@@ -6,6 +6,7 @@ use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Result, bail};
 use chrono::Utc;
+use core_service::auth::constants::ROLE_USER;
 use core_service::auth::constants::SCOPE_PAYMENT_READ;
 use core_service::auth::jwt::{AccessTokenClaims, validate_access_token};
 use core_service::config::{AuthConfig, DEFAULT_ASSET_ADDRESS};
@@ -259,6 +260,41 @@ async fn core_api_get_user_asset_balance() -> anyhow::Result<()> {
         .await
         .expect("unknown user balance");
     assert!(unknown_user.is_none());
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+#[serial_test::file_serial(db)]
+async fn core_api_get_user_asset_balance_denies_foreign_read_for_plain_user() -> anyhow::Result<()>
+{
+    let (config, _core_client, ctx, _auth) = setup_http_test_environment().await?;
+    let base_addr = core_base_url(&config);
+
+    let caller = PrivateKeySigner::random();
+    let caller_auth =
+        login_with_siwe(&base_addr, &ctx, &caller, ROLE_USER, &[SCOPE_PAYMENT_READ]).await?;
+    let caller_client =
+        rpc::RpcProxy::new(&base_addr)?.with_bearer_token(caller_auth.access_token.clone());
+
+    let foreign_user = random_address();
+    ensure_user_with_collateral(&ctx, &foreign_user, U256::from(15u64)).await?;
+
+    let err = caller_client
+        .get_user_asset_balance(foreign_user, DEFAULT_ASSET_ADDRESS.to_string())
+        .await
+        .expect_err("plain user must not read another wallet's balance");
+
+    match err {
+        rpc::ApiClientError::Api { status, message } => {
+            assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+            assert!(
+                message.contains("user address does not match token subject"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 
     Ok(())
 }

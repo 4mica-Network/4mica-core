@@ -32,6 +32,7 @@ impl CoreService {
         asset_address: String,
     ) -> ServiceResult<Option<AssetBalanceInfo>> {
         access::require_scope(auth, SCOPE_PAYMENT_READ)?;
+        access::require_user_match_or_privileged(auth, &user_address)?;
 
         let Some(balance) =
             repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
