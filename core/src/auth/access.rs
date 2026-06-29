@@ -75,6 +75,28 @@ pub fn require_user_match(auth: &AccessContext, user_address: &str) -> ServiceRe
     Ok(())
 }
 
+/// Binds a user-scoped read to the authenticated subject, allowing admin and
+/// facilitator roles to read cross-account (mirroring the clearing-proof
+/// handlers).
+pub fn require_user_match_or_privileged(
+    auth: &AccessContext,
+    user_address: &str,
+) -> ServiceResult<()> {
+    if !addresses_match(&auth.wallet_address, user_address)
+        && require_admin_role(auth).is_err()
+        && require_facilitator_role(auth).is_err()
+    {
+        warn!(
+            "auth user denied: wallet={}, role={}, user={}",
+            auth.wallet_address, auth.role, user_address
+        );
+        return Err(ServiceError::Unauthorized(
+            "user address does not match token subject and role is not privileged".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn require_admin_role(auth: &AccessContext) -> ServiceResult<()> {
     if !auth.role.trim().eq_ignore_ascii_case(ROLE_ADMIN) {
         return Err(ServiceError::Unauthorized("admin role required".into()));
@@ -93,7 +115,43 @@ pub fn require_facilitator_role(auth: &AccessContext) -> ServiceResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::scope_contains;
+    use super::super::constants::{ROLE_ADMIN, ROLE_FACILITATOR, ROLE_USER, SCOPE_PAYMENT_READ};
+    use super::{AccessContext, require_user_match_or_privileged, scope_contains};
+
+    fn ctx(wallet: &str, role: &str) -> AccessContext {
+        AccessContext {
+            wallet_address: wallet.to_string(),
+            role: role.to_string(),
+            scopes: vec![SCOPE_PAYMENT_READ.to_string()],
+        }
+    }
+
+    #[test]
+    fn require_user_match_or_privileged_allows_self() {
+        let auth = ctx("0xAbC", ROLE_USER);
+        // Case-insensitive match against the token subject.
+        assert!(require_user_match_or_privileged(&auth, "0xabc").is_ok());
+    }
+
+    #[test]
+    fn require_user_match_or_privileged_denies_other_user() {
+        // Regression test for 4MCA-M05: a plain user must not read another
+        // wallet's balance/exposure (IDOR).
+        let auth = ctx("0xAbC", ROLE_USER);
+        assert!(require_user_match_or_privileged(&auth, "0xdef").is_err());
+    }
+
+    #[test]
+    fn require_user_match_or_privileged_allows_admin_cross_account() {
+        let auth = ctx("0xAbC", ROLE_ADMIN);
+        assert!(require_user_match_or_privileged(&auth, "0xdef").is_ok());
+    }
+
+    #[test]
+    fn require_user_match_or_privileged_allows_facilitator_cross_account() {
+        let auth = ctx("0xAbC", ROLE_FACILITATOR);
+        assert!(require_user_match_or_privileged(&auth, "0xdef").is_ok());
+    }
 
     #[test]
     fn scope_contains_matches_case_insensitively() {
