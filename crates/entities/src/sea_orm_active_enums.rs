@@ -107,6 +107,10 @@ pub enum SettlementCycleStatus {
     Settling,
     #[sea_orm(string_value = "CANCELLED")]
     Cancelled,
+    /// Terminal state for a cycle whose recovered collateral cannot fully cover creditor
+    /// claims; creditors are paid a pro-rata share.
+    #[sea_orm(string_value = "SHORTFALL")]
+    Shortfall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
