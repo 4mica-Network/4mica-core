@@ -124,7 +124,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
         address[] memory stablecoins = new address[](1);
         stablecoins[0] = address(usdc);
-        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
+        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
         manager.setTargetFunctionRole(
             address(bareCore), _asSingletonArray(Core4Mica.addStablecoinAsset.selector), USER_ADMIN_ROLE
         );

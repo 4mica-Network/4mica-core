@@ -643,14 +643,68 @@ contract ClearingHouseTest is Test {
         assertEq(clearingHouse.getCycle(CYCLE_ID).totalClaimedOut, 140 ether);
     }
 
-    function test_MarkShortfallRevertsWhenFullyFunded() public {
+    function test_MarkShortfallRevertsWhenNotDefaulted() public {
+        // A fully-paid cycle never defaults, so it stays PaymentWindowOpen and cannot be marked
+        // Shortfall: markCycleShortfall is only valid from Defaulted.
         (, bytes32[] memory debtorProof,) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
         vm.prank(DEBTOR);
         clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
         vm.warp(block.timestamp + 2 hours + 1);
 
         vm.prank(OPERATOR);
-        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleFullyFunded.selector, NET_AMOUNT, NET_AMOUNT));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ClearingHouse.InvalidCycleStatus.selector, CYCLE_ID, ClearingHouse.CycleStatus.PaymentWindowOpen
+            )
+        );
+        clearingHouse.markCycleShortfall(CYCLE_ID);
+    }
+
+    function test_MarkShortfallRevertsWhenDefaultedButFullyRecovered() public {
+        // A defaulter whose seizure fully covers its debt leaves the cycle funded == totalNetCredit;
+        // markCycleShortfall must then revert CycleFullyFunded (the cycle should finalize, not shortfall).
+        address d1 = address(0xD1);
+        address d2 = address(0xD2);
+        address c1 = address(0xC1);
+        address c2 = address(0xC2);
+        uint256 amt = 100 ether;
+        uint256 total = 200 ether;
+
+        vm.deal(d1, amt);
+
+        bytes32[] memory leaves = new bytes32[](4);
+        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, amt, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, amt, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, c1, amt, ClearingHouse.ParticipantRole.NetCreditor);
+        leaves[3] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, c2, amt, ClearingHouse.ParticipantRole.NetCreditor);
+
+        (bytes32 root,) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p2) = _merkle(leaves, leaves[1]);
+
+        vm.prank(OPERATOR);
+        clearingHouse.commitCycle(
+            CYCLE_ID, ETH_ASSET, root, total, total, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+        );
+
+        // d1 pays in full; d2 defaults but holds full collateral, so seizure fully covers its debt
+        // -> funded = 100 (paid) + 100 (seized) = 200 = total.
+        vm.prank(d1);
+        clearingHouse.payNetDebit{value: amt}(CYCLE_ID, amt, p1);
+        core4Mica.setCollateral(d2, ETH_ASSET, amt);
+        vm.deal(address(core4Mica), amt);
+
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        ClearingHouse.DebtorEntry[] memory debtors = new ClearingHouse.DebtorEntry[](1);
+        debtors[0] = ClearingHouse.DebtorEntry({debtor: d2, netDebit: amt, proof: p2});
+        vm.prank(OPERATOR);
+        clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
+
+        vm.prank(OPERATOR);
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleFullyFunded.selector, total, total));
         clearingHouse.markCycleShortfall(CYCLE_ID);
     }
 

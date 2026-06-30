@@ -170,10 +170,22 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event EscrowDeposited(address indexed asset, address indexed from, uint256 amount, uint256 scaledCredited);
 
     // ========= Constructor =========
-    constructor(address manager, BLS.G1Point memory verificationKey, address[] memory stablecoins_)
-        AccessManaged(manager)
-    {
+    constructor(
+        address manager,
+        BLS.G1Point memory verificationKey,
+        address[] memory stablecoins_,
+        uint256 minGracePeriod_
+    ) AccessManaged(manager) {
         if (stablecoins_.length == 0) revert AmountZero();
+        // Set the withdrawal-grace floor atomically at deploy so it can never be left at 0 by a
+        // forgotten setter call. May be 0 only for explicit opt-out (e.g. tests); production
+        // deploys pass a non-zero value (enforced by the deploy script). Must not exceed the
+        // initial grace period so withdrawalGracePeriod >= minWithdrawalGracePeriod always holds.
+        if (minGracePeriod_ > withdrawalGracePeriod) {
+            revert MinGracePeriodExceedsGrace(minGracePeriod_, withdrawalGracePeriod);
+        }
+        minWithdrawalGracePeriod = minGracePeriod_;
+        emit MinWithdrawalGracePeriodUpdated(minGracePeriod_);
         for (uint256 i = 0; i < stablecoins_.length; i++) {
             _addStablecoinAsset(stablecoins_[i]);
         }

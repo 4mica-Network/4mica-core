@@ -33,7 +33,7 @@ contract Core4MicaFullStackSmokeTest is Test {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = USDC;
         stablecoins[1] = USDT;
-        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins);
+        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins, 0);
         GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
 
         address[] memory trustedRegistries = new address[](1);
@@ -71,7 +71,7 @@ contract Core4MicaFullStackSmokeTest is Test {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = USDC;
         stablecoins[1] = USDT;
-        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins);
+        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins, 0);
         GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
 
         _configureCoreRoles(manager, core4Mica, deployer);

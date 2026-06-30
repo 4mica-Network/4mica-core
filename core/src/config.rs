@@ -306,6 +306,24 @@ impl SettlementCycleConfig {
                 "SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS must be >= SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS"
             );
         }
+        if self.shortfall_grace_secs == 0 {
+            // A zero grace collapses the seize-retry window, so the first tick past finality would
+            // socialize creditor losses into the terminal Shortfall state with no retry buffer.
+            bail!("SETTLEMENT_SHORTFALL_GRACE_SECS must be > 0");
+        }
+        if self.shortfall_grace_secs > self.seizure_margin_secs {
+            // Seizures are retried until payment_finality_deadline + shortfall_grace_secs. Keeping
+            // that window within seizure_margin_secs ensures the delayed-withdrawal solvency
+            // invariant (validate_against_withdrawal_grace_period, which budgets seizure_margin_secs)
+            // still covers the whole period during which a debtor's collateral may be seized.
+            bail!(
+                "SETTLEMENT_SHORTFALL_GRACE_SECS ({}) must be <= SETTLEMENT_SEIZURE_MARGIN_SECS ({}) \
+                 so the shortfall retry window stays within the seizure margin the withdrawal-grace \
+                 solvency invariant budgets for",
+                self.shortfall_grace_secs,
+                self.seizure_margin_secs
+            );
+        }
         Ok(())
     }
 
@@ -682,6 +700,34 @@ mod tests {
         let err = cfg
             .validate()
             .expect_err("zero seizure margin must be rejected");
+        assert!(err.to_string().contains("SETTLEMENT_SEIZURE_MARGIN_SECS"));
+    }
+
+    #[test]
+    fn settlement_cycle_config_rejects_zero_shortfall_grace() {
+        let cfg = SettlementCycleConfig {
+            shortfall_grace_secs: 0,
+            ..default_settlement_cycle_config()
+        };
+
+        let err = cfg
+            .validate()
+            .expect_err("zero shortfall grace must be rejected");
+        assert!(err.to_string().contains("SETTLEMENT_SHORTFALL_GRACE_SECS"));
+    }
+
+    #[test]
+    fn settlement_cycle_config_rejects_shortfall_grace_above_seizure_margin() {
+        let cfg = SettlementCycleConfig {
+            shortfall_grace_secs: 21_601,
+            seizure_margin_secs: 21_600,
+            ..default_settlement_cycle_config()
+        };
+
+        let err = cfg
+            .validate()
+            .expect_err("shortfall grace above seizure margin must be rejected");
+        assert!(err.to_string().contains("SETTLEMENT_SHORTFALL_GRACE_SECS"));
         assert!(err.to_string().contains("SETTLEMENT_SEIZURE_MARGIN_SECS"));
     }
 

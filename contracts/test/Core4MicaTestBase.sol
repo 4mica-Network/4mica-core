@@ -114,7 +114,7 @@ abstract contract Core4MicaTestBase is Test {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = address(usdc);
         stablecoins[1] = address(usdt);
-        core4Mica = new Core4Mica(address(manager), testPublicKey, stablecoins);
+        core4Mica = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
 
         vm.deal(USER1, 5 ether);
         usdc.mint(USER1, 1_000_000 ether);

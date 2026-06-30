@@ -369,11 +369,16 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
     /// Drive an under-funded cycle to the terminal Shortfall state once payment finality has
     /// passed and every debtor is resolved (paid or seized to exhaustion) but recovered
-    /// collateral still cannot cover creditor claims. Creditors then withdraw a pro-rata share
-    ///. Restricted to the operator.
+    /// collateral still cannot cover creditor claims. Creditors then withdraw a pro-rata share.
+    /// Restricted to the operator.
+    ///
+    /// Only valid from `Defaulted`: an under-funded cycle necessarily had a defaulting debtor, so
+    /// `settleDefaultsFromCollateralBatch` (which sets `Defaulted`) must have run first. In
+    /// `PaymentWindowOpen` a shortfall is impossible — by zero-sum, `totalResolvedDebit ==
+    /// totalNetDebit` implies `funded >= totalNetCredit`, which would revert `CycleFullyFunded`.
     function markCycleShortfall(bytes32 cycleId) external restricted {
         OnchainCycle storage cycle = _requireCycle(cycleId);
-        if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
+        if (cycle.status != CycleStatus.Defaulted) {
             revert InvalidCycleStatus(cycleId, cycle.status);
         }
         if (block.timestamp <= cycle.paymentFinalityDeadline) {

@@ -64,7 +64,7 @@ contract Core4MicaAaveForkTest is Test {
         address[] memory supportedStablecoins = new address[](2);
         supportedStablecoins[0] = stablecoins[0];
         supportedStablecoins[1] = stablecoins[1];
-        core4Mica = new Core4Mica(address(manager), testPublicKey, supportedStablecoins);
+        core4Mica = new Core4Mica(address(manager), testPublicKey, supportedStablecoins, 0);
 
         _grantGovernance(Core4Mica.configureAave.selector);
         _grantGovernance(Core4Mica.setYieldFeeBps.selector);
