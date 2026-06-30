@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::{NaiveDateTime, Utc};
+use entities::cycle_participant_position;
 use entities::sea_orm_active_enums::{
     CollateralEventType, GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus,
     SettlementCycleStatus,
@@ -15,7 +16,7 @@ use crate::{
     ethereum::{ClearingCommitInput, CreditorSettlement, DebtorSettlement, event_data::EventMeta},
     evm,
     persist::repo::{self, common::parse_address},
-    service::CoreService,
+    service::{CoreService, netting::ParticipantLeaf},
 };
 
 impl CoreService {
@@ -111,6 +112,19 @@ impl CoreService {
     /// payment-window cycles (mark `Settling`), then finalize `Settling` cycles whose
     /// ledger is fully resolved. Returns cycle ids that had an on-chain tx submitted.
     pub async fn settle_due_cycles(&self) -> ServiceResult<Vec<String>> {
+        // Only one settlement tick may run at a time. The scheduler does not suppress overlapping
+        // fires, and each tick makes many serial on-chain round-trips; without this guard a slow
+        // tick could overlap the next and redundantly re-submit the same settlement txs. (The
+        // on-chain contract is idempotent, so the risk is wasted gas and spurious revert logs, not
+        // double settlement.)
+        let _tick = match self.inner.settlement_tick.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                warn!("settlement tick still running; skipping this fire to avoid overlap");
+                return Ok(Vec::new());
+            }
+        };
+
         let now = Utc::now().naive_utc();
         let mut acted = Vec::new();
 
@@ -209,50 +223,33 @@ impl CoreService {
         let batch_size = self.inner.config.settlement_cycle.default_batch_size.max(1) as usize;
         let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
 
+        // Fetch the Merkle proofs once and join both sides through the shared helper so the
+        // open-settlement and shortfall paths apply the same missing-proof policy.
         let proofs = self.get_cycle_participant_proofs(cycle_id).await?;
-        let mut debtor_proofs: HashMap<Address, (U256, Vec<B256>)> = HashMap::new();
-        let mut creditor_proofs: HashMap<Address, (U256, Vec<B256>)> = HashMap::new();
-        for (leaf, proof) in proofs {
-            match leaf.role {
-                ParticipantCycleRole::NetDebtor => {
-                    debtor_proofs.insert(leaf.participant, (leaf.amount, proof));
-                }
-                ParticipantCycleRole::NetCreditor => {
-                    creditor_proofs.insert(leaf.participant, (leaf.amount, proof));
-                }
-                ParticipantCycleRole::Flat => {}
-            }
-        }
-
-        let mut debtor_entries = Vec::with_capacity(unpaid.len());
-        for pos in &unpaid {
-            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
-            match debtor_proofs.get(&participant) {
-                Some((amount, proof)) => debtor_entries.push(DebtorSettlement {
-                    debtor: participant,
-                    net_debit: *amount,
-                    proof: proof.clone(),
-                }),
-                None => warn!(
-                    "missing debtor proof for {participant} in settlement cycle {cycle_id}; skipping"
-                ),
-            }
-        }
-
-        let mut creditor_entries = Vec::with_capacity(claimable.len());
-        for pos in &claimable {
-            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
-            match creditor_proofs.get(&participant) {
-                Some((amount, proof)) => creditor_entries.push(CreditorSettlement {
-                    creditor: participant,
-                    net_credit: *amount,
-                    proof: proof.clone(),
-                }),
-                None => warn!(
-                    "missing creditor proof for {participant} in settlement cycle {cycle_id}; skipping"
-                ),
-            }
-        }
+        let debtor_entries = Self::join_role_settlements(
+            cycle_id,
+            &unpaid,
+            &proofs,
+            ParticipantCycleRole::NetDebtor,
+            "debtor",
+            |debtor, net_debit, proof| DebtorSettlement {
+                debtor,
+                net_debit,
+                proof,
+            },
+        )?;
+        let creditor_entries = Self::join_role_settlements(
+            cycle_id,
+            &claimable,
+            &proofs,
+            ParticipantCycleRole::NetCreditor,
+            "creditor",
+            |creditor, net_credit, proof| CreditorSettlement {
+                creditor,
+                net_credit,
+                proof,
+            },
+        )?;
 
         // A missing proof can never finalize on-chain; defer and surface it rather
         // than half-settling into a stuck state.
@@ -347,41 +344,71 @@ impl CoreService {
         }
     }
 
+    /// Join the still-actionable `positions` (all expected to be of `role`) with their Merkle
+    /// proofs into on-chain settlement entries. A participant whose proof is missing is skipped
+    /// with a warning; callers compare `entries.len()` against `positions.len()` to detect that
+    /// and defer, because a cycle with a missing proof can never settle on-chain. Shared by the
+    /// open-settlement and shortfall paths so both apply the same missing-proof policy.
+    fn join_role_settlements<T>(
+        cycle_id: &str,
+        positions: &[cycle_participant_position::Model],
+        proofs: &[(ParticipantLeaf, Vec<B256>)],
+        role: ParticipantCycleRole,
+        role_label: &str,
+        build: impl Fn(Address, U256, Vec<B256>) -> T,
+    ) -> ServiceResult<Vec<T>> {
+        let mut by_addr: HashMap<Address, (U256, &Vec<B256>)> = HashMap::new();
+        for (leaf, proof) in proofs {
+            if leaf.role == role {
+                by_addr.insert(leaf.participant, (leaf.amount, proof));
+            }
+        }
+
+        let mut entries = Vec::with_capacity(positions.len());
+        for pos in positions {
+            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
+            match by_addr.get(&participant) {
+                Some((amount, proof)) => {
+                    entries.push(build(participant, *amount, (*proof).clone()))
+                }
+                None => warn!(
+                    "missing {role_label} proof for {participant} in settlement cycle {cycle_id}; skipping"
+                ),
+            }
+        }
+        Ok(entries)
+    }
+
     /// Build the on-chain creditor-funding entries (with Merkle proofs) for a cycle's
-    /// still-claimable net creditors.
-    async fn creditor_settlements(&self, cycle_id: &str) -> ServiceResult<Vec<CreditorSettlement>> {
+    /// still-claimable net creditors. Returns the entries and the expected count; when
+    /// `entries.len() < expected` a creditor's proof was missing (and they must self-claim).
+    async fn creditor_settlements(
+        &self,
+        cycle_id: &str,
+    ) -> ServiceResult<(Vec<CreditorSettlement>, usize)> {
         let claimable = repo::list_claimable_creditors_for_cycle_on(
             self.inner.persist_ctx.db.as_ref(),
             cycle_id,
         )
         .await?;
         if claimable.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
 
         let proofs = self.get_cycle_participant_proofs(cycle_id).await?;
-        let mut creditor_proofs: HashMap<Address, (U256, Vec<B256>)> = HashMap::new();
-        for (leaf, proof) in proofs {
-            if leaf.role == ParticipantCycleRole::NetCreditor {
-                creditor_proofs.insert(leaf.participant, (leaf.amount, proof));
-            }
-        }
-
-        let mut entries = Vec::with_capacity(claimable.len());
-        for pos in &claimable {
-            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
-            match creditor_proofs.get(&participant) {
-                Some((amount, proof)) => entries.push(CreditorSettlement {
-                    creditor: participant,
-                    net_credit: *amount,
-                    proof: proof.clone(),
-                }),
-                None => warn!(
-                    "missing creditor proof for {participant} in settlement cycle {cycle_id}; skipping"
-                ),
-            }
-        }
-        Ok(entries)
+        let entries = Self::join_role_settlements(
+            cycle_id,
+            &claimable,
+            &proofs,
+            ParticipantCycleRole::NetCreditor,
+            "creditor",
+            |creditor, net_credit, proof| CreditorSettlement {
+                creditor,
+                net_credit,
+                proof,
+            },
+        )?;
+        Ok((entries, claimable.len()))
     }
 
     /// Drive an under-funded, fully-resolved cycle to the terminal Shortfall state once the
@@ -438,7 +465,14 @@ impl CoreService {
 
         // Pay remaining creditors their pro-rata share (no Aave liquidity needed); creditors may
         // also self-claim on-chain.
-        let creditor_entries = self.creditor_settlements(cycle_id).await?;
+        let (creditor_entries, creditor_expected) = self.creditor_settlements(cycle_id).await?;
+        if creditor_entries.len() != creditor_expected {
+            warn!(
+                "incomplete creditor proofs for shortfall settlement cycle {cycle_id} ({}/{}); the unproven creditors must self-claim on-chain",
+                creditor_entries.len(),
+                creditor_expected
+            );
+        }
         let batch_size = self.inner.config.settlement_cycle.default_batch_size.max(1) as usize;
         for chunk in creditor_entries.chunks(batch_size) {
             self.inner

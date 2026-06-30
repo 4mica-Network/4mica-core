@@ -38,6 +38,9 @@ pub struct Inner {
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
+    /// Serializes settlement ticks so an overlong `settle_due_cycles` run can't overlap the next
+    /// scheduled fire and re-submit the same on-chain settlement work concurrently.
+    settlement_tick: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -193,6 +196,7 @@ impl CoreService {
             persist_ctx: deps.persist_ctx,
             read_provider: deps.read_provider,
             contract_api: deps.contract_api,
+            settlement_tick: tokio::sync::Mutex::new(()),
         };
 
         Ok(Self {
