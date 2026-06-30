@@ -126,6 +126,45 @@ impl ClearingCycleView {
     pub fn is_under_funded_and_resolved(&self) -> bool {
         self.total_resolved_debit == self.total_net_debit && self.funded() < self.total_net_credit
     }
+
+    /// The decoded on-chain cycle status.
+    pub fn status(&self) -> CycleStatus {
+        CycleStatus::from_u8(self.status)
+    }
+
+    pub fn is_finalized(&self) -> bool {
+        self.status() == CycleStatus::Finalized
+    }
+
+    pub fn is_shortfall(&self) -> bool {
+        self.status() == CycleStatus::Shortfall
+    }
+}
+
+/// Mirror of `ClearingHouse.CycleStatus` (contracts/src/ClearingHouse.sol). Keep these ordinals in
+/// sync with the Solidity enum; `Unknown` guards against a contract that adds states ahead of this
+/// build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleStatus {
+    Committed,
+    PaymentWindowOpen,
+    Finalized,
+    Defaulted,
+    Shortfall,
+    Unknown(u8),
+}
+
+impl CycleStatus {
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Committed,
+            1 => Self::PaymentWindowOpen,
+            2 => Self::Finalized,
+            3 => Self::Defaulted,
+            4 => Self::Shortfall,
+            other => Self::Unknown(other),
+        }
+    }
 }
 
 #[async_trait]

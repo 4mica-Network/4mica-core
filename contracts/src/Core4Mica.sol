@@ -521,13 +521,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         returns (uint256 seized)
     {
         if (asset == ETH_ASSET) {
-            uint256 available = ethCollateralBalances[debtor];
-            if (amount > available) revert InsufficientAvailable();
-            ethCollateralBalances[debtor] = available - amount;
+            if (amount > ethCollateralBalances[debtor]) revert InsufficientAvailable();
+            _seizeEth(debtor, amount);
             seized = amount;
-            (bool ok,) = payable(msg.sender).call{value: amount}("");
-            if (!ok) revert TransferFailed();
-            emit CollateralSeized(debtor, asset, amount, 0);
         } else {
             if (amount > _userWithdrawableStablecoinBalance(debtor, asset)) revert InsufficientAvailable();
             // Re-attribute the debtor's scaled position into escrow rather than withdrawing
@@ -554,17 +550,24 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         if (asset == ETH_ASSET) {
             uint256 take = Math.min(amount, ethCollateralBalances[debtor]);
             if (take == 0) return 0;
-            ethCollateralBalances[debtor] -= take;
+            _seizeEth(debtor, take);
             seized = take;
-            (bool ok,) = payable(msg.sender).call{value: take}("");
-            if (!ok) revert TransferFailed();
-            emit CollateralSeized(debtor, asset, take, 0);
         } else {
             uint256 take = Math.min(amount, _userWithdrawableStablecoinBalance(debtor, asset));
             if (take == 0) return 0;
             // Stablecoin path emits CollateralSeized itself.
             seized = _seizeStablecoinToEscrow(debtor, asset, take);
         }
+    }
+
+    /// @dev Debit `amount` of `debtor`'s ETH collateral and forward it to the caller (the
+    /// ClearingHouse). Caller must ensure `amount <= ethCollateralBalances[debtor]`. Shared by
+    /// `seizeCollateral` (revert-on-shortfall) and `seizeUpTo` (clamp-to-available).
+    function _seizeEth(address debtor, uint256 amount) internal {
+        ethCollateralBalances[debtor] -= amount;
+        (bool ok,) = payable(msg.sender).call{value: amount}("");
+        if (!ok) revert TransferFailed();
+        emit CollateralSeized(debtor, ETH_ASSET, amount, 0);
     }
 
     /// Credit `amount` of `asset` to a creditor's collateral, funded by the caller

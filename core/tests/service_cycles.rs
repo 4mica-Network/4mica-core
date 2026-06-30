@@ -2,7 +2,7 @@
 //! and netting independence from collateral. No chain, no HTTP.
 
 use alloy::primitives::U256;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use entities::sea_orm_active_enums::SettlementCycleStatus;
 
 #[path = "common/mod.rs"]
@@ -16,7 +16,11 @@ use core_service::{config::DEFAULT_ASSET_ADDRESS, persist::repo};
 #[serial_test::file_serial(db)]
 async fn active_cycle_creation_reuses_open_cycle_for_same_asset() -> anyhow::Result<()> {
     let service = setup_cycle_service().await?;
-    let now = Utc::now();
+    // Align to a day boundary (a multiple of any standard cycle length) so both instants fall in
+    // the same settlement window; using a raw Utc::now() flakes when it lands near a boundary.
+    let secs = Utc::now().timestamp();
+    let now = DateTime::<Utc>::from_timestamp(secs - secs.rem_euclid(86_400), 0)
+        .expect("aligned timestamp is valid");
 
     let first = service
         .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, now)

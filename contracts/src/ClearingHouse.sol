@@ -222,11 +222,19 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
         // Full amount when fully funded; pro-rata share of the pool in a Shortfall cycle.
         uint256 payout = _creditorPayout(cycle, netCredit);
-        if (payout == 0) revert AmountZero();
-        uint256 available = cycle.totalPaidIn + cycle.totalDefaultCovered - cycle.totalClaimedOut;
+        ParticipantState storage participant = participantStates[cycleId][msg.sender];
+        if (payout == 0) {
+            // Pro-rata share rounded to zero under a severe shortfall. Resolve the creditor
+            // (mirroring fundCreditorsFromPoolBatch) instead of reverting, so they aren't left
+            // unable to self-claim and stranded awaiting the operator batch.
+            participant.netCredit = netCredit;
+            participant.claimed = true;
+            emit CreditorClaimed(cycleId, msg.sender, cycle.asset, 0);
+            return;
+        }
+        uint256 available = _available(cycle);
         if (available < payout) revert ClaimExceedsFundedLiquidity(available, payout);
 
-        ParticipantState storage participant = participantStates[cycleId][msg.sender];
         participant.netCredit = netCredit;
         participant.claimed = true;
         cycle.totalClaimedOut += payout;
@@ -304,10 +312,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
-        // A fully-funded cycle pays each creditor in full; a Shortfall cycle pays pro-rata
-        //. Outside Shortfall, funding before the pool is complete is rejected.
+        // A fully-funded cycle pays each creditor in full; a Shortfall cycle pays pro-rata.
+        // Outside Shortfall, funding before the pool is complete is rejected.
         if (cycle.status != CycleStatus.Shortfall) {
-            uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
+            uint256 funded = _funded(cycle);
             if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
         }
 
@@ -333,7 +341,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, 0);
                 continue;
             }
-            uint256 available = cycle.totalPaidIn + cycle.totalDefaultCovered - cycle.totalClaimedOut;
+            uint256 available = _available(cycle);
             if (available < payout) {
                 emit SettlementSkipped(cycleId, entry.creditor, "insufficient liquidity");
                 continue;
@@ -387,7 +395,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (cycle.totalResolvedDebit != cycle.totalNetDebit) {
             revert CycleDebtUnresolved(cycle.totalResolvedDebit, cycle.totalNetDebit);
         }
-        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
+        uint256 funded = _funded(cycle);
         if (funded >= cycle.totalNetCredit) revert CycleFullyFunded(funded, cycle.totalNetCredit);
 
         cycle.status = CycleStatus.Shortfall;
@@ -404,7 +412,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             revert CycleDebtUnresolved(cycle.totalResolvedDebit, cycle.totalNetDebit);
         }
 
-        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
+        uint256 funded = _funded(cycle);
         if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
         if (cycle.totalClaimedOut != cycle.totalNetCredit) {
             revert CycleClaimsUnresolved(cycle.totalClaimedOut, cycle.totalNetCredit);
@@ -467,11 +475,22 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         }
     }
 
+    /// Total value available to a cycle's creditors: debtor payments plus collateral recovered
+    /// via seizure.
+    function _funded(OnchainCycle storage cycle) private view returns (uint256) {
+        return cycle.totalPaidIn + cycle.totalDefaultCovered;
+    }
+
+    /// Funded value not yet paid out to creditors.
+    function _available(OnchainCycle storage cycle) private view returns (uint256) {
+        return _funded(cycle) - cycle.totalClaimedOut;
+    }
+
     /// The underlying a creditor owed `netCredit` receives: the full amount once the cycle is
-    /// fully funded, or a pro-rata share of the funded pool in the terminal Shortfall state
-    ///. Reverts in non-shortfall states if the cycle is not yet fully funded.
+    /// fully funded, or a pro-rata share of the funded pool in the terminal Shortfall state.
+    /// Reverts in non-shortfall states if the cycle is not yet fully funded.
     function _creditorPayout(OnchainCycle storage cycle, uint256 netCredit) private view returns (uint256) {
-        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
+        uint256 funded = _funded(cycle);
         if (cycle.status == CycleStatus.Shortfall) {
             return Math.mulDiv(netCredit, funded, cycle.totalNetCredit);
         }

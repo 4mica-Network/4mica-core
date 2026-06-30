@@ -420,10 +420,6 @@ impl CoreService {
         cycle_id: &str,
         now: NaiveDateTime,
     ) -> ServiceResult<bool> {
-        // On-chain CycleStatus enum ordinals.
-        const CYCLE_STATUS_FINALIZED: u8 = 2;
-        const CYCLE_STATUS_SHORTFALL: u8 = 4;
-
         let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
         let view = self
             .inner
@@ -431,7 +427,7 @@ impl CoreService {
             .get_clearing_cycle(onchain_cycle_id)
             .await
             .map_err(|e| ServiceError::Other(anyhow!(e)))?;
-        if !view.exists || view.status == CYCLE_STATUS_FINALIZED {
+        if !view.exists || view.is_finalized() {
             return Ok(false);
         }
 
@@ -446,11 +442,11 @@ impl CoreService {
 
         // Only socialize a genuinely under-collateralised cycle: every debtor resolved but the
         // recovered pool still can't cover creditor claims.
-        if view.status != CYCLE_STATUS_SHORTFALL && !view.is_under_funded_and_resolved() {
+        if !view.is_shortfall() && !view.is_under_funded_and_resolved() {
             return Ok(false);
         }
 
-        if view.status != CYCLE_STATUS_SHORTFALL {
+        if !view.is_shortfall() {
             warn!(
                 "settlement cycle {cycle_id} under-funded after grace window (funded {} < required {}); entering Shortfall",
                 view.funded(),
