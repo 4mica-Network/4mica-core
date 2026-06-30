@@ -159,6 +159,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     event ProtocolYieldClaimed(address indexed asset, address indexed to, uint256 amount);
     event SurplusATokensClaimed(address indexed asset, address indexed to, uint256 scaledAmount, uint256 nominalAmount);
+    /// Seized debtor collateral during settlement. For stablecoins `scaledToEscrow` is the scaled aToken
+    /// amount moved into the settlement escrow; for ETH it is 0.
+    event CollateralSeized(address indexed debtor, address indexed asset, uint256 amount, uint256 scaledToEscrow);
+    /// Escrowed stablecoin collateral re-attributed to a creditor (no Aave round trip).
+    event EscrowCredited(address indexed creditor, address indexed asset, uint256 amount, uint256 scaledFromEscrow);
+    /// Escrowed stablecoin collateral converted to underlying via Aave and paid out.
+    event EscrowWithdrawn(address indexed asset, address indexed recipient, uint256 amount, uint256 scaledBurned);
+    /// Debtor's paid-in stablecoin supplied to Aave and held in the settlement escrow.
+    event EscrowDeposited(address indexed asset, address indexed from, uint256 amount, uint256 scaledCredited);
 
     // ========= Constructor =========
     constructor(address manager, BLS.G1Point memory verificationKey, address[] memory stablecoins_)
@@ -506,20 +515,22 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             seized = amount;
             (bool ok,) = payable(msg.sender).call{value: amount}("");
             if (!ok) revert TransferFailed();
+            emit CollateralSeized(debtor, asset, amount, 0);
         } else {
             if (amount > _userWithdrawableStablecoinBalance(debtor, asset)) revert InsufficientAvailable();
             // Re-attribute the debtor's scaled position into escrow rather than withdrawing
-            // underlying from Aave, so the seizure cannot revert on Aave illiquidity
-            //. Conversion to underlying happens lazily at creditor cash-out.
+            // underlying from Aave, so the seizure cannot revert on Aave illiquidity.
+            // Conversion to underlying happens lazily at creditor cash-out. The stablecoin path
+            // emits CollateralSeized itself (it has the scaled-to-escrow amount).
             seized = _seizeStablecoinToEscrow(debtor, asset, amount);
         }
     }
 
     /// Seize up to `amount` of a defaulting debtor's collateral, recovering whatever is
     /// available without reverting on a shortfall. Lets settlement always resolve an
-    /// under-collateralised debtor so the cycle can reach a terminal state rather than wedging
-    ///. Returns the underlying-equivalent actually seized (possibly < `amount`,
-    /// or zero). Restricted to the ClearingHouse.
+    /// under-collateralised debtor so the cycle can reach a terminal state rather than wedging.
+    /// Returns the underlying-equivalent actually seized (possibly < `amount`, or zero).
+    /// Restricted to the ClearingHouse.
     function seizeUpTo(address debtor, address asset, uint256 amount)
         external
         restricted
@@ -535,9 +546,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             seized = take;
             (bool ok,) = payable(msg.sender).call{value: take}("");
             if (!ok) revert TransferFailed();
+            emit CollateralSeized(debtor, asset, take, 0);
         } else {
             uint256 take = Math.min(amount, _userWithdrawableStablecoinBalance(debtor, asset));
             if (take == 0) return 0;
+            // Stablecoin path emits CollateralSeized itself.
             seized = _seizeStablecoinToEscrow(debtor, asset, take);
         }
     }
@@ -590,13 +603,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         stablecoinPrincipalBalances[creditor][asset] += amount;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
+        emit EscrowCredited(creditor, asset, amount, scaledAmount);
     }
 
     /// Convert up to `amount` of escrowed stablecoin collateral to underlying via Aave and
     /// send it to `recipient`. Partial-fill tolerant: returns the amount actually withdrawn
-    /// (which may be less than `amount` if Aave liquidity is short), never reverting on a
-    /// shortfall, so an individual cash-out can be retried without wedging the cycle
-    ///. Restricted to the ClearingHouse.
+    /// (which may be less than `amount` if Aave liquidity is short). Never reverts on an Aave
+    /// liquidity shortfall, so an individual cash-out can be retried without wedging the cycle
+    /// (it can still revert on an escrow underflow or reconciliation failure). Restricted to the
+    /// ClearingHouse.
     function withdrawFromEscrow(address asset, uint256 amount, address recipient)
         external
         restricted
@@ -617,6 +632,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         escrowScaledStablecoinBalances[asset] = escrowScaled - scaledBurn;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
+        emit EscrowWithdrawn(asset, recipient, actualWithdrawn, scaledBurn);
     }
 
     /// Pull `amount` of `asset` from the caller, supply it into Aave, and hold it in the
@@ -642,6 +658,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         escrowScaledStablecoinBalances[asset] += scaledCredit;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
+        emit EscrowDeposited(asset, msg.sender, amount, scaledCredit);
     }
 
     // ========= Views / Helpers =========
@@ -1004,26 +1021,57 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     /// underlying to `recipient`, and keeps the scaled / principal / protocol-fee
     /// accounting and reconciliation invariants consistent. `amount` must not exceed
     /// the user's withdrawable balance. Returns the underlying actually withdrawn.
+    /// @dev Shared accounting for both stablecoin debit paths (user withdrawal and seizure):
+    /// for a debit of `amount` underlying, returns how much principal it consumes and the scaled
+    /// protocol-fee slice to reallocate from the user to the protocol pool. View-only — no state
+    /// writes, no Aave interaction. Keeps the 4MCA-H03 fee math in one place so a fix can never
+    /// land in only one caller.
+    function _planStablecoinDebit(address user, address asset, uint256 amount, uint256 index)
+        internal
+        view
+        returns (uint256 principalConsumed, uint256 protocolScaledCredit)
+    {
+        uint256 gross = _grossYield(user, asset);
+        uint256 userNet = _netYieldFromGross(gross);
+        principalConsumed = Math.min(amount, stablecoinPrincipalBalances[user][asset]);
+        uint256 userYieldWithdrawn = amount - principalConsumed;
+        uint256 remainingGross = _grossForNetYield(userNet - userYieldWithdrawn);
+        uint256 grossAfterUserWithdrawal = gross - userYieldWithdrawn;
+        // Saturating subtraction: _grossForNetYield returns the smallest preimage, so
+        // remainingGross can never exceed grossAfterUserWithdrawal; the clamp guards a rounding
+        // edge so the call can never underflow and revert a seizure or partial withdrawal. Any
+        // under-charge is at most one unit, in the user's favour (4MCA-H03).
+        uint256 protocolFeeReallocatedUnderlying =
+            grossAfterUserWithdrawal > remainingGross ? grossAfterUserWithdrawal - remainingGross : 0;
+        protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, index);
+    }
+
+    /// @dev Applies the user-side burn shared by both debit paths: removes `principalConsumed`
+    /// principal and `userScaledDeduction` scaled aTokens from the user, reverting on a scaled
+    /// underflow. The caller routes the seized/withdrawn scaled value and credits the protocol fee.
+    function _applyUserStablecoinDeduction(
+        address user,
+        address asset,
+        uint256 principalConsumed,
+        uint256 userScaledDeduction
+    ) internal {
+        uint256 userScaledBalance = scaledStablecoinBalances[user][asset];
+        if (userScaledDeduction > userScaledBalance) {
+            revert UserScaledBalanceUnderflow(asset, user, userScaledDeduction, userScaledBalance);
+        }
+        stablecoinPrincipalBalances[user][asset] -= principalConsumed;
+        scaledStablecoinBalances[user][asset] = userScaledBalance - userScaledDeduction;
+        totalUserScaledStablecoinBalances[asset] -= userScaledDeduction;
+    }
+
     function _debitUserStablecoin(address user, address asset, uint256 amount, address recipient)
         internal
         returns (uint256 withdrawalAmount)
     {
-        uint256 principal = stablecoinPrincipalBalances[user][asset];
-        uint256 gross = _grossYield(user, asset);
-        uint256 userNet = _netYieldFromGross(gross);
         withdrawalAmount = amount;
-        uint256 principalConsumed = Math.min(withdrawalAmount, principal);
-        uint256 userYieldWithdrawn = withdrawalAmount - principalConsumed;
-        uint256 remainingUserNet = userNet - userYieldWithdrawn;
-        uint256 remainingGross = _grossForNetYield(remainingUserNet);
-        // Saturating subtraction: grossForNetYield now returns the smallest preimage, so
-        // remainingGross can never exceed (gross - userYieldWithdrawn); clamp anyway so a
-        // rounding edge can never underflow and revert a seizure or partial withdrawal
-        //. Any under-charge is at most one unit, in the user's favour.
-        uint256 grossAfterUserWithdrawal = gross - userYieldWithdrawn;
-        uint256 protocolFeeReallocatedUnderlying =
-            grossAfterUserWithdrawal > remainingGross ? grossAfterUserWithdrawal - remainingGross : 0;
-        uint256 protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, _currentIndex(asset));
+        uint256 index = _currentIndex(asset);
+        (uint256 principalConsumed, uint256 protocolScaledCredit) =
+            _planStablecoinDebit(user, asset, withdrawalAmount, index);
 
         (uint256 scaledBurn, uint256 actualWithdrawn) =
             _withdrawStablecoinAndMeasureScaledBurn(asset, withdrawalAmount, recipient);
@@ -1031,15 +1079,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             revert StablecoinWithdrawShortfall(asset, withdrawalAmount, actualWithdrawn);
         }
 
-        uint256 userScaledDeduction = scaledBurn + protocolScaledCredit;
-        uint256 userScaledBalance = scaledStablecoinBalances[user][asset];
-        if (userScaledDeduction > userScaledBalance) {
-            revert UserScaledBalanceUnderflow(asset, user, userScaledDeduction, userScaledBalance);
-        }
-
-        stablecoinPrincipalBalances[user][asset] = principal - principalConsumed;
-        scaledStablecoinBalances[user][asset] = userScaledBalance - userScaledDeduction;
-        totalUserScaledStablecoinBalances[asset] -= userScaledDeduction;
+        _applyUserStablecoinDeduction(user, asset, principalConsumed, scaledBurn + protocolScaledCredit);
         protocolScaledStablecoinBalances[asset] += protocolScaledCredit;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
@@ -1047,46 +1087,28 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     /// Seizes `amount` of `user`'s withdrawable stablecoin balance into the settlement
     /// escrow, mirroring [`_debitUserStablecoin`]'s scaled / principal / protocol-fee
-    /// accounting but WITHOUT touching Aave: the seized value is re-attributed as scaled
-    /// aTokens to the escrow rather than withdrawn to underlying, so a seizure never depends
-    /// on instantaneous Aave liquidity. `amount` must not exceed the user's
+    /// accounting (via [`_planStablecoinDebit`]) but WITHOUT touching Aave: the seized value is
+    /// re-attributed as scaled aTokens to the escrow rather than withdrawn to underlying, so a
+    /// seizure never depends on instantaneous Aave liquidity. `amount` must not exceed the user's
     /// withdrawable balance. Returns the underlying-equivalent seized into escrow.
     function _seizeStablecoinToEscrow(address user, address asset, uint256 amount)
         internal
         returns (uint256 seizedUnderlying)
     {
         uint256 index = _currentIndex(asset);
-        uint256 principal = stablecoinPrincipalBalances[user][asset];
-        uint256 gross = _grossYield(user, asset);
-        uint256 userNet = _netYieldFromGross(gross);
-        uint256 principalConsumed = Math.min(amount, principal);
-        uint256 userYieldWithdrawn = amount - principalConsumed;
-        uint256 remainingUserNet = userNet - userYieldWithdrawn;
-        uint256 remainingGross = _grossForNetYield(remainingUserNet);
-        // Saturating, identical to _debitUserStablecoin.
-        uint256 grossAfterUserWithdrawal = gross - userYieldWithdrawn;
-        uint256 protocolFeeReallocatedUnderlying =
-            grossAfterUserWithdrawal > remainingGross ? grossAfterUserWithdrawal - remainingGross : 0;
-        uint256 protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, index);
+        (uint256 principalConsumed, uint256 protocolScaledCredit) = _planStablecoinDebit(user, asset, amount, index);
 
         // Round the seized scaled amount UP, matching the burn Aave would perform on a real
         // withdrawal, so the escrow holds at least `amount` of underlying value.
         uint256 scaledSeized = _toScaledRoundUp(amount, index);
-        uint256 userScaledDeduction = scaledSeized + protocolScaledCredit;
-        uint256 userScaledBalance = scaledStablecoinBalances[user][asset];
-        if (userScaledDeduction > userScaledBalance) {
-            revert UserScaledBalanceUnderflow(asset, user, userScaledDeduction, userScaledBalance);
-        }
-
-        stablecoinPrincipalBalances[user][asset] = principal - principalConsumed;
-        scaledStablecoinBalances[user][asset] = userScaledBalance - userScaledDeduction;
-        totalUserScaledStablecoinBalances[asset] -= userScaledDeduction;
+        _applyUserStablecoinDeduction(user, asset, principalConsumed, scaledSeized + protocolScaledCredit);
         escrowScaledStablecoinBalances[asset] += scaledSeized;
         protocolScaledStablecoinBalances[asset] += protocolScaledCredit;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
 
         seizedUnderlying = amount;
+        emit CollateralSeized(user, asset, amount, scaledSeized);
     }
 
     /// Supplies `amount` of `asset` (pulled from `from`) into Aave and credits it to
