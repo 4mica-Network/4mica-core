@@ -530,7 +530,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             // underlying from Aave, so the seizure cannot revert on Aave illiquidity.
             // Conversion to underlying happens lazily at creditor cash-out. The stablecoin path
             // emits CollateralSeized itself (it has the scaled-to-escrow amount).
-            seized = _seizeStablecoinToEscrow(debtor, asset, amount);
+            seized = _seizeStablecoinToEscrow(debtor, asset, amount, false);
         }
     }
 
@@ -556,7 +556,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             uint256 take = Math.min(amount, _userWithdrawableStablecoinBalance(debtor, asset));
             if (take == 0) return 0;
             // Stablecoin path emits CollateralSeized itself.
-            seized = _seizeStablecoinToEscrow(debtor, asset, take);
+            seized = _seizeStablecoinToEscrow(debtor, asset, take, true);
         }
     }
 
@@ -1106,7 +1106,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     /// re-attributed as scaled aTokens to the escrow rather than withdrawn to underlying, so a
     /// seizure never depends on instantaneous Aave liquidity. `amount` must not exceed the user's
     /// withdrawable balance. Returns the underlying-equivalent seized into escrow.
-    function _seizeStablecoinToEscrow(address user, address asset, uint256 amount)
+    function _seizeStablecoinToEscrow(address user, address asset, uint256 amount, bool bestEffort)
         internal
         returns (uint256 seizedUnderlying)
     {
@@ -1116,14 +1116,33 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         // Round the seized scaled amount UP, matching the burn Aave would perform on a real
         // withdrawal, so the escrow holds at least `amount` of underlying value.
         uint256 scaledSeized = _toScaledRoundUp(amount, index);
+        seizedUnderlying = amount;
+
+        // A scaled position can back up to ~1 base unit less than its recorded principal: Aave mints
+        // scaled by rounding `amount / index` DOWN at deposit, while principal is stored at face
+        // value and the withdrawable bound floors net yield at 0 rather than below principal. In that
+        // dust edge `scaledSeized` (rounded UP) exceeds the user's scaled balance, so the deduction
+        // would underflow and revert. On the best-effort path (`seizeUpTo`) a revert would leave the
+        // debtor unresolved and wedge the whole cycle, so instead seize the entire position and
+        // report what it truly backs; the <=1-unit remainder is borne by creditors via the terminal
+        // Shortfall state. The strict path (`seizeCollateral`) keeps its revert-on-shortfall contract.
+        if (bestEffort) {
+            uint256 userScaled = scaledStablecoinBalances[user][asset];
+            if (scaledSeized + protocolScaledCredit > userScaled) {
+                scaledSeized = userScaled;
+                protocolScaledCredit = 0; // no yield to skim when the position backs < principal
+                principalConsumed = stablecoinPrincipalBalances[user][asset];
+                seizedUnderlying = _toUnderlyingRoundDown(scaledSeized, index);
+            }
+        }
+
         _applyUserStablecoinDeduction(user, asset, principalConsumed, scaledSeized + protocolScaledCredit);
         escrowScaledStablecoinBalances[asset] += scaledSeized;
         protocolScaledStablecoinBalances[asset] += protocolScaledCredit;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
 
-        seizedUnderlying = amount;
-        emit CollateralSeized(user, asset, amount, scaledSeized);
+        emit CollateralSeized(user, asset, seizedUnderlying, scaledSeized);
     }
 
     /// Supplies `amount` of `asset` (pulled from `from`) into Aave and credits it to
