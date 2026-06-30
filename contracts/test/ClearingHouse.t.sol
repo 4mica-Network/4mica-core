@@ -686,7 +686,13 @@ contract ClearingHouseTest is Test {
 
         vm.prank(OPERATOR);
         clearingHouse.commitCycle(
-            CYCLE_ID, ETH_ASSET, root, total, total, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            total,
+            total,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
         );
 
         // d1 pays in full; d2 defaults but holds full collateral, so seizure fully covers its debt
