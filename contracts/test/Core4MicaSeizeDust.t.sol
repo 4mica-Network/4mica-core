@@ -72,9 +72,7 @@ contract Core4MicaSeizeDustTest is Core4MicaTestBase {
         assertEq(core4Mica.totalUserScaledBalance(address(usdc)), 0, "user scaled zeroed");
 
         // The whole scaled position moved into escrow.
-        assertEq(
-            core4Mica.escrowScaledBalance(address(usdc)) - escrowBefore, DUST_SCALED, "escrow took full position"
-        );
+        assertEq(core4Mica.escrowScaledBalance(address(usdc)) - escrowBefore, DUST_SCALED, "escrow took full position");
         _assertReconciled(address(usdc));
     }
 
