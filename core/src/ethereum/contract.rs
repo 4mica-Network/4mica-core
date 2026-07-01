@@ -81,6 +81,9 @@ pub mod abi {
 
         #[derive(Debug)]
         event CycleFinalized(bytes32 indexed cycleId);
+
+        #[derive(Debug)]
+        event SettlementSkipped(bytes32 indexed cycleId, address indexed participant, string reason);
     }
 }
 
@@ -88,12 +91,12 @@ pub mod abi {
 pub use abi::{
     AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
     CycleFinalized, DebtorDefaulted, DebtorPaid, GuaranteeVersionUpdated, ProtocolYieldClaimed,
-    StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated, WithdrawalCanceled,
-    WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
+    SettlementSkipped, StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated,
+    WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 17] = [
+pub const EVENT_SIGNATURES: [&str; 18] = [
     CollateralDeposited::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
     WithdrawalRequested::SIGNATURE,
@@ -111,10 +114,11 @@ pub const EVENT_SIGNATURES: [&str; 17] = [
     CreditorClaimed::SIGNATURE,
     DebtorDefaulted::SIGNATURE,
     CycleFinalized::SIGNATURE,
+    SettlementSkipped::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 17] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     CollateralDeposited::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
     WithdrawalRequested::SIGNATURE_HASH,
@@ -132,6 +136,7 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 17] = [
     CreditorClaimed::SIGNATURE_HASH,
     DebtorDefaulted::SIGNATURE_HASH,
     CycleFinalized::SIGNATURE_HASH,
+    SettlementSkipped::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -322,7 +327,7 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
-    const EXPECTED_EVENT_SIGNATURES: [&str; 17] = [
+    const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
         "CollateralDeposited(address,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
         "WithdrawalRequested(address,address,uint256,uint256)",
@@ -340,6 +345,7 @@ mod tests {
         "CreditorClaimed(bytes32,address,address,uint256)",
         "DebtorDefaulted(bytes32,address,address,uint256)",
         "CycleFinalized(bytes32)",
+        "SettlementSkipped(bytes32,address,string)",
     ];
 
     #[test]
@@ -364,5 +370,9 @@ mod tests {
         );
         assert_eq!(EVENT_SIGNATURES[12], CycleCommitted::SIGNATURE);
         assert_eq!(EVENT_SIGNATURE_HASHES[16], CycleFinalized::SIGNATURE_HASH);
+        assert_eq!(
+            EVENT_SIGNATURE_HASHES[17],
+            SettlementSkipped::SIGNATURE_HASH
+        );
     }
 }
