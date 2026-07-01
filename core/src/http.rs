@@ -147,6 +147,13 @@ impl From<ServiceError> for ApiError {
                 StatusCode::BAD_REQUEST,
                 "request timestamp is outside the active settlement cycle",
             ),
+            ServiceError::SettlementTimingHalted(msg) => {
+                log::error!("guarantee issuance halted by settlement timing invariant: {msg}");
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "guarantee issuance temporarily unavailable",
+                )
+            }
             ServiceError::Db(e) => {
                 log::error!("database error: {e}");
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
@@ -482,4 +489,18 @@ fn sdk_client_from_headers(headers: &HeaderMap) -> &str {
         .or_else(|| headers.get(USER_AGENT))
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The settlement-timing hard stop (4MCA-H02) must surface as 503 so issuance is refused, not
+    /// merely logged. Locks the mapping against a regression back to a warn-only path.
+    #[test]
+    fn settlement_timing_halted_maps_to_503() {
+        let api: ApiError =
+            ServiceError::SettlementTimingHalted("cycle window exceeds grace".into()).into();
+        assert_eq!(api.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

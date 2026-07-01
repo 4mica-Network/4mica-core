@@ -184,6 +184,9 @@ pub enum ServiceError {
     #[error("another guarantee with req_id {req_id} already exists")]
     DuplicateGuarantee { req_id: U256 },
 
+    #[error("settlement timing invariant violated; guarantee issuance halted: {0}")]
+    SettlementTimingHalted(String),
+
     #[error("database error: {0}")]
     Db(PersistDbError),
 

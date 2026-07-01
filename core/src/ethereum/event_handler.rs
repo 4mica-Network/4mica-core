@@ -23,6 +23,8 @@ pub trait EthereumEventHandler: Send + Sync {
 
     async fn handle_cycle_finalized(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
+    async fn handle_settlement_skipped(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
     async fn handle_admin_event(
         &self,
         log: Log,
@@ -30,4 +32,9 @@ pub trait EthereumEventHandler: Send + Sync {
     ) -> Result<(), BlockchainListenerError>;
 
     async fn handle_unknown_event(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
+    /// Notify the handler that the scanner advanced its confirmed head (one successful tick), so it
+    /// can track scan liveness. Used to detect a stale on-chain `withdrawalGracePeriod` cache before
+    /// minting guarantees. Default no-op; the production handler records the timestamp.
+    fn note_scan_progress(&self) {}
 }

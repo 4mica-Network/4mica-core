@@ -13,7 +13,8 @@ use crate::{
 };
 use alloy::primitives::Address;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
+use chrono::Utc;
 use crypto::bls::KeyMaterial;
 use log::{error, info};
 use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
@@ -27,6 +28,31 @@ pub mod health;
 pub mod netting;
 mod query;
 
+/// Maximum tolerated event-scanner lag before the cached on-chain `withdrawalGracePeriod` is
+/// treated as untrustworthy for the settlement-timing invariant. A healthy scanner advances every
+/// few seconds; 30 minutes is well clear of transient RPC hiccups while still catching a genuinely
+/// wedged scanner long before an unprocessed grace reduction could matter.
+const MAX_SCANNER_LAG_SECS: u64 = 1_800;
+
+/// Decide whether the cached on-chain `withdrawalGracePeriod` is fresh enough to trust.
+/// `last_scan_unix == 0` means the scanner has not completed a tick yet (startup), where the grace
+/// was validated directly against the chain, so freshness is not yet enforced. Once the scanner has
+/// run, a lag beyond `max_lag_secs` returns `Err(lag)` so the caller can halt issuance.
+fn scanner_grace_is_fresh(
+    now_unix: u64,
+    last_scan_unix: u64,
+    max_lag_secs: u64,
+) -> Result<(), u64> {
+    if last_scan_unix == 0 {
+        return Ok(());
+    }
+    let lag = now_unix.saturating_sub(last_scan_unix);
+    if lag > max_lag_secs {
+        return Err(lag);
+    }
+    Ok(())
+}
+
 pub struct Inner {
     config: AppConfig,
     public_params: CorePublicParameters,
@@ -35,6 +61,11 @@ pub struct Inner {
     guarantee_domains: HashMap<u64, [u8; 32]>,
     /// On-chain `withdrawalGracePeriod` (seconds)
     withdrawal_grace_period: AtomicU64,
+    /// Unix timestamp of the last confirmed-head advance reported by the event scanner.
+    /// `0` until the scanner completes its first tick. Used to detect a wedged/lagging scanner,
+    /// after which the cached `withdrawal_grace_period` may be stale (an unprocessed grace
+    /// reduction) and must not be trusted to gate guarantee issuance.
+    last_scan_unix: AtomicU64,
     persist_ctx: PersistCtx,
     read_provider: DynProvider,
     contract_api: Arc<dyn CoreContractApi>,
@@ -193,6 +224,7 @@ impl CoreService {
             accepted_guarantee_versions,
             guarantee_domains: deps.guarantee_domains,
             withdrawal_grace_period: AtomicU64::new(deps.withdrawal_grace_period),
+            last_scan_unix: AtomicU64::new(0),
             persist_ctx: deps.persist_ctx,
             read_provider: deps.read_provider,
             contract_api: deps.contract_api,
@@ -238,9 +270,32 @@ impl CoreService {
         self.inner.withdrawal_grace_period.load(Ordering::Relaxed)
     }
 
-    /// Re-evaluate the settlement-cycle solvency invariant against the currently
-    /// known on-chain `withdrawalGracePeriod`.
+    /// Record that the event scanner advanced its confirmed head, i.e. the cached
+    /// `withdrawal_grace_period` reflects chain state up to "now". Called once per successful
+    /// scan tick; a cheap atomic store, safe to call from the scanner's hot loop.
+    pub(crate) fn record_scan_progress(&self) {
+        let now = Utc::now().timestamp().max(0) as u64;
+        self.inner.last_scan_unix.store(now, Ordering::Relaxed);
+    }
+
+    /// Re-evaluate the settlement-cycle solvency invariant against the currently known on-chain
+    /// `withdrawalGracePeriod`.
+    ///
+    /// Also guards the *freshness* of that cached value: the grace period is event-sourced from
+    /// `WithdrawalGracePeriodUpdated`, so if the scanner is wedged or lagging (4MCA-M02), an
+    /// on-chain grace *reduction* may be unprocessed and the cached value stale-high. Trusting it
+    /// would let issuance keep minting against a window that no longer holds, so a stale scanner is
+    /// itself a hard stop (4MCA-H02).
     pub(crate) fn check_settlement_timing_invariant(&self) -> anyhow::Result<()> {
+        let now = Utc::now().timestamp().max(0) as u64;
+        let last_scan = self.inner.last_scan_unix.load(Ordering::Relaxed);
+        if let Err(lag) = scanner_grace_is_fresh(now, last_scan, MAX_SCANNER_LAG_SECS) {
+            bail!(
+                "event scanner is {lag}s behind (> {MAX_SCANNER_LAG_SECS}s); the cached on-chain \
+                 withdrawalGracePeriod may be stale, so guarantee issuance is halted until the \
+                 scanner catches up"
+            );
+        }
         self.inner
             .config
             .settlement_cycle
@@ -282,5 +337,38 @@ impl CoreService {
         let updated =
             repo::update_user_suspension(&self.inner.persist_ctx, &user_address, suspended).await?;
         Ok(mapper::user_model_to_suspension_status(updated))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SCANNER_LAG_SECS, scanner_grace_is_fresh};
+
+    #[test]
+    fn freshness_skipped_before_first_scan() {
+        // last_scan_unix == 0: scanner has not run yet; startup validated grace directly.
+        assert!(scanner_grace_is_fresh(1_000_000, 0, MAX_SCANNER_LAG_SECS).is_ok());
+    }
+
+    #[test]
+    fn freshness_ok_within_lag_window() {
+        let now = 1_000_000;
+        let last = now - MAX_SCANNER_LAG_SECS; // exactly at the bound is still fresh
+        assert!(scanner_grace_is_fresh(now, last, MAX_SCANNER_LAG_SECS).is_ok());
+    }
+
+    #[test]
+    fn freshness_fails_when_scanner_stale() {
+        let now = 1_000_000;
+        let last = now - MAX_SCANNER_LAG_SECS - 1; // one second past the bound
+        let lag = scanner_grace_is_fresh(now, last, MAX_SCANNER_LAG_SECS)
+            .expect_err("a stale scanner must fail the freshness check");
+        assert_eq!(lag, MAX_SCANNER_LAG_SECS + 1);
+    }
+
+    #[test]
+    fn freshness_handles_clock_skew_without_underflow() {
+        // last_scan in the future (clock skew) must not underflow; treat as zero lag.
+        assert!(scanner_grace_is_fresh(1_000, 2_000, MAX_SCANNER_LAG_SECS).is_ok());
     }
 }
