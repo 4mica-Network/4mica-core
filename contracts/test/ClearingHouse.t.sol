@@ -153,7 +153,13 @@ contract ClearingHouseTest is Test {
         vm.prank(OPERATOR);
         vm.expectRevert(ClearingHouse.InvalidDeadline.selector);
         clearingHouse.commitCycle(
-            CYCLE_ID, ETH_ASSET, root, NET_AMOUNT, NET_AMOUNT, uint64(block.timestamp), uint64(block.timestamp + 2 hours)
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            NET_AMOUNT,
+            NET_AMOUNT,
+            uint64(block.timestamp),
+            uint64(block.timestamp + 2 hours)
         );
     }
 
@@ -167,16 +173,26 @@ contract ClearingHouseTest is Test {
         vm.deal(d2, NET_AMOUNT);
 
         bytes32[] memory leaves = new bytes32[](3);
-        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
-        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
-        leaves[2] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, CREDITOR, NET_AMOUNT, ClearingHouse.ParticipantRole.NetCreditor);
+        leaves[0] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] = clearingHouse.participantLeaf(
+            CYCLE_ID, ETH_ASSET, CREDITOR, NET_AMOUNT, ClearingHouse.ParticipantRole.NetCreditor
+        );
         (bytes32 root,) = _merkle(leaves, leaves[0]);
         (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
         (, bytes32[] memory p2) = _merkle(leaves, leaves[1]);
 
         vm.prank(OPERATOR);
         clearingHouse.commitCycle(
-            CYCLE_ID, ETH_ASSET, root, NET_AMOUNT, NET_AMOUNT, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            NET_AMOUNT,
+            NET_AMOUNT,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
         );
 
         // First debtor resolves the entire committed debit.
@@ -198,16 +214,26 @@ contract ClearingHouseTest is Test {
         address d2 = address(0xD2);
 
         bytes32[] memory leaves = new bytes32[](3);
-        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
-        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
-        leaves[2] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, CREDITOR, NET_AMOUNT, ClearingHouse.ParticipantRole.NetCreditor);
+        leaves[0] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] = clearingHouse.participantLeaf(
+            CYCLE_ID, ETH_ASSET, CREDITOR, NET_AMOUNT, ClearingHouse.ParticipantRole.NetCreditor
+        );
         (bytes32 root,) = _merkle(leaves, leaves[0]);
         (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
         (, bytes32[] memory p2) = _merkle(leaves, leaves[1]);
 
         vm.prank(OPERATOR);
         clearingHouse.commitCycle(
-            CYCLE_ID, ETH_ASSET, root, NET_AMOUNT, NET_AMOUNT, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            NET_AMOUNT,
+            NET_AMOUNT,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
         );
 
         core4Mica.setCollateral(d1, ETH_ASSET, NET_AMOUNT);
