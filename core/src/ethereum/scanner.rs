@@ -189,6 +189,11 @@ impl EthereumEventScanner {
 
         crate::metrics::record_scanned_event_tx_block(confirmed_head);
 
+        // The cursor advanced and all events in range were applied, so the cached on-chain
+        // withdrawalGracePeriod now reflects chain state up to this head. Record liveness so the
+        // settlement-timing invariant can detect a wedged scanner and stop trusting a stale grace.
+        handler.note_scan_progress();
+
         Ok(())
     }
 
@@ -388,6 +393,9 @@ impl EthereumEventScanner {
                     }
                     Some(&CycleFinalized::SIGNATURE_HASH) => {
                         handler.handle_cycle_finalized(log.clone()).await
+                    }
+                    Some(&SettlementSkipped::SIGNATURE_HASH) => {
+                        handler.handle_settlement_skipped(log.clone()).await
                     }
                     Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
                         handler

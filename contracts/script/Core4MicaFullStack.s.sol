@@ -74,6 +74,7 @@ contract Core4MicaFullStackScript is Script {
         address[] trustedRegistries;
         bytes32 baseSalt;
         BLS.G1Point guaranteeVerificationKey;
+        uint256 minWithdrawalGracePeriod;
     }
 
     function run() external {
@@ -92,7 +93,8 @@ contract Core4MicaFullStackScript is Script {
             config.managerAdmin,
             config.guaranteeVerificationKey,
             config.stablecoins,
-            config.trustedRegistries
+            config.trustedRegistries,
+            config.minWithdrawalGracePeriod
         );
         _configureDeployedStack(deployment, config);
 
@@ -128,6 +130,11 @@ contract Core4MicaFullStackScript is Script {
             y_a: vm.envBytes32("VK_Y0"),
             y_b: vm.envBytes32("VK_Y1")
         });
+        // On-chain floor for withdrawalGracePeriod, set at construction so it can never be left
+        // at 0. Must exceed worst-case cycle time-to-finality + seizure margin to preserve the
+        // delayed-withdrawal solvency invariant; default 7 days (vs the 22-day default grace).
+        config.minWithdrawalGracePeriod = vm.envOr("MIN_WITHDRAWAL_GRACE_PERIOD", uint256(7 days));
+        require(config.minWithdrawalGracePeriod > 0, "MIN_WITHDRAWAL_GRACE_PERIOD must be > 0");
     }
 
     function _configureDeployedStack(FullStackDeployment memory deployment, DeploymentConfig memory config) internal {
@@ -150,7 +157,8 @@ contract Core4MicaFullStackScript is Script {
         address managerAdmin,
         BLS.G1Point memory guaranteeVerificationKey,
         address[] memory stablecoins,
-        address[] memory trustedRegistries
+        address[] memory trustedRegistries,
+        uint256 minWithdrawalGracePeriod
     ) internal returns (FullStackDeployment memory deployment) {
         address managerAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "ACCESS_MANAGER"),
@@ -159,7 +167,8 @@ contract Core4MicaFullStackScript is Script {
         address core4MicaAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CORE4MICA"),
             abi.encodePacked(
-                type(Core4Mica).creationCode, abi.encode(managerAddress, guaranteeVerificationKey, stablecoins)
+                type(Core4Mica).creationCode,
+                abi.encode(managerAddress, guaranteeVerificationKey, stablecoins, minWithdrawalGracePeriod)
             )
         );
         address routerAddress = DeterministicCreate2.deploy(
@@ -229,20 +238,27 @@ contract Core4MicaFullStackScript is Script {
         internal
     {
         // Cycle commitment and default settlement are 4mica operator-driven settlement bookkeeping.
-        bytes4[] memory operatorSelectors = new bytes4[](3);
+        bytes4[] memory operatorSelectors = new bytes4[](4);
         operatorSelectors[0] = ClearingHouse.commitCycle.selector;
         operatorSelectors[1] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
         operatorSelectors[2] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        operatorSelectors[3] = ClearingHouse.markCycleShortfall.selector;
         for (uint256 i = 0; i < operatorSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(clearingHouse), _asSingletonArray(operatorSelectors[i]), FOURMICA_OPERATOR_ROLE
             );
         }
 
-        // The ClearingHouse alone may move collateral inside Core4Mica during settlement.
-        bytes4[] memory collateralSelectors = new bytes4[](2);
+        // The ClearingHouse alone may move collateral inside Core4Mica during settlement,
+        // including the scaled-escrow hooks used for liquidity-free stablecoin settlement
+        //.
+        bytes4[] memory collateralSelectors = new bytes4[](6);
         collateralSelectors[0] = Core4Mica.seizeCollateral.selector;
         collateralSelectors[1] = Core4Mica.creditCollateral.selector;
+        collateralSelectors[2] = Core4Mica.depositToEscrow.selector;
+        collateralSelectors[3] = Core4Mica.creditFromEscrowScaled.selector;
+        collateralSelectors[4] = Core4Mica.withdrawFromEscrow.selector;
+        collateralSelectors[5] = Core4Mica.seizeUpTo.selector;
         for (uint256 i = 0; i < collateralSelectors.length; i++) {
             manager.setTargetFunctionRole(
                 address(core4Mica), _asSingletonArray(collateralSelectors[i]), CLEARING_HOUSE_ROLE

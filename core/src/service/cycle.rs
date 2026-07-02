@@ -355,6 +355,7 @@ mod tests {
             payment_finality_window_secs: 14_400,
             seizure_margin_secs: 21_600,
             default_batch_size: 50,
+            shortfall_grace_secs: 21_600,
         };
         let now = Utc.with_ymd_and_hms(2026, 4, 27, 14, 37, 11).unwrap();
 

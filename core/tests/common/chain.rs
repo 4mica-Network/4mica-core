@@ -154,6 +154,9 @@ fn force_local_e2e_guarantee_defaults(cfg: &mut AppConfig) {
     cfg.guarantee.max_accepted_version = 1;
     cfg.guarantee.accepted_request_versions.clear();
     cfg.guarantee.trusted_validation_registries.clear();
+    // No shortfall grace window in tests: drive an under-funded cycle terminal immediately so
+    // the Shortfall path is exercised deterministically without advancing wall-clock time.
+    cfg.settlement_cycle.shortfall_grace_secs = 0;
 }
 
 async fn deploy_contracts(
@@ -282,6 +285,7 @@ async fn deploy_clearing_house(
         FixedBytes::<4>::from(ClearingHouse::commitCycleCall::SELECTOR),
         FixedBytes::<4>::from(ClearingHouse::settleDefaultsFromCollateralBatchCall::SELECTOR),
         FixedBytes::<4>::from(ClearingHouse::fundCreditorsFromPoolBatchCall::SELECTOR),
+        FixedBytes::<4>::from(ClearingHouse::markCycleShortfallCall::SELECTOR),
     ];
     access_manager
         .setTargetFunctionRole(*clearing_house.address(), selectors, OPERATOR_ROLE)
@@ -303,7 +307,11 @@ async fn deploy_clearing_house(
     // Let the ClearingHouse move collateral inside Core4Mica during settlement.
     let collateral_selectors = vec![
         FixedBytes::<4>::from(Core4Mica::seizeCollateralCall::SELECTOR),
+        FixedBytes::<4>::from(Core4Mica::seizeUpToCall::SELECTOR),
         FixedBytes::<4>::from(Core4Mica::creditCollateralCall::SELECTOR),
+        FixedBytes::<4>::from(Core4Mica::depositToEscrowCall::SELECTOR),
+        FixedBytes::<4>::from(Core4Mica::creditFromEscrowScaledCall::SELECTOR),
+        FixedBytes::<4>::from(Core4Mica::withdrawFromEscrowCall::SELECTOR),
     ];
     access_manager
         .setTargetFunctionRole(

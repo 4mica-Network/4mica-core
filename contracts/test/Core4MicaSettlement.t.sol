@@ -13,9 +13,12 @@ contract Core4MicaSettlementTest is Core4MicaTestBase {
     function setUp() public override {
         super.setUp();
         // Grant the settlement hooks to OPERATOR, which stands in for the ClearingHouse.
-        bytes4[] memory selectors = new bytes4[](2);
+        bytes4[] memory selectors = new bytes4[](5);
         selectors[0] = Core4Mica.seizeCollateral.selector;
         selectors[1] = Core4Mica.creditCollateral.selector;
+        selectors[2] = Core4Mica.creditFromEscrowScaled.selector;
+        selectors[3] = Core4Mica.withdrawFromEscrow.selector;
+        selectors[4] = Core4Mica.depositToEscrow.selector;
         for (uint256 i = 0; i < selectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(selectors[i]), OPERATOR_ROLE);
         }
@@ -24,7 +27,7 @@ contract Core4MicaSettlementTest is Core4MicaTestBase {
     function _assertReconciled(address asset) internal view {
         uint256 observed = core4Mica.contractScaledATokenBalance(asset);
         uint256 tracked = core4Mica.totalUserScaledBalance(asset) + core4Mica.protocolScaledBalance(asset)
-            + core4Mica.surplusScaledBalance(asset);
+            + core4Mica.escrowScaledBalance(asset) + core4Mica.surplusScaledBalance(asset);
         uint256 tolerance = core4Mica.reconciliationDustToleranceScaled();
         uint256 diff = observed > tracked ? observed - tracked : tracked - observed;
         assertLe(diff, tolerance, "reconciliation drift");
@@ -50,11 +53,15 @@ contract Core4MicaSettlementTest is Core4MicaTestBase {
         core4Mica.depositStablecoin(address(usdc), DEPOSIT);
 
         uint256 operatorBefore = usdc.balanceOf(OPERATOR);
+        uint256 escrowBefore = core4Mica.escrowScaledBalance(address(usdc));
         vm.prank(OPERATOR);
         uint256 seized = core4Mica.seizeCollateral(USER1, address(usdc), 40e6);
 
         assertEq(seized, 40e6);
-        assertEq(usdc.balanceOf(OPERATOR), operatorBefore + 40e6);
+        // The seizure re-attributes the scaled position into escrow;
+        // no underlying is withdrawn from Aave, so the caller receives nothing.
+        assertEq(usdc.balanceOf(OPERATOR), operatorBefore);
+        assertGt(core4Mica.escrowScaledBalance(address(usdc)), escrowBefore);
         assertEq(core4Mica.collateral(USER1, address(usdc)), DEPOSIT - 40e6);
         _assertReconciled(address(usdc));
     }
@@ -123,17 +130,101 @@ contract Core4MicaSettlementTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.depositStablecoin(address(usdc), DEPOSIT);
 
-        // Seize from USER1 into OPERATOR, then credit it back to USER2's collateral.
+        // Seize from USER1 into escrow (no underlying leaves the vault).
         vm.prank(OPERATOR);
         uint256 seized = core4Mica.seizeCollateral(USER1, address(usdc), 60e6);
+        assertEq(seized, 60e6);
+        assertEq(core4Mica.collateral(USER1, address(usdc)), DEPOSIT - 60e6);
+        assertGt(core4Mica.escrowScaledBalance(address(usdc)), 0);
 
+        // Independently credit USER2 from a fresh deposit; escrow plus user balances reconcile.
+        // (The escrow -> creditor round trip lands with the credit-from-escrow primitive.)
+        usdc.mint(OPERATOR, 60e6);
         vm.startPrank(OPERATOR);
-        usdc.approve(address(core4Mica), seized);
-        core4Mica.creditCollateral(USER2, address(usdc), seized);
+        usdc.approve(address(core4Mica), 60e6);
+        core4Mica.creditCollateral(USER2, address(usdc), 60e6);
         vm.stopPrank();
 
-        assertEq(core4Mica.collateral(USER1, address(usdc)), DEPOSIT - 60e6);
         assertEq(core4Mica.collateral(USER2, address(usdc)), 60e6);
+        _assertReconciled(address(usdc));
+    }
+
+    // ===================== escrow consumption =====================
+
+    function test_SeizeThenCreditFromEscrow() public {
+        vm.prank(USER1);
+        core4Mica.depositStablecoin(address(usdc), DEPOSIT);
+
+        vm.prank(OPERATOR);
+        core4Mica.seizeCollateral(USER1, address(usdc), 60e6);
+        uint256 escrowAfterSeize = core4Mica.escrowScaledBalance(address(usdc));
+        assertGt(escrowAfterSeize, 0);
+
+        // Make USER2 whole in collateral form straight from escrow — no Aave interaction.
+        vm.prank(OPERATOR);
+        core4Mica.creditFromEscrowScaled(USER2, address(usdc), 60e6);
+
+        assertEq(core4Mica.collateral(USER2, address(usdc)), 60e6);
+        assertEq(core4Mica.collateral(USER1, address(usdc)), DEPOSIT - 60e6);
+        assertLt(core4Mica.escrowScaledBalance(address(usdc)), escrowAfterSeize);
+        _assertReconciled(address(usdc));
+    }
+
+    function test_SeizeThenWithdrawFromEscrow() public {
+        vm.prank(USER1);
+        core4Mica.depositStablecoin(address(usdc), DEPOSIT);
+
+        vm.prank(OPERATOR);
+        core4Mica.seizeCollateral(USER1, address(usdc), 60e6);
+
+        uint256 recipientBefore = usdc.balanceOf(USER2);
+        vm.prank(OPERATOR);
+        uint256 got = core4Mica.withdrawFromEscrow(address(usdc), 60e6, USER2);
+
+        assertEq(got, 60e6);
+        assertEq(usdc.balanceOf(USER2), recipientBefore + 60e6);
+        assertEq(core4Mica.escrowScaledBalance(address(usdc)), 0);
+        _assertReconciled(address(usdc));
+    }
+
+    function test_WithdrawFromEscrow_PartialFillOnLiquidityShortfall() public {
+        vm.prank(USER1);
+        core4Mica.depositStablecoin(address(usdc), DEPOSIT);
+
+        vm.prank(OPERATOR);
+        core4Mica.seizeCollateral(USER1, address(usdc), 60e6);
+        uint256 escrowBefore = core4Mica.escrowScaledBalance(address(usdc));
+
+        // Aave can only return 40 of the requested 60; the call must not revert.
+        mockPool.setWithdrawShortfall(address(usdc), 20e6);
+
+        uint256 recipientBefore = usdc.balanceOf(USER2);
+        vm.prank(OPERATOR);
+        uint256 got = core4Mica.withdrawFromEscrow(address(usdc), 60e6, USER2);
+
+        assertEq(got, 40e6);
+        assertEq(usdc.balanceOf(USER2), recipientBefore + 40e6);
+        // Only the converted portion's scaled balance is burned; the rest stays in escrow.
+        assertEq(core4Mica.escrowScaledBalance(address(usdc)), escrowBefore - 40e6);
+        _assertReconciled(address(usdc));
+    }
+
+    function test_DepositToEscrowThenCreditOut_FullRoundTrip() public {
+        usdc.mint(OPERATOR, DEPOSIT);
+        vm.startPrank(OPERATOR);
+        usdc.approve(address(core4Mica), DEPOSIT);
+        core4Mica.depositToEscrow(address(usdc), DEPOSIT);
+        vm.stopPrank();
+
+        assertGt(core4Mica.escrowScaledBalance(address(usdc)), 0);
+        _assertReconciled(address(usdc));
+
+        // Fund a creditor entirely from the paid-in escrow, no Aave withdrawal.
+        vm.prank(OPERATOR);
+        core4Mica.creditFromEscrowScaled(USER2, address(usdc), DEPOSIT);
+
+        assertEq(core4Mica.collateral(USER2, address(usdc)), DEPOSIT);
+        assertEq(core4Mica.escrowScaledBalance(address(usdc)), 0);
         _assertReconciled(address(usdc));
     }
 

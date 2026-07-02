@@ -623,3 +623,79 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Under-collateralised default driven by the off-chain job: the unpaid
+/// debtor's on-chain collateral covers only part of its net debit, so the cycle can never be
+/// fully funded. The seize recovers what it can, the job drives the cycle to the terminal
+/// Shortfall state once the (zero, in tests) grace window passes, and the creditor is paid a
+/// pro-rata share — the cycle terminates instead of freezing.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyhow::Result<()> {
+    let env = setup_e2e_environment()
+        .await
+        .context("setup_e2e_environment")?;
+    let provider = env.provider.clone();
+    let svc = env.core_service.clone();
+    let ctx = svc.persist_ctx();
+    let http = env.cfg.ethereum_config.http_rpc_url.clone();
+
+    let (debtor, debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
+    let (creditor, _creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
+
+    let cycle_id = "clearing-e2e-shortfall";
+    commit_two_party_cycle_past_finality(&svc, cycle_id, &debtor, &creditor).await?;
+
+    // The debtor only posts HALF its net debit on-chain, so the pool can never be fully funded.
+    let half = U256::from(NET_AMOUNT / 2);
+    Core4Mica::new(*env.contract.address(), debtor_provider)
+        .deposit()
+        .value(half)
+        .send()
+        .await
+        .context("debtor deposit send")?
+        .watch()
+        .await
+        .context("debtor deposit confirm")?;
+    mine(&provider, 2).await?;
+
+    // One job pass: the seize recovers the partial collateral, the creditor-funding batch can't
+    // fully fund, so the job drives the cycle terminal (Shortfall) and pays the creditor pro-rata.
+    svc.settle_due_cycles().await?;
+    mine(&provider, 2).await?;
+
+    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Shortfall).await?;
+    poll_position_status(
+        ctx,
+        cycle_id,
+        &lower(&debtor),
+        ParticipantCycleStatus::Defaulted,
+    )
+    .await?;
+    poll_position_status(
+        ctx,
+        cycle_id,
+        &lower(&creditor),
+        ParticipantCycleStatus::Claimed,
+    )
+    .await?;
+
+    // Debtor's collateral fully seized; creditor made whole only up to the recovered pool
+    // (pro-rata = NET_AMOUNT * (NET_AMOUNT/2) / NET_AMOUNT = NET_AMOUNT/2).
+    let core = Core4Mica::new(*env.contract.address(), provider.clone());
+    let debtor_balance = core
+        .withdrawableBalance(debtor, Address::ZERO)
+        .call()
+        .await?;
+    let creditor_balance = core
+        .withdrawableBalance(creditor, Address::ZERO)
+        .call()
+        .await?;
+    assert_eq!(debtor_balance, U256::ZERO, "debtor collateral fully seized");
+    assert_eq!(
+        creditor_balance, half,
+        "creditor made whole only up to its pro-rata share"
+    );
+
+    Ok(())
+}

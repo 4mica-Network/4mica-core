@@ -100,6 +100,73 @@ pub struct CreditorSettlement {
     pub proof: Vec<B256>,
 }
 
+/// On-chain accounting/state snapshot for a settlement cycle, used to decide whether a cycle
+/// is under-funded and should be driven to the terminal Shortfall state.
+#[derive(Debug, Clone)]
+pub struct ClearingCycleView {
+    pub total_net_debit: U256,
+    pub total_net_credit: U256,
+    pub total_paid_in: U256,
+    pub total_claimed_out: U256,
+    pub total_default_covered: U256,
+    pub total_resolved_debit: U256,
+    pub payment_finality_deadline: u64,
+    pub status: u8,
+    pub exists: bool,
+}
+
+impl ClearingCycleView {
+    /// Underlying value available to creditors: paid-in plus covered defaults.
+    pub fn funded(&self) -> U256 {
+        self.total_paid_in + self.total_default_covered
+    }
+
+    /// True when every debtor is resolved but recovered collateral cannot fully fund creditor
+    /// claims — the precondition for the terminal Shortfall state.
+    pub fn is_under_funded_and_resolved(&self) -> bool {
+        self.total_resolved_debit == self.total_net_debit && self.funded() < self.total_net_credit
+    }
+
+    /// The decoded on-chain cycle status.
+    pub fn status(&self) -> CycleStatus {
+        CycleStatus::from_u8(self.status)
+    }
+
+    pub fn is_finalized(&self) -> bool {
+        self.status() == CycleStatus::Finalized
+    }
+
+    pub fn is_shortfall(&self) -> bool {
+        self.status() == CycleStatus::Shortfall
+    }
+}
+
+/// Mirror of `ClearingHouse.CycleStatus` (contracts/src/ClearingHouse.sol). Keep these ordinals in
+/// sync with the Solidity enum; `Unknown` guards against a contract that adds states ahead of this
+/// build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleStatus {
+    Committed,
+    PaymentWindowOpen,
+    Finalized,
+    Defaulted,
+    Shortfall,
+    Unknown(u8),
+}
+
+impl CycleStatus {
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Committed,
+            1 => Self::PaymentWindowOpen,
+            2 => Self::Finalized,
+            3 => Self::Defaulted,
+            4 => Self::Shortfall,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
 #[async_trait]
 pub trait CoreContractApi: Send + Sync {
     async fn get_chain_id(&self) -> Result<u64, CoreContractApiError>;
@@ -148,6 +215,18 @@ pub trait CoreContractApi: Send + Sync {
         &self,
         cycle_id: B256,
     ) -> Result<ClearingTxResult, CoreContractApiError>;
+
+    /// Drive an under-funded cycle to the terminal Shortfall state.
+    async fn mark_cycle_shortfall(
+        &self,
+        cycle_id: B256,
+    ) -> Result<ClearingTxResult, CoreContractApiError>;
+
+    /// Read the on-chain accounting/state snapshot for a cycle.
+    async fn get_clearing_cycle(
+        &self,
+        cycle_id: B256,
+    ) -> Result<ClearingCycleView, CoreContractApiError>;
 }
 
 impl CoreContractProxy {
@@ -391,5 +470,95 @@ impl CoreContractApi for CoreContractProxy {
             block_number: receipt.block_number,
             block_hash: receipt.block_hash,
         })
+    }
+
+    async fn mark_cycle_shortfall(
+        &self,
+        cycle_id: B256,
+    ) -> Result<ClearingTxResult, CoreContractApiError> {
+        let _guard = self.tx_write_lock.lock().await;
+        let contract = self.build_clearing_house();
+
+        let receipt = contract
+            .markCycleShortfall(cycle_id)
+            .send()
+            .await
+            .observe("markCycleShortfall")?
+            .get_receipt()
+            .await
+            .observe("markCycleShortfall")?;
+
+        info!(
+            "ClearingHouse.markCycleShortfall confirmed in tx {:?}",
+            receipt.transaction_hash
+        );
+        Ok(ClearingTxResult {
+            tx_hash: receipt.transaction_hash,
+            block_number: receipt.block_number,
+            block_hash: receipt.block_hash,
+        })
+    }
+
+    async fn get_clearing_cycle(
+        &self,
+        cycle_id: B256,
+    ) -> Result<ClearingCycleView, CoreContractApiError> {
+        let contract = self.build_clearing_house();
+        let cycle = contract
+            .getCycle(cycle_id)
+            .call()
+            .await
+            .observe("getCycle")?;
+        Ok(ClearingCycleView {
+            total_net_debit: cycle.totalNetDebit,
+            total_net_credit: cycle.totalNetCredit,
+            total_paid_in: cycle.totalPaidIn,
+            total_claimed_out: cycle.totalClaimedOut,
+            total_default_covered: cycle.totalDefaultCovered,
+            total_resolved_debit: cycle.totalResolvedDebit,
+            payment_finality_deadline: cycle.paymentFinalityDeadline,
+            status: cycle.status,
+            exists: cycle.exists,
+        })
+    }
+}
+
+#[cfg(test)]
+mod clearing_cycle_view_tests {
+    use super::*;
+
+    fn view(
+        paid_in: u64,
+        default_covered: u64,
+        net_credit: u64,
+        resolved: u64,
+        net_debit: u64,
+    ) -> ClearingCycleView {
+        ClearingCycleView {
+            total_net_debit: U256::from(net_debit),
+            total_net_credit: U256::from(net_credit),
+            total_paid_in: U256::from(paid_in),
+            total_claimed_out: U256::ZERO,
+            total_default_covered: U256::from(default_covered),
+            total_resolved_debit: U256::from(resolved),
+            payment_finality_deadline: 0,
+            status: 3,
+            exists: true,
+        }
+    }
+
+    #[test]
+    fn funded_sums_paid_in_and_default_covered() {
+        assert_eq!(view(100, 40, 200, 200, 200).funded(), U256::from(140u64));
+    }
+
+    #[test]
+    fn under_funded_requires_full_debt_resolution() {
+        // Resolved but pool short -> shortfall-eligible.
+        assert!(view(100, 40, 200, 200, 200).is_under_funded_and_resolved());
+        // Fully funded -> not a shortfall.
+        assert!(!view(160, 40, 200, 200, 200).is_under_funded_and_resolved());
+        // Under-funded but debt not yet fully resolved -> keep settling, not shortfall.
+        assert!(!view(100, 40, 200, 100, 200).is_under_funded_and_resolved());
     }
 }

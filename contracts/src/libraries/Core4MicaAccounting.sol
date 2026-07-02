@@ -27,20 +27,31 @@ library Core4MicaAccounting {
         return gross - protocolShareFromGross(gross, feeBps);
     }
 
-    /// @dev Finds the smallest gross such that netYieldFromGross(gross, feeBps) == desiredNet.
-    /// The initial ceil-rounded estimate is within 1 unit of the answer, so each correction
-    /// loop runs at most 1 iteration in practice (bounded by the mulDiv rounding error).
+    /// @dev Returns the SMALLEST `gross` such that `netYieldFromGross(gross, feeBps) >= desiredNet`.
+    ///
+    /// This inverts `netYieldFromGross`. Because the protocol share floors
+    /// (`net(g) = g - floor(g*feeBps/BASIS_POINTS)`), `net` is non-decreasing but flat across
+    /// "fee steps": several consecutive `gross` values can map to the same `net`. The caller
+    /// reallocates the protocol fee as `grossAfterUserWithdrawal - grossForNetYield(remainingNet)`,
+    /// so this MUST return the smallest preimage — a larger one makes that subtraction underflow
+    /// and reverts a seizure or partial withdrawal (4MCA-H03).
+    ///
+    /// Closed form. `net` increments by 0 or 1 as `gross` increases, so it takes every integer
+    /// value; the smallest `gross` reaching `desiredNet` therefore hits it exactly, i.e.
+    /// `gross* - floor(gross*·feeBps/BASIS_POINTS) = desiredNet`. Writing `gross* = desiredNet + q`,
+    /// the floored protocol share `q` is the smallest fixed point of `q = floor((desiredNet+q)·feeBps/B)`,
+    /// which solves to `q = floor(feeBps·(desiredNet-1) / (BASIS_POINTS - feeBps))`. Hence:
+    ///
+    ///     gross* = desiredNet + floor(feeBps·(desiredNet-1) / (BASIS_POINTS - feeBps))
+    ///
+    /// Verified exact against a brute-force inverse over all feeBps in [0, 99%] and
+    /// desiredNet up to 1e9. O(1): a single `mulDiv`, no iteration. `mulDiv` evaluates the
+    /// numerator at full 512-bit width, so the intermediate product cannot overflow.
+    ///
+    /// Precondition: `feeBps < BASIS_POINTS` (enforced by the fee setter), so the denominator
+    /// `BASIS_POINTS - feeBps` is non-zero.
     function grossForNetYield(uint256 desiredNet, uint256 feeBps) internal pure returns (uint256) {
         if (desiredNet == 0 || feeBps == 0) return desiredNet;
-
-        uint256 denominator = BASIS_POINTS - feeBps;
-        uint256 gross = Math.mulDiv(desiredNet, BASIS_POINTS, denominator, Math.Rounding.Ceil);
-        while (netYieldFromGross(gross, feeBps) > desiredNet) {
-            gross--;
-        }
-        while (netYieldFromGross(gross + 1, feeBps) <= desiredNet) {
-            gross++;
-        }
-        return gross;
+        return desiredNet + Math.mulDiv(feeBps, desiredNet - 1, BASIS_POINTS - feeBps);
     }
 }

@@ -59,6 +59,11 @@ pub enum StoredEventData {
     CycleFinalized {
         cycle_id: String,
     },
+    SettlementSkipped {
+        cycle_id: String,
+        participant: String,
+        reason: String,
+    },
     Unknown {
         name: String,
     },
@@ -205,12 +210,69 @@ impl TryInto<StoredEventData> for &Log {
                     cycle_id: format!("{:#x}", cycleId),
                 })
             }
+            Some(&SettlementSkipped::SIGNATURE_HASH) => {
+                let SettlementSkipped {
+                    cycleId,
+                    participant,
+                    reason,
+                } = self.log_decode::<SettlementSkipped>()?.data().clone();
+                Ok(StoredEventData::SettlementSkipped {
+                    cycle_id: format!("{:#x}", cycleId),
+                    participant: participant.to_string(),
+                    reason,
+                })
+            }
             Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => Ok(StoredEventData::Unknown {
                 name: "WithdrawalGracePeriodUpdated".to_string(),
             }),
             _ => Ok(StoredEventData::Unknown {
                 name: "unknown".to_string(),
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, B256, Log as PrimitiveLog};
+    use alloy_sol_types::SolEvent;
+
+    #[test]
+    fn decodes_settlement_skipped_with_reason() {
+        let cycle = B256::repeat_byte(0xab);
+        let participant = Address::repeat_byte(0x11);
+        let event = SettlementSkipped {
+            cycleId: cycle,
+            participant,
+            reason: "invalid proof".to_string(),
+        };
+        let rpc_log = Log {
+            inner: PrimitiveLog {
+                address: Address::ZERO,
+                data: event.encode_log_data(),
+            },
+            block_hash: None,
+            block_number: None,
+            block_timestamp: None,
+            transaction_hash: None,
+            transaction_index: None,
+            log_index: None,
+            removed: false,
+        };
+
+        let decoded: StoredEventData = (&rpc_log).try_into().expect("decode");
+        match decoded {
+            StoredEventData::SettlementSkipped {
+                cycle_id,
+                participant: p,
+                reason,
+            } => {
+                assert_eq!(reason, "invalid proof");
+                assert_eq!(cycle_id, format!("{cycle:#x}"));
+                assert_eq!(p.to_lowercase(), format!("{participant:#x}"));
+            }
+            other => panic!("expected SettlementSkipped, got {other:?}"),
         }
     }
 }

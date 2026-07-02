@@ -6,11 +6,22 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// Minimal view of Core4Mica used by the settlement pool to move collateral.
 interface ICore4MicaSettlement {
     function seizeCollateral(address debtor, address asset, uint256 amount) external returns (uint256 seized);
+    /// Partial-tolerant seizure: recovers up to `amount`, returning what was actually taken, so
+    /// an under-collateralised debtor still resolves and the cycle can terminate.
+    function seizeUpTo(address debtor, address asset, uint256 amount) external returns (uint256 seized);
     function creditCollateral(address creditor, address asset, uint256 amount) external payable;
+    /// Stablecoin settlement escrow: paid-in and seized value is held as
+    /// scaled aTokens inside Core4Mica so settlement never depends on Aave liquidity.
+    function depositToEscrow(address asset, uint256 amount) external;
+    function creditFromEscrowScaled(address creditor, address asset, uint256 amount) external;
+    function withdrawFromEscrow(address asset, uint256 amount, address recipient)
+        external
+        returns (uint256 actualWithdrawn);
 }
 
 /// @title ClearingHouse
@@ -29,7 +40,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         Committed,
         PaymentWindowOpen,
         Finalized,
-        Defaulted
+        Defaulted,
+        // Terminal state for a cycle whose recovered collateral cannot fully cover creditor
+        // claims; creditors withdraw a pro-rata share of the funded pool.
+        Shortfall
     }
 
     enum ParticipantRole {
@@ -91,6 +105,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error NativeTransferFailed(address recipient, uint256 amount);
     error ZeroAddress();
     error UnauthorizedEthSender(address sender);
+    error ClaimConversionShortfall(uint256 requested, uint256 got);
+    error CycleFullyFunded(uint256 funded, uint256 required);
 
     mapping(bytes32 => OnchainCycle) private cycles;
     mapping(bytes32 => mapping(address => ParticipantState)) private participantStates;
@@ -111,6 +127,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     event DebtorDefaulted(bytes32 indexed cycleId, address indexed debtor, address indexed asset, uint256 amount);
     event CycleFinalized(bytes32 indexed cycleId);
     event SettlementSkipped(bytes32 indexed cycleId, address indexed participant, string reason);
+    /// Emitted when a cycle is driven to the terminal Shortfall state because recovered
+    /// collateral cannot fully fund creditor claims.
+    event CycleShortfall(bytes32 indexed cycleId, uint256 funded, uint256 totalNetCredit);
 
     constructor(address manager, address core4Mica_) AccessManaged(manager) {
         if (core4Mica_ == address(0)) revert ZeroAddress();
@@ -177,6 +196,13 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         _verifyParticipant(cycle, cycleId, msg.sender, netDebit, ParticipantRole.NetDebtor, proof);
 
         _collect(cycle.asset, netDebit);
+        // Route stablecoin payments into the Core4Mica escrow so the whole settlement pool is
+        // held as scaled aTokens and never depends on Aave liquidity. ETH
+        // stays in this contract.
+        if (cycle.asset != address(0)) {
+            IERC20(cycle.asset).forceApprove(address(core4Mica), netDebit);
+            core4Mica.depositToEscrow(cycle.asset, netDebit);
+        }
 
         ParticipantState storage participant = participantStates[cycleId][msg.sender];
         participant.netDebit = netDebit;
@@ -190,24 +216,42 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external nonReentrant {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
-        // Only pay out once the cycle is fully funded
-        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
-        if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
         if (netCredit == 0) revert AmountZero();
         if (participantStates[cycleId][msg.sender].claimed) revert AlreadyClaimed(cycleId, msg.sender);
         _verifyParticipant(cycle, cycleId, msg.sender, netCredit, ParticipantRole.NetCreditor, proof);
 
-        uint256 available = cycle.totalPaidIn + cycle.totalDefaultCovered - cycle.totalClaimedOut;
-        if (available < netCredit) revert ClaimExceedsFundedLiquidity(available, netCredit);
-
+        // Full amount when fully funded; pro-rata share of the pool in a Shortfall cycle.
+        uint256 payout = _creditorPayout(cycle, netCredit);
         ParticipantState storage participant = participantStates[cycleId][msg.sender];
+        if (payout == 0) {
+            // Pro-rata share rounded to zero under a severe shortfall. Resolve the creditor
+            // (mirroring fundCreditorsFromPoolBatch) instead of reverting, so they aren't left
+            // unable to self-claim and stranded awaiting the operator batch.
+            participant.netCredit = netCredit;
+            participant.claimed = true;
+            emit CreditorClaimed(cycleId, msg.sender, cycle.asset, 0);
+            return;
+        }
+        uint256 available = _available(cycle);
+        if (available < payout) revert ClaimExceedsFundedLiquidity(available, payout);
+
         participant.netCredit = netCredit;
         participant.claimed = true;
-        cycle.totalClaimedOut += netCredit;
+        cycle.totalClaimedOut += payout;
 
-        _pay(cycle.asset, msg.sender, netCredit);
+        if (cycle.asset == address(0)) {
+            _pay(cycle.asset, msg.sender, payout);
+        } else {
+            // Convert escrowed scaled aTokens to underlying on demand. Partial fills (Aave
+            // liquidity short) revert the whole claim so it stays atomic and retryable per
+            // creditor, without wedging the cycle. The creditor can instead
+            // be made whole in collateral form via fundCreditorsFromPoolBatch, which needs no
+            // Aave liquidity.
+            uint256 got = core4Mica.withdrawFromEscrow(cycle.asset, payout, msg.sender);
+            if (got < payout) revert ClaimConversionShortfall(payout, got);
+        }
 
-        emit CreditorClaimed(cycleId, msg.sender, cycle.asset, netCredit);
+        emit CreditorClaimed(cycleId, msg.sender, cycle.asset, payout);
     }
 
     /// Operator batch: seize collateral for unpaid debtors after finality.
@@ -241,12 +285,12 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 continue;
             }
 
-            // Shouldn't happen: each debtor locks its net debit at guarantee issuance, so
-            // collateral should always cover the seize.
-            // TODO: but if it doesn't, the skip leaves the cycle underfunded and unable to
-            // finalize, wedged in Settling forever. Needs an explicit loss policy (socialize
-            // pro-rata, partial-credit creditors, or a terminal Shortfall state) to terminate.
-            try core4Mica.seizeCollateral(entry.debtor, cycle.asset, entry.netDebit) returns (uint256 seized) {
+            // Seize up to the net debit, recovering whatever collateral is available. The
+            // debtor is resolved either way; any uncovered remainder is borne by creditors via
+            // the terminal Shortfall state rather than wedging the cycle. Each
+            // debtor's net debit is normally fully backed by collateral locked at issuance, so a
+            // partial recovery is the exceptional, under-collateralised case.
+            try core4Mica.seizeUpTo(entry.debtor, cycle.asset, entry.netDebit) returns (uint256 seized) {
                 participant.netDebit = entry.netDebit;
                 participant.defaulted = true;
                 cycle.totalResolvedDebit += entry.netDebit;
@@ -268,8 +312,12 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
-        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
-        if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
+        // A fully-funded cycle pays each creditor in full; a Shortfall cycle pays pro-rata.
+        // Outside Shortfall, funding before the pool is complete is rejected.
+        if (cycle.status != CycleStatus.Shortfall) {
+            uint256 funded = _funded(cycle);
+            if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
+        }
 
         for (uint256 i = 0; i < entries.length; i++) {
             CreditorEntry calldata entry = entries[i];
@@ -284,22 +332,32 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 emit SettlementSkipped(cycleId, entry.creditor, "invalid proof");
                 continue;
             }
-            uint256 available = cycle.totalPaidIn + cycle.totalDefaultCovered - cycle.totalClaimedOut;
-            if (available < entry.netCredit) {
+            // Full amount when funded; pro-rata share in Shortfall (may round to zero for a
+            // tiny claim under a severe shortfall, in which case the creditor is simply resolved).
+            uint256 payout = _creditorPayout(cycle, entry.netCredit);
+            if (payout == 0) {
+                participant.netCredit = entry.netCredit;
+                participant.claimed = true;
+                emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, 0);
+                continue;
+            }
+            uint256 available = _available(cycle);
+            if (available < payout) {
                 emit SettlementSkipped(cycleId, entry.creditor, "insufficient liquidity");
                 continue;
             }
 
             bool credited;
             if (cycle.asset == address(0)) {
-                try core4Mica.creditCollateral{value: entry.netCredit}(entry.creditor, cycle.asset, entry.netCredit) {
+                try core4Mica.creditCollateral{value: payout}(entry.creditor, cycle.asset, payout) {
                     credited = true;
                 } catch {
                     credited = false;
                 }
             } else {
-                IERC20(cycle.asset).forceApprove(address(core4Mica), entry.netCredit);
-                try core4Mica.creditCollateral(entry.creditor, cycle.asset, entry.netCredit) {
+                // Re-attribute escrowed scaled aTokens directly to the creditor's collateral —
+                // no withdraw/supply round trip, no Aave liquidity needed.
+                try core4Mica.creditFromEscrowScaled(entry.creditor, cycle.asset, payout) {
                     credited = true;
                 } catch {
                     credited = false;
@@ -312,9 +370,36 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
             participant.netCredit = entry.netCredit;
             participant.claimed = true;
-            cycle.totalClaimedOut += entry.netCredit;
-            emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, entry.netCredit);
+            cycle.totalClaimedOut += payout;
+            emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, payout);
         }
+    }
+
+    /// Drive an under-funded cycle to the terminal Shortfall state once payment finality has
+    /// passed and every debtor is resolved (paid or seized to exhaustion) but recovered
+    /// collateral still cannot cover creditor claims. Creditors then withdraw a pro-rata share.
+    /// Restricted to the operator.
+    ///
+    /// Only valid from `Defaulted`: an under-funded cycle necessarily had a defaulting debtor, so
+    /// `settleDefaultsFromCollateralBatch` (which sets `Defaulted`) must have run first. In
+    /// `PaymentWindowOpen` a shortfall is impossible — by zero-sum, `totalResolvedDebit ==
+    /// totalNetDebit` implies `funded >= totalNetCredit`, which would revert `CycleFullyFunded`.
+    function markCycleShortfall(bytes32 cycleId) external restricted {
+        OnchainCycle storage cycle = _requireCycle(cycleId);
+        if (cycle.status != CycleStatus.Defaulted) {
+            revert InvalidCycleStatus(cycleId, cycle.status);
+        }
+        if (block.timestamp <= cycle.paymentFinalityDeadline) {
+            revert PaymentFinalityPending(cycle.paymentFinalityDeadline);
+        }
+        if (cycle.totalResolvedDebit != cycle.totalNetDebit) {
+            revert CycleDebtUnresolved(cycle.totalResolvedDebit, cycle.totalNetDebit);
+        }
+        uint256 funded = _funded(cycle);
+        if (funded >= cycle.totalNetCredit) revert CycleFullyFunded(funded, cycle.totalNetCredit);
+
+        cycle.status = CycleStatus.Shortfall;
+        emit CycleShortfall(cycleId, funded, cycle.totalNetCredit);
     }
 
     function finalizeCycle(bytes32 cycleId) external {
@@ -327,7 +412,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             revert CycleDebtUnresolved(cycle.totalResolvedDebit, cycle.totalNetDebit);
         }
 
-        uint256 funded = cycle.totalPaidIn + cycle.totalDefaultCovered;
+        uint256 funded = _funded(cycle);
         if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
         if (cycle.totalClaimedOut != cycle.totalNetCredit) {
             revert CycleClaimsUnresolved(cycle.totalClaimedOut, cycle.totalNetCredit);
@@ -382,9 +467,35 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     }
 
     function _requireClaimableStatus(bytes32 cycleId, OnchainCycle storage cycle) private view {
-        if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
+        if (
+            cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted
+                && cycle.status != CycleStatus.Shortfall
+        ) {
             revert InvalidCycleStatus(cycleId, cycle.status);
         }
+    }
+
+    /// Total value available to a cycle's creditors: debtor payments plus collateral recovered
+    /// via seizure.
+    function _funded(OnchainCycle storage cycle) private view returns (uint256) {
+        return cycle.totalPaidIn + cycle.totalDefaultCovered;
+    }
+
+    /// Funded value not yet paid out to creditors.
+    function _available(OnchainCycle storage cycle) private view returns (uint256) {
+        return _funded(cycle) - cycle.totalClaimedOut;
+    }
+
+    /// The underlying a creditor owed `netCredit` receives: the full amount once the cycle is
+    /// fully funded, or a pro-rata share of the funded pool in the terminal Shortfall state.
+    /// Reverts in non-shortfall states if the cycle is not yet fully funded.
+    function _creditorPayout(OnchainCycle storage cycle, uint256 netCredit) private view returns (uint256) {
+        uint256 funded = _funded(cycle);
+        if (cycle.status == CycleStatus.Shortfall) {
+            return Math.mulDiv(netCredit, funded, cycle.totalNetCredit);
+        }
+        if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
+        return netCredit;
     }
 
     function _verifyParticipant(

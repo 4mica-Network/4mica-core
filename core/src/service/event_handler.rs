@@ -2,7 +2,7 @@ use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
 use entities::sea_orm_active_enums::CollateralEventType;
-use log::{info, warn};
+use log::{debug, error, info, warn};
 use metrics_4mica::measure;
 
 use crate::metrics::misc::record_event_handler_time;
@@ -15,6 +15,10 @@ use crate::{
 
 #[async_trait]
 impl EthereumEventHandler for CoreService {
+    fn note_scan_progress(&self) {
+        self.record_scan_progress();
+    }
+
     #[measure(record_event_handler_time, name = "collateral_deposited")]
     async fn handle_collateral_deposited(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CollateralDeposited {
@@ -175,6 +179,56 @@ impl EthereumEventHandler for CoreService {
         self.process_cycle_finalized(cycleId)
             .await
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
+    /// Surface a participant the ClearingHouse skipped during settlement, classified by reason so
+    /// the operator can tell a benign skip from a transient one from a genuine bug. This is
+    /// observability only: it never mutates domain state and always succeeds, so a skip can never
+    /// wedge the scanner. Recovery of transient skips is handled by the settlement driver, which
+    /// keeps an under-funded cycle in the payment window and re-submits the seize each tick.
+    #[measure(record_event_handler_time, name = "settlement_skipped")]
+    async fn handle_settlement_skipped(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let SettlementSkipped {
+            cycleId,
+            participant,
+            reason,
+        } = log.log_decode::<SettlementSkipped>()?.data().clone();
+        let cycle_id = format!("{cycleId:#x}");
+
+        match reason.as_str() {
+            // The participant was already paid/defaulted in an earlier batch; expected on retries.
+            "already resolved" => {
+                debug!(
+                    "SettlementSkipped (benign): cycle {cycle_id} participant {participant} already resolved"
+                );
+            }
+            // The operator's Merkle proof did not verify against the committed root. This is
+            // deterministic — re-submitting the same proof fails forever — and signals an off-chain
+            // proof-generation bug or off-chain/on-chain netting divergence. It needs operator
+            // action (regenerate the proof / reconcile the commit), not a blind retry.
+            "invalid proof" => {
+                error!(
+                    "SettlementSkipped (INVALID PROOF): cycle {cycle_id} participant {participant}; \
+                     proof did not verify against the committed root — this is deterministic and will \
+                     not self-heal. Investigate proof generation / netting divergence."
+                );
+            }
+            // Transient/expected: the seize or credit reverted, or Aave was momentarily illiquid.
+            // The driver keeps the cycle under-funded and re-submits on the next tick.
+            "seize failed" | "insufficient liquidity" | "credit failed" => {
+                warn!(
+                    "SettlementSkipped (transient): cycle {cycle_id} participant {participant} reason '{reason}'; \
+                     settlement driver will re-attempt while the cycle stays under-funded"
+                );
+            }
+            other => {
+                warn!(
+                    "SettlementSkipped (unrecognized reason): cycle {cycle_id} participant {participant} reason '{other}'"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     #[measure(record_event_handler_time, name = "admin_event")]

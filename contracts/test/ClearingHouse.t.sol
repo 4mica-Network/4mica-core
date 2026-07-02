@@ -12,9 +12,17 @@ import {MockERC20} from "./Core4MicaTestBase.sol";
 contract MockCore4Mica is ICore4MicaSettlement {
     mapping(address => mapping(address => uint256)) public collateralOf;
     mapping(address => mapping(address => uint256)) public creditedOf;
+    // Stablecoin settlement escrow (underlying-equivalent), mirroring Core4Mica's scaled escrow.
+    mapping(address => uint256) public escrowOf;
+    // Optional per-asset liquidity shortfall to exercise partial-fill cash-out.
+    mapping(address => uint256) public withdrawShortfall;
 
     function setCollateral(address user, address asset, uint256 amount) external {
         collateralOf[user][asset] = amount;
+    }
+
+    function setWithdrawShortfall(address asset, uint256 amount) external {
+        withdrawShortfall[asset] = amount;
     }
 
     function seizeCollateral(address debtor, address asset, uint256 amount) external returns (uint256) {
@@ -24,9 +32,24 @@ contract MockCore4Mica is ICore4MicaSettlement {
             (bool ok,) = payable(msg.sender).call{value: amount}("");
             require(ok, "eth send failed");
         } else {
-            require(IERC20(asset).transfer(msg.sender, amount), "transfer failed");
+            // Stablecoin seizures stay in escrow (no underlying released), mirroring Core4Mica.
+            escrowOf[asset] += amount;
         }
         return amount;
+    }
+
+    function seizeUpTo(address debtor, address asset, uint256 amount) external returns (uint256) {
+        uint256 available = collateralOf[debtor][asset];
+        uint256 take = amount < available ? amount : available;
+        if (take == 0) return 0;
+        collateralOf[debtor][asset] = available - take;
+        if (asset == address(0)) {
+            (bool ok,) = payable(msg.sender).call{value: take}("");
+            require(ok, "eth send failed");
+        } else {
+            escrowOf[asset] += take;
+        }
+        return take;
     }
 
     function creditCollateral(address creditor, address asset, uint256 amount) external payable {
@@ -37,6 +60,28 @@ contract MockCore4Mica is ICore4MicaSettlement {
             require(IERC20(asset).transferFrom(msg.sender, address(this), amount), "transferFrom failed");
         }
         creditedOf[creditor][asset] += amount;
+    }
+
+    function depositToEscrow(address asset, uint256 amount) external {
+        require(IERC20(asset).transferFrom(msg.sender, address(this), amount), "transferFrom failed");
+        escrowOf[asset] += amount;
+    }
+
+    function creditFromEscrowScaled(address creditor, address asset, uint256 amount) external {
+        require(escrowOf[asset] >= amount, "escrow underflow");
+        escrowOf[asset] -= amount;
+        creditedOf[creditor][asset] += amount;
+    }
+
+    function withdrawFromEscrow(address asset, uint256 amount, address recipient)
+        external
+        returns (uint256 actualWithdrawn)
+    {
+        uint256 shortfall = withdrawShortfall[asset];
+        actualWithdrawn = amount > shortfall ? amount - shortfall : 0;
+        require(escrowOf[asset] >= actualWithdrawn, "escrow underflow");
+        escrowOf[asset] -= actualWithdrawn;
+        require(IERC20(asset).transfer(recipient, actualWithdrawn), "transfer failed");
     }
 
     receive() external payable {}
@@ -63,10 +108,11 @@ contract ClearingHouseTest is Test {
         clearingHouse = new ClearingHouse(address(manager), address(core4Mica));
         usdc = new MockERC20("USD Coin", "USDC", 6);
 
-        bytes4[] memory operatorSelectors = new bytes4[](3);
+        bytes4[] memory operatorSelectors = new bytes4[](4);
         operatorSelectors[0] = ClearingHouse.commitCycle.selector;
         operatorSelectors[1] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
         operatorSelectors[2] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        operatorSelectors[3] = ClearingHouse.markCycleShortfall.selector;
         manager.setTargetFunctionRole(address(clearingHouse), operatorSelectors, OPERATOR_ROLE);
         manager.grantRole(OPERATOR_ROLE, OPERATOR, 0);
 
@@ -427,19 +473,22 @@ contract ClearingHouseTest is Test {
 
         vm.expectEmit(true, true, false, true);
         emit ClearingHouse.SettlementSkipped(CYCLE_ID, d1, "already resolved");
-        vm.expectEmit(true, true, false, true);
-        emit ClearingHouse.SettlementSkipped(CYCLE_ID, d2, "seize failed");
+        // d2 has no collateral: it is resolved as a zero-recovery default rather than skipped,
+        // so the cycle can terminate via Shortfall instead of wedging.
+        vm.expectEmit(true, true, true, true);
+        emit ClearingHouse.DebtorDefaulted(CYCLE_ID, d2, ETH_ASSET, 0);
         vm.expectEmit(true, true, true, true);
         emit ClearingHouse.DebtorDefaulted(CYCLE_ID, d3, ETH_ASSET, amt);
         vm.prank(OPERATOR);
         clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 
         ClearingHouse.OnchainCycle memory cycle = clearingHouse.getCycle(CYCLE_ID);
-        // d1 (paid) + d3 (covered) resolved; d2 still outstanding.
-        assertEq(cycle.totalResolvedDebit, 2 * amt);
+        // All three debtors resolved; only d1 (paid) and d3 (seized) actually funded the pool.
+        assertEq(cycle.totalResolvedDebit, total);
         assertEq(cycle.totalPaidIn, amt);
         assertEq(cycle.totalDefaultCovered, amt);
-        assertFalse(clearingHouse.getParticipantState(CYCLE_ID, d2).defaulted);
+        // Funded (200) < total (300): the cycle is under-collateralised and Shortfall-eligible.
+        assertTrue(clearingHouse.getParticipantState(CYCLE_ID, d2).defaulted);
         assertTrue(clearingHouse.getParticipantState(CYCLE_ID, d3).defaulted);
     }
 
@@ -487,15 +536,182 @@ contract ClearingHouseTest is Test {
         vm.prank(OPERATOR);
         clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
 
-        assertEq(usdc.balanceOf(address(clearingHouse)), NET_AMOUNT);
+        // Seized stablecoin is held in escrow, never released to the pool contract.
+        assertEq(core4Mica.escrowOf(address(usdc)), NET_AMOUNT);
+        assertEq(usdc.balanceOf(address(clearingHouse)), 0);
 
         ClearingHouse.CreditorEntry[] memory creditors = new ClearingHouse.CreditorEntry[](1);
         creditors[0] = ClearingHouse.CreditorEntry({creditor: CREDITOR, netCredit: NET_AMOUNT, proof: creditorProof});
         vm.prank(OPERATOR);
         clearingHouse.fundCreditorsFromPoolBatch(CYCLE_ID, creditors);
 
+        // Creditor is made whole in collateral form straight from escrow — no Aave round trip.
         assertEq(core4Mica.creditedOf(CREDITOR, address(usdc)), NET_AMOUNT);
+        assertEq(core4Mica.escrowOf(address(usdc)), 0);
         assertEq(usdc.balanceOf(address(clearingHouse)), 0);
+    }
+
+    function test_Erc20ClaimRetriesAfterLiquidityShortfall() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) =
+            _commitTokenCycle(address(usdc), NET_AMOUNT, NET_AMOUNT);
+
+        vm.startPrank(DEBTOR);
+        usdc.approve(address(clearingHouse), NET_AMOUNT);
+        clearingHouse.payNetDebit(CYCLE_ID, NET_AMOUNT, debtorProof);
+        vm.stopPrank();
+
+        // Aave can't fully convert: the cash-out reverts atomically (no partial claim recorded).
+        core4Mica.setWithdrawShortfall(address(usdc), 1);
+        vm.prank(CREDITOR);
+        vm.expectRevert(
+            abi.encodeWithSelector(ClearingHouse.ClaimConversionShortfall.selector, NET_AMOUNT, NET_AMOUNT - 1)
+        );
+        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+
+        // Liquidity returns; the same creditor retries successfully.
+        core4Mica.setWithdrawShortfall(address(usdc), 0);
+        uint256 before = usdc.balanceOf(CREDITOR);
+        vm.prank(CREDITOR);
+        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+        assertEq(usdc.balanceOf(CREDITOR), before + NET_AMOUNT);
+    }
+
+    function test_UnderCollateralizedCycleEntersShortfallAndPaysProRata() public {
+        address d1 = address(0xD1);
+        address d2 = address(0xD2);
+        address c1 = address(0xC1);
+        address c2 = address(0xC2);
+        uint256 amt = 100 ether;
+        uint256 total = 200 ether;
+
+        vm.deal(d1, amt);
+
+        bytes32[] memory leaves = new bytes32[](4);
+        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, amt, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, amt, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, c1, amt, ClearingHouse.ParticipantRole.NetCreditor);
+        leaves[3] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, c2, amt, ClearingHouse.ParticipantRole.NetCreditor);
+
+        (bytes32 root,) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p2) = _merkle(leaves, leaves[1]);
+        (, bytes32[] memory pc1) = _merkle(leaves, leaves[2]);
+        (, bytes32[] memory pc2) = _merkle(leaves, leaves[3]);
+
+        vm.prank(OPERATOR);
+        clearingHouse.commitCycle(
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            total,
+            total,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
+        );
+
+        // d1 pays in full; d2 defaults with only 40 of its 100 collateral -> funded = 140 < 200.
+        vm.prank(d1);
+        clearingHouse.payNetDebit{value: amt}(CYCLE_ID, amt, p1);
+        core4Mica.setCollateral(d2, ETH_ASSET, 40 ether);
+        vm.deal(address(core4Mica), 40 ether);
+
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        ClearingHouse.DebtorEntry[] memory debtors = new ClearingHouse.DebtorEntry[](1);
+        debtors[0] = ClearingHouse.DebtorEntry({debtor: d2, netDebit: amt, proof: p2});
+        vm.prank(OPERATOR);
+        clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
+
+        // Cannot finalize (under-funded); operator drives it terminal instead.
+        vm.expectEmit(true, false, false, true);
+        emit ClearingHouse.CycleShortfall(CYCLE_ID, 140 ether, total);
+        vm.prank(OPERATOR);
+        clearingHouse.markCycleShortfall(CYCLE_ID);
+
+        assertEq(uint8(clearingHouse.getCycle(CYCLE_ID).status), uint8(ClearingHouse.CycleStatus.Shortfall));
+
+        // Each creditor receives a pro-rata share: 100 * 140/200 = 70.
+        vm.prank(c1);
+        clearingHouse.claimNetCredit(CYCLE_ID, amt, pc1);
+        vm.prank(c2);
+        clearingHouse.claimNetCredit(CYCLE_ID, amt, pc2);
+
+        assertEq(c1.balance, 70 ether);
+        assertEq(c2.balance, 70 ether);
+        assertEq(clearingHouse.getCycle(CYCLE_ID).totalClaimedOut, 140 ether);
+    }
+
+    function test_MarkShortfallRevertsWhenNotDefaulted() public {
+        // A fully-paid cycle never defaults, so it stays PaymentWindowOpen and cannot be marked
+        // Shortfall: markCycleShortfall is only valid from Defaulted.
+        (, bytes32[] memory debtorProof,) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        vm.prank(OPERATOR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ClearingHouse.InvalidCycleStatus.selector, CYCLE_ID, ClearingHouse.CycleStatus.PaymentWindowOpen
+            )
+        );
+        clearingHouse.markCycleShortfall(CYCLE_ID);
+    }
+
+    function test_MarkShortfallRevertsWhenDefaultedButFullyRecovered() public {
+        // A defaulter whose seizure fully covers its debt leaves the cycle funded == totalNetCredit;
+        // markCycleShortfall must then revert CycleFullyFunded (the cycle should finalize, not shortfall).
+        address d1 = address(0xD1);
+        address d2 = address(0xD2);
+        address c1 = address(0xC1);
+        address c2 = address(0xC2);
+        uint256 amt = 100 ether;
+        uint256 total = 200 ether;
+
+        vm.deal(d1, amt);
+
+        bytes32[] memory leaves = new bytes32[](4);
+        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, amt, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, amt, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, c1, amt, ClearingHouse.ParticipantRole.NetCreditor);
+        leaves[3] =
+            clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, c2, amt, ClearingHouse.ParticipantRole.NetCreditor);
+
+        (bytes32 root,) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p2) = _merkle(leaves, leaves[1]);
+
+        vm.prank(OPERATOR);
+        clearingHouse.commitCycle(
+            CYCLE_ID,
+            ETH_ASSET,
+            root,
+            total,
+            total,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
+        );
+
+        // d1 pays in full; d2 defaults but holds full collateral, so seizure fully covers its debt
+        // -> funded = 100 (paid) + 100 (seized) = 200 = total.
+        vm.prank(d1);
+        clearingHouse.payNetDebit{value: amt}(CYCLE_ID, amt, p1);
+        core4Mica.setCollateral(d2, ETH_ASSET, amt);
+        vm.deal(address(core4Mica), amt);
+
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        ClearingHouse.DebtorEntry[] memory debtors = new ClearingHouse.DebtorEntry[](1);
+        debtors[0] = ClearingHouse.DebtorEntry({debtor: d2, netDebit: amt, proof: p2});
+        vm.prank(OPERATOR);
+        clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
+
+        vm.prank(OPERATOR);
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleFullyFunded.selector, total, total));
+        clearingHouse.markCycleShortfall(CYCLE_ID);
     }
 
     function _commitEthCycle(uint256 netDebit, uint256 netCredit)

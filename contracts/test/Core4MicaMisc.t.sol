@@ -123,7 +123,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     function test_Constructor_SupportsOneStablecoin() public {
         address[] memory stablecoins = new address[](1);
         stablecoins[0] = address(usdc);
-        Core4Mica singleAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
+        Core4Mica singleAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
 
         address[] memory tokens = singleAssetCore.getERC20Tokens();
         assertEq(tokens.length, 1);
@@ -150,7 +150,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         stablecoins[0] = address(usdc);
         stablecoins[1] = address(usdt);
         stablecoins[2] = address(eurc);
-        Core4Mica threeAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
+        Core4Mica threeAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
 
         address[] memory tokens = threeAssetCore.getERC20Tokens();
         assertEq(tokens.length, 3);
@@ -177,7 +177,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = address(usdc);
         stablecoins[1] = address(usdt);
-        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins);
+        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
 
         vm.prank(USER1);
         bareCore.deposit{value: 1 ether}();

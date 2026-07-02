@@ -179,6 +179,14 @@ impl CoreService {
         verify_guarantee_request_signature(&self.inner.public_params, &req)?;
         self.verify_guarantee_request_claims(&req.claims)?;
 
+        // Hard stop on issuance: if the on-chain `withdrawalGracePeriod` has been reduced below the
+        // settlement-cycle seizure window, we can no longer guarantee a defaulter's collateral can
+        // be seized before they withdraw it. Refuse to mint new guarantees until the invariant is
+        // restored, rather than only warning and serving from a stale window (4MCA-H02). The stored
+        // grace tracks the latest `WithdrawalGracePeriodUpdated` event.
+        self.check_settlement_timing_invariant()
+            .map_err(|e| ServiceError::SettlementTimingHalted(format!("{e:#}")))?;
+
         repo::ensure_user_is_active(&self.inner.persist_ctx, req.claims.user_address()).await?;
         repo::ensure_user_is_active_if_exists(
             &self.inner.persist_ctx,

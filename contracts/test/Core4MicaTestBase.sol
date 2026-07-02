@@ -114,7 +114,7 @@ abstract contract Core4MicaTestBase is Test {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = address(usdc);
         stablecoins[1] = address(usdt);
-        core4Mica = new Core4Mica(address(manager), testPublicKey, stablecoins);
+        core4Mica = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
 
         vm.deal(USER1, 5 ether);
         usdc.mint(USER1, 1_000_000 ether);
@@ -124,7 +124,7 @@ abstract contract Core4MicaTestBase is Test {
         usdt.approve(address(core4Mica), type(uint256).max);
         vm.stopPrank();
 
-        bytes4[] memory adminSelectors = new bytes4[](8);
+        bytes4[] memory adminSelectors = new bytes4[](9);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
         adminSelectors[2] = Core4Mica.pause.selector;
@@ -133,6 +133,7 @@ abstract contract Core4MicaTestBase is Test {
         adminSelectors[5] = Core4Mica.addStablecoinAsset.selector;
         adminSelectors[6] = Core4Mica.setYieldFeeBps.selector;
         adminSelectors[7] = Core4Mica.claimProtocolYield.selector;
+        adminSelectors[8] = Core4Mica.setMinWithdrawalGracePeriod.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
         }
