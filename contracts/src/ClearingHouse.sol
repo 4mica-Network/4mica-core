@@ -107,6 +107,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error UnauthorizedEthSender(address sender);
     error ClaimConversionShortfall(uint256 requested, uint256 got);
     error CycleFullyFunded(uint256 funded, uint256 required);
+    error ResolvedDebitExceedsCommitted(uint256 attempted, uint256 total);
 
     mapping(bytes32 => OnchainCycle) private cycles;
     mapping(bytes32 => mapping(address => ParticipantState)) private participantStates;
@@ -155,7 +156,12 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             revert AmountZero();
         }
         if (totalNetDebit != totalNetCredit) revert CycleNotZeroSum(totalNetDebit, totalNetCredit);
-        if (paymentSubmissionDeadline == 0 || paymentFinalityDeadline < paymentSubmissionDeadline) {
+        // The payment window must still be open at commit (submission strictly in the future),
+        // which by the ordering constraint also puts finality in the future. Otherwise the
+        // finality-gated selectors (settleDefaultsFromCollateralBatch, markCycleShortfall,
+        // finalizeCycle) could run in the very block the cycle is committed, enabling an
+        // atomic commit→seize→credit drain (4MCA-H07, weaponised by 4MCA-H01).
+        if (paymentSubmissionDeadline <= block.timestamp || paymentFinalityDeadline < paymentSubmissionDeadline) {
             revert InvalidDeadline();
         }
 
@@ -194,6 +200,15 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (netDebit == 0) revert AmountZero();
         if (participantStates[cycleId][msg.sender].paid) revert AlreadyPaid(cycleId, msg.sender);
         _verifyParticipant(cycle, cycleId, msg.sender, netDebit, ParticipantRole.NetDebtor, proof);
+
+        // The Merkle root is trusted for membership only, never checked against the committed
+        // totals at commit; bind the leaf sums here by capping resolved debit at totalNetDebit.
+        // A consistent cycle's debtor leaves sum to exactly totalNetDebit, so this never blocks an
+        // honest payer — it rejects an inconsistent or malicious commit whose leaves over-sum,
+        // before any funds move (4MCA-H07).
+        if (cycle.totalResolvedDebit + netDebit > cycle.totalNetDebit) {
+            revert ResolvedDebitExceedsCommitted(cycle.totalResolvedDebit + netDebit, cycle.totalNetDebit);
+        }
 
         _collect(cycle.asset, netDebit);
         // Route stablecoin payments into the Core4Mica escrow so the whole settlement pool is
@@ -282,6 +297,13 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                     cycle, cycleId, entry.debtor, entry.netDebit, ParticipantRole.NetDebtor, entry.proof
                 )) {
                 emit SettlementSkipped(cycleId, entry.debtor, "invalid proof");
+                continue;
+            }
+            // Never seize beyond the committed net-debit total (see payNetDebit). Skip rather
+            // than revert so one over-summing leaf doesn't abort the whole operator batch or
+            // strand already-seized collateral (4MCA-H07).
+            if (cycle.totalResolvedDebit + entry.netDebit > cycle.totalNetDebit) {
+                emit SettlementSkipped(cycleId, entry.debtor, "exceeds committed debit");
                 continue;
             }
 

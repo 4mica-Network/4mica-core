@@ -382,14 +382,44 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
     Ok(())
 }
 
-/// Like [`commit_two_party_cycle`] but with submission/finality deadlines already in
-/// the past, so the off-chain finality job marks the cycle defaulted and the on-chain
-/// batch settlement is allowed immediately.
+/// Like [`commit_two_party_cycle`], but afterwards advances on-chain time past the
+/// finality deadline and backdates the off-chain deadline, so the off-chain job marks
+/// the cycle defaulted and on-chain batch settlement is allowed. The cycle is committed
+/// with a future payment window (required by `commitCycle`, 4MCA-H07); finality is
+/// reached by advancing anvil time rather than committing past deadlines.
 async fn commit_two_party_cycle_past_finality(
+    svc: &core_service::service::CoreService,
+    provider: &DynProvider,
+    cycle_id: &str,
+    debtor: &Address,
+    creditor: &Address,
+) -> anyhow::Result<String> {
+    let guarantee_id = commit_two_party_cycle(svc, cycle_id, debtor, creditor).await?;
+
+    // Move on-chain time past the finality deadline (so settleDefaults is allowed) and
+    // backdate the off-chain finality deadline (so the settlement job sees the cycle as due).
+    provider
+        .anvil_set_block_timestamp_interval(3 * 60 * 60)
+        .await?;
+    backdate_cycle_finality(svc.persist_ctx(), cycle_id).await?;
+
+    Ok(guarantee_id)
+}
+
+/// Commit a two-party cycle whose on-chain payment window closes `secs` in the future.
+///
+/// The shortfall path can't use the anvil-time-jump of
+/// [`commit_two_party_cycle_past_finality`]: `drive_cycle_shortfall` gates on wall-clock
+/// `now` versus the *on-chain* finality deadline, and anvil block time doesn't move
+/// wall-clock. Since `commitCycle` requires a future window (4MCA-H07) and anvil
+/// timestamps can't be set behind wall-clock, the caller instead commits a near-now
+/// window and sleeps past `finality + shortfall_grace` in real time.
+async fn commit_two_party_cycle_finality_soon(
     svc: &core_service::service::CoreService,
     cycle_id: &str,
     debtor: &Address,
     creditor: &Address,
+    secs: i64,
 ) -> anyhow::Result<String> {
     use chrono::{Duration as ChronoDuration, Utc};
     use core_service::config::DEFAULT_ASSET_ADDRESS;
@@ -401,12 +431,12 @@ async fn commit_two_party_cycle_past_finality(
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
             asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-            period_start: now - ChronoDuration::hours(6),
-            period_end: now - ChronoDuration::hours(5),
-            resolution_cutoff: now - ChronoDuration::hours(4),
-            clearing_commit_deadline: now - ChronoDuration::hours(3),
-            payment_submission_deadline: now - ChronoDuration::hours(2),
-            payment_finality_deadline: now - ChronoDuration::hours(1),
+            period_start: now - ChronoDuration::hours(3),
+            period_end: now - ChronoDuration::hours(2),
+            resolution_cutoff: now - ChronoDuration::hours(1),
+            clearing_commit_deadline: now - ChronoDuration::minutes(30),
+            payment_submission_deadline: now + ChronoDuration::seconds(secs),
+            payment_finality_deadline: now + ChronoDuration::seconds(secs),
         },
     )
     .await?;
@@ -559,7 +589,7 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
 
     let cycle_id = "clearing-e2e-batch-default";
     let guarantee_id =
-        commit_two_party_cycle_past_finality(&svc, cycle_id, &debtor, &creditor).await?;
+        commit_two_party_cycle_past_finality(&svc, &provider, cycle_id, &debtor, &creditor).await?;
 
     // The debtor's collateral lives on-chain in Core4Mica so the pool can seize it.
     let amount = U256::from(NET_AMOUNT);
@@ -632,6 +662,11 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
 async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyhow::Result<()> {
+    // The shortfall grace guard compares wall-clock now to the on-chain finality deadline, and
+    // committing requires a future window (4MCA-H07), so keep the grace tiny to bound the wait.
+    unsafe {
+        std::env::set_var("SETTLEMENT_SHORTFALL_GRACE_SECS", "2");
+    }
     let env = setup_e2e_environment()
         .await
         .context("setup_e2e_environment")?;
@@ -644,7 +679,9 @@ async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyho
     let (creditor, _creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
 
     let cycle_id = "clearing-e2e-shortfall";
-    commit_two_party_cycle_past_finality(&svc, cycle_id, &debtor, &creditor).await?;
+    // Commit with a short (5s) future window rather than jumping anvil time, so wall-clock can
+    // pass the on-chain finality deadline the shortfall driver reads.
+    commit_two_party_cycle_finality_soon(&svc, cycle_id, &debtor, &creditor, 5).await?;
 
     // The debtor only posts HALF its net debit on-chain, so the pool can never be fully funded.
     let half = U256::from(NET_AMOUNT / 2);
@@ -658,6 +695,16 @@ async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyho
         .await
         .context("debtor deposit confirm")?;
     mine(&provider, 2).await?;
+
+    // Push on-chain block time past the finality deadline (so settleDefaults/markCycleShortfall
+    // are allowed on-chain), let wall-clock pass finality + grace (so the driver's grace window
+    // elapses), and backdate the off-chain deadline so the job treats the cycle as due.
+    provider
+        .anvil_set_block_timestamp_interval(3 * 60 * 60)
+        .await?;
+    mine(&provider, 1).await?;
+    tokio::time::sleep(Duration::from_secs(9)).await;
+    backdate_cycle_finality(ctx, cycle_id).await?;
 
     // One job pass: the seize recovers the partial collateral, the creditor-funding batch can't
     // fully fund, so the job drives the cycle terminal (Shortfall) and pays the creditor pro-rata.

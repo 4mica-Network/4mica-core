@@ -145,6 +145,90 @@ contract ClearingHouseTest is Test {
         assertTrue(cycle.exists);
     }
 
+    function test_CommitCycleRejectsNonFutureSubmissionDeadline() public {
+        (bytes32 root,,) = _rootAndProofs(ETH_ASSET, NET_AMOUNT, NET_AMOUNT);
+        // A submission deadline at/behind the current block would leave the finality-gated
+        // settlement selectors runnable in the commit block, enabling an atomic
+        // commit→seize→credit drain (4MCA-H07 / 4MCA-H01).
+        vm.prank(OPERATOR);
+        vm.expectRevert(ClearingHouse.InvalidDeadline.selector);
+        clearingHouse.commitCycle(
+            CYCLE_ID, ETH_ASSET, root, NET_AMOUNT, NET_AMOUNT, uint64(block.timestamp), uint64(block.timestamp + 2 hours)
+        );
+    }
+
+    function test_PayNetDebitRejectsDebitBeyondCommittedTotal() public {
+        // A root whose debtor leaves sum to 2x the committed totalNetDebit — an inconsistent or
+        // malicious commit. Membership proves, but resolved debit must be capped at the committed
+        // total so the second payment is rejected before any funds move (4MCA-H07).
+        address d1 = address(0xD1);
+        address d2 = address(0xD2);
+        vm.deal(d1, NET_AMOUNT);
+        vm.deal(d2, NET_AMOUNT);
+
+        bytes32[] memory leaves = new bytes32[](3);
+        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, CREDITOR, NET_AMOUNT, ClearingHouse.ParticipantRole.NetCreditor);
+        (bytes32 root,) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p2) = _merkle(leaves, leaves[1]);
+
+        vm.prank(OPERATOR);
+        clearingHouse.commitCycle(
+            CYCLE_ID, ETH_ASSET, root, NET_AMOUNT, NET_AMOUNT, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+        );
+
+        // First debtor resolves the entire committed debit.
+        vm.prank(d1);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, p1);
+
+        // Second debtor would push resolved debit past totalNetDebit → rejected.
+        vm.prank(d2);
+        vm.expectRevert(
+            abi.encodeWithSelector(ClearingHouse.ResolvedDebitExceedsCommitted.selector, 2 * NET_AMOUNT, NET_AMOUNT)
+        );
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, p2);
+    }
+
+    function test_SettleDefaultsSkipsDebitBeyondCommittedTotal() public {
+        // Same over-summing root on the default path: the first debtor is seized to resolve the
+        // committed total; the second is skipped rather than over-seized (4MCA-H07).
+        address d1 = address(0xD1);
+        address d2 = address(0xD2);
+
+        bytes32[] memory leaves = new bytes32[](3);
+        leaves[0] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d1, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[1] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, d2, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor);
+        leaves[2] = clearingHouse.participantLeaf(CYCLE_ID, ETH_ASSET, CREDITOR, NET_AMOUNT, ClearingHouse.ParticipantRole.NetCreditor);
+        (bytes32 root,) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p1) = _merkle(leaves, leaves[0]);
+        (, bytes32[] memory p2) = _merkle(leaves, leaves[1]);
+
+        vm.prank(OPERATOR);
+        clearingHouse.commitCycle(
+            CYCLE_ID, ETH_ASSET, root, NET_AMOUNT, NET_AMOUNT, uint64(block.timestamp + 1 hours), uint64(block.timestamp + 2 hours)
+        );
+
+        core4Mica.setCollateral(d1, ETH_ASSET, NET_AMOUNT);
+        core4Mica.setCollateral(d2, ETH_ASSET, NET_AMOUNT);
+        vm.deal(address(core4Mica), 2 * NET_AMOUNT);
+        vm.warp(block.timestamp + 2 hours + 1);
+
+        ClearingHouse.DebtorEntry[] memory debtors = new ClearingHouse.DebtorEntry[](2);
+        debtors[0] = ClearingHouse.DebtorEntry({debtor: d1, netDebit: NET_AMOUNT, proof: p1});
+        debtors[1] = ClearingHouse.DebtorEntry({debtor: d2, netDebit: NET_AMOUNT, proof: p2});
+
+        vm.expectEmit(true, true, false, true);
+        emit ClearingHouse.SettlementSkipped(CYCLE_ID, d2, "exceeds committed debit");
+        vm.prank(OPERATOR);
+        clearingHouse.settleDefaultsFromCollateralBatch(CYCLE_ID, debtors);
+
+        ClearingHouse.OnchainCycle memory cycle = clearingHouse.getCycle(CYCLE_ID);
+        assertEq(cycle.totalResolvedDebit, NET_AMOUNT, "only the committed total is resolved");
+        assertEq(core4Mica.collateralOf(d2, ETH_ASSET), NET_AMOUNT, "second debtor not over-seized");
+    }
+
     function test_PayNetDebitRequiresExactNativePayment() public {
         (, bytes32[] memory debtorProof,) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
 
