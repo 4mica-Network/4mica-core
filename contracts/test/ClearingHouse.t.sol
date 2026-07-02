@@ -147,9 +147,6 @@ contract ClearingHouseTest is Test {
 
     function test_CommitCycleRejectsNonFutureSubmissionDeadline() public {
         (bytes32 root,,) = _rootAndProofs(ETH_ASSET, NET_AMOUNT, NET_AMOUNT);
-        // A submission deadline at/behind the current block would leave the finality-gated
-        // settlement selectors runnable in the commit block, enabling an atomic
-        // commit→seize→credit drain (4MCA-H07 / 4MCA-H01).
         vm.prank(OPERATOR);
         vm.expectRevert(ClearingHouse.InvalidDeadline.selector);
         clearingHouse.commitCycle(
@@ -164,9 +161,6 @@ contract ClearingHouseTest is Test {
     }
 
     function test_PayNetDebitRejectsDebitBeyondCommittedTotal() public {
-        // A root whose debtor leaves sum to 2x the committed totalNetDebit — an inconsistent or
-        // malicious commit. Membership proves, but resolved debit must be capped at the committed
-        // total so the second payment is rejected before any funds move (4MCA-H07).
         address d1 = address(0xD1);
         address d2 = address(0xD2);
         vm.deal(d1, NET_AMOUNT);
@@ -208,8 +202,6 @@ contract ClearingHouseTest is Test {
     }
 
     function test_SettleDefaultsSkipsDebitBeyondCommittedTotal() public {
-        // Same over-summing root on the default path: the first debtor is seized to resolve the
-        // committed total; the second is skipped rather than over-seized (4MCA-H07).
         address d1 = address(0xD1);
         address d2 = address(0xD2);
 
