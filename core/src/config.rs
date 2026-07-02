@@ -81,6 +81,13 @@ pub struct EthereumConfig {
     /// treat blocks as finalized after this depth (useful for local dev/test only).
     #[envconfig(from = "FINALIZED_HEAD_DEPTH", default = "0")]
     pub finalized_head_depth: u64,
+    /// Explicit acknowledgement that the operator accepts reorg risk when
+    /// FINALIZED_HEAD_DEPTH > 0. Without this, a non-zero depth makes the scanner
+    /// process reorg-able blocks (which can double-credit ETH deposits and mint
+    /// unbacked guarantees, see 4MCA-H04) and startup validation hard-fails.
+    /// For local dev/test only; never set in production.
+    #[envconfig(from = "ACCEPT_REORG_RISK", default = "false")]
+    pub accept_reorg_risk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,8 +128,18 @@ impl EthereumConfig {
             );
         }
         if mode == ConfirmationMode::Finalized && self.finalized_head_depth > 0 {
+            if !self.accept_reorg_risk {
+                bail!(
+                    "FINALIZED_HEAD_DEPTH={} makes the scanner treat latest-N blocks as finalized, \
+                     so it processes reorg-able blocks (double-credited ETH deposits can mint \
+                     unbacked guarantees; see 4MCA-H04/4MCA-M03). Set ACCEPT_REORG_RISK=true to \
+                     override (unsafe for production).",
+                    self.finalized_head_depth
+                );
+            }
             warn!(
-                "FINALIZED_HEAD_DEPTH={} is set; finalized mode will treat latest-N blocks as finalized. This is not safe for production.",
+                "FINALIZED_HEAD_DEPTH={} is set with ACCEPT_REORG_RISK=true; finalized mode will \
+                 treat latest-N blocks as finalized. This is not safe for production.",
                 self.finalized_head_depth
             );
         }
@@ -494,7 +511,54 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuaranteeConfig, SettlementCycleConfig};
+    use super::{EthereumConfig, GuaranteeConfig, SettlementCycleConfig};
+
+    fn base_ethereum_config() -> EthereumConfig {
+        EthereumConfig {
+            chain_id: 1,
+            ws_rpc_url: "ws://localhost:8545".to_string(),
+            http_rpc_url: "http://localhost:8545".to_string(),
+            public_http_rpc_url: String::new(),
+            contract_address: "0x0000000000000000000000000000000000000001".to_string(),
+            clearing_house_address: "0x0000000000000000000000000000000000000000".to_string(),
+            cron_job_settings: "0 */1 * * * *".to_string(),
+            event_scanner_cron: "*/5 * * * * *".to_string(),
+            confirmation_mode: "finalized".to_string(),
+            number_of_blocks_to_confirm: 20,
+            payment_scan_lookback_blocks: 5,
+            payment_legacy_scan_enabled: false,
+            initial_event_scan_lookback_blocks: 25,
+            max_log_block_range: 10000,
+            finalized_head_depth: 0,
+            accept_reorg_risk: false,
+        }
+    }
+
+    #[test]
+    fn ethereum_config_accepts_finalized_with_zero_depth() {
+        let cfg = base_ethereum_config();
+        cfg.validate().expect("finalized-only config must be valid");
+    }
+
+    #[test]
+    fn ethereum_config_rejects_nonzero_depth_without_acknowledgement() {
+        let mut cfg = base_ethereum_config();
+        cfg.finalized_head_depth = 5;
+        let err = cfg
+            .validate()
+            .expect_err("non-zero depth without ACCEPT_REORG_RISK should fail");
+        assert!(err.to_string().contains("FINALIZED_HEAD_DEPTH"));
+        assert!(err.to_string().contains("ACCEPT_REORG_RISK"));
+    }
+
+    #[test]
+    fn ethereum_config_allows_nonzero_depth_with_acknowledgement() {
+        let mut cfg = base_ethereum_config();
+        cfg.finalized_head_depth = 5;
+        cfg.accept_reorg_risk = true;
+        cfg.validate()
+            .expect("non-zero depth with ACCEPT_REORG_RISK should be allowed");
+    }
 
     #[test]
     fn guarantee_config_accepts_valid_v1_and_v2() {

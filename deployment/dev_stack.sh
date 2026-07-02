@@ -180,6 +180,9 @@ ETHEREUM_CONTRACT_ADDRESS="$contract_addr"
 ETHEREUM_CLEARING_HOUSE_ADDRESS="$clearing_house_addr"
 ETHEREUM_PRIVATE_KEY="$DEPLOYER_PRIVATE_KEY"
 FINALIZED_HEAD_DEPTH=1
+# Local anvil has no real finalized head; fake finality via head depth. This is a
+# reorg-able mode (unsafe for production) so the operator must opt in explicitly.
+ACCEPT_REORG_RISK=true
 NUMBER_OF_BLOCKS_TO_CONFIRM=1
 PAYMENT_SCAN_LOOKBACK_BLOCKS=1
 

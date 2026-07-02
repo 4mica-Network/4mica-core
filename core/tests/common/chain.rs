@@ -358,6 +358,9 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         initial_event_scan_lookback_blocks: 10,
         max_log_block_range: 10_000,
         finalized_head_depth: 1,
+        // The anvil harness has no real finalized head, so it fakes finality via a
+        // small head depth; that reorg-able mode is acceptable in tests only.
+        accept_reorg_risk: true,
     };
 
     debug!(
