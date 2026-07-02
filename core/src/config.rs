@@ -774,7 +774,10 @@ mod tests {
         let err = cfg
             .validate(Environment::Production)
             .expect_err("V2 guarantees must be rejected in production");
-        assert!(err.to_string().contains("V2+ guarantees are disabled in production"));
+        assert!(
+            err.to_string()
+                .contains("V2+ guarantees are disabled in production")
+        );
     }
 
     #[test]
