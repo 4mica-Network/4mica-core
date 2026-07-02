@@ -1,3 +1,4 @@
+use alloy::eips::BlockId;
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
@@ -26,6 +27,7 @@ impl EthereumEventHandler for CoreService {
         info!("Deposit by {user:?} of {amount}, asset={asset}");
 
         let meta = self.event_meta_from_log(&log)?;
+        let block_number = block_number_from_log(&log)?;
         repo::credit_collateral_with_event_on(
             self.inner.persist_ctx.db.as_ref(),
             user.to_string(),
@@ -35,7 +37,8 @@ impl EthereumEventHandler for CoreService {
             Some(meta),
         )
         .await?;
-        self.sync_balance_from_chain(user, asset).await?;
+        self.sync_balance_from_chain(user, asset, block_number)
+            .await?;
         Ok(())
     }
 
@@ -50,6 +53,7 @@ impl EthereumEventHandler for CoreService {
         info!("Collateral withdrawn by {user:?}: {amount}");
 
         let meta = self.event_meta_from_log(&log)?;
+        let block_number = block_number_from_log(&log)?;
         if self.stablecoin_a_token(asset).await?.is_some() {
             repo::mark_withdrawal_executed_with_event(
                 &self.inner.persist_ctx,
@@ -59,7 +63,8 @@ impl EthereumEventHandler for CoreService {
                 Some(&meta),
             )
             .await?;
-            self.sync_balance_from_chain(user, asset).await?;
+            self.sync_balance_from_chain(user, asset, block_number)
+                .await?;
         } else {
             repo::finalize_withdrawal_with_event(
                 &self.inner.persist_ctx,
@@ -69,7 +74,8 @@ impl EthereumEventHandler for CoreService {
                 Some(&meta),
             )
             .await?;
-            self.sync_balance_from_chain(user, asset).await?;
+            self.sync_balance_from_chain(user, asset, block_number)
+                .await?;
         }
         Ok(())
     }
@@ -232,6 +238,12 @@ fn tx_hash_from_log(log: &Log) -> Result<String, BlockchainListenerError> {
         })
 }
 
+fn block_number_from_log(log: &Log) -> Result<u64, BlockchainListenerError> {
+    log.block_number.ok_or_else(|| {
+        BlockchainListenerError::EventHandlerError("log missing block_number".to_string())
+    })
+}
+
 impl CoreService {
     /// Overwrite the off-chain `total` for `(user, asset)` with the authoritative
     /// on-chain collateral, leaving `locked` untouched. This makes event-sourced
@@ -242,16 +254,22 @@ impl CoreService {
         &self,
         user: Address,
         asset: Address,
+        block_number: u64,
     ) -> Result<(), BlockchainListenerError> {
         let contract = self.read_contract()?;
+        let block = BlockId::from(block_number);
 
         let on_chain_total = if asset == Address::ZERO {
             // ETH collateral is custodied directly by Core4Mica.
-            contract.collateral(user, asset).call().await
+            contract.collateral(user, asset).block(block).call().await
         } else if self.stablecoin_a_token(asset).await?.is_some() {
             // Stablecoin collateral is supplied to Aave; its guaranteeable
             // capacity (principal, excluding yield) is what backs the off-chain total.
-            contract.guaranteeCapacity(user, asset).call().await
+            contract
+                .guaranteeCapacity(user, asset)
+                .block(block)
+                .call()
+                .await
         } else {
             // Not a supported collateral asset; nothing to reconcile.
             return Ok(());
