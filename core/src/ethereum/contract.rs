@@ -198,6 +198,10 @@ pub mod contract_abi {
             /// View: guaranteeable collateral for a user/asset pair.
             function guaranteeCapacity(address user, address asset) external view returns (uint256);
 
+            /// View: authoritative on-chain collateral for a user/asset pair
+            /// (ETH balance for the zero asset, withdrawable stablecoin otherwise).
+            function collateral(address user, address asset) external view returns (uint256);
+
             // ---- Custom errors (mirrored from contracts/src/Core4Mica.sol) ----
             // Declared here only so revert data can be decoded into named errors.
             error AmountZero();
