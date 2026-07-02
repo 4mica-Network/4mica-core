@@ -160,8 +160,9 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          FINALIZED_HEAD_DEPTH: "1"
-          ACCEPT_REORG_RISK: "true"
+          SERVER_ENVIRONMENT: "development"
+          CONFIRMATION_MODE: "depth"
+          NUMBER_OF_BLOCKS_TO_CONFIRM: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
@@ -177,8 +178,9 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          FINALIZED_HEAD_DEPTH: "1"
-          ACCEPT_REORG_RISK: "true"
+          SERVER_ENVIRONMENT: "development"
+          CONFIRMATION_MODE: "depth"
+          NUMBER_OF_BLOCKS_TO_CONFIRM: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
@@ -230,8 +232,9 @@ jobs:
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
           PUBLIC_ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
-          FINALIZED_HEAD_DEPTH: "1"
-          ACCEPT_REORG_RISK: "true"
+          SERVER_ENVIRONMENT: "development"
+          CONFIRMATION_MODE: "depth"
+          NUMBER_OF_BLOCKS_TO_CONFIRM: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_CLEARING_HOUSE_ADDRESS: ${{ env.ETHEREUM_CLEARING_HOUSE_ADDRESS }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
@@ -275,8 +278,9 @@ jobs:
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
           ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
           ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          FINALIZED_HEAD_DEPTH: "1"
-          ACCEPT_REORG_RISK: "true"
+          SERVER_ENVIRONMENT: "development"
+          CONFIRMATION_MODE: "depth"
+          NUMBER_OF_BLOCKS_TO_CONFIRM: "1"
           ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
           ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}

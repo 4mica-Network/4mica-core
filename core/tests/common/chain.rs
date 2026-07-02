@@ -34,6 +34,11 @@ use super::db::{clear_all_tables, ensure_migrations};
 
 pub const OPERATOR_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
+/// Depth the test scanner subtracts from the latest block to reach its confirmed
+/// head (`CONFIRMATION_MODE=depth`, `NUMBER_OF_BLOCKS_TO_CONFIRM`). Shared by the
+/// scanner config and `mine_confirmations` so they never drift out of sync.
+pub const TEST_CONFIRMATION_DEPTH: u64 = 1;
+
 pub struct E2eEnvironment {
     pub cfg: AppConfig,
     pub provider: DynProvider,
@@ -79,14 +84,10 @@ pub fn fn_selector(sig: &str) -> FixedBytes<4> {
     FixedBytes::<4>::from([h[0], h[1], h[2], h[3]])
 }
 
-/// Mine `blocks` confirmations (plus the configured finalized-head depth) so the
-/// event scanner observes finalized state.
+/// Mine `blocks` confirmations (plus the depth the scanner subtracts to reach its
+/// confirmed head) so the event scanner observes confirmed state.
 pub async fn mine_confirmations(provider: &DynProvider, blocks: u64) -> anyhow::Result<()> {
-    let finalized_depth = std::env::var("FINALIZED_HEAD_DEPTH")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let total = blocks.saturating_add(finalized_depth);
+    let total = blocks.saturating_add(TEST_CONFIRMATION_DEPTH);
     if total > 0 {
         provider.anvil_mine(Some(total), None).await?;
     }
@@ -351,16 +352,15 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         public_http_rpc_url: format!("http://localhost:{anvil_port}"),
         cron_job_settings: "* * * * * *".to_string(),
         event_scanner_cron: "* * * * * *".to_string(),
-        confirmation_mode: "finalized".to_string(),
-        number_of_blocks_to_confirm: 1, // faster confirmations for tests
+        // The anvil harness has no real finalized head, so it uses depth-based
+        // confirmation (treating latest-N blocks as confirmed). That reorg-able
+        // mode is acceptable in tests only; production requires `finalized`.
+        confirmation_mode: "depth".to_string(),
+        number_of_blocks_to_confirm: TEST_CONFIRMATION_DEPTH,
         payment_scan_lookback_blocks: 1,
         payment_legacy_scan_enabled: false,
         initial_event_scan_lookback_blocks: 10,
         max_log_block_range: 10_000,
-        finalized_head_depth: 1,
-        // The anvil harness has no real finalized head, so it fakes finality via a
-        // small head depth; that reorg-able mode is acceptable in tests only.
-        accept_reorg_risk: true,
     };
 
     debug!(

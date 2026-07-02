@@ -31,6 +31,7 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         host,
         port,
         log_level,
+        environment: _,
     } = app_config.server_config.clone();
 
     env_logger::Builder::from_env(Env::default().default_filter_or(log_level.as_str())).init();
