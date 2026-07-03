@@ -7,7 +7,8 @@ use alloy::providers::Provider;
 use alloy::providers::ext::AnvilApi;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::ethereum::EthereumEventScanner;
-use core_service::persist::repo;
+use core_service::ethereum::event_data::EventMeta;
+use core_service::persist::{PersistCtx, repo};
 use core_service::scheduler::Task;
 use entities::sea_orm_active_enums::*;
 use entities::*;
@@ -25,6 +26,23 @@ use common::contract::Core4Mica;
 use common::fixtures::{ensure_user, read_collateral};
 
 static NUMBER_OF_TRIALS: u32 = 120;
+
+/// Poll the off-chain balance until it reaches `expected`, or panic after
+/// `NUMBER_OF_TRIALS`. The scanner applies chain events on a per-second cron, so
+/// tests observe DB state asynchronously.
+async fn await_collateral(
+    ctx: &PersistCtx,
+    user_address: &str,
+    expected: U256,
+) -> anyhow::Result<()> {
+    for _ in 0..NUMBER_OF_TRIALS {
+        if read_collateral(ctx, user_address, DEFAULT_ASSET_ADDRESS).await? == expected {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!("collateral did not reach {expected} after {NUMBER_OF_TRIALS} tries");
+}
 
 // ════════════════════════ deposits ════════════════════════
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
@@ -64,6 +82,71 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
         tries += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+
+    Ok(())
+}
+
+/// A reorg that re-mines a `CollateralDeposited` into a new block bypasses the
+/// block-hash-keyed dedup and double-credits the off-chain ETH total (4MCA-H04).
+/// ETH balances now self-heal: the next deposit event re-syncs the total from
+/// the authoritative on-chain balance, so an inflated total cannot persist and
+/// back unbacked guarantees.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn eth_balance_self_heals_from_reorg_double_credit() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let contract = env.contract.clone();
+    let persist_ctx = env.core_service.persist_ctx();
+    let user_addr = format!("{:#x}", env.signer_addr);
+    ensure_user(persist_ctx, &user_addr).await?;
+
+    // First deposit lands normally.
+    let first = U256::from(2_000_000_000_000_000_000u128);
+    contract
+        .deposit()
+        .value(first)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mine_confirmations(&provider, 1).await?;
+    await_collateral(persist_ctx, &user_addr, first).await?;
+
+    // Simulate the reorg double-apply: the same deposit credited again under a
+    // fresh event identity, as a re-mined block hash would bypass the dedup.
+    repo::credit_collateral_with_event_on(
+        persist_ctx.db.as_ref(),
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        first,
+        CollateralEventType::Deposit,
+        Some(EventMeta {
+            chain_id: env.cfg.ethereum_config.chain_id,
+            block_hash: "0xreorged".to_string(),
+            tx_hash: "0xdeadbeef".to_string(),
+            log_index: 0,
+        }),
+    )
+    .await?;
+    assert_eq!(
+        read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        first * U256::from(2u8),
+        "double-credit should inflate the off-chain total (bug reproduced)"
+    );
+
+    // A subsequent real deposit triggers a re-sync from chain, healing the total
+    // back to the true on-chain balance rather than first * 2 + second.
+    let second = U256::from(1_000_000_000_000_000_000u128);
+    contract
+        .deposit()
+        .value(second)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    mine_confirmations(&provider, 1).await?;
+    await_collateral(persist_ctx, &user_addr, first + second).await?;
 
     Ok(())
 }
@@ -520,8 +603,8 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
 // ════════════════════════ stablecoin deposit / withdrawal (aToken branch) ════════════════════════
 
 /// Depositing an ERC-20 stablecoin exercises `handle_collateral_deposited` ->
-/// `sync_stablecoin_balance_from_chain` -> `guaranteeCapacity` (the aToken
-/// branch), which the native-ETH deposit tests never reach.
+/// `sync_balance_from_chain` -> `guaranteeCapacity` (the aToken branch), which
+/// the native-ETH deposit tests never reach.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
 async fn stablecoin_deposit_syncs_balance_from_chain() -> anyhow::Result<()> {

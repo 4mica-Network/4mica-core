@@ -93,7 +93,7 @@ impl CoreService {
         let persist_ctx = PersistCtx::new().await?;
         let eth_cfg = config.ethereum_config.clone();
         let guarantee_config = config.guarantee.clone();
-        guarantee_config.validate()?;
+        guarantee_config.validate(config.server_config.environment)?;
         let accepted_guarantee_versions = guarantee_config.accepted_request_versions()?;
 
         let contract_api = Arc::new(CoreContractProxy::new(&config).await?);
@@ -167,7 +167,7 @@ impl CoreService {
         let eip712_version = config.eip712.version.clone();
         let eth_config = config.ethereum_config.clone();
         let guarantee_config = config.guarantee.clone();
-        guarantee_config.validate()?;
+        guarantee_config.validate(config.server_config.environment)?;
         let trusted_validation_registries =
             guarantee_config.trusted_validation_registry_allowlist()?;
         let trusted_validation_registry_set: HashSet<Address> = trusted_validation_registries

@@ -31,6 +31,41 @@ pub struct ServerConfig {
 
     #[envconfig(from = "LOG_LEVEL", default = "info")]
     pub log_level: log::Level,
+
+    /// Deployment environment. Gates production-only safety requirements (e.g.
+    /// requiring reorg-safe `finalized` confirmation). Defaults to `production`
+    /// so a deployment that forgets to set it gets the strict, safe behavior;
+    /// local dev/test must explicitly opt into the relaxed paths with
+    /// `SERVER_ENVIRONMENT=development`.
+    #[envconfig(from = "SERVER_ENVIRONMENT", default = "production")]
+    pub environment: Environment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    Production,
+    Development,
+}
+
+impl Environment {
+    pub fn is_production(self) -> bool {
+        matches!(self, Environment::Production)
+    }
+}
+
+impl FromStr for Environment {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "production" | "prod" => Ok(Environment::Production),
+            "development" | "dev" | "test" => Ok(Environment::Development),
+            other => bail!(
+                "Invalid SERVER_ENVIRONMENT '{}'. Use one of: production, development",
+                other
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Envconfig)]
@@ -77,10 +112,6 @@ pub struct EthereumConfig {
     /// Maximum block span for a single eth_getLogs request.
     #[envconfig(from = "ETHEREUM_MAX_LOG_BLOCK_RANGE", default = "10000")]
     pub max_log_block_range: u64,
-    /// When CONFIRMATION_MODE=finalized and the provider doesn't advance finalized head,
-    /// treat blocks as finalized after this depth (useful for local dev/test only).
-    #[envconfig(from = "FINALIZED_HEAD_DEPTH", default = "0")]
-    pub finalized_head_depth: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,17 +144,29 @@ impl EthereumConfig {
         }
     }
 
-    pub fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self, environment: Environment) -> anyhow::Result<()> {
         let mode = self.confirmation_mode()?;
+        // Only the chain's real `finalized` head is reorg-safe. `depth` and `safe`
+        // treat recent (still reorg-able) blocks as confirmed, so the scanner can
+        // process blocks that later roll back — double-crediting ETH deposits and
+        // minting unbacked guarantees (4MCA-H04/4MCA-M03). Hard-fail that in
+        // production; allow it in development for local anvil/CI, which have no
+        // real finalized head.
         if mode != ConfirmationMode::Finalized {
-            bail!(
-                "CONFIRMATION_MODE must be finalized when processing on-chain data without rollback"
-            );
-        }
-        if mode == ConfirmationMode::Finalized && self.finalized_head_depth > 0 {
+            if environment.is_production() {
+                bail!(
+                    "CONFIRMATION_MODE must be `finalized` in production, but is `{}`. Non-finalized \
+                     modes treat reorg-able blocks as confirmed, which can double-credit ETH deposits \
+                     and mint unbacked guarantees (4MCA-H04/4MCA-M03). Set SERVER_ENVIRONMENT=development \
+                     for local/test use of `{}`.",
+                    mode.as_str(),
+                    mode.as_str()
+                );
+            }
             warn!(
-                "FINALIZED_HEAD_DEPTH={} is set; finalized mode will treat latest-N blocks as finalized. This is not safe for production.",
-                self.finalized_head_depth
+                "CONFIRMATION_MODE={} treats recent (reorg-able) blocks as confirmed; permitted only \
+                 because SERVER_ENVIRONMENT=development. Never use this in production.",
+                mode.as_str()
             );
         }
         if mode == ConfirmationMode::Depth && self.number_of_blocks_to_confirm == 0 {
@@ -205,12 +248,32 @@ impl GuaranteeConfig {
             .collect()
     }
 
-    pub fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self, environment: Environment) -> anyhow::Result<()> {
         validate_guarantee_version(self.max_accepted_version, "GUARANTEE_REQUEST_VERSION")?;
         let accepted_versions = self.accepted_request_versions()?;
         accepted_versions.iter().try_for_each(|v| {
             validate_guarantee_version(*v, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")
         })?;
+
+        // V2+ guarantees are validation-gated and not enabled for production. Refuse
+        // to start if any advertised or accepted version is beyond V1 in production;
+        // development/test may exercise V2. `accepted_request_versions()` is the
+        // source of truth for both request acceptance and the advertised max version,
+        // so gating here disables V2 everywhere it is surfaced.
+        if environment.is_production() {
+            let advertises_v2 = version_requires_validation_registry(self.max_accepted_version)
+                || accepted_versions
+                    .iter()
+                    .any(|&v| version_requires_validation_registry(v));
+            if advertises_v2 {
+                bail!(
+                    "V2+ guarantees are disabled in production (SERVER_ENVIRONMENT=production); \
+                     set GUARANTEE_REQUEST_VERSION=1 and remove any version >1 from \
+                     GUARANTEE_ACCEPTED_REQUEST_VERSIONS. Use SERVER_ENVIRONMENT=development to test V2."
+                );
+            }
+        }
+
         let canonicalization_version = self.validation_hash_canonicalization_version.trim();
         if canonicalization_version.is_empty() {
             bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");
@@ -377,7 +440,7 @@ pub struct Secrets {
 }
 
 impl Secrets {
-    pub fn init_from_env() -> anyhow::Result<Self> {
+    pub fn init_from_env(environment: Environment) -> anyhow::Result<Self> {
         let mut bls_secret_key_raw = Self::load_env_var("BLS_PRIVATE_KEY")?;
         let bls_secret_key = KeyMaterial::from_str(&bls_secret_key_raw)?;
         bls_secret_key_raw.zeroize();
@@ -394,10 +457,27 @@ impl Secrets {
         if secret == DEFAULT_AUTH_JWT_SECRET {
             bail!("AUTH_JWT_SECRET is set to the insecure default; override it");
         }
-        if secret == PLACEHOLDER_AUTH_JWT_SECRET {
-            warn!("AUTH_JWT_SECRET uses the placeholder value; replace with a 32+ byte secret");
+        // A placeholder or short signing key can be brute-forced, letting anyone forge
+        // access tokens. Hard-fail in production; keep it a warning in development so
+        // local/test setups can use throwaway secrets.
+        let weak_secret = if secret == PLACEHOLDER_AUTH_JWT_SECRET {
+            Some(
+                "AUTH_JWT_SECRET uses the placeholder value; set a 32+ byte random secret"
+                    .to_string(),
+            )
         } else if secret.len() < 32 {
-            warn!("AUTH_JWT_SECRET is shorter than 32 bytes; use a 32+ byte secret in production");
+            Some(format!(
+                "AUTH_JWT_SECRET is {} bytes; use a 32+ byte random secret",
+                secret.len()
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = weak_secret {
+            if environment.is_production() {
+                bail!("{reason} (required in production; SERVER_ENVIRONMENT=production)");
+            }
+            warn!("{reason}; permitted only because SERVER_ENVIRONMENT=development");
         }
 
         let secret_bytes = secret.as_bytes();
@@ -448,6 +528,39 @@ pub struct AuthConfig {
     #[envconfig(from = "AUTH_SIWE_URI")]
     pub siwe_uri: Option<String>,
 }
+
+impl AuthConfig {
+    pub fn validate(&self, environment: Environment) -> anyhow::Result<()> {
+        // The SIWE domain and URI are bound into the sign-in message the wallet
+        // signs, anchoring the login to this origin. In production we refuse the
+        // silent fallbacks in `build_siwe_context` (bind host for the domain,
+        // `http://` for the URI): a wrong or insecure origin enables cross-domain
+        // replay/phishing of sign-in messages. Development keeps the fallbacks so
+        // local setups work without extra config.
+        if !environment.is_production() {
+            return Ok(());
+        }
+        let domain = self.siwe_domain.as_deref().map(str::trim).unwrap_or("");
+        if domain.is_empty() {
+            bail!(
+                "AUTH_SIWE_DOMAIN must be set in production (SERVER_ENVIRONMENT=production); \
+                 otherwise the SIWE domain silently falls back to the server bind host"
+            );
+        }
+        let uri = self.siwe_uri.as_deref().map(str::trim).unwrap_or("");
+        if uri.is_empty() {
+            bail!(
+                "AUTH_SIWE_URI must be set in production (SERVER_ENVIRONMENT=production); \
+                 otherwise the SIWE URI silently falls back to an insecure http:// URL"
+            );
+        }
+        if !uri.starts_with("https://") {
+            bail!("AUTH_SIWE_URI must use https in production, but is '{uri}'");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Envconfig)]
 pub struct DatabaseConfig {
     #[envconfig(from = "DATABASE_CONFLICT_RETRIES", default = "5")]
@@ -483,23 +596,29 @@ impl AppConfig {
         let ethereum_config =
             EthereumConfig::init_from_env().context("Failed to load ethereum config")?;
         ethereum_config
-            .validate()
+            .validate(server_config.environment)
             .context("Invalid ethereum config")?;
         let database_config =
             DatabaseConfig::init_from_env().context("Failed to load database config")?;
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
         let guarantee =
             GuaranteeConfig::init_from_env().context("Failed to load guarantee config")?;
-        guarantee.validate().context("Invalid guarantee config")?;
+        guarantee
+            .validate(server_config.environment)
+            .context("Invalid guarantee config")?;
         let settlement_cycle = SettlementCycleConfig::init_from_env()
             .context("Failed to load settlement cycle config")?;
         settlement_cycle
             .validate()
             .context("Invalid settlement cycle config")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
+        auth.validate(server_config.environment)
+            .context("Invalid auth config")?;
         let monitoring =
             MonitoringConfig::init_from_env().context("Failed to load monitoring config")?;
-        let secrets = Arc::new(Secrets::init_from_env().context("Failed to load secrets")?);
+        let secrets = Arc::new(
+            Secrets::init_from_env(server_config.environment).context("Failed to load secrets")?,
+        );
 
         Ok(Self {
             server_config,
@@ -517,7 +636,127 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuaranteeConfig, SettlementCycleConfig};
+    use super::{AuthConfig, Environment, EthereumConfig, GuaranteeConfig, SettlementCycleConfig};
+
+    fn base_ethereum_config() -> EthereumConfig {
+        EthereumConfig {
+            chain_id: 1,
+            ws_rpc_url: "ws://localhost:8545".to_string(),
+            http_rpc_url: "http://localhost:8545".to_string(),
+            public_http_rpc_url: String::new(),
+            contract_address: "0x0000000000000000000000000000000000000001".to_string(),
+            clearing_house_address: "0x0000000000000000000000000000000000000000".to_string(),
+            cron_job_settings: "0 */1 * * * *".to_string(),
+            event_scanner_cron: "*/5 * * * * *".to_string(),
+            confirmation_mode: "finalized".to_string(),
+            number_of_blocks_to_confirm: 20,
+            payment_scan_lookback_blocks: 5,
+            payment_legacy_scan_enabled: false,
+            initial_event_scan_lookback_blocks: 25,
+            max_log_block_range: 10000,
+        }
+    }
+
+    #[test]
+    fn ethereum_config_accepts_finalized_in_production() {
+        let cfg = base_ethereum_config();
+        cfg.validate(Environment::Production)
+            .expect("finalized config must be valid in production");
+    }
+
+    #[test]
+    fn ethereum_config_rejects_reorgable_mode_in_production() {
+        let mut cfg = base_ethereum_config();
+        cfg.confirmation_mode = "depth".to_string();
+        let err = cfg
+            .validate(Environment::Production)
+            .expect_err("depth mode in production should fail");
+        assert!(
+            err.to_string()
+                .contains("CONFIRMATION_MODE must be `finalized`")
+        );
+        assert!(err.to_string().contains("SERVER_ENVIRONMENT=development"));
+    }
+
+    #[test]
+    fn ethereum_config_allows_reorgable_mode_in_development() {
+        let mut cfg = base_ethereum_config();
+        cfg.confirmation_mode = "depth".to_string();
+        cfg.validate(Environment::Development)
+            .expect("depth mode should be allowed in development");
+    }
+
+    #[test]
+    fn ethereum_config_accepts_finalized_in_development() {
+        let cfg = base_ethereum_config();
+        cfg.validate(Environment::Development)
+            .expect("finalized config must be valid in development");
+    }
+
+    #[test]
+    fn environment_parses_case_insensitively() {
+        use std::str::FromStr;
+        assert_eq!(
+            Environment::from_str("PRODUCTION").unwrap(),
+            Environment::Production
+        );
+        assert_eq!(
+            Environment::from_str(" development ").unwrap(),
+            Environment::Development
+        );
+        assert!(Environment::from_str("staging").is_err());
+    }
+
+    fn auth_config(siwe_domain: Option<&str>, siwe_uri: Option<&str>) -> AuthConfig {
+        AuthConfig {
+            nonce_ttl_secs: 300,
+            refresh_ttl_secs: 2_592_000,
+            access_ttl_secs: 900,
+            jwt_issuer: "4mica-core".to_string(),
+            jwt_audience: "4mica".to_string(),
+            siwe_statement: "Sign in to 4mica.".to_string(),
+            siwe_domain: siwe_domain.map(str::to_string),
+            siwe_uri: siwe_uri.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn auth_config_development_allows_siwe_fallbacks() {
+        auth_config(None, None)
+            .validate(Environment::Development)
+            .expect("development must permit SIWE fallbacks");
+    }
+
+    #[test]
+    fn auth_config_production_requires_siwe_domain() {
+        let err = auth_config(None, Some("https://app.4mica.io"))
+            .validate(Environment::Production)
+            .expect_err("missing SIWE domain must fail in production");
+        assert!(err.to_string().contains("AUTH_SIWE_DOMAIN"));
+    }
+
+    #[test]
+    fn auth_config_production_requires_siwe_uri() {
+        let err = auth_config(Some("app.4mica.io"), None)
+            .validate(Environment::Production)
+            .expect_err("missing SIWE uri must fail in production");
+        assert!(err.to_string().contains("AUTH_SIWE_URI"));
+    }
+
+    #[test]
+    fn auth_config_production_rejects_insecure_siwe_uri() {
+        let err = auth_config(Some("app.4mica.io"), Some("http://app.4mica.io"))
+            .validate(Environment::Production)
+            .expect_err("http SIWE uri must fail in production");
+        assert!(err.to_string().contains("https"));
+    }
+
+    #[test]
+    fn auth_config_production_accepts_explicit_https_siwe() {
+        auth_config(Some("app.4mica.io"), Some("https://app.4mica.io"))
+            .validate(Environment::Production)
+            .expect("explicit https SIWE config must be valid in production");
+    }
 
     #[test]
     fn guarantee_config_accepts_valid_v1_and_v2() {
@@ -527,7 +766,8 @@ mod tests {
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
-        v1.validate().expect("v1 config must be valid");
+        v1.validate(Environment::Production)
+            .expect("v1 config must be valid");
 
         let v2 = GuaranteeConfig {
             max_accepted_version: 2,
@@ -537,11 +777,55 @@ mod tests {
                     .to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
-        v2.validate().expect("v2 config must be valid");
+        v2.validate(Environment::Development)
+            .expect("v2 config must be valid in development");
         let allowlist = v2
             .trusted_validation_registry_allowlist()
             .expect("allowlist should parse");
         assert_eq!(allowlist.len(), 2);
+    }
+
+    #[test]
+    fn guarantee_config_rejects_v2_in_production() {
+        // Default accepted set for max=2 is [1, 2], so this exercises the accepted-set gate.
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        };
+        let err = cfg
+            .validate(Environment::Production)
+            .expect_err("V2 guarantees must be rejected in production");
+        assert!(
+            err.to_string()
+                .contains("V2+ guarantees are disabled in production")
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_explicit_v2_only_in_production() {
+        // Even when V1 is excluded, an explicit V2-only accepted set must be rejected in prod.
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: "2".to_string(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        };
+        cfg.validate(Environment::Production)
+            .expect_err("explicit V2 accepted set must be rejected in production");
+    }
+
+    #[test]
+    fn guarantee_config_accepts_v1_only_in_production() {
+        let cfg = GuaranteeConfig {
+            max_accepted_version: 1,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: String::new(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        };
+        cfg.validate(Environment::Production)
+            .expect("V1-only config must be valid in production");
     }
 
     #[test]
@@ -554,7 +838,7 @@ mod tests {
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         let err = cfg
-            .validate()
+            .validate(Environment::Development)
             .expect_err("invalid allowlist should be rejected");
         assert!(
             err.to_string()
@@ -571,7 +855,7 @@ mod tests {
             validation_hash_canonicalization_version: "   ".to_string(),
         };
         let err = cfg
-            .validate()
+            .validate(Environment::Development)
             .expect_err("empty canonicalization version should fail");
         assert!(
             err.to_string()
@@ -588,7 +872,7 @@ mod tests {
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
         };
         let err = cfg
-            .validate()
+            .validate(Environment::Development)
             .expect_err("unsupported canonicalization version should fail");
         assert!(
             err.to_string()
@@ -605,7 +889,7 @@ mod tests {
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         let err = cfg
-            .validate()
+            .validate(Environment::Development)
             .expect_err("v2 config without allowlist should fail");
         assert!(err.to_string().contains("TRUSTED_VALIDATION_REGISTRIES"));
     }
@@ -619,7 +903,7 @@ mod tests {
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
         };
         let err = cfg
-            .validate()
+            .validate(Environment::Development)
             .expect_err("unsupported guarantee request version should fail");
         assert!(
             err.to_string()

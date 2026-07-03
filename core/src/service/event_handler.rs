@@ -1,3 +1,4 @@
+use alloy::eips::BlockId;
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
@@ -30,6 +31,7 @@ impl EthereumEventHandler for CoreService {
         info!("Deposit by {user:?} of {amount}, asset={asset}");
 
         let meta = self.event_meta_from_log(&log)?;
+        let block_number = block_number_from_log(&log)?;
         repo::credit_collateral_with_event_on(
             self.inner.persist_ctx.db.as_ref(),
             user.to_string(),
@@ -39,7 +41,8 @@ impl EthereumEventHandler for CoreService {
             Some(meta),
         )
         .await?;
-        self.sync_stablecoin_balance_from_chain(user, asset).await?;
+        self.sync_balance_from_chain(user, asset, block_number)
+            .await?;
         Ok(())
     }
 
@@ -54,6 +57,7 @@ impl EthereumEventHandler for CoreService {
         info!("Collateral withdrawn by {user:?}: {amount}");
 
         let meta = self.event_meta_from_log(&log)?;
+        let block_number = block_number_from_log(&log)?;
         if self.stablecoin_a_token(asset).await?.is_some() {
             repo::mark_withdrawal_executed_with_event(
                 &self.inner.persist_ctx,
@@ -63,7 +67,8 @@ impl EthereumEventHandler for CoreService {
                 Some(&meta),
             )
             .await?;
-            self.sync_stablecoin_balance_from_chain(user, asset).await?;
+            self.sync_balance_from_chain(user, asset, block_number)
+                .await?;
         } else {
             repo::finalize_withdrawal_with_event(
                 &self.inner.persist_ctx,
@@ -73,6 +78,8 @@ impl EthereumEventHandler for CoreService {
                 Some(&meta),
             )
             .await?;
+            self.sync_balance_from_chain(user, asset, block_number)
+                .await?;
         }
         Ok(())
     }
@@ -285,36 +292,53 @@ fn tx_hash_from_log(log: &Log) -> Result<String, BlockchainListenerError> {
         })
 }
 
+fn block_number_from_log(log: &Log) -> Result<u64, BlockchainListenerError> {
+    log.block_number.ok_or_else(|| {
+        BlockchainListenerError::EventHandlerError("log missing block_number".to_string())
+    })
+}
+
 impl CoreService {
-    async fn sync_stablecoin_balance_from_chain(
+    /// Overwrite the off-chain `total` for `(user, asset)` with the authoritative
+    /// on-chain collateral, leaving `locked` untouched. This makes event-sourced
+    /// balances self-heal from any double-applied event (e.g. a deposit re-mined
+    /// into a new block by a reorg, 4MCA-H04) rather than drifting permanently,
+    /// since issuance always gates on this reconciled total.
+    async fn sync_balance_from_chain(
         &self,
         user: Address,
         asset: Address,
+        block_number: u64,
     ) -> Result<(), BlockchainListenerError> {
-        if asset == Address::ZERO {
-            return Ok(());
-        }
-
-        if self.stablecoin_a_token(asset).await?.is_none() {
-            return Ok(());
-        }
-
         let contract = self.read_contract()?;
-        let guarantee_capacity = contract
-            .guaranteeCapacity(user, asset)
-            .call()
-            .await
-            .map_err(|err| {
-                BlockchainListenerError::EventHandlerError(format!(
-                    "failed to load guarantee capacity for user {user} asset {asset}: {err}"
-                ))
-            })?;
+        let block = BlockId::from(block_number);
+
+        let on_chain_total = if asset == Address::ZERO {
+            // ETH collateral is custodied directly by Core4Mica.
+            contract.collateral(user, asset).block(block).call().await
+        } else if self.stablecoin_a_token(asset).await?.is_some() {
+            // Stablecoin collateral is supplied to Aave; its guaranteeable
+            // capacity (principal, excluding yield) is what backs the off-chain total.
+            contract
+                .guaranteeCapacity(user, asset)
+                .block(block)
+                .call()
+                .await
+        } else {
+            // Not a supported collateral asset; nothing to reconcile.
+            return Ok(());
+        }
+        .map_err(|err| {
+            BlockchainListenerError::EventHandlerError(format!(
+                "failed to load on-chain collateral for user {user} asset {asset}: {err}"
+            ))
+        })?;
 
         repo::sync_user_asset_total(
             &self.inner.persist_ctx,
             &user.to_string(),
             &asset.to_string(),
-            guarantee_capacity,
+            on_chain_total,
         )
         .await?;
 

@@ -179,11 +179,15 @@ ETHEREUM_CHAIN_ID="$CHAIN_ID"
 ETHEREUM_CONTRACT_ADDRESS="$contract_addr"
 ETHEREUM_CLEARING_HOUSE_ADDRESS="$clearing_house_addr"
 ETHEREUM_PRIVATE_KEY="$DEPLOYER_PRIVATE_KEY"
-FINALIZED_HEAD_DEPTH=1
+# Local anvil has no real finalized head; use depth-based confirmation instead.
+# This reorg-able mode is unsafe for production, so it is only permitted when
+# SERVER_ENVIRONMENT=development (see EthereumConfig::validate).
+CONFIRMATION_MODE=depth
 NUMBER_OF_BLOCKS_TO_CONFIRM=1
 PAYMENT_SCAN_LOOKBACK_BLOCKS=1
 
 # Server
+SERVER_ENVIRONMENT=development
 SERVER_HOST=$CORE_HOST
 SERVER_PORT=$CORE_PORT
 

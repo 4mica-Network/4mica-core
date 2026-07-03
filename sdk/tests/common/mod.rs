@@ -80,11 +80,14 @@ pub async fn get_chain_timestamp<S>(config: &Config<S>) -> anyhow::Result<u64> {
 
 pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::Result<()> {
     load_core_env();
-    let finalized_depth = std::env::var("FINALIZED_HEAD_DEPTH")
+    // The dev/CI core-service runs `CONFIRMATION_MODE=depth`; mine the extra
+    // NUMBER_OF_BLOCKS_TO_CONFIRM blocks the scanner subtracts to reach its
+    // confirmed head so the event surfaces.
+    let confirmation_depth = std::env::var("NUMBER_OF_BLOCKS_TO_CONFIRM")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
-    let total_blocks = blocks.saturating_add(finalized_depth);
+        .unwrap_or(1);
+    let total_blocks = blocks.saturating_add(confirmation_depth);
     if total_blocks == 0 {
         return Ok(());
     }

@@ -264,19 +264,11 @@ impl EthereumEventScanner {
                 block.map(|b| b.header.number)
             }
             crate::config::ConfirmationMode::Finalized => {
-                if config.finalized_head_depth > 0 {
-                    let latest = provider
-                        .get_block_number()
-                        .await
-                        .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-                    Some(latest.saturating_sub(config.finalized_head_depth))
-                } else {
-                    let block = provider
-                        .get_block_by_number(BlockNumberOrTag::Finalized)
-                        .await
-                        .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-                    block.map(|b| b.header.number)
-                }
+                let block = provider
+                    .get_block_by_number(BlockNumberOrTag::Finalized)
+                    .await
+                    .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
+                block.map(|b| b.header.number)
             }
         };
 
