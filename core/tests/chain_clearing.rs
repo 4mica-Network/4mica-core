@@ -382,11 +382,6 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
     Ok(())
 }
 
-/// Like [`commit_two_party_cycle`], but afterwards advances on-chain time past the
-/// finality deadline and backdates the off-chain deadline, so the off-chain job marks
-/// the cycle defaulted and on-chain batch settlement is allowed. The cycle is committed
-/// with a future payment window (required by `commitCycle`, 4MCA-H07); finality is
-/// reached by advancing anvil time rather than committing past deadlines.
 async fn commit_two_party_cycle_past_finality(
     svc: &core_service::service::CoreService,
     provider: &DynProvider,
@@ -406,14 +401,6 @@ async fn commit_two_party_cycle_past_finality(
     Ok(guarantee_id)
 }
 
-/// Commit a two-party cycle whose on-chain payment window closes `secs` in the future.
-///
-/// The shortfall path can't use the anvil-time-jump of
-/// [`commit_two_party_cycle_past_finality`]: `drive_cycle_shortfall` gates on wall-clock
-/// `now` versus the *on-chain* finality deadline, and anvil block time doesn't move
-/// wall-clock. Since `commitCycle` requires a future window (4MCA-H07) and anvil
-/// timestamps can't be set behind wall-clock, the caller instead commits a near-now
-/// window and sleeps past `finality + shortfall_grace` in real time.
 async fn commit_two_party_cycle_finality_soon(
     svc: &core_service::service::CoreService,
     cycle_id: &str,
