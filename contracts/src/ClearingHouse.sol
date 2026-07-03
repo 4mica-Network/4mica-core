@@ -108,6 +108,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error ClaimConversionShortfall(uint256 requested, uint256 got);
     error CycleFullyFunded(uint256 funded, uint256 required);
     error ResolvedDebitExceedsCommitted(uint256 attempted, uint256 total);
+    error ClaimedCreditExceedsCommitted(uint256 attempted, uint256 total);
 
     mapping(bytes32 => OnchainCycle) private cycles;
     mapping(bytes32 => mapping(address => ParticipantState)) private participantStates;
@@ -238,6 +239,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             emit CreditorClaimed(cycleId, msg.sender, cycle.asset, 0);
             return;
         }
+        if (cycle.totalClaimedOut + payout > cycle.totalNetCredit) {
+            revert ClaimedCreditExceedsCommitted(cycle.totalClaimedOut + payout, cycle.totalNetCredit);
+        }
         uint256 available = _available(cycle);
         if (available < payout) {
             revert ClaimExceedsFundedLiquidity(available, payout);
@@ -342,6 +346,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 participant.netCredit = entry.netCredit;
                 participant.claimed = true;
                 emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, 0);
+                continue;
+            }
+            if (cycle.totalClaimedOut + payout > cycle.totalNetCredit) {
+                emit SettlementSkipped(cycleId, entry.creditor, "exceeds committed credit");
                 continue;
             }
             uint256 available = _available(cycle);
