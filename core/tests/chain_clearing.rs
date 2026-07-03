@@ -256,7 +256,7 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
 
     // Advance past the finality deadline, then finalize on-chain.
     provider
-        .anvil_set_block_timestamp_interval(3 * 60 * 60)
+        .anvil_set_block_timestamp_interval(5 * 60 * 60)
         .await?;
     ClearingHouse::new(*env.clearing_house.address(), op_provider)
         .finalizeCycle(debtor_proof.cycle_id)
@@ -399,7 +399,7 @@ async fn commit_two_party_cycle_past_finality(
     // Move on-chain time past the finality deadline (so settleDefaults is allowed) and
     // backdate the off-chain finality deadline (so the settlement job sees the cycle as due).
     provider
-        .anvil_set_block_timestamp_interval(3 * 60 * 60)
+        .anvil_set_block_timestamp_interval(5 * 60 * 60)
         .await?;
     backdate_cycle_finality(svc.persist_ctx(), cycle_id).await?;
 
@@ -532,7 +532,7 @@ async fn fully_paid_cycle_with_unclaimed_creditor_is_settled_by_job() -> anyhow:
     // Push on-chain time past finality (so finalizeCycle is allowed) and backdate the
     // off-chain finality deadline (so the job sees the cycle as due).
     provider
-        .anvil_set_block_timestamp_interval(3 * 60 * 60)
+        .anvil_set_block_timestamp_interval(5 * 60 * 60)
         .await?;
     backdate_cycle_finality(ctx, cycle_id).await?;
 
@@ -654,22 +654,20 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Under-collateralised default driven by the off-chain job: the unpaid
-/// debtor's on-chain collateral covers only part of its net debit, so the cycle can never be
-/// fully funded. The seize recovers what it can, the job drives the cycle to the terminal
-/// Shortfall state once the (zero, in tests) grace window passes, and the creditor is paid a
-/// pro-rata share — the cycle terminates instead of freezing.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
 async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyhow::Result<()> {
-    // The shortfall grace guard compares wall-clock now to the on-chain finality deadline, and
-    // committing requires a future window (4MCA-H07), so keep the grace tiny to bound the wait.
     unsafe {
-        std::env::set_var("SETTLEMENT_SHORTFALL_GRACE_SECS", "2");
+        std::env::set_var("SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS", "5");
+        std::env::set_var("SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS", "5");
     }
     let env = setup_e2e_environment()
         .await
         .context("setup_e2e_environment")?;
+    unsafe {
+        std::env::remove_var("SETTLEMENT_PAYMENT_SUBMISSION_WINDOW_SECS");
+        std::env::remove_var("SETTLEMENT_PAYMENT_FINALITY_WINDOW_SECS");
+    }
     let provider = env.provider.clone();
     let svc = env.core_service.clone();
     let ctx = svc.persist_ctx();
