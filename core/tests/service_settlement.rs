@@ -52,6 +52,8 @@ async fn debtor_payment_and_creditor_claim_advance_participant_statuses() -> any
             cycle_id,
             Some("0xcommit".to_string()),
             Utc::now().naive_utc(),
+            Utc::now().naive_utc(),
+            Utc::now().naive_utc(),
         )
         .await?
     );
@@ -135,6 +137,8 @@ async fn multi_party_settlement_releases_all_locked_collateral() -> anyhow::Resu
             ctx.db.as_ref(),
             cycle_id,
             Some("0xcommit".to_string()),
+            Utc::now().naive_utc(),
+            Utc::now().naive_utc(),
             Utc::now().naive_utc(),
         )
         .await?
@@ -234,6 +238,8 @@ async fn defaulted_debtor_has_total_collateral_debited() -> anyhow::Result<()> {
             ctx.db.as_ref(),
             cycle_id,
             Some("0xcommit".to_string()),
+            Utc::now().naive_utc(),
+            Utc::now().naive_utc(),
             Utc::now().naive_utc(),
         )
         .await?
@@ -347,6 +353,8 @@ async fn finalize_cycle_sweeps_residual_netted_collateral() -> anyhow::Result<()
             &cycle_id,
             None,
             Utc::now().naive_utc(),
+            Utc::now().naive_utc(),
+            Utc::now().naive_utc(),
         )
         .await?
     );
@@ -394,6 +402,8 @@ async fn marking_payment_window_cycle_moves_it_to_settling() -> anyhow::Result<(
             ctx.db.as_ref(),
             cycle_id,
             Some("0xcommit".to_string()),
+            Utc::now().naive_utc(),
+            Utc::now().naive_utc(),
             Utc::now().naive_utc(),
         )
         .await?

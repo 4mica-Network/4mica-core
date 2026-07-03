@@ -275,6 +275,8 @@ pub async fn mark_cycle_payment_window_open_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
     commit_tx_hash: Option<String>,
+    payment_submission_deadline: NaiveDateTime,
+    payment_finality_deadline: NaiveDateTime,
     now: NaiveDateTime,
 ) -> Result<bool, PersistDbError> {
     let result = settlement_cycle::Entity::update_many()
@@ -283,6 +285,8 @@ pub async fn mark_cycle_payment_window_open_on<C: ConnectionTrait>(
         .set(settlement_cycle::ActiveModel {
             status: Set(SettlementCycleStatus::PaymentWindowOpen),
             commit_tx_hash: Set(commit_tx_hash),
+            payment_submission_deadline: Set(payment_submission_deadline),
+            payment_finality_deadline: Set(payment_finality_deadline),
             updated_at: Set(now),
             ..Default::default()
         })
