@@ -2,12 +2,16 @@
 pragma solidity ^0.8.29;
 
 import {Script, console} from "forge-std/Script.sol";
-import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
+import {
+    AccessManager
+} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
-import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
+import {
+    ValidationRegistryGuaranteeDecoder
+} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 import {MockERC20} from "../test/Core4MicaTestBase.sol";
@@ -36,7 +40,7 @@ import {MockERC20} from "../test/Core4MicaTestBase.sol";
 /// - CREATE2_SALT (optional, default "4mica-core-v1")
 /// - ACCESS_MANAGER_ADMIN (optional, default broadcaster address)
 ///
-/// Hardened governance (production; 4MCA-H08). Opt-in via:
+/// Hardened governance. Opt-in via:
 /// - REQUIRE_HARDENED_GOVERNANCE=true
 ///   When set, the deployer is only a *bootstrap* AccessManager admin: it configures roles, then
 ///   hands ADMIN_ROLE to ACCESS_MANAGER_ADMIN (which must be a non-deployer contract, i.e. a
@@ -55,7 +59,11 @@ contract Core4MicaFullStackScript is Script {
     error AaveReadbackMismatch(string field);
     error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
     error InsecureGovernanceAdmin(address admin);
-    error GovernanceDelayBelowMinimum(string field, uint256 provided, uint256 minimum);
+    error GovernanceDelayBelowMinimum(
+        string field,
+        uint256 provided,
+        uint256 minimum
+    );
     error RoleHolderNotSeparated(string role);
     error AdminHandoffFailed(address expectedAdmin);
     error DeployerRetainedAdmin(address deployer);
@@ -82,8 +90,6 @@ contract Core4MicaFullStackScript is Script {
     uint32 public constant DEFAULT_ADMIN_EXECUTION_DELAY = 72 hours;
     uint32 public constant DEFAULT_ROLE_GRANT_DELAY = 72 hours;
 
-    // Hardened-governance minimums, enforced only when REQUIRE_HARDENED_GOVERNANCE=true. They reject
-    // the zeroable/instant-action topology of 4MCA-H08 while leaving the exact durations tunable.
     uint32 public constant MIN_ADMIN_EXECUTION_DELAY = 24 hours;
     uint32 public constant MIN_ROLE_GRANT_DELAY = 24 hours;
     uint32 public constant MIN_GOVERNANCE_EXECUTION_DELAY = 24 hours;
@@ -112,7 +118,9 @@ contract Core4MicaFullStackScript is Script {
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        DeploymentConfig memory config = _loadDeploymentConfig(vm.addr(deployerPrivateKey));
+        DeploymentConfig memory config = _loadDeploymentConfig(
+            vm.addr(deployerPrivateKey)
+        );
 
         vm.startBroadcast(deployerPrivateKey);
 
@@ -121,10 +129,9 @@ contract Core4MicaFullStackScript is Script {
             _validateStablecoins(config.stablecoins);
         }
 
-        // In hardened mode the deployer is only a bootstrap admin so it can configure roles; admin
-        // is handed to config.managerAdmin (a multisig) and the deployer renounces below. Otherwise
-        // the AccessManager is created directly under the configured admin (unchanged behaviour).
-        address initialAdmin = config.hardenedGovernance ? config.deployer : config.managerAdmin;
+        address initialAdmin = config.hardenedGovernance
+            ? config.deployer
+            : config.managerAdmin;
 
         FullStackDeployment memory deployment = _deployFullStack(
             config.baseSalt,
@@ -145,16 +152,24 @@ contract Core4MicaFullStackScript is Script {
         console.log("AccessManager:", address(deployment.manager));
         console.log("Core4Mica:", address(deployment.core4Mica));
         console.log("GuaranteeDecoderRouter:", address(deployment.router));
-        console.log("ValidationRegistryGuaranteeDecoder:", address(deployment.validationDecoder));
+        console.log(
+            "ValidationRegistryGuaranteeDecoder:",
+            address(deployment.validationDecoder)
+        );
         console.log("ClearingHouse:", address(deployment.clearingHouse));
-        console.log("Trusted registries count:", config.trustedRegistries.length);
+        console.log(
+            "Trusted registries count:",
+            config.trustedRegistries.length
+        );
         console.log("AccessManager admin:", config.managerAdmin);
         console.log("Hardened governance:", config.hardenedGovernance);
         console.log("CREATE2 base salt:");
         console.logBytes32(config.baseSalt);
     }
 
-    function _loadDeploymentConfig(address deployer) internal view returns (DeploymentConfig memory config) {
+    function _loadDeploymentConfig(
+        address deployer
+    ) internal view returns (DeploymentConfig memory config) {
         // In mock mode the stablecoins are deployed after broadcast starts; leave them empty here.
         address[] memory stablecoins;
         if (!vm.envOr("DEPLOY_MOCK_STABLECOINS", false)) {
@@ -166,7 +181,9 @@ contract Core4MicaFullStackScript is Script {
         config.managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
         config.stablecoins = stablecoins;
         config.trustedRegistries = _loadTrustedValidationRegistries();
-        config.baseSalt = keccak256(bytes(vm.envOr("CREATE2_SALT", string("4mica-core-v1"))));
+        config.baseSalt = keccak256(
+            bytes(vm.envOr("CREATE2_SALT", string("4mica-core-v1")))
+        );
         config.guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),
             x_b: vm.envBytes32("VK_X1"),
@@ -176,43 +193,74 @@ contract Core4MicaFullStackScript is Script {
         // On-chain floor for withdrawalGracePeriod, set at construction so it can never be left
         // at 0. Must exceed worst-case cycle time-to-finality + seizure margin to preserve the
         // delayed-withdrawal solvency invariant; default 7 days (vs the 22-day default grace).
-        config.minWithdrawalGracePeriod = vm.envOr("MIN_WITHDRAWAL_GRACE_PERIOD", uint256(7 days));
-        require(config.minWithdrawalGracePeriod > 0, "MIN_WITHDRAWAL_GRACE_PERIOD must be > 0");
+        config.minWithdrawalGracePeriod = vm.envOr(
+            "MIN_WITHDRAWAL_GRACE_PERIOD",
+            uint256(7 days)
+        );
+        require(
+            config.minWithdrawalGracePeriod > 0,
+            "MIN_WITHDRAWAL_GRACE_PERIOD must be > 0"
+        );
 
-        config.hardenedGovernance = vm.envOr("REQUIRE_HARDENED_GOVERNANCE", false);
-        config.adminExecutionDelay = uint32(vm.envOr("ADMIN_EXECUTION_DELAY", uint256(DEFAULT_ADMIN_EXECUTION_DELAY)));
-        config.roleGrantDelay = uint32(vm.envOr("ROLE_GRANT_DELAY", uint256(DEFAULT_ROLE_GRANT_DELAY)));
+        config.hardenedGovernance = vm.envOr(
+            "REQUIRE_HARDENED_GOVERNANCE",
+            false
+        );
+        config.adminExecutionDelay = uint32(
+            vm.envOr(
+                "ADMIN_EXECUTION_DELAY",
+                uint256(DEFAULT_ADMIN_EXECUTION_DELAY)
+            )
+        );
+        config.roleGrantDelay = uint32(
+            vm.envOr("ROLE_GRANT_DELAY", uint256(DEFAULT_ROLE_GRANT_DELAY))
+        );
         if (config.hardenedGovernance) {
             _validateHardenedGovernance(config, deployer);
         }
     }
 
-    /// @dev Reject the 4MCA-H08 single-key / zeroable-delay topology before any state is deployed:
+    /// @dev Reject the single-key / zeroable-delay topology before any state is deployed:
     /// the admin must be a non-deployer contract (multisig/timelock heuristic), the admin/grant and
     /// governance/treasury delays must clear their minimums, and each role holder must be explicitly
     /// configured and distinct from the deployer.
-    function _validateHardenedGovernance(DeploymentConfig memory config, address deployer) internal view {
+    function _validateHardenedGovernance(
+        DeploymentConfig memory config,
+        address deployer
+    ) internal view {
         if (
-            config.managerAdmin == deployer || config.managerAdmin == address(0) || config.managerAdmin.code.length == 0
+            config.managerAdmin == deployer ||
+            config.managerAdmin == address(0) ||
+            config.managerAdmin.code.length == 0
         ) {
             revert InsecureGovernanceAdmin(config.managerAdmin);
         }
         if (config.adminExecutionDelay < MIN_ADMIN_EXECUTION_DELAY) {
             revert GovernanceDelayBelowMinimum(
-                "ADMIN_EXECUTION_DELAY", config.adminExecutionDelay, MIN_ADMIN_EXECUTION_DELAY
+                "ADMIN_EXECUTION_DELAY",
+                config.adminExecutionDelay,
+                MIN_ADMIN_EXECUTION_DELAY
             );
         }
         if (config.roleGrantDelay < MIN_ROLE_GRANT_DELAY) {
-            revert GovernanceDelayBelowMinimum("ROLE_GRANT_DELAY", config.roleGrantDelay, MIN_ROLE_GRANT_DELAY);
+            revert GovernanceDelayBelowMinimum(
+                "ROLE_GRANT_DELAY",
+                config.roleGrantDelay,
+                MIN_ROLE_GRANT_DELAY
+            );
         }
         if (_governanceDelay() < MIN_GOVERNANCE_EXECUTION_DELAY) {
             revert GovernanceDelayBelowMinimum(
-                "GOVERNANCE_EXECUTION_DELAY", _governanceDelay(), MIN_GOVERNANCE_EXECUTION_DELAY
+                "GOVERNANCE_EXECUTION_DELAY",
+                _governanceDelay(),
+                MIN_GOVERNANCE_EXECUTION_DELAY
             );
         }
         if (_treasuryDelay() < MIN_TREASURY_EXECUTION_DELAY) {
             revert GovernanceDelayBelowMinimum(
-                "TREASURY_EXECUTION_DELAY", _treasuryDelay(), MIN_TREASURY_EXECUTION_DELAY
+                "TREASURY_EXECUTION_DELAY",
+                _treasuryDelay(),
+                MIN_TREASURY_EXECUTION_DELAY
             );
         }
         _requireSeparatedHolder("GOVERNANCE_ROLE_HOLDER", deployer);
@@ -221,38 +269,39 @@ contract Core4MicaFullStackScript is Script {
         _requireSeparatedHolder("FOURMICA_OPERATOR_ROLE_HOLDER", deployer);
     }
 
-    function _requireSeparatedHolder(string memory envKey, address deployer) internal view {
+    function _requireSeparatedHolder(
+        string memory envKey,
+        address deployer
+    ) internal view {
         address holder = vm.envAddress(envKey); // reverts if unset
         _requireSeparatedHolder(envKey, holder, deployer);
     }
 
     /// @dev Pure topology check (no env), so a role holder can never silently default to the deployer.
-    function _requireSeparatedHolder(string memory role, address holder, address deployer) internal pure {
+    function _requireSeparatedHolder(
+        string memory role,
+        address holder,
+        address deployer
+    ) internal pure {
         if (holder == deployer || holder == address(0)) {
             revert RoleHolderNotSeparated(role);
         }
     }
 
-    /// @dev Hand AccessManager admin authority from the bootstrap deployer to the configured admin
-    /// (a multisig/timelock), install a non-zero admin execution delay plus role grant delays so a
-    /// compromised admin cannot instantly grant a live role or re-gate a function, then renounce the
-    /// deployer's admin. Closes the code-addressable half of 4MCA-H08 and the admin-self-grant theft
-    /// path of 4MCA-H02 (the rest — that the admin is genuinely an M-of-N multisig behind a timelock,
-    /// and operator key custody — is operational).
-    ///
-    /// Ordering matters: the admin is granted first (a fresh grant applies its execution delay
-    /// immediately and is not itself grant-delayed), grant delays are installed next (increases
-    /// engage after AccessManager.minSetback() == 5 days; the admin execution delay is the immediate
-    /// protection in the interim), and the deployer renounces last so it retains authority throughout.
-    function _finalizeHardenedGovernance(AccessManager manager, DeploymentConfig memory config) internal {
-        manager.grantRole(ADMIN_ROLE, config.managerAdmin, config.adminExecutionDelay);
+    function _finalizeHardenedGovernance(
+        AccessManager manager,
+        DeploymentConfig memory config
+    ) internal {
+        manager.grantRole(
+            ADMIN_ROLE,
+            config.managerAdmin,
+            config.adminExecutionDelay
+        );
 
         manager.setGrantDelay(GOVERNANCE_ROLE, config.roleGrantDelay);
         manager.setGrantDelay(TREASURY_ROLE, config.roleGrantDelay);
         manager.setGrantDelay(GUARDIAN_ROLE, config.roleGrantDelay);
         manager.setGrantDelay(FOURMICA_OPERATOR_ROLE, config.roleGrantDelay);
-        // CLEARING_HOUSE_ROLE is the collateral-seizing role a compromised admin would self-grant
-        // (4MCA-H02); delaying its grant keeps a malicious re-grant from becoming live instantly.
         manager.setGrantDelay(CLEARING_HOUSE_ROLE, config.roleGrantDelay);
         manager.setGrantDelay(ADMIN_ROLE, config.roleGrantDelay);
 
@@ -261,30 +310,55 @@ contract Core4MicaFullStackScript is Script {
         _assertHardenedGovernance(manager, config);
     }
 
-    function _assertHardenedGovernance(AccessManager manager, DeploymentConfig memory config) internal view {
-        (bool adminIsMember, uint32 adminDelay) = manager.hasRole(ADMIN_ROLE, config.managerAdmin);
+    function _assertHardenedGovernance(
+        AccessManager manager,
+        DeploymentConfig memory config
+    ) internal view {
+        (bool adminIsMember, uint32 adminDelay) = manager.hasRole(
+            ADMIN_ROLE,
+            config.managerAdmin
+        );
         if (!adminIsMember || adminDelay < MIN_ADMIN_EXECUTION_DELAY) {
             revert AdminHandoffFailed(config.managerAdmin);
         }
-        (bool deployerIsAdmin,) = manager.hasRole(ADMIN_ROLE, config.deployer);
+        (bool deployerIsAdmin, ) = manager.hasRole(ADMIN_ROLE, config.deployer);
         if (deployerIsAdmin) {
             revert DeployerRetainedAdmin(config.deployer);
         }
     }
 
-    function _configureDeployedStack(FullStackDeployment memory deployment, DeploymentConfig memory config) internal {
+    function _configureDeployedStack(
+        FullStackDeployment memory deployment,
+        DeploymentConfig memory config
+    ) internal {
         _assertStablecoinReadback(deployment.core4Mica, config.stablecoins);
         _configureOptionalAave(deployment.core4Mica, config.stablecoins);
 
-        bytes32 v2Domain =
-            keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(deployment.core4Mica)));
-        deployment.core4Mica
-            .configureGuaranteeVersion(
-                GUARANTEE_V2, config.guaranteeVerificationKey, v2Domain, address(deployment.validationDecoder), true
-            );
-        _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
+        bytes32 v2Domain = keccak256(
+            abi.encode(
+                "4MICA_CORE_GUARANTEE_V2",
+                block.chainid,
+                address(deployment.core4Mica)
+            )
+        );
+        deployment.core4Mica.configureGuaranteeVersion(
+            GUARANTEE_V2,
+            config.guaranteeVerificationKey,
+            v2Domain,
+            address(deployment.validationDecoder),
+            true
+        );
+        _configureCoreRoles(
+            deployment.manager,
+            deployment.core4Mica,
+            config.deployer
+        );
         _configureRouterRoles(deployment.manager, deployment.router);
-        _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse, deployment.core4Mica);
+        _configureClearingHouseRoles(
+            deployment.manager,
+            deployment.clearingHouse,
+            deployment.core4Mica
+        );
     }
 
     function _deployFullStack(
@@ -297,36 +371,59 @@ contract Core4MicaFullStackScript is Script {
     ) internal returns (FullStackDeployment memory deployment) {
         address managerAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "ACCESS_MANAGER"),
-            abi.encodePacked(type(AccessManager).creationCode, abi.encode(initialAdmin))
+            abi.encodePacked(
+                type(AccessManager).creationCode,
+                abi.encode(initialAdmin)
+            )
         );
         address core4MicaAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CORE4MICA"),
             abi.encodePacked(
                 type(Core4Mica).creationCode,
-                abi.encode(managerAddress, guaranteeVerificationKey, stablecoins, minWithdrawalGracePeriod)
+                abi.encode(
+                    managerAddress,
+                    guaranteeVerificationKey,
+                    stablecoins,
+                    minWithdrawalGracePeriod
+                )
             )
         );
         address routerAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "GUARANTEE_DECODER_ROUTER"),
-            abi.encodePacked(type(GuaranteeDecoderRouter).creationCode, abi.encode(managerAddress))
+            abi.encodePacked(
+                type(GuaranteeDecoderRouter).creationCode,
+                abi.encode(managerAddress)
+            )
         );
         address validationDecoderAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "VALIDATION_REGISTRY_GUARANTEE_DECODER"),
-            abi.encodePacked(type(ValidationRegistryGuaranteeDecoder).creationCode, abi.encode(trustedRegistries))
+            abi.encodePacked(
+                type(ValidationRegistryGuaranteeDecoder).creationCode,
+                abi.encode(trustedRegistries)
+            )
         );
         address clearingHouseAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CLEARING_HOUSE"),
-            abi.encodePacked(type(ClearingHouse).creationCode, abi.encode(managerAddress, core4MicaAddress))
+            abi.encodePacked(
+                type(ClearingHouse).creationCode,
+                abi.encode(managerAddress, core4MicaAddress)
+            )
         );
 
         deployment.manager = AccessManager(managerAddress);
         deployment.core4Mica = Core4Mica(payable(core4MicaAddress));
         deployment.router = GuaranteeDecoderRouter(routerAddress);
-        deployment.validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
+        deployment.validationDecoder = ValidationRegistryGuaranteeDecoder(
+            validationDecoderAddress
+        );
         deployment.clearingHouse = ClearingHouse(payable(clearingHouseAddress));
     }
 
-    function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
+    function _configureCoreRoles(
+        AccessManager manager,
+        Core4Mica core4Mica,
+        address deployer
+    ) internal {
         bytes4[] memory governanceSelectors = new bytes4[](6);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
         governanceSelectors[1] = Core4Mica.setGuaranteeVerificationKey.selector;
@@ -337,50 +434,91 @@ contract Core4MicaFullStackScript is Script {
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(
-                address(core4Mica), _asSingletonArray(governanceSelectors[i]), GOVERNANCE_ROLE
+                address(core4Mica),
+                _asSingletonArray(governanceSelectors[i]),
+                GOVERNANCE_ROLE
             );
         }
 
         manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(Core4Mica.claimProtocolYield.selector), TREASURY_ROLE
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.claimProtocolYield.selector),
+            TREASURY_ROLE
         );
         manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(Core4Mica.claimSurplusATokens.selector), TREASURY_ROLE
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.claimSurplusATokens.selector),
+            TREASURY_ROLE
         );
-        manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(Core4Mica.pause.selector), GUARDIAN_ROLE);
         manager.setTargetFunctionRole(
-            address(core4Mica), _asSingletonArray(Core4Mica.unpause.selector), GOVERNANCE_ROLE
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.pause.selector),
+            GUARDIAN_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(core4Mica),
+            _asSingletonArray(Core4Mica.unpause.selector),
+            GOVERNANCE_ROLE
         );
 
-        manager.grantRole(GOVERNANCE_ROLE, _roleHolder("GOVERNANCE_ROLE_HOLDER", deployer), _governanceDelay());
-        manager.grantRole(TREASURY_ROLE, _roleHolder("TREASURY_ROLE_HOLDER", deployer), _treasuryDelay());
-        manager.grantRole(GUARDIAN_ROLE, _roleHolder("GUARDIAN_ROLE_HOLDER", deployer), _guardianDelay());
         manager.grantRole(
-            FOURMICA_OPERATOR_ROLE, _roleHolder("FOURMICA_OPERATOR_ROLE_HOLDER", deployer), _fourmicaOperatorDelay()
+            GOVERNANCE_ROLE,
+            _roleHolder("GOVERNANCE_ROLE_HOLDER", deployer),
+            _governanceDelay()
+        );
+        manager.grantRole(
+            TREASURY_ROLE,
+            _roleHolder("TREASURY_ROLE_HOLDER", deployer),
+            _treasuryDelay()
+        );
+        manager.grantRole(
+            GUARDIAN_ROLE,
+            _roleHolder("GUARDIAN_ROLE_HOLDER", deployer),
+            _guardianDelay()
+        );
+        manager.grantRole(
+            FOURMICA_OPERATOR_ROLE,
+            _roleHolder("FOURMICA_OPERATOR_ROLE_HOLDER", deployer),
+            _fourmicaOperatorDelay()
         );
     }
 
-    function _configureRouterRoles(AccessManager manager, GuaranteeDecoderRouter router) internal {
+    function _configureRouterRoles(
+        AccessManager manager,
+        GuaranteeDecoderRouter router
+    ) internal {
         manager.setTargetFunctionRole(
-            address(router), _asSingletonArray(router.setVersionModule.selector), GOVERNANCE_ROLE
+            address(router),
+            _asSingletonArray(router.setVersionModule.selector),
+            GOVERNANCE_ROLE
         );
         manager.setTargetFunctionRole(
-            address(router), _asSingletonArray(router.freezeVersion.selector), GOVERNANCE_ROLE
+            address(router),
+            _asSingletonArray(router.freezeVersion.selector),
+            GOVERNANCE_ROLE
         );
     }
 
-    function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse, Core4Mica core4Mica)
-        internal
-    {
+    function _configureClearingHouseRoles(
+        AccessManager manager,
+        ClearingHouse clearingHouse,
+        Core4Mica core4Mica
+    ) internal {
         // Cycle commitment and default settlement are 4mica operator-driven settlement bookkeeping.
         bytes4[] memory operatorSelectors = new bytes4[](4);
         operatorSelectors[0] = ClearingHouse.commitCycle.selector;
-        operatorSelectors[1] = ClearingHouse.settleDefaultsFromCollateralBatch.selector;
-        operatorSelectors[2] = ClearingHouse.fundCreditorsFromPoolBatch.selector;
+        operatorSelectors[1] = ClearingHouse
+            .settleDefaultsFromCollateralBatch
+            .selector;
+        operatorSelectors[2] = ClearingHouse
+            .fundCreditorsFromPoolBatch
+            .selector;
         operatorSelectors[3] = ClearingHouse.markCycleShortfall.selector;
         for (uint256 i = 0; i < operatorSelectors.length; i++) {
             manager.setTargetFunctionRole(
-                address(clearingHouse), _asSingletonArray(operatorSelectors[i]), FOURMICA_OPERATOR_ROLE
+                address(clearingHouse),
+                _asSingletonArray(operatorSelectors[i]),
+                FOURMICA_OPERATOR_ROLE
             );
         }
 
@@ -396,20 +534,35 @@ contract Core4MicaFullStackScript is Script {
         collateralSelectors[5] = Core4Mica.seizeUpTo.selector;
         for (uint256 i = 0; i < collateralSelectors.length; i++) {
             manager.setTargetFunctionRole(
-                address(core4Mica), _asSingletonArray(collateralSelectors[i]), CLEARING_HOUSE_ROLE
+                address(core4Mica),
+                _asSingletonArray(collateralSelectors[i]),
+                CLEARING_HOUSE_ROLE
             );
         }
         manager.grantRole(CLEARING_HOUSE_ROLE, address(clearingHouse), 0);
     }
 
-    function _loadTrustedValidationRegistries() internal view returns (address[] memory registries) {
-        uint256 count = vm.envOr("TRUSTED_VALIDATION_REGISTRIES_COUNT", uint256(0));
+    function _loadTrustedValidationRegistries()
+        internal
+        view
+        returns (address[] memory registries)
+    {
+        uint256 count = vm.envOr(
+            "TRUSTED_VALIDATION_REGISTRIES_COUNT",
+            uint256(0)
+        );
         if (count > 0) {
             registries = new address[](count);
             for (uint256 i = 0; i < count; i++) {
-                string memory key = string.concat("TRUSTED_VALIDATION_REGISTRY_", vm.toString(i));
+                string memory key = string.concat(
+                    "TRUSTED_VALIDATION_REGISTRY_",
+                    vm.toString(i)
+                );
                 registries[i] = vm.envAddress(key);
-                require(registries[i] != address(0), "trusted registry is zero");
+                require(
+                    registries[i] != address(0),
+                    "trusted registry is zero"
+                );
             }
             return registries;
         }
@@ -420,21 +573,33 @@ contract Core4MicaFullStackScript is Script {
         registries[0] = single;
     }
 
-    function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {
+    function _asSingletonArray(
+        bytes4 selector
+    ) internal pure returns (bytes4[] memory arr) {
         arr = new bytes4[](1);
         arr[0] = selector;
     }
 
-    function _deriveSalt(bytes32 baseSalt, string memory label) internal pure returns (bytes32) {
+    function _deriveSalt(
+        bytes32 baseSalt,
+        string memory label
+    ) internal pure returns (bytes32) {
         return keccak256(abi.encode(baseSalt, label));
     }
 
-    function _loadStablecoinAssets() internal view returns (address[] memory assets) {
+    function _loadStablecoinAssets()
+        internal
+        view
+        returns (address[] memory assets)
+    {
         uint256 count = vm.envOr("STABLECOINS_COUNT", uint256(0));
         if (count > 0) {
             assets = new address[](count);
             for (uint256 i = 0; i < count; i++) {
-                string memory key = string.concat("STABLECOIN_", vm.toString(i));
+                string memory key = string.concat(
+                    "STABLECOIN_",
+                    vm.toString(i)
+                );
                 assets[i] = vm.envAddress(key);
                 require(assets[i] != address(0), "stablecoin address is zero");
             }
@@ -444,42 +609,68 @@ contract Core4MicaFullStackScript is Script {
     }
 
     /// @dev Local-dev only: deploys STABLECOINS_COUNT fresh ERC20 mocks
-    function _deployMockStablecoins() internal returns (address[] memory assets) {
+    function _deployMockStablecoins()
+        internal
+        returns (address[] memory assets)
+    {
         uint256 count = vm.envOr("STABLECOINS_COUNT", uint256(0));
         require(count > 0, "set STABLECOINS_COUNT for mock stablecoins");
         assets = new address[](count);
         for (uint256 i = 0; i < count; i++) {
             // First token is a USDC stand-in; any extras get a distinct suffixed symbol.
-            string memory name = i == 0 ? "USD Coin" : string.concat("USD Coin ", vm.toString(i));
-            string memory symbol = i == 0 ? "USDC" : string.concat("USDC", vm.toString(i));
+            string memory name = i == 0
+                ? "USD Coin"
+                : string.concat("USD Coin ", vm.toString(i));
+            string memory symbol = i == 0
+                ? "USDC"
+                : string.concat("USDC", vm.toString(i));
             MockERC20 token = new MockERC20(name, symbol, 6);
             assets[i] = address(token);
-            console.log(string.concat("MockERC20 ", symbol, " deployed:"), assets[i]);
+            console.log(
+                string.concat("MockERC20 ", symbol, " deployed:"),
+                assets[i]
+            );
         }
     }
 
     function _validateStablecoins(address[] memory assets) internal pure {
         for (uint256 i = 0; i < assets.length; i++) {
             for (uint256 j = i + 1; j < assets.length; j++) {
-                if (assets[i] == assets[j]) revert InvalidStablecoinConfiguration();
+                if (assets[i] == assets[j])
+                    revert InvalidStablecoinConfiguration();
             }
         }
     }
 
-    function _assertStablecoinReadback(Core4Mica core4Mica, address[] memory expectedAssets) internal view {
+    function _assertStablecoinReadback(
+        Core4Mica core4Mica,
+        address[] memory expectedAssets
+    ) internal view {
         address[] memory storedAssets = core4Mica.getERC20Tokens();
-        if (storedAssets.length != expectedAssets.length) revert StablecoinReadbackMismatch();
+        if (storedAssets.length != expectedAssets.length)
+            revert StablecoinReadbackMismatch();
         for (uint256 i = 0; i < expectedAssets.length; i++) {
-            if (storedAssets[i] != expectedAssets[i]) revert StablecoinReadbackMismatch();
+            if (storedAssets[i] != expectedAssets[i])
+                revert StablecoinReadbackMismatch();
         }
     }
 
-    function _configureOptionalAave(Core4Mica core4Mica, address[] memory stablecoins) internal {
+    function _configureOptionalAave(
+        Core4Mica core4Mica,
+        address[] memory stablecoins
+    ) internal {
         bool configureAave = vm.envOr("CONFIGURE_AAVE", false);
         address provider = vm.envOr("AAVE_POOL_ADDRESSES_PROVIDER", address(0));
-        (address[] memory aTokens, bool anyATokenSet, bool allATokensSet) = _loadStablecoinATokens(stablecoins.length);
+        (
+            address[] memory aTokens,
+            bool anyATokenSet,
+            bool allATokensSet
+        ) = _loadStablecoinATokens(stablecoins.length);
 
-        if ((provider != address(0) || anyATokenSet) && (!configureAave || provider == address(0) || !allATokensSet)) {
+        if (
+            (provider != address(0) || anyATokenSet) &&
+            (!configureAave || provider == address(0) || !allATokensSet)
+        ) {
             revert PartialAaveConfiguration();
         }
 
@@ -490,7 +681,9 @@ contract Core4MicaFullStackScript is Script {
             }
             for (uint256 i = 0; i < stablecoins.length; i++) {
                 if (core4Mica.stablecoinAToken(stablecoins[i]) != aTokens[i]) {
-                    revert AaveReadbackMismatch(string.concat("stablecoinAToken", vm.toString(i)));
+                    revert AaveReadbackMismatch(
+                        string.concat("stablecoinAToken", vm.toString(i))
+                    );
                 }
             }
         }
@@ -506,15 +699,24 @@ contract Core4MicaFullStackScript is Script {
         }
     }
 
-    function _loadStablecoinATokens(uint256 count)
+    function _loadStablecoinATokens(
+        uint256 count
+    )
         internal
         view
-        returns (address[] memory aTokens, bool anyATokenSet, bool allATokensSet)
+        returns (
+            address[] memory aTokens,
+            bool anyATokenSet,
+            bool allATokensSet
+        )
     {
         aTokens = new address[](count);
         allATokensSet = count > 0;
         for (uint256 i = 0; i < count; i++) {
-            string memory key = string.concat("STABLECOIN_ATOKEN_", vm.toString(i));
+            string memory key = string.concat(
+                "STABLECOIN_ATOKEN_",
+                vm.toString(i)
+            );
             aTokens[i] = vm.envOr(key, address(0));
             if (aTokens[i] != address(0)) {
                 anyATokenSet = true;
@@ -524,23 +726,50 @@ contract Core4MicaFullStackScript is Script {
         }
     }
 
-    function _roleHolder(string memory envKey, address fallbackAddress) internal view returns (address) {
+    function _roleHolder(
+        string memory envKey,
+        address fallbackAddress
+    ) internal view returns (address) {
         return vm.envOr(envKey, fallbackAddress);
     }
 
     function _governanceDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("GOVERNANCE_EXECUTION_DELAY", uint256(DEFAULT_GOVERNANCE_EXECUTION_DELAY)));
+        return
+            uint32(
+                vm.envOr(
+                    "GOVERNANCE_EXECUTION_DELAY",
+                    uint256(DEFAULT_GOVERNANCE_EXECUTION_DELAY)
+                )
+            );
     }
 
     function _treasuryDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("TREASURY_EXECUTION_DELAY", uint256(DEFAULT_TREASURY_EXECUTION_DELAY)));
+        return
+            uint32(
+                vm.envOr(
+                    "TREASURY_EXECUTION_DELAY",
+                    uint256(DEFAULT_TREASURY_EXECUTION_DELAY)
+                )
+            );
     }
 
     function _guardianDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("GUARDIAN_EXECUTION_DELAY", uint256(DEFAULT_GUARDIAN_EXECUTION_DELAY)));
+        return
+            uint32(
+                vm.envOr(
+                    "GUARDIAN_EXECUTION_DELAY",
+                    uint256(DEFAULT_GUARDIAN_EXECUTION_DELAY)
+                )
+            );
     }
 
     function _fourmicaOperatorDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("FOURMICA_OPERATOR_EXECUTION_DELAY", uint256(DEFAULT_FOURMICA_OPERATOR_EXECUTION_DELAY)));
+        return
+            uint32(
+                vm.envOr(
+                    "FOURMICA_OPERATOR_EXECUTION_DELAY",
+                    uint256(DEFAULT_FOURMICA_OPERATOR_EXECUTION_DELAY)
+                )
+            );
     }
 }
