@@ -146,18 +146,12 @@ impl EthereumConfig {
 
     pub fn validate(&self, environment: Environment) -> anyhow::Result<()> {
         let mode = self.confirmation_mode()?;
-        // Only the chain's real `finalized` head is reorg-safe. `depth` and `safe`
-        // treat recent (still reorg-able) blocks as confirmed, so the scanner can
-        // process blocks that later roll back — double-crediting ETH deposits and
-        // minting unbacked guarantees (4MCA-H04/4MCA-M03). Hard-fail that in
-        // production; allow it in development for local anvil/CI, which have no
-        // real finalized head.
         if mode != ConfirmationMode::Finalized {
             if environment.is_production() {
                 bail!(
                     "CONFIRMATION_MODE must be `finalized` in production, but is `{}`. Non-finalized \
                      modes treat reorg-able blocks as confirmed, which can double-credit ETH deposits \
-                     and mint unbacked guarantees (4MCA-H04/4MCA-M03). Set SERVER_ENVIRONMENT=development \
+                     and mint unbacked guarantees. Set SERVER_ENVIRONMENT=development \
                      for local/test use of `{}`.",
                     mode.as_str(),
                     mode.as_str()

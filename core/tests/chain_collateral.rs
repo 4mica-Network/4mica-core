@@ -85,12 +85,6 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 
     Ok(())
 }
-
-/// A reorg that re-mines a `CollateralDeposited` into a new block bypasses the
-/// block-hash-keyed dedup and double-credits the off-chain ETH total (4MCA-H04).
-/// ETH balances now self-heal: the next deposit event re-syncs the total from
-/// the authoritative on-chain balance, so an inflated total cannot persist and
-/// back unbacked guarantees.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
 async fn eth_balance_self_heals_from_reorg_double_credit() -> anyhow::Result<()> {

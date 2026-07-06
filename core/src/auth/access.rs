@@ -135,7 +135,6 @@ mod tests {
 
     #[test]
     fn require_user_match_or_privileged_denies_other_user() {
-        // Regression test for 4MCA-M05: a plain user must not read another
         // wallet's balance/exposure (IDOR).
         let auth = ctx("0xAbC", ROLE_USER);
         assert!(require_user_match_or_privileged(&auth, "0xdef").is_err());
