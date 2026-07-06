@@ -35,7 +35,6 @@ import {MockERC20} from "../test/Core4MicaTestBase.sol";
 /// Deterministic deployment:
 /// - CREATE2_SALT (optional, default "4mica-core-v1")
 /// - ACCESS_MANAGER_ADMIN (optional, default broadcaster address)
-///
 contract Core4MicaFullStackScript is Script {
     error InvalidStablecoinConfiguration();
     error PartialAaveConfiguration();
