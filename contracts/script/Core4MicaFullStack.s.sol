@@ -35,12 +35,30 @@ import {MockERC20} from "../test/Core4MicaTestBase.sol";
 /// Deterministic deployment:
 /// - CREATE2_SALT (optional, default "4mica-core-v1")
 /// - ACCESS_MANAGER_ADMIN (optional, default broadcaster address)
+///
+/// Hardened governance (production; 4MCA-H08). Opt-in via:
+/// - REQUIRE_HARDENED_GOVERNANCE=true
+///   When set, the deployer is only a *bootstrap* AccessManager admin: it configures roles, then
+///   hands ADMIN_ROLE to ACCESS_MANAGER_ADMIN (which must be a non-deployer contract, i.e. a
+///   multisig/timelock) with a non-zero execution delay, installs role grant delays, and renounces
+///   its own admin. The deploy reverts unless the admin, role holders, and delays meet the minimums
+///   below. Relevant env (all have safe defaults except the required role holders):
+///   - ADMIN_EXECUTION_DELAY (default 72h, floored at MIN_ADMIN_EXECUTION_DELAY)
+///   - ROLE_GRANT_DELAY (default 72h, floored at MIN_ROLE_GRANT_DELAY)
+///   - GOVERNANCE_ROLE_HOLDER / TREASURY_ROLE_HOLDER / GUARDIAN_ROLE_HOLDER /
+///     FOURMICA_OPERATOR_ROLE_HOLDER (required, each distinct from the deployer)
+///   - GOVERNANCE_EXECUTION_DELAY / TREASURY_EXECUTION_DELAY (floored at their minimums)
 contract Core4MicaFullStackScript is Script {
     error InvalidStablecoinConfiguration();
     error PartialAaveConfiguration();
     error StablecoinReadbackMismatch();
     error AaveReadbackMismatch(string field);
     error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
+    error InsecureGovernanceAdmin(address admin);
+    error GovernanceDelayBelowMinimum(string field, uint256 provided, uint256 minimum);
+    error RoleHolderNotSeparated(string role);
+    error AdminHandoffFailed(address expectedAdmin);
+    error DeployerRetainedAdmin(address deployer);
 
     // Delayed governance role for protocol policy, trust roots, and Aave configuration.
     uint64 public constant GOVERNANCE_ROLE = 1;
@@ -53,11 +71,23 @@ contract Core4MicaFullStackScript is Script {
     // Immediate role held only by the ClearingHouse so it can move collateral in Core4Mica.
     uint64 public constant CLEARING_HOUSE_ROLE = 5;
     uint64 public constant GUARANTEE_V2 = 2;
+    // AccessManager built-in admin role (OpenZeppelin AccessManager.ADMIN_ROLE == 0).
+    uint64 public constant ADMIN_ROLE = 0;
 
     uint32 public constant DEFAULT_GOVERNANCE_EXECUTION_DELAY = 72 hours;
     uint32 public constant DEFAULT_TREASURY_EXECUTION_DELAY = 72 hours;
     uint32 public constant DEFAULT_GUARDIAN_EXECUTION_DELAY = 0;
     uint32 public constant DEFAULT_FOURMICA_OPERATOR_EXECUTION_DELAY = 0;
+
+    uint32 public constant DEFAULT_ADMIN_EXECUTION_DELAY = 72 hours;
+    uint32 public constant DEFAULT_ROLE_GRANT_DELAY = 72 hours;
+
+    // Hardened-governance minimums, enforced only when REQUIRE_HARDENED_GOVERNANCE=true. They reject
+    // the zeroable/instant-action topology of 4MCA-H08 while leaving the exact durations tunable.
+    uint32 public constant MIN_ADMIN_EXECUTION_DELAY = 24 hours;
+    uint32 public constant MIN_ROLE_GRANT_DELAY = 24 hours;
+    uint32 public constant MIN_GOVERNANCE_EXECUTION_DELAY = 24 hours;
+    uint32 public constant MIN_TREASURY_EXECUTION_DELAY = 24 hours;
 
     struct FullStackDeployment {
         AccessManager manager;
@@ -75,6 +105,9 @@ contract Core4MicaFullStackScript is Script {
         bytes32 baseSalt;
         BLS.G1Point guaranteeVerificationKey;
         uint256 minWithdrawalGracePeriod;
+        bool hardenedGovernance;
+        uint32 adminExecutionDelay;
+        uint32 roleGrantDelay;
     }
 
     function run() external {
@@ -88,15 +121,24 @@ contract Core4MicaFullStackScript is Script {
             _validateStablecoins(config.stablecoins);
         }
 
+        // In hardened mode the deployer is only a bootstrap admin so it can configure roles; admin
+        // is handed to config.managerAdmin (a multisig) and the deployer renounces below. Otherwise
+        // the AccessManager is created directly under the configured admin (unchanged behaviour).
+        address initialAdmin = config.hardenedGovernance ? config.deployer : config.managerAdmin;
+
         FullStackDeployment memory deployment = _deployFullStack(
             config.baseSalt,
-            config.managerAdmin,
+            initialAdmin,
             config.guaranteeVerificationKey,
             config.stablecoins,
             config.trustedRegistries,
             config.minWithdrawalGracePeriod
         );
         _configureDeployedStack(deployment, config);
+
+        if (config.hardenedGovernance) {
+            _finalizeHardenedGovernance(deployment.manager, config);
+        }
 
         vm.stopBroadcast();
 
@@ -107,6 +149,7 @@ contract Core4MicaFullStackScript is Script {
         console.log("ClearingHouse:", address(deployment.clearingHouse));
         console.log("Trusted registries count:", config.trustedRegistries.length);
         console.log("AccessManager admin:", config.managerAdmin);
+        console.log("Hardened governance:", config.hardenedGovernance);
         console.log("CREATE2 base salt:");
         console.logBytes32(config.baseSalt);
     }
@@ -135,6 +178,98 @@ contract Core4MicaFullStackScript is Script {
         // delayed-withdrawal solvency invariant; default 7 days (vs the 22-day default grace).
         config.minWithdrawalGracePeriod = vm.envOr("MIN_WITHDRAWAL_GRACE_PERIOD", uint256(7 days));
         require(config.minWithdrawalGracePeriod > 0, "MIN_WITHDRAWAL_GRACE_PERIOD must be > 0");
+
+        config.hardenedGovernance = vm.envOr("REQUIRE_HARDENED_GOVERNANCE", false);
+        config.adminExecutionDelay = uint32(vm.envOr("ADMIN_EXECUTION_DELAY", uint256(DEFAULT_ADMIN_EXECUTION_DELAY)));
+        config.roleGrantDelay = uint32(vm.envOr("ROLE_GRANT_DELAY", uint256(DEFAULT_ROLE_GRANT_DELAY)));
+        if (config.hardenedGovernance) {
+            _validateHardenedGovernance(config, deployer);
+        }
+    }
+
+    /// @dev Reject the 4MCA-H08 single-key / zeroable-delay topology before any state is deployed:
+    /// the admin must be a non-deployer contract (multisig/timelock heuristic), the admin/grant and
+    /// governance/treasury delays must clear their minimums, and each role holder must be explicitly
+    /// configured and distinct from the deployer.
+    function _validateHardenedGovernance(DeploymentConfig memory config, address deployer) internal view {
+        if (
+            config.managerAdmin == deployer || config.managerAdmin == address(0) || config.managerAdmin.code.length == 0
+        ) {
+            revert InsecureGovernanceAdmin(config.managerAdmin);
+        }
+        if (config.adminExecutionDelay < MIN_ADMIN_EXECUTION_DELAY) {
+            revert GovernanceDelayBelowMinimum(
+                "ADMIN_EXECUTION_DELAY", config.adminExecutionDelay, MIN_ADMIN_EXECUTION_DELAY
+            );
+        }
+        if (config.roleGrantDelay < MIN_ROLE_GRANT_DELAY) {
+            revert GovernanceDelayBelowMinimum("ROLE_GRANT_DELAY", config.roleGrantDelay, MIN_ROLE_GRANT_DELAY);
+        }
+        if (_governanceDelay() < MIN_GOVERNANCE_EXECUTION_DELAY) {
+            revert GovernanceDelayBelowMinimum(
+                "GOVERNANCE_EXECUTION_DELAY", _governanceDelay(), MIN_GOVERNANCE_EXECUTION_DELAY
+            );
+        }
+        if (_treasuryDelay() < MIN_TREASURY_EXECUTION_DELAY) {
+            revert GovernanceDelayBelowMinimum(
+                "TREASURY_EXECUTION_DELAY", _treasuryDelay(), MIN_TREASURY_EXECUTION_DELAY
+            );
+        }
+        _requireSeparatedHolder("GOVERNANCE_ROLE_HOLDER", deployer);
+        _requireSeparatedHolder("TREASURY_ROLE_HOLDER", deployer);
+        _requireSeparatedHolder("GUARDIAN_ROLE_HOLDER", deployer);
+        _requireSeparatedHolder("FOURMICA_OPERATOR_ROLE_HOLDER", deployer);
+    }
+
+    function _requireSeparatedHolder(string memory envKey, address deployer) internal view {
+        address holder = vm.envAddress(envKey); // reverts if unset
+        _requireSeparatedHolder(envKey, holder, deployer);
+    }
+
+    /// @dev Pure topology check (no env), so a role holder can never silently default to the deployer.
+    function _requireSeparatedHolder(string memory role, address holder, address deployer) internal pure {
+        if (holder == deployer || holder == address(0)) {
+            revert RoleHolderNotSeparated(role);
+        }
+    }
+
+    /// @dev Hand AccessManager admin authority from the bootstrap deployer to the configured admin
+    /// (a multisig/timelock), install a non-zero admin execution delay plus role grant delays so a
+    /// compromised admin cannot instantly grant a live role or re-gate a function, then renounce the
+    /// deployer's admin. Closes the code-addressable half of 4MCA-H08 and the admin-self-grant theft
+    /// path of 4MCA-H02 (the rest — that the admin is genuinely an M-of-N multisig behind a timelock,
+    /// and operator key custody — is operational).
+    ///
+    /// Ordering matters: the admin is granted first (a fresh grant applies its execution delay
+    /// immediately and is not itself grant-delayed), grant delays are installed next (increases
+    /// engage after AccessManager.minSetback() == 5 days; the admin execution delay is the immediate
+    /// protection in the interim), and the deployer renounces last so it retains authority throughout.
+    function _finalizeHardenedGovernance(AccessManager manager, DeploymentConfig memory config) internal {
+        manager.grantRole(ADMIN_ROLE, config.managerAdmin, config.adminExecutionDelay);
+
+        manager.setGrantDelay(GOVERNANCE_ROLE, config.roleGrantDelay);
+        manager.setGrantDelay(TREASURY_ROLE, config.roleGrantDelay);
+        manager.setGrantDelay(GUARDIAN_ROLE, config.roleGrantDelay);
+        manager.setGrantDelay(FOURMICA_OPERATOR_ROLE, config.roleGrantDelay);
+        // CLEARING_HOUSE_ROLE is the collateral-seizing role a compromised admin would self-grant
+        // (4MCA-H02); delaying its grant keeps a malicious re-grant from becoming live instantly.
+        manager.setGrantDelay(CLEARING_HOUSE_ROLE, config.roleGrantDelay);
+        manager.setGrantDelay(ADMIN_ROLE, config.roleGrantDelay);
+
+        manager.renounceRole(ADMIN_ROLE, config.deployer);
+
+        _assertHardenedGovernance(manager, config);
+    }
+
+    function _assertHardenedGovernance(AccessManager manager, DeploymentConfig memory config) internal view {
+        (bool adminIsMember, uint32 adminDelay) = manager.hasRole(ADMIN_ROLE, config.managerAdmin);
+        if (!adminIsMember || adminDelay < MIN_ADMIN_EXECUTION_DELAY) {
+            revert AdminHandoffFailed(config.managerAdmin);
+        }
+        (bool deployerIsAdmin,) = manager.hasRole(ADMIN_ROLE, config.deployer);
+        if (deployerIsAdmin) {
+            revert DeployerRetainedAdmin(config.deployer);
+        }
     }
 
     function _configureDeployedStack(FullStackDeployment memory deployment, DeploymentConfig memory config) internal {
@@ -154,7 +289,7 @@ contract Core4MicaFullStackScript is Script {
 
     function _deployFullStack(
         bytes32 baseSalt,
-        address managerAdmin,
+        address initialAdmin,
         BLS.G1Point memory guaranteeVerificationKey,
         address[] memory stablecoins,
         address[] memory trustedRegistries,
@@ -162,7 +297,7 @@ contract Core4MicaFullStackScript is Script {
     ) internal returns (FullStackDeployment memory deployment) {
         address managerAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "ACCESS_MANAGER"),
-            abi.encodePacked(type(AccessManager).creationCode, abi.encode(managerAdmin))
+            abi.encodePacked(type(AccessManager).creationCode, abi.encode(initialAdmin))
         );
         address core4MicaAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CORE4MICA"),
