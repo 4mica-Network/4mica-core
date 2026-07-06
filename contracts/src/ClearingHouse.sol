@@ -107,6 +107,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error UnauthorizedEthSender(address sender);
     error ClaimConversionShortfall(uint256 requested, uint256 got);
     error CycleFullyFunded(uint256 funded, uint256 required);
+    error ResolvedDebitExceedsCommitted(uint256 attempted, uint256 total);
+    error ClaimedCreditExceedsCommitted(uint256 attempted, uint256 total);
 
     mapping(bytes32 => OnchainCycle) private cycles;
     mapping(bytes32 => mapping(address => ParticipantState)) private participantStates;
@@ -138,7 +140,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
     /// Accept ETH only from Core4Mica. All other direct transfers are rejected.
     receive() external payable {
-        if (msg.sender != address(core4Mica)) revert UnauthorizedEthSender(msg.sender);
+        if (msg.sender != address(core4Mica)) {
+            revert UnauthorizedEthSender(msg.sender);
+        }
     }
 
     function commitCycle(
@@ -154,8 +158,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (cycleId == bytes32(0) || merkleRoot == bytes32(0) || totalNetDebit == 0 || totalNetCredit == 0) {
             revert AmountZero();
         }
-        if (totalNetDebit != totalNetCredit) revert CycleNotZeroSum(totalNetDebit, totalNetCredit);
-        if (paymentSubmissionDeadline == 0 || paymentFinalityDeadline < paymentSubmissionDeadline) {
+        if (totalNetDebit != totalNetCredit) {
+            revert CycleNotZeroSum(totalNetDebit, totalNetCredit);
+        }
+        if (paymentSubmissionDeadline <= block.timestamp || paymentFinalityDeadline < paymentSubmissionDeadline) {
             revert InvalidDeadline();
         }
 
@@ -192,13 +198,15 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             revert PaymentWindowElapsed(cycle.paymentSubmissionDeadline);
         }
         if (netDebit == 0) revert AmountZero();
-        if (participantStates[cycleId][msg.sender].paid) revert AlreadyPaid(cycleId, msg.sender);
+        if (participantStates[cycleId][msg.sender].paid) {
+            revert AlreadyPaid(cycleId, msg.sender);
+        }
         _verifyParticipant(cycle, cycleId, msg.sender, netDebit, ParticipantRole.NetDebtor, proof);
+        if (cycle.totalResolvedDebit + netDebit > cycle.totalNetDebit) {
+            revert ResolvedDebitExceedsCommitted(cycle.totalResolvedDebit + netDebit, cycle.totalNetDebit);
+        }
 
         _collect(cycle.asset, netDebit);
-        // Route stablecoin payments into the Core4Mica escrow so the whole settlement pool is
-        // held as scaled aTokens and never depends on Aave liquidity. ETH
-        // stays in this contract.
         if (cycle.asset != address(0)) {
             IERC20(cycle.asset).forceApprove(address(core4Mica), netDebit);
             core4Mica.depositToEscrow(cycle.asset, netDebit);
@@ -217,23 +225,27 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
         if (netCredit == 0) revert AmountZero();
-        if (participantStates[cycleId][msg.sender].claimed) revert AlreadyClaimed(cycleId, msg.sender);
+        if (participantStates[cycleId][msg.sender].claimed) {
+            revert AlreadyClaimed(cycleId, msg.sender);
+        }
         _verifyParticipant(cycle, cycleId, msg.sender, netCredit, ParticipantRole.NetCreditor, proof);
 
         // Full amount when fully funded; pro-rata share of the pool in a Shortfall cycle.
         uint256 payout = _creditorPayout(cycle, netCredit);
         ParticipantState storage participant = participantStates[cycleId][msg.sender];
         if (payout == 0) {
-            // Pro-rata share rounded to zero under a severe shortfall. Resolve the creditor
-            // (mirroring fundCreditorsFromPoolBatch) instead of reverting, so they aren't left
-            // unable to self-claim and stranded awaiting the operator batch.
             participant.netCredit = netCredit;
             participant.claimed = true;
             emit CreditorClaimed(cycleId, msg.sender, cycle.asset, 0);
             return;
         }
+        if (cycle.totalClaimedOut + payout > cycle.totalNetCredit) {
+            revert ClaimedCreditExceedsCommitted(cycle.totalClaimedOut + payout, cycle.totalNetCredit);
+        }
         uint256 available = _available(cycle);
-        if (available < payout) revert ClaimExceedsFundedLiquidity(available, payout);
+        if (available < payout) {
+            revert ClaimExceedsFundedLiquidity(available, payout);
+        }
 
         participant.netCredit = netCredit;
         participant.claimed = true;
@@ -242,11 +254,6 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (cycle.asset == address(0)) {
             _pay(cycle.asset, msg.sender, payout);
         } else {
-            // Convert escrowed scaled aTokens to underlying on demand. Partial fills (Aave
-            // liquidity short) revert the whole claim so it stays atomic and retryable per
-            // creditor, without wedging the cycle. The creditor can instead
-            // be made whole in collateral form via fundCreditorsFromPoolBatch, which needs no
-            // Aave liquidity.
             uint256 got = core4Mica.withdrawFromEscrow(cycle.asset, payout, msg.sender);
             if (got < payout) revert ClaimConversionShortfall(payout, got);
         }
@@ -284,12 +291,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 emit SettlementSkipped(cycleId, entry.debtor, "invalid proof");
                 continue;
             }
-
-            // Seize up to the net debit, recovering whatever collateral is available. The
-            // debtor is resolved either way; any uncovered remainder is borne by creditors via
-            // the terminal Shortfall state rather than wedging the cycle. Each
-            // debtor's net debit is normally fully backed by collateral locked at issuance, so a
-            // partial recovery is the exceptional, under-collateralised case.
+            if (cycle.totalResolvedDebit + entry.netDebit > cycle.totalNetDebit) {
+                emit SettlementSkipped(cycleId, entry.debtor, "exceeds committed debit");
+                continue;
+            }
             try core4Mica.seizeUpTo(entry.debtor, cycle.asset, entry.netDebit) returns (uint256 seized) {
                 participant.netDebit = entry.netDebit;
                 participant.defaulted = true;
@@ -316,7 +321,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         // Outside Shortfall, funding before the pool is complete is rejected.
         if (cycle.status != CycleStatus.Shortfall) {
             uint256 funded = _funded(cycle);
-            if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
+            if (funded < cycle.totalNetCredit) {
+                revert CycleUnderfunded(funded, cycle.totalNetCredit);
+            }
         }
 
         for (uint256 i = 0; i < entries.length; i++) {
@@ -339,6 +346,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
                 participant.netCredit = entry.netCredit;
                 participant.claimed = true;
                 emit CreditorClaimed(cycleId, entry.creditor, cycle.asset, 0);
+                continue;
+            }
+            if (cycle.totalClaimedOut + payout > cycle.totalNetCredit) {
+                emit SettlementSkipped(cycleId, entry.creditor, "exceeds committed credit");
                 continue;
             }
             uint256 available = _available(cycle);
@@ -396,7 +407,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             revert CycleDebtUnresolved(cycle.totalResolvedDebit, cycle.totalNetDebit);
         }
         uint256 funded = _funded(cycle);
-        if (funded >= cycle.totalNetCredit) revert CycleFullyFunded(funded, cycle.totalNetCredit);
+        if (funded >= cycle.totalNetCredit) {
+            revert CycleFullyFunded(funded, cycle.totalNetCredit);
+        }
 
         cycle.status = CycleStatus.Shortfall;
         emit CycleShortfall(cycleId, funded, cycle.totalNetCredit);
@@ -413,7 +426,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         }
 
         uint256 funded = _funded(cycle);
-        if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
+        if (funded < cycle.totalNetCredit) {
+            revert CycleUnderfunded(funded, cycle.totalNetCredit);
+        }
         if (cycle.totalClaimedOut != cycle.totalNetCredit) {
             revert CycleClaimsUnresolved(cycle.totalClaimedOut, cycle.totalNetCredit);
         }
@@ -463,7 +478,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     }
 
     function _requirePaymentWindowOpen(bytes32 cycleId, OnchainCycle storage cycle) private view {
-        if (cycle.status != CycleStatus.PaymentWindowOpen) revert InvalidCycleStatus(cycleId, cycle.status);
+        if (cycle.status != CycleStatus.PaymentWindowOpen) {
+            revert InvalidCycleStatus(cycleId, cycle.status);
+        }
     }
 
     function _requireClaimableStatus(bytes32 cycleId, OnchainCycle storage cycle) private view {
@@ -494,7 +511,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (cycle.status == CycleStatus.Shortfall) {
             return Math.mulDiv(netCredit, funded, cycle.totalNetCredit);
         }
-        if (funded < cycle.totalNetCredit) revert CycleUnderfunded(funded, cycle.totalNetCredit);
+        if (funded < cycle.totalNetCredit) {
+            revert CycleUnderfunded(funded, cycle.totalNetCredit);
+        }
         return netCredit;
     }
 
@@ -525,7 +544,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
 
     function _collect(address asset, uint256 amount) private {
         if (asset == address(0)) {
-            if (msg.value != amount) revert ExactPaymentRequired(amount, msg.value);
+            if (msg.value != amount) {
+                revert ExactPaymentRequired(amount, msg.value);
+            }
         } else {
             if (msg.value != 0) revert ExactPaymentRequired(0, msg.value);
             IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);

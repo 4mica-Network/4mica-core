@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
-use chrono::{NaiveDateTime, Utc};
+use chrono::{Duration, NaiveDateTime, Utc};
 use entities::cycle_participant_position;
 use entities::sea_orm_active_enums::{
     CollateralEventType, GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus,
@@ -55,6 +55,19 @@ impl CoreService {
             }
         })?;
 
+        let cycle_config = &self.inner.config.settlement_cycle;
+        let submission_window = Duration::seconds(
+            i64::try_from(cycle_config.payment_submission_window_secs)
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?,
+        );
+        let finality_window = Duration::seconds(
+            i64::try_from(cycle_config.payment_finality_window_secs)
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?,
+        );
+        let committed_at = Utc::now();
+        let payment_submission_deadline = (committed_at + submission_window).naive_utc();
+        let payment_finality_deadline = (committed_at + finality_window).naive_utc();
+
         let input = ClearingCommitInput {
             cycle_id: evm::cycle_id_hash(&cycle.id),
             asset: evm::parse_address("cycle asset", &batch.asset_address)?,
@@ -69,11 +82,11 @@ impl CoreService {
             )?,
             payment_submission_deadline: crate::util::timestamp_to_u64(
                 "payment submission deadline",
-                cycle.payment_submission_deadline,
+                payment_submission_deadline,
             )?,
             payment_finality_deadline: crate::util::timestamp_to_u64(
                 "payment finality deadline",
-                cycle.payment_finality_deadline,
+                payment_finality_deadline,
             )?,
         };
 
@@ -89,6 +102,8 @@ impl CoreService {
             self.inner.persist_ctx.db.as_ref(),
             cycle_id,
             Some(tx_hash.clone()),
+            payment_submission_deadline,
+            payment_finality_deadline,
             now,
         )
         .await?;
