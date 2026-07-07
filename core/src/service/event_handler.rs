@@ -130,7 +130,7 @@ impl EthereumEventHandler for CoreService {
         let tx_hash = tx_hash_from_log(&log)?;
         self.process_cycle_committed(cycleId, &tx_hash)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)
     }
 
     #[measure(record_event_handler_time, name = "debtor_paid")]
@@ -141,7 +141,7 @@ impl EthereumEventHandler for CoreService {
         let tx_hash = tx_hash_from_log(&log)?;
         self.process_paid_debtor(cycleId, &debtor.to_string(), &tx_hash)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)
     }
 
     #[measure(record_event_handler_time, name = "creditor_claimed")]
@@ -162,7 +162,7 @@ impl EthereumEventHandler for CoreService {
             meta,
         )
         .await
-        .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+        .map_err(BlockchainListenerError::from)
     }
 
     #[measure(record_event_handler_time, name = "debtor_defaulted")]
@@ -177,7 +177,7 @@ impl EthereumEventHandler for CoreService {
         let meta = self.event_meta_from_log(&log)?;
         self.process_defaulted_debtor(cycleId, debtor.to_string(), asset.to_string(), amount, meta)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)
     }
 
     #[measure(record_event_handler_time, name = "cycle_finalized")]
@@ -185,7 +185,7 @@ impl EthereumEventHandler for CoreService {
         let CycleFinalized { cycleId, .. } = *log.log_decode()?.data();
         self.process_cycle_finalized(cycleId)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)
     }
 
     /// Surface a participant the ClearingHouse skipped during settlement, classified by reason so

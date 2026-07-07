@@ -197,6 +197,23 @@ pub enum ServiceError {
     Other(#[from] anyhow::Error),
 }
 
+impl From<ServiceError> for BlockchainListenerError {
+    /// Preserve the retryable/deterministic distinction when a settlement `process_*` handler's
+    /// `ServiceError` crosses into the scanner, instead of flattening everything to a
+    /// (non-retryable) `EventHandlerError`. Without this, a transient DB lock during settlement
+    /// would be misclassified as an un-handleable event — and once dead-lettering lands, a real
+    /// `DebtorDefaulted`/`CreditorClaimed` could be dropped on a mere lock blip.
+    fn from(err: ServiceError) -> Self {
+        match err {
+            ServiceError::OptimisticLockConflict => BlockchainListenerError::DatabaseFailure(
+                sea_orm::DbErr::Custom("optimistic lock conflict".to_string()),
+            ),
+            ServiceError::Db(db) => BlockchainListenerError::Db(db),
+            other => BlockchainListenerError::EventHandlerError(other.to_string()),
+        }
+    }
+}
+
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
 impl ServiceError {

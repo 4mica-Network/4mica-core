@@ -519,7 +519,7 @@ fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_retryable_handler_error;
-    use crate::error::{BlockchainListenerError, PersistDbError};
+    use crate::error::{BlockchainListenerError, PersistDbError, ServiceError};
 
     #[test]
     fn rpc_failures_are_retryable() {
@@ -552,5 +552,30 @@ mod tests {
         assert!(!is_retryable_handler_error(
             &BlockchainListenerError::UserNotFound("0xabc".into())
         ));
+    }
+
+    #[test]
+    fn settlement_optimistic_lock_conflict_is_retryable() {
+        let err = BlockchainListenerError::from(ServiceError::OptimisticLockConflict);
+        assert!(is_retryable_handler_error(&err));
+    }
+
+    #[test]
+    fn settlement_db_failure_is_retryable() {
+        let err = BlockchainListenerError::from(ServiceError::Db(PersistDbError::DatabaseFailure(
+            sea_orm::DbErr::Custom("connection reset".into()),
+        )));
+        assert!(is_retryable_handler_error(&err));
+    }
+
+    #[test]
+    fn settlement_domain_errors_are_not_retryable() {
+        let invariant = BlockchainListenerError::from(ServiceError::Db(
+            PersistDbError::InvariantViolation("leaf sum mismatch".into()),
+        ));
+        assert!(!is_retryable_handler_error(&invariant));
+
+        let invalid = BlockchainListenerError::from(ServiceError::InvalidParams("bad".into()));
+        assert!(!is_retryable_handler_error(&invalid));
     }
 }
