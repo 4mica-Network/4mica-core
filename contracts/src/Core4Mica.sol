@@ -318,13 +318,19 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         if (poolAddressesProvider == address(0)) {
             revert ZeroAddress();
         }
-        if (aTokens.length != stablecoinAssetList.length || aTokens.length == 0) revert InvalidAsset(address(0));
-        if (_hasOpenStablecoinPositions()) revert AaveProviderReconfigurationBlocked();
+        if (aTokens.length != stablecoinAssetList.length || aTokens.length == 0) {
+            revert InvalidAsset(address(0));
+        }
+        if (_hasOpenStablecoinPositions()) {
+            revert AaveProviderReconfigurationBlocked();
+        }
 
         IPoolAddressesProvider provider = IPoolAddressesProvider(poolAddressesProvider);
         address pool = provider.getPool();
         address dataProvider = provider.getPoolDataProvider();
-        if (pool == address(0) || dataProvider == address(0)) revert ZeroAddress();
+        if (pool == address(0) || dataProvider == address(0)) {
+            revert ZeroAddress();
+        }
 
         aaveAddressesProvider = provider;
         for (uint256 i = 0; i < stablecoinAssetList.length; i++) {
@@ -345,7 +351,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         if (address(provider) == address(0)) revert AaveNotConfigured();
 
         address dataProvider = provider.getPoolDataProvider();
-        if (provider.getPool() == address(0) || dataProvider == address(0)) revert AaveNotConfigured();
+        if (provider.getPool() == address(0) || dataProvider == address(0)) {
+            revert AaveNotConfigured();
+        }
 
         _validateAToken(dataProvider, asset, aToken);
         _addStablecoinAsset(asset);
@@ -401,14 +409,18 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         stablecoin(asset)
         nonZero(scaledAmount)
     {
-        if (scaledAmount > surplusScaledStablecoinBalances[asset]) revert SurplusClaimExceedsAvailable();
+        if (scaledAmount > surplusScaledStablecoinBalances[asset]) {
+            revert SurplusClaimExceedsAvailable();
+        }
         address aToken = _requireAToken(asset);
         uint256 nominalAmount = _toUnderlyingRoundDown(scaledAmount, _currentIndex(asset));
         uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
         IERC20(aToken).safeTransfer(to, nominalAmount);
         uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
         uint256 actualScaledRemoved = scaledBefore - scaledAfter;
-        if (actualScaledRemoved > surplusScaledStablecoinBalances[asset]) revert SurplusClaimExceedsAvailable();
+        if (actualScaledRemoved > surplusScaledStablecoinBalances[asset]) {
+            revert SurplusClaimExceedsAvailable();
+        }
         surplusScaledStablecoinBalances[asset] -= actualScaledRemoved;
         _checkReconciliation(asset);
         emit SurplusATokensClaimed(asset, to, actualScaledRemoved, nominalAmount);
@@ -521,11 +533,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         returns (uint256 seized)
     {
         if (asset == ETH_ASSET) {
-            if (amount > ethCollateralBalances[debtor]) revert InsufficientAvailable();
+            if (amount > ethCollateralBalances[debtor]) {
+                revert InsufficientAvailable();
+            }
             _seizeEth(debtor, amount);
             seized = amount;
         } else {
-            if (amount > _userWithdrawableStablecoinBalance(debtor, asset)) revert InsufficientAvailable();
+            if (amount > _userWithdrawableStablecoinBalance(debtor, asset)) {
+                revert InsufficientAvailable();
+            }
             // Re-attribute the debtor's scaled position into escrow rather than withdrawing
             // underlying from Aave, so the seizure cannot revert on Aave illiquidity.
             // Conversion to underlying happens lazily at creditor cash-out. The stablecoin path
@@ -608,7 +624,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     {
         uint256 scaledAmount = _toScaledRoundDown(amount, _currentIndex(asset));
         uint256 escrowScaled = escrowScaledStablecoinBalances[asset];
-        if (scaledAmount > escrowScaled) revert EscrowScaledUnderflow(asset, scaledAmount, escrowScaled);
+        if (scaledAmount > escrowScaled) {
+            revert EscrowScaledUnderflow(asset, scaledAmount, escrowScaled);
+        }
 
         // Mirror deposit accounting: principal records the credited amount, scaled is the
         // round-down equivalent, so the creditor's position is identical to a fresh deposit.
@@ -643,7 +661,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 scaledBurn = scaledBefore - IAToken(aToken).scaledBalanceOf(address(this));
 
         uint256 escrowScaled = escrowScaledStablecoinBalances[asset];
-        if (scaledBurn > escrowScaled) revert EscrowScaledUnderflow(asset, scaledBurn, escrowScaled);
+        if (scaledBurn > escrowScaled) {
+            revert EscrowScaledUnderflow(asset, scaledBurn, escrowScaled);
+        }
         escrowScaledStablecoinBalances[asset] = escrowScaled - scaledBurn;
         _syncSurplusScaledBalance(asset);
         _checkReconciliation(asset);
@@ -1032,15 +1052,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         emit CollateralWithdrawn(user, asset, withdrawalAmount);
     }
 
-    /// Debits `amount` of `user`'s withdrawable stablecoin balance, routing the
-    /// underlying to `recipient`, and keeps the scaled / principal / protocol-fee
-    /// accounting and reconciliation invariants consistent. `amount` must not exceed
-    /// the user's withdrawable balance. Returns the underlying actually withdrawn.
-    /// @dev Shared accounting for both stablecoin debit paths (user withdrawal and seizure):
-    /// for a debit of `amount` underlying, returns how much principal it consumes and the scaled
-    /// protocol-fee slice to reallocate from the user to the protocol pool. View-only — no state
-    /// writes, no Aave interaction. Keeps the 4MCA-H03 fee math in one place so a fix can never
-    /// land in only one caller.
     function _planStablecoinDebit(address user, address asset, uint256 amount, uint256 index)
         internal
         view
@@ -1052,10 +1063,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         uint256 userYieldWithdrawn = amount - principalConsumed;
         uint256 remainingGross = _grossForNetYield(userNet - userYieldWithdrawn);
         uint256 grossAfterUserWithdrawal = gross - userYieldWithdrawn;
-        // Saturating subtraction: _grossForNetYield returns the smallest preimage, so
-        // remainingGross can never exceed grossAfterUserWithdrawal; the clamp guards a rounding
-        // edge so the call can never underflow and revert a seizure or partial withdrawal. Any
-        // under-charge is at most one unit, in the user's favour (4MCA-H03).
         uint256 protocolFeeReallocatedUnderlying =
             grossAfterUserWithdrawal > remainingGross ? grossAfterUserWithdrawal - remainingGross : 0;
         protocolScaledCredit = _toScaledRoundDown(protocolFeeReallocatedUnderlying, index);
