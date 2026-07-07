@@ -23,6 +23,11 @@ use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Max in-loop retries for a *retryable* handler failure before the scan is aborted and the range
+/// is retried on the next tick. Deterministic failures are never retried; they are dead-lettered.
+const MAX_HANDLER_RETRIES: usize = 5;
+const RETRY_BASE_DELAY_MS: u64 = 200;
+
 pub struct EthereumEventScanner {
     config: EthereumConfig,
     persist_ctx: PersistCtx,
@@ -284,9 +289,6 @@ impl EthereumEventScanner {
         chain_id: u64,
         stream: &mut (impl futures_util::Stream<Item = Log> + Unpin),
     ) -> Result<(), BlockchainListenerError> {
-        const MAX_HANDLER_RETRIES: usize = 5;
-        const RETRY_BASE_DELAY_MS: u64 = 200;
-
         while let Some(log) = stream.next().await {
             let Some(block_number) = log.block_number else {
                 warn!("Log has no block number, skipping...");
@@ -410,8 +412,9 @@ impl EthereumEventScanner {
 
                 match result {
                     Ok(()) => break,
-                    Err(e) => {
-                        if attempts < MAX_HANDLER_RETRIES && is_retryable_handler_error(&e) {
+                    Err(e) => match classify_handler_failure(&e, attempts) {
+                        // Transient failure with retries left: back off and retry in place.
+                        HandlerFailureAction::Retry => {
                             attempts += 1;
                             let delay = Duration::from_millis(
                                 RETRY_BASE_DELAY_MS.saturating_mul(attempts as u64),
@@ -422,8 +425,11 @@ impl EthereumEventScanner {
                             tokio::time::sleep(delay).await;
                             continue;
                         }
-
-                        if is_retryable_handler_error(&e) {
+                        // Retryable but retries exhausted: a sustained infra outage (DB/RPC down),
+                        // not a property of this event. Abort the batch and let the next scan retry
+                        // the whole range; delete the stored row so the handler runs again then (a
+                        // kept row would be skipped as already-stored).
+                        HandlerFailureAction::Abort => {
                             error!(
                                 "Event handler exhausted {MAX_HANDLER_RETRIES} retries; aborting scan: {e}"
                             );
@@ -437,43 +443,49 @@ impl EthereumEventScanner {
                             .await;
                             return Err(e);
                         }
-
-                        error!(
-                            "Dead-lettering un-handleable event {signature} at block {block_number} \
-                             log_index {log_index}: {e}"
-                        );
-                        match repo::mark_blockchain_event_dead_lettered(
-                            persist_ctx,
-                            chain_id,
-                            block_number,
-                            &block_hash_str,
-                            log_index,
-                            attempts as i32,
-                            &e.to_string(),
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                crate::metrics::record_dead_lettered_event(&signature);
-                                break;
-                            }
-                            Err(mark_err) => {
-                                // Could not persist the dead-letter (DB issue). Delete the row so
-                                // the event is reprocessed next scan rather than silently
-                                // skipped-but-unrecorded, then abort.
-                                error!("Failed to record dead-letter for {signature}: {mark_err}");
-                                Self::delete_stored_event_best_effort(
-                                    persist_ctx,
-                                    chain_id,
-                                    block_number,
-                                    &block_hash_str,
-                                    log_index,
-                                )
-                                .await;
-                                return Err(e);
+                        // Deterministic failure: dead-letter and skip so a single un-handleable
+                        // event cannot wedge the whole pipeline. Keep the (now-marked)
+                        // row so the next scan skips it instead of re-running the doomed handler.
+                        HandlerFailureAction::DeadLetter => {
+                            error!(
+                                "Dead-lettering un-handleable event {signature} at block {block_number} \
+                                 log_index {log_index}: {e}"
+                            );
+                            match repo::mark_blockchain_event_dead_lettered(
+                                persist_ctx,
+                                chain_id,
+                                block_number,
+                                &block_hash_str,
+                                log_index,
+                                attempts as i32,
+                                &e.to_string(),
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    crate::metrics::record_dead_lettered_event(&signature);
+                                    break;
+                                }
+                                Err(mark_err) => {
+                                    // Could not persist the dead-letter (DB issue). Delete the row
+                                    // so the event is reprocessed next scan rather than silently
+                                    // skipped-but-unrecorded, then abort.
+                                    error!(
+                                        "Failed to record dead-letter for {signature}: {mark_err}"
+                                    );
+                                    Self::delete_stored_event_best_effort(
+                                        persist_ctx,
+                                        chain_id,
+                                        block_number,
+                                        &block_hash_str,
+                                        log_index,
+                                    )
+                                    .await;
+                                    return Err(e);
+                                }
                             }
                         }
-                    }
+                    },
                 }
             }
         }
@@ -572,9 +584,43 @@ fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
     )
 }
 
+/// What the scanner should do with a failed event handler (4MCA-M04).
+#[derive(Debug, PartialEq, Eq)]
+enum HandlerFailureAction {
+    /// Transient failure with retries remaining — back off and retry in place.
+    Retry,
+    /// Transient failure whose retries are exhausted — a sustained infra outage, not a property of
+    /// the event. Abort the batch and retry the whole range next scan.
+    Abort,
+    /// Deterministic failure that will fail identically on every rescan — dead-letter it and skip so
+    /// one poison event cannot halt all indexing.
+    DeadLetter,
+}
+
+/// Decide how to handle a failed event handler: retryable errors are retried up to
+/// `MAX_HANDLER_RETRIES` and then abort the scan; deterministic errors are dead-lettered
+/// immediately so they can never wedge the pipeline.
+fn classify_handler_failure(
+    err: &BlockchainListenerError,
+    attempts: usize,
+) -> HandlerFailureAction {
+    if is_retryable_handler_error(err) {
+        if attempts < MAX_HANDLER_RETRIES {
+            HandlerFailureAction::Retry
+        } else {
+            HandlerFailureAction::Abort
+        }
+    } else {
+        HandlerFailureAction::DeadLetter
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_retryable_handler_error;
+    use super::{
+        HandlerFailureAction, MAX_HANDLER_RETRIES, classify_handler_failure,
+        is_retryable_handler_error,
+    };
     use crate::error::{BlockchainListenerError, PersistDbError, ServiceError};
 
     #[test]
@@ -633,5 +679,42 @@ mod tests {
 
         let invalid = BlockchainListenerError::from(ServiceError::InvalidParams("bad".into()));
         assert!(!is_retryable_handler_error(&invalid));
+    }
+
+    // The terminal-branch decision: which of retry / abort / dead-letter the scanner takes for a
+    // given handler failure and retry count (4MCA-M04).
+
+    #[test]
+    fn retryable_error_retries_until_exhausted_then_aborts() {
+        let err = BlockchainListenerError::RpcFailure("provider timeout".into());
+        // Retries remain -> retry in place.
+        assert_eq!(
+            classify_handler_failure(&err, 0),
+            HandlerFailureAction::Retry
+        );
+        assert_eq!(
+            classify_handler_failure(&err, MAX_HANDLER_RETRIES - 1),
+            HandlerFailureAction::Retry
+        );
+        // Retries exhausted -> abort the batch (sustained outage), never dead-letter.
+        assert_eq!(
+            classify_handler_failure(&err, MAX_HANDLER_RETRIES),
+            HandlerFailureAction::Abort
+        );
+    }
+
+    #[test]
+    fn deterministic_error_is_dead_lettered_without_retrying() {
+        // A deterministic failure is dead-lettered immediately, regardless of the attempt count,
+        // so a poison event can never wedge the pipeline.
+        let err = BlockchainListenerError::EventHandlerError("collateral underflow".into());
+        assert_eq!(
+            classify_handler_failure(&err, 0),
+            HandlerFailureAction::DeadLetter
+        );
+        assert_eq!(
+            classify_handler_failure(&err, MAX_HANDLER_RETRIES),
+            HandlerFailureAction::DeadLetter
+        );
     }
 }
