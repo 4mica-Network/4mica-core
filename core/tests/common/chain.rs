@@ -369,6 +369,8 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         payment_legacy_scan_enabled: false,
         initial_event_scan_lookback_blocks: 10,
         max_log_block_range: 10_000,
+        event_handler_max_retries: 5,
+        event_handler_retry_base_delay_ms: 200,
     };
 
     debug!(

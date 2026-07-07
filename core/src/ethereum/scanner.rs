@@ -23,11 +23,6 @@ use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Max in-loop retries for a *retryable* handler failure before the scan is aborted and the range
-/// is retried on the next tick. Deterministic failures are never retried; they are dead-lettered.
-const MAX_HANDLER_RETRIES: usize = 5;
-const RETRY_BASE_DELAY_MS: u64 = 200;
-
 pub struct EthereumEventScanner {
     config: EthereumConfig,
     persist_ctx: PersistCtx,
@@ -182,7 +177,15 @@ impl EthereumEventScanner {
         .await?;
 
         let mut log_stream = stream::iter(logs);
-        Self::process_events(&handler, &persist_ctx, config.chain_id, &mut log_stream).await?;
+        Self::process_events(
+            &handler,
+            &persist_ctx,
+            config.chain_id,
+            config.event_handler_max_retries,
+            config.event_handler_retry_base_delay_ms,
+            &mut log_stream,
+        )
+        .await?;
 
         repo::upsert_blockchain_event_cursor(
             &persist_ctx,
@@ -287,6 +290,8 @@ impl EthereumEventScanner {
         handler: &Arc<dyn EthereumEventHandler>,
         persist_ctx: &PersistCtx,
         chain_id: u64,
+        max_retries: usize,
+        retry_base_delay_ms: u64,
         stream: &mut (impl futures_util::Stream<Item = Log> + Unpin),
     ) -> Result<(), BlockchainListenerError> {
         while let Some(log) = stream.next().await {
@@ -326,7 +331,7 @@ impl EthereumEventScanner {
 
             // A row that is already stored (including one previously dead-lettered) is skipped
             // here, so its handler never re-runs — this is what makes a dead-lettered poison event
-            // stay skipped and the scanner advance past it (4MCA-M04).
+            // stay skipped and the scanner advance past it.
             match repo::store_blockchain_event(
                 persist_ctx,
                 chain_id,
@@ -412,15 +417,15 @@ impl EthereumEventScanner {
 
                 match result {
                     Ok(()) => break,
-                    Err(e) => match classify_handler_failure(&e, attempts) {
+                    Err(e) => match classify_handler_failure(&e, attempts, max_retries) {
                         // Transient failure with retries left: back off and retry in place.
                         HandlerFailureAction::Retry => {
                             attempts += 1;
                             let delay = Duration::from_millis(
-                                RETRY_BASE_DELAY_MS.saturating_mul(attempts as u64),
+                                retry_base_delay_ms.saturating_mul(attempts as u64),
                             );
                             warn!(
-                                "Event handler error (attempt {attempts}/{MAX_HANDLER_RETRIES}): {e}. Retrying in {delay:?}..."
+                                "Event handler error (attempt {attempts}/{max_retries}): {e}. Retrying in {delay:?}..."
                             );
                             tokio::time::sleep(delay).await;
                             continue;
@@ -431,7 +436,7 @@ impl EthereumEventScanner {
                         // kept row would be skipped as already-stored).
                         HandlerFailureAction::Abort => {
                             error!(
-                                "Event handler exhausted {MAX_HANDLER_RETRIES} retries; aborting scan: {e}"
+                                "Event handler exhausted {max_retries} retries; aborting scan: {e}"
                             );
                             Self::delete_stored_event_best_effort(
                                 persist_ctx,
@@ -584,7 +589,7 @@ fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
     )
 }
 
-/// What the scanner should do with a failed event handler (4MCA-M04).
+/// What the scanner should do with a failed event handler.
 #[derive(Debug, PartialEq, Eq)]
 enum HandlerFailureAction {
     /// Transient failure with retries remaining — back off and retry in place.
@@ -603,9 +608,10 @@ enum HandlerFailureAction {
 fn classify_handler_failure(
     err: &BlockchainListenerError,
     attempts: usize,
+    max_retries: usize,
 ) -> HandlerFailureAction {
     if is_retryable_handler_error(err) {
-        if attempts < MAX_HANDLER_RETRIES {
+        if attempts < max_retries {
             HandlerFailureAction::Retry
         } else {
             HandlerFailureAction::Abort
@@ -617,11 +623,10 @@ fn classify_handler_failure(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        HandlerFailureAction, MAX_HANDLER_RETRIES, classify_handler_failure,
-        is_retryable_handler_error,
-    };
+    use super::{HandlerFailureAction, classify_handler_failure, is_retryable_handler_error};
     use crate::error::{BlockchainListenerError, PersistDbError, ServiceError};
+
+    const MAX_RETRIES: usize = 5;
 
     #[test]
     fn rpc_failures_are_retryable() {
@@ -681,24 +686,31 @@ mod tests {
         assert!(!is_retryable_handler_error(&invalid));
     }
 
-    // The terminal-branch decision: which of retry / abort / dead-letter the scanner takes for a
-    // given handler failure and retry count (4MCA-M04).
-
     #[test]
     fn retryable_error_retries_until_exhausted_then_aborts() {
         let err = BlockchainListenerError::RpcFailure("provider timeout".into());
         // Retries remain -> retry in place.
         assert_eq!(
-            classify_handler_failure(&err, 0),
+            classify_handler_failure(&err, 0, MAX_RETRIES),
             HandlerFailureAction::Retry
         );
         assert_eq!(
-            classify_handler_failure(&err, MAX_HANDLER_RETRIES - 1),
+            classify_handler_failure(&err, MAX_RETRIES - 1, MAX_RETRIES),
             HandlerFailureAction::Retry
         );
         // Retries exhausted -> abort the batch (sustained outage), never dead-letter.
         assert_eq!(
-            classify_handler_failure(&err, MAX_HANDLER_RETRIES),
+            classify_handler_failure(&err, MAX_RETRIES, MAX_RETRIES),
+            HandlerFailureAction::Abort
+        );
+    }
+
+    #[test]
+    fn zero_max_retries_aborts_a_retryable_error_immediately() {
+        // max_retries = 0 disables retries: a retryable error aborts at once (never dead-lettered).
+        let err = BlockchainListenerError::RpcFailure("provider timeout".into());
+        assert_eq!(
+            classify_handler_failure(&err, 0, 0),
             HandlerFailureAction::Abort
         );
     }
@@ -709,11 +721,11 @@ mod tests {
         // so a poison event can never wedge the pipeline.
         let err = BlockchainListenerError::EventHandlerError("collateral underflow".into());
         assert_eq!(
-            classify_handler_failure(&err, 0),
+            classify_handler_failure(&err, 0, MAX_RETRIES),
             HandlerFailureAction::DeadLetter
         );
         assert_eq!(
-            classify_handler_failure(&err, MAX_HANDLER_RETRIES),
+            classify_handler_failure(&err, MAX_RETRIES, MAX_RETRIES),
             HandlerFailureAction::DeadLetter
         );
     }
