@@ -44,6 +44,7 @@ pub async fn store_blockchain_event(
         address: Set(address.to_string()),
         data: Set(data.to_string()),
         created_at: Set(now()),
+        ..Default::default()
     };
 
     let affected = blockchain_event::Entity::insert(event)
