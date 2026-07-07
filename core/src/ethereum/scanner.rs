@@ -512,5 +512,45 @@ fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
         BlockchainListenerError::Db(PersistDbError::UserBalanceLockConflict { .. })
             | BlockchainListenerError::Db(PersistDbError::DatabaseFailure(_))
             | BlockchainListenerError::DatabaseFailure(_)
+            | BlockchainListenerError::RpcFailure(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_retryable_handler_error;
+    use crate::error::{BlockchainListenerError, PersistDbError};
+
+    #[test]
+    fn rpc_failures_are_retryable() {
+        assert!(is_retryable_handler_error(
+            &BlockchainListenerError::RpcFailure("provider timeout".into())
+        ));
+    }
+
+    #[test]
+    fn transient_db_failures_are_retryable() {
+        assert!(is_retryable_handler_error(
+            &BlockchainListenerError::DatabaseFailure(sea_orm::DbErr::Custom(
+                "connection reset".into()
+            ))
+        ));
+        assert!(is_retryable_handler_error(&BlockchainListenerError::Db(
+            PersistDbError::UserBalanceLockConflict {
+                user: "0xabc".into(),
+                asset_address: "0xdef".into(),
+                expected_version: 1,
+            }
+        )));
+    }
+
+    #[test]
+    fn deterministic_errors_are_not_retryable() {
+        assert!(!is_retryable_handler_error(
+            &BlockchainListenerError::EventHandlerError("collateral underflow".into())
+        ));
+        assert!(!is_retryable_handler_error(
+            &BlockchainListenerError::UserNotFound("0xabc".into())
+        ));
+    }
 }

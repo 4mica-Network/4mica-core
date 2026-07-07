@@ -302,7 +302,7 @@ impl CoreService {
     /// Overwrite the off-chain `total` for `(user, asset)` with the authoritative
     /// on-chain collateral, leaving `locked` untouched. This makes event-sourced
     /// balances self-heal from any double-applied event (e.g. a deposit re-mined
-    /// into a new block by a reorg, 4MCA-H04) rather than drifting permanently,
+    /// into a new block by a reorg) rather than drifting permanently,
     /// since issuance always gates on this reconciled total.
     async fn sync_balance_from_chain(
         &self,
@@ -329,7 +329,7 @@ impl CoreService {
             return Ok(());
         }
         .map_err(|err| {
-            BlockchainListenerError::EventHandlerError(format!(
+            BlockchainListenerError::RpcFailure(format!(
                 "failed to load on-chain collateral for user {user} asset {asset}: {err}"
             ))
         })?;
@@ -388,7 +388,7 @@ impl CoreService {
             .call()
             .await
             .map_err(|err| {
-                BlockchainListenerError::EventHandlerError(format!(
+                BlockchainListenerError::RpcFailure(format!(
                     "failed to load stablecoin aToken for asset {asset}: {err}"
                 ))
             })?;

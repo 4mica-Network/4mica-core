@@ -49,6 +49,9 @@ pub enum BlockchainListenerError {
     #[error("Database operation failed: {0}")]
     DatabaseFailure(#[from] sea_orm::DbErr),
 
+    #[error("RPC/provider call failed: {0}")]
+    RpcFailure(String),
+
     #[error("Event handler error: {0}")]
     EventHandlerError(String),
 
