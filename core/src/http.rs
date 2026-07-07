@@ -494,9 +494,6 @@ fn sdk_client_from_headers(headers: &HeaderMap) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The settlement-timing hard stop (4MCA-H02) must surface as 503 so issuance is refused, not
-    /// merely logged. Locks the mapping against a regression back to a warn-only path.
     #[test]
     fn settlement_timing_halted_maps_to_503() {
         let api: ApiError =

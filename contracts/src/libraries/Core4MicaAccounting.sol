@@ -34,7 +34,7 @@ library Core4MicaAccounting {
     /// "fee steps": several consecutive `gross` values can map to the same `net`. The caller
     /// reallocates the protocol fee as `grossAfterUserWithdrawal - grossForNetYield(remainingNet)`,
     /// so this MUST return the smallest preimage — a larger one makes that subtraction underflow
-    /// and reverts a seizure or partial withdrawal (4MCA-H03).
+    /// and reverts a seizure or partial withdrawal.
     ///
     /// Closed form. `net` increments by 0 or 1 as `gross` increases, so it takes every integer
     /// value; the smallest `gross` reaching `desiredNet` therefore hits it exactly, i.e.

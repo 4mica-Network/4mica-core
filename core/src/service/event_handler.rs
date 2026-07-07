@@ -299,11 +299,6 @@ fn block_number_from_log(log: &Log) -> Result<u64, BlockchainListenerError> {
 }
 
 impl CoreService {
-    /// Overwrite the off-chain `total` for `(user, asset)` with the authoritative
-    /// on-chain collateral, leaving `locked` untouched. This makes event-sourced
-    /// balances self-heal from any double-applied event (e.g. a deposit re-mined
-    /// into a new block by a reorg) rather than drifting permanently,
-    /// since issuance always gates on this reconciled total.
     async fn sync_balance_from_chain(
         &self,
         user: Address,
