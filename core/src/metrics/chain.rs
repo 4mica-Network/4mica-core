@@ -148,3 +148,18 @@ pub fn record_scanned_payment_tx_block(block_number: u64) {
 pub fn record_scanned_event_tx_block(block_number: u64) {
     ScannedEventTxBlockMetric::get(&()).set(block_number as f64);
 }
+
+#[derive(Debug, Clone, MetricLabels)]
+pub struct DeadLetteredEventLabels {
+    pub signature: String,
+}
+
+#[derive(Clone, Metric)]
+#[counter(labels = DeadLetteredEventLabels, name = "dead_lettered_event_total")]
+pub struct DeadLetteredEventTotalMetric;
+pub fn record_dead_lettered_event(signature: &str) {
+    let labels = DeadLetteredEventLabels {
+        signature: signature.to_string(),
+    };
+    DeadLetteredEventTotalMetric::get(&labels).increment(1);
+}

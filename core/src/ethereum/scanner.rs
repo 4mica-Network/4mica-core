@@ -322,7 +322,10 @@ impl EthereumEventScanner {
                 "Storing blockchain event: {signature} at block {block_number} with log index {log_index}"
             );
 
-            let inserted = match repo::store_blockchain_event(
+            // A row that is already stored (including one previously dead-lettered) is skipped
+            // here, so its handler never re-runs — this is what makes a dead-lettered poison event
+            // stay skipped and the scanner advance past it (4MCA-M04).
+            match repo::store_blockchain_event(
                 persist_ctx,
                 chain_id,
                 &signature,
@@ -335,20 +338,18 @@ impl EthereumEventScanner {
             )
             .await
             {
-                Ok(inserted) => {
-                    if !inserted {
-                        info!(
-                            "Blockchain event already stored: {signature} at block {block_number} with log index {log_index}, skipping..."
-                        );
-                        continue;
-                    }
-                    true
+                Ok(true) => {}
+                Ok(false) => {
+                    info!(
+                        "Blockchain event already stored: {signature} at block {block_number} with log index {log_index}, skipping..."
+                    );
+                    continue;
                 }
                 Err(e) => {
                     error!("Failed to store blockchain event: {e}");
                     return Err(e.into());
                 }
-            };
+            }
 
             crate::metrics::record_processed_event_tx(
                 EventTxStatus::Confirmed,
@@ -422,27 +423,82 @@ impl EthereumEventScanner {
                             continue;
                         }
 
-                        error!("Event handler error: {e}");
-                        if inserted
-                            && let Err(err) = repo::delete_blockchain_event(
+                        if is_retryable_handler_error(&e) {
+                            error!(
+                                "Event handler exhausted {MAX_HANDLER_RETRIES} retries; aborting scan: {e}"
+                            );
+                            Self::delete_stored_event_best_effort(
                                 persist_ctx,
                                 chain_id,
                                 block_number,
                                 &block_hash_str,
                                 log_index,
                             )
-                            .await
-                        {
-                            error!("Failed to delete blockchain event: {err}");
+                            .await;
+                            return Err(e);
                         }
 
-                        return Err(e);
+                        error!(
+                            "Dead-lettering un-handleable event {signature} at block {block_number} \
+                             log_index {log_index}: {e}"
+                        );
+                        match repo::mark_blockchain_event_dead_lettered(
+                            persist_ctx,
+                            chain_id,
+                            block_number,
+                            &block_hash_str,
+                            log_index,
+                            attempts as i32,
+                            &e.to_string(),
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                crate::metrics::record_dead_lettered_event(&signature);
+                                break;
+                            }
+                            Err(mark_err) => {
+                                // Could not persist the dead-letter (DB issue). Delete the row so
+                                // the event is reprocessed next scan rather than silently
+                                // skipped-but-unrecorded, then abort.
+                                error!("Failed to record dead-letter for {signature}: {mark_err}");
+                                Self::delete_stored_event_best_effort(
+                                    persist_ctx,
+                                    chain_id,
+                                    block_number,
+                                    &block_hash_str,
+                                    log_index,
+                                )
+                                .await;
+                                return Err(e);
+                            }
+                        }
                     }
                 }
             }
         }
 
         Ok(())
+    }
+
+    async fn delete_stored_event_best_effort(
+        persist_ctx: &PersistCtx,
+        chain_id: u64,
+        block_number: u64,
+        block_hash: &str,
+        log_index: u64,
+    ) {
+        if let Err(err) = repo::delete_blockchain_event(
+            persist_ctx,
+            chain_id,
+            block_number,
+            block_hash,
+            log_index,
+        )
+        .await
+        {
+            error!("Failed to delete blockchain event: {err}");
+        }
     }
 
     async fn block_hash_at(
