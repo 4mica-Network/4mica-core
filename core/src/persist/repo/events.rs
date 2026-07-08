@@ -1,18 +1,14 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use entities::sea_orm_active_enums::BlockchainEventStatus;
 use entities::{blockchain_block, blockchain_event, blockchain_event_cursor};
 use metrics_4mica::measure;
 use sea_orm::ColumnTrait;
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{ActiveEnum, EntityTrait, QueryFilter, QueryOrder, Set};
 
 use super::common::now;
 use crate::metrics::misc::record_db_time;
-
-/// `BlockchainEvent.status` value marking an event whose handler failed deterministically and was
-/// skipped so the scanner could advance (4MCA-M04). Query `WHERE status = 'DEAD_LETTERED'` to list
-/// events an operator must investigate/replay.
-pub const DEAD_LETTERED_STATUS: &str = "DEAD_LETTERED";
 
 #[measure(record_db_time)]
 pub async fn get_last_processed_blockchain_event(
@@ -87,7 +83,7 @@ pub async fn mark_blockchain_event_dead_lettered(
     blockchain_event::Entity::update_many()
         .col_expr(
             blockchain_event::Column::Status,
-            Expr::value(DEAD_LETTERED_STATUS.to_string()),
+            BlockchainEventStatus::DeadLettered.as_enum(),
         )
         .col_expr(blockchain_event::Column::Attempts, Expr::value(attempts))
         .col_expr(

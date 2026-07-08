@@ -1,3 +1,4 @@
+use crate::sea_orm_active_enums::BlockchainEventStatus;
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
@@ -20,9 +21,9 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub data: String,
     pub created_at: DateTime,
-    /// deterministic handler failure has been recorded so the scanner can skip it instead of wedging.
-    #[sea_orm(column_type = "Text", nullable)]
-    pub status: Option<String>,
+    /// Processing state. `None` predates this column and is treated as handled;
+    /// otherwise `Pending`/`Processed`/`DeadLettered`.
+    pub status: Option<BlockchainEventStatus>,
     /// Handler attempts made before the event was dead-lettered.
     pub attempts: Option<i32>,
     /// The deterministic error that caused the dead-letter, for operator diagnosis/replay.

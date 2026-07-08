@@ -148,3 +148,17 @@ pub enum ParticipantCycleStatus {
     #[sea_orm(string_value = "FINALIZED")]
     Finalized,
 }
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "Enum",
+    enum_name = "blockchain_event_status"
+)]
+pub enum BlockchainEventStatus {
+    #[sea_orm(string_value = "PENDING")]
+    Pending,
+    #[sea_orm(string_value = "PROCESSED")]
+    Processed,
+    #[sea_orm(string_value = "DEAD_LETTERED")]
+    DeadLettered,
+}
