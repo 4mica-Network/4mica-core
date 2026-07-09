@@ -112,6 +112,14 @@ pub struct EthereumConfig {
     /// Maximum block span for a single eth_getLogs request.
     #[envconfig(from = "ETHEREUM_MAX_LOG_BLOCK_RANGE", default = "10000")]
     pub max_log_block_range: u64,
+    /// Max in-loop retries for a *retryable* event-handler failure (transient DB/RPC) before the
+    /// scan aborts and retries the range next tick. Deterministic failures are never retried; they
+    /// are dead-lettered. `0` disables retries (a retryable error aborts immediately).
+    #[envconfig(from = "ETHEREUM_EVENT_HANDLER_MAX_RETRIES", default = "5")]
+    pub event_handler_max_retries: usize,
+    /// Base backoff between event-handler retries; the delay scales linearly with the attempt count.
+    #[envconfig(from = "ETHEREUM_EVENT_HANDLER_RETRY_BASE_DELAY_MS", default = "200")]
+    pub event_handler_retry_base_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -648,6 +656,8 @@ mod tests {
             payment_legacy_scan_enabled: false,
             initial_event_scan_lookback_blocks: 25,
             max_log_block_range: 10000,
+            event_handler_max_retries: 5,
+            event_handler_retry_base_delay_ms: 200,
         }
     }
 

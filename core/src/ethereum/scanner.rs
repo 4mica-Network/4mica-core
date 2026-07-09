@@ -177,7 +177,15 @@ impl EthereumEventScanner {
         .await?;
 
         let mut log_stream = stream::iter(logs);
-        Self::process_events(&handler, &persist_ctx, config.chain_id, &mut log_stream).await?;
+        Self::process_events(
+            &handler,
+            &persist_ctx,
+            config.chain_id,
+            config.event_handler_max_retries,
+            config.event_handler_retry_base_delay_ms,
+            &mut log_stream,
+        )
+        .await?;
 
         repo::upsert_blockchain_event_cursor(
             &persist_ctx,
@@ -282,11 +290,10 @@ impl EthereumEventScanner {
         handler: &Arc<dyn EthereumEventHandler>,
         persist_ctx: &PersistCtx,
         chain_id: u64,
+        max_retries: usize,
+        retry_base_delay_ms: u64,
         stream: &mut (impl futures_util::Stream<Item = Log> + Unpin),
     ) -> Result<(), BlockchainListenerError> {
-        const MAX_HANDLER_RETRIES: usize = 5;
-        const RETRY_BASE_DELAY_MS: u64 = 200;
-
         while let Some(log) = stream.next().await {
             let Some(block_number) = log.block_number else {
                 warn!("Log has no block number, skipping...");
@@ -322,7 +329,10 @@ impl EthereumEventScanner {
                 "Storing blockchain event: {signature} at block {block_number} with log index {log_index}"
             );
 
-            let inserted = match repo::store_blockchain_event(
+            // A row that is already stored (including one previously dead-lettered) is skipped
+            // here, so its handler never re-runs — this is what makes a dead-lettered poison event
+            // stay skipped and the scanner advance past it.
+            match repo::store_blockchain_event(
                 persist_ctx,
                 chain_id,
                 &signature,
@@ -335,20 +345,18 @@ impl EthereumEventScanner {
             )
             .await
             {
-                Ok(inserted) => {
-                    if !inserted {
-                        info!(
-                            "Blockchain event already stored: {signature} at block {block_number} with log index {log_index}, skipping..."
-                        );
-                        continue;
-                    }
-                    true
+                Ok(true) => {}
+                Ok(false) => {
+                    info!(
+                        "Blockchain event already stored: {signature} at block {block_number} with log index {log_index}, skipping..."
+                    );
+                    continue;
                 }
                 Err(e) => {
                     error!("Failed to store blockchain event: {e}");
                     return Err(e.into());
                 }
-            };
+            }
 
             crate::metrics::record_processed_event_tx(
                 EventTxStatus::Confirmed,
@@ -409,40 +417,105 @@ impl EthereumEventScanner {
 
                 match result {
                     Ok(()) => break,
-                    Err(e) => {
-                        if attempts < MAX_HANDLER_RETRIES && is_retryable_handler_error(&e) {
+                    Err(e) => match classify_handler_failure(&e, attempts, max_retries) {
+                        // Transient failure with retries left: back off and retry in place.
+                        HandlerFailureAction::Retry => {
                             attempts += 1;
                             let delay = Duration::from_millis(
-                                RETRY_BASE_DELAY_MS.saturating_mul(attempts as u64),
+                                retry_base_delay_ms.saturating_mul(attempts as u64),
                             );
                             warn!(
-                                "Event handler error (attempt {attempts}/{MAX_HANDLER_RETRIES}): {e}. Retrying in {delay:?}..."
+                                "Event handler error (attempt {attempts}/{max_retries}): {e}. Retrying in {delay:?}..."
                             );
                             tokio::time::sleep(delay).await;
                             continue;
                         }
-
-                        error!("Event handler error: {e}");
-                        if inserted
-                            && let Err(err) = repo::delete_blockchain_event(
+                        // Retryable but retries exhausted: a sustained infra outage (DB/RPC down),
+                        // not a property of this event. Abort the batch and let the next scan retry
+                        // the whole range; delete the stored row so the handler runs again then (a
+                        // kept row would be skipped as already-stored).
+                        HandlerFailureAction::Abort => {
+                            error!(
+                                "Event handler exhausted {max_retries} retries; aborting scan: {e}"
+                            );
+                            Self::delete_stored_event_best_effort(
                                 persist_ctx,
                                 chain_id,
                                 block_number,
                                 &block_hash_str,
                                 log_index,
                             )
-                            .await
-                        {
-                            error!("Failed to delete blockchain event: {err}");
+                            .await;
+                            return Err(e);
                         }
-
-                        return Err(e);
-                    }
+                        // Deterministic failure: dead-letter and skip so a single un-handleable
+                        // event cannot wedge the whole pipeline. Keep the (now-marked)
+                        // row so the next scan skips it instead of re-running the doomed handler.
+                        HandlerFailureAction::DeadLetter => {
+                            error!(
+                                "Dead-lettering un-handleable event {signature} at block {block_number} \
+                                 log_index {log_index}: {e}"
+                            );
+                            match repo::mark_blockchain_event_dead_lettered(
+                                persist_ctx,
+                                chain_id,
+                                block_number,
+                                &block_hash_str,
+                                log_index,
+                                attempts as i32,
+                                &e.to_string(),
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    crate::metrics::record_dead_lettered_event(&signature);
+                                    break;
+                                }
+                                Err(mark_err) => {
+                                    // Could not persist the dead-letter (DB issue). Delete the row
+                                    // so the event is reprocessed next scan rather than silently
+                                    // skipped-but-unrecorded, then abort.
+                                    error!(
+                                        "Failed to record dead-letter for {signature}: {mark_err}"
+                                    );
+                                    Self::delete_stored_event_best_effort(
+                                        persist_ctx,
+                                        chain_id,
+                                        block_number,
+                                        &block_hash_str,
+                                        log_index,
+                                    )
+                                    .await;
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    },
                 }
             }
         }
 
         Ok(())
+    }
+
+    async fn delete_stored_event_best_effort(
+        persist_ctx: &PersistCtx,
+        chain_id: u64,
+        block_number: u64,
+        block_hash: &str,
+        log_index: u64,
+    ) {
+        if let Err(err) = repo::delete_blockchain_event(
+            persist_ctx,
+            chain_id,
+            block_number,
+            block_hash,
+            log_index,
+        )
+        .await
+        {
+            error!("Failed to delete blockchain event: {err}");
+        }
     }
 
     async fn block_hash_at(
@@ -512,5 +585,148 @@ fn is_retryable_handler_error(err: &BlockchainListenerError) -> bool {
         BlockchainListenerError::Db(PersistDbError::UserBalanceLockConflict { .. })
             | BlockchainListenerError::Db(PersistDbError::DatabaseFailure(_))
             | BlockchainListenerError::DatabaseFailure(_)
+            | BlockchainListenerError::RpcFailure(_)
     )
+}
+
+/// What the scanner should do with a failed event handler.
+#[derive(Debug, PartialEq, Eq)]
+enum HandlerFailureAction {
+    /// Transient failure with retries remaining — back off and retry in place.
+    Retry,
+    /// Transient failure whose retries are exhausted — a sustained infra outage, not a property of
+    /// the event. Abort the batch and retry the whole range next scan.
+    Abort,
+    /// Deterministic failure that will fail identically on every rescan — dead-letter it and skip so
+    /// one poison event cannot halt all indexing.
+    DeadLetter,
+}
+
+/// Decide how to handle a failed event handler: retryable errors are retried up to
+/// `MAX_HANDLER_RETRIES` and then abort the scan; deterministic errors are dead-lettered
+/// immediately so they can never wedge the pipeline.
+fn classify_handler_failure(
+    err: &BlockchainListenerError,
+    attempts: usize,
+    max_retries: usize,
+) -> HandlerFailureAction {
+    if is_retryable_handler_error(err) {
+        if attempts < max_retries {
+            HandlerFailureAction::Retry
+        } else {
+            HandlerFailureAction::Abort
+        }
+    } else {
+        HandlerFailureAction::DeadLetter
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HandlerFailureAction, classify_handler_failure, is_retryable_handler_error};
+    use crate::error::{BlockchainListenerError, PersistDbError, ServiceError};
+
+    const MAX_RETRIES: usize = 5;
+
+    #[test]
+    fn rpc_failures_are_retryable() {
+        assert!(is_retryable_handler_error(
+            &BlockchainListenerError::RpcFailure("provider timeout".into())
+        ));
+    }
+
+    #[test]
+    fn transient_db_failures_are_retryable() {
+        assert!(is_retryable_handler_error(
+            &BlockchainListenerError::DatabaseFailure(sea_orm::DbErr::Custom(
+                "connection reset".into()
+            ))
+        ));
+        assert!(is_retryable_handler_error(&BlockchainListenerError::Db(
+            PersistDbError::UserBalanceLockConflict {
+                user: "0xabc".into(),
+                asset_address: "0xdef".into(),
+                expected_version: 1,
+            }
+        )));
+    }
+
+    #[test]
+    fn deterministic_errors_are_not_retryable() {
+        assert!(!is_retryable_handler_error(
+            &BlockchainListenerError::EventHandlerError("collateral underflow".into())
+        ));
+        assert!(!is_retryable_handler_error(
+            &BlockchainListenerError::UserNotFound("0xabc".into())
+        ));
+    }
+
+    #[test]
+    fn settlement_optimistic_lock_conflict_is_retryable() {
+        let err = BlockchainListenerError::from(ServiceError::OptimisticLockConflict);
+        assert!(is_retryable_handler_error(&err));
+    }
+
+    #[test]
+    fn settlement_db_failure_is_retryable() {
+        let err = BlockchainListenerError::from(ServiceError::Db(PersistDbError::DatabaseFailure(
+            sea_orm::DbErr::Custom("connection reset".into()),
+        )));
+        assert!(is_retryable_handler_error(&err));
+    }
+
+    #[test]
+    fn settlement_domain_errors_are_not_retryable() {
+        let invariant = BlockchainListenerError::from(ServiceError::Db(
+            PersistDbError::InvariantViolation("leaf sum mismatch".into()),
+        ));
+        assert!(!is_retryable_handler_error(&invariant));
+
+        let invalid = BlockchainListenerError::from(ServiceError::InvalidParams("bad".into()));
+        assert!(!is_retryable_handler_error(&invalid));
+    }
+
+    #[test]
+    fn retryable_error_retries_until_exhausted_then_aborts() {
+        let err = BlockchainListenerError::RpcFailure("provider timeout".into());
+        // Retries remain -> retry in place.
+        assert_eq!(
+            classify_handler_failure(&err, 0, MAX_RETRIES),
+            HandlerFailureAction::Retry
+        );
+        assert_eq!(
+            classify_handler_failure(&err, MAX_RETRIES - 1, MAX_RETRIES),
+            HandlerFailureAction::Retry
+        );
+        // Retries exhausted -> abort the batch (sustained outage), never dead-letter.
+        assert_eq!(
+            classify_handler_failure(&err, MAX_RETRIES, MAX_RETRIES),
+            HandlerFailureAction::Abort
+        );
+    }
+
+    #[test]
+    fn zero_max_retries_aborts_a_retryable_error_immediately() {
+        // max_retries = 0 disables retries: a retryable error aborts at once (never dead-lettered).
+        let err = BlockchainListenerError::RpcFailure("provider timeout".into());
+        assert_eq!(
+            classify_handler_failure(&err, 0, 0),
+            HandlerFailureAction::Abort
+        );
+    }
+
+    #[test]
+    fn deterministic_error_is_dead_lettered_without_retrying() {
+        // A deterministic failure is dead-lettered immediately, regardless of the attempt count,
+        // so a poison event can never wedge the pipeline.
+        let err = BlockchainListenerError::EventHandlerError("collateral underflow".into());
+        assert_eq!(
+            classify_handler_failure(&err, 0, MAX_RETRIES),
+            HandlerFailureAction::DeadLetter
+        );
+        assert_eq!(
+            classify_handler_failure(&err, MAX_RETRIES, MAX_RETRIES),
+            HandlerFailureAction::DeadLetter
+        );
+    }
 }
