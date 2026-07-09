@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use entities::sea_orm_active_enums::CollateralEventType;
 use log::{debug, error, info, warn};
 use metrics_4mica::measure;
+use sea_orm::TransactionTrait;
 
 use crate::metrics::misc::record_event_handler_time;
 use crate::{
@@ -32,15 +33,27 @@ impl EthereumEventHandler for CoreService {
 
         let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
-        repo::credit_collateral_with_event_on(
-            self.inner.persist_ctx.db.as_ref(),
-            user.to_string(),
-            asset.to_string(),
-            amount,
-            CollateralEventType::Deposit,
-            Some(meta),
-        )
-        .await?;
+        self.inner
+            .persist_ctx
+            .db
+            .transaction::<_, (), BlockchainListenerError>(|txn| {
+                let user = user.to_string();
+                let asset = asset.to_string();
+                Box::pin(async move {
+                    repo::credit_collateral_with_event_on(
+                        txn,
+                        user,
+                        asset,
+                        amount,
+                        CollateralEventType::Deposit,
+                        Some(meta),
+                    )
+                    .await?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(BlockchainListenerError::from)?;
         self.sync_balance_from_chain(user, asset, block_number)
             .await?;
         Ok(())

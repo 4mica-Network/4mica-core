@@ -16,18 +16,24 @@ use alloy::{
     rpc::types::{Filter, Log},
     sol_types::SolEvent,
 };
+use entities::sea_orm_active_enums::BlockchainEventStatus;
 use futures_util::{StreamExt, stream};
 use log::{error, info, warn};
 use metrics_4mica::measure;
 use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 pub struct EthereumEventScanner {
     config: EthereumConfig,
     persist_ctx: PersistCtx,
     provider: DynProvider,
     handler: Arc<dyn EthereumEventHandler>,
+    /// Serialises scan runs. The cron fires every second, but a scan can take longer; without this
+    /// two runs would process the same range concurrently and, because a not-yet-`Processed` event
+    /// is re-run, apply a handler twice (4MCA-M05 recovery must stay at-most-once under overlap).
+    scan_lock: Arc<Mutex<()>>,
 }
 
 struct ScanArgs<P>
@@ -48,6 +54,12 @@ impl Task for EthereumEventScanner {
 
     #[measure(record_task_time, name = "scan_events")]
     async fn run(&self) -> anyhow::Result<()> {
+        // Single-flight: if a previous scan is still running, skip this tick rather than process the
+        // same range concurrently (which would re-run not-yet-`Processed` events and double-apply).
+        let Ok(_guard) = self.scan_lock.try_lock() else {
+            info!("Event scan already in progress; skipping this tick");
+            return Ok(());
+        };
         Self::scan_events(ScanArgs {
             provider: self.provider.clone(),
             config: self.config.clone(),
@@ -71,6 +83,7 @@ impl EthereumEventScanner {
             persist_ctx,
             provider,
             handler,
+            scan_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -347,10 +360,32 @@ impl EthereumEventScanner {
             {
                 Ok(true) => {}
                 Ok(false) => {
-                    info!(
-                        "Blockchain event already stored: {signature} at block {block_number} with log index {log_index}, skipping..."
-                    );
-                    continue;
+                    match repo::get_blockchain_event_status(
+                        persist_ctx,
+                        chain_id,
+                        block_number,
+                        &block_hash_str,
+                        log_index,
+                    )
+                    .await?
+                    {
+                        Some(Some(
+                            BlockchainEventStatus::Processed | BlockchainEventStatus::DeadLettered,
+                        )) => {
+                            info!(
+                                "Blockchain event already resolved: {signature} at block {block_number} with log index {log_index}, skipping..."
+                            );
+                            continue;
+                        }
+                        // Pending, NULL (pre-migration), or a row that raced away — re-run to recover
+                        // a crash-interrupted apply. At-most-once via single-flight +
+                        // per-identity idempotent handlers.
+                        _ => {
+                            info!(
+                                "Re-running stored-but-unprocessed event: {signature} at block {block_number} with log index {log_index}"
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to store blockchain event: {e}");
@@ -416,7 +451,27 @@ impl EthereumEventScanner {
                 };
 
                 match result {
-                    Ok(()) => break,
+                    Ok(()) => {
+                        // Handler committed its effect; record `Processed` so later scans skip it. If
+                        // this mark fails, abort WITHOUT deleting the row: the effect is already
+                        // applied and the handler is idempotent, so the next scan re-runs it (a
+                        // no-op) and re-marks, rather than losing or double-applying the event.
+                        if let Err(mark_err) = repo::mark_blockchain_event_processed(
+                            persist_ctx,
+                            chain_id,
+                            block_number,
+                            &block_hash_str,
+                            log_index,
+                        )
+                        .await
+                        {
+                            error!(
+                                "Failed to mark event processed for {signature} at block {block_number} log_index {log_index}: {mark_err}"
+                            );
+                            return Err(mark_err.into());
+                        }
+                        break;
+                    }
                     Err(e) => match classify_handler_failure(&e, attempts, max_retries) {
                         // Transient failure with retries left: back off and retry in place.
                         HandlerFailureAction::Retry => {
