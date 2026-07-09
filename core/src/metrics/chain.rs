@@ -163,3 +163,23 @@ pub fn record_dead_lettered_event(signature: &str) {
     };
     DeadLetteredEventTotalMetric::get(&labels).increment(1);
 }
+
+#[derive(Debug, Clone, MetricLabels)]
+pub struct UndercollateralizedSyncLabels {
+    pub asset: String,
+}
+
+/// A chain reconciliation found on-chain backing below already-locked collateral (INV-3 would be
+/// violated) and pinned `total` to `locked` instead. This should be unreachable under a correct
+/// deployment (a sufficient withdrawal grace period keeps collateral seizable before it can exit);
+/// a non-zero count signals a broken solvency invariant (e.g. grace period too short, M02/M07) and
+/// warrants investigation.
+#[derive(Clone, Metric)]
+#[counter(labels = UndercollateralizedSyncLabels, name = "undercollateralized_sync_total")]
+pub struct UndercollateralizedSyncTotalMetric;
+pub fn record_undercollateralized_sync(asset: &str) {
+    let labels = UndercollateralizedSyncLabels {
+        asset: asset.to_string(),
+    };
+    UndercollateralizedSyncTotalMetric::get(&labels).increment(1);
+}

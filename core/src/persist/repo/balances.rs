@@ -164,6 +164,7 @@ pub async fn sync_user_asset_total(
                     warn!(
                         "sync_user_asset_total: on-chain total {new_total} for user {user_address} asset {asset_address} is below locked {locked}; pinning total to locked (under-collateralised)"
                     );
+                    crate::metrics::record_undercollateralized_sync(&asset_address);
                 }
 
                 update_user_balance_and_version_on(
