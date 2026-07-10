@@ -25,7 +25,7 @@ use common::chain::{OPERATOR_KEY, setup_e2e_environment};
 use common::contract::{ClearingHouse, Core4Mica};
 use common::cycle_fixtures::{create_frozen_cycle, store_payable_guarantee};
 use common::fixtures::{
-    ensure_user_with_collateral, read_locked_collateral, set_locked_collateral,
+    ensure_user_with_collateral, read_collateral, read_locked_collateral, set_locked_collateral,
 };
 use core_service::persist::{PersistCtx, repo};
 
@@ -131,6 +131,24 @@ async fn commit_interleaved_cycle(
         .context("commit_cycle_to_chain")?;
 
     Ok(g_d1c)
+}
+
+/// Poll the off-chain collateral `total` until it reaches `expected`. Settlement handlers reconcile
+/// `total` from chain (sync) just after committing the position status, so this may lag the status
+/// poll by a tick.
+async fn poll_collateral(
+    ctx: &PersistCtx,
+    user: &str,
+    asset: &str,
+    expected: U256,
+) -> anyhow::Result<()> {
+    for _ in 0..POLL_ATTEMPTS {
+        if read_collateral(ctx, user, asset).await? == expected {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    anyhow::bail!("off-chain collateral for {user} never reached {expected}");
 }
 
 async fn poll_position_status(
@@ -632,6 +650,10 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
         .await?;
     assert_eq!(debtor_balance, U256::ZERO, "debtor collateral fully seized");
     assert_eq!(creditor_balance, amount, "creditor collateral funded");
+
+    let asset = core_service::config::DEFAULT_ASSET_ADDRESS;
+    poll_collateral(ctx, &lower(&debtor), asset, U256::ZERO).await?;
+    poll_collateral(ctx, &lower(&creditor), asset, amount).await?;
 
     // Second job pass: the off-chain ledger is fully resolved, so the cycle finalizes.
     svc.settle_due_cycles().await?;

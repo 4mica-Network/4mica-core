@@ -14,8 +14,8 @@ use common::cycle_fixtures::{
     build_three_party_cycle, create_frozen_cycle, setup_cycle_service, store_payable_guarantee,
 };
 use common::fixtures::{
-    ensure_user_with_collateral, normalize_address, random_address, read_collateral,
-    read_locked_collateral, set_locked_collateral,
+    ensure_user_with_collateral, normalize_address, random_address, read_locked_collateral,
+    set_locked_collateral,
 };
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS, ethereum::event_data::EventMeta, evm, persist::repo,
@@ -146,48 +146,27 @@ async fn multi_party_settlement_releases_all_locked_collateral() -> anyhow::Resu
 
     let onchain = evm::cycle_id_hash(cycle_id);
 
-    // Drive the real on-chain-event handlers: debtor pays, creditors claim.
-    // The net debtor (alice) pays from her wallet, leaving her collateral
-    // untouched; each net creditor's claim credits its net credit (bob 6,
-    // carol 3) back into collateral.
+    // Drive the real on-chain-event handlers: debtor pays, creditors claim. These
+    // settle domain state (status + netted guarantees, releasing locked collateral).
+    // The collateral `total` is reconciled from chain by the event handlers
+    // (covered in chain_clearing), which this chain-free test does not exercise.
     service.process_paid_debtor(onchain, alice, "0xpay").await?;
     service
-        .process_credit_claim(
-            onchain,
-            bob.clone(),
-            asset.to_string(),
-            U256::from(6u64),
-            event_meta("0xclaim-bob"),
-        )
+        .process_credit_claim(onchain, bob.clone(), event_meta("0xclaim-bob"))
         .await?;
     service
-        .process_credit_claim(
-            onchain,
-            carol.clone(),
-            asset.to_string(),
-            U256::from(3u64),
-            event_meta("0xclaim-carol"),
-        )
+        .process_credit_claim(onchain, carol.clone(), event_meta("0xclaim-carol"))
         .await?;
 
     // Finalize for good measure; the sweep must be a no-op here (nothing left).
     service.finalize_cycle(cycle_id).await?;
 
-    // All locked collateral must be released; the net creditors' totals grow by
-    // the net credit they claimed, while the net debtor's total is unchanged.
-    let expected_totals = [(alice, 10u64), (bob, 4 + 6), (carol, 1 + 3)];
+    // All locked collateral must be released (the regression this test guards).
     for (who, _) in locks {
         assert_eq!(
             read_locked_collateral(ctx, who, asset).await?,
             U256::ZERO,
             "locked collateral not released for {who}"
-        );
-    }
-    for (who, expected) in expected_totals {
-        assert_eq!(
-            read_collateral(ctx, who, asset).await?,
-            U256::from(expected),
-            "unexpected total collateral for {who}"
         );
     }
     assert!(
@@ -202,13 +181,13 @@ async fn multi_party_settlement_releases_all_locked_collateral() -> anyhow::Resu
 
 /// When a net debtor does not pay, finality settlement seizes its collateral
 /// on-chain and the `DebtorDefaulted` mirror must reflect that off-chain: the
-/// debtor's position flips to `Defaulted` and its *total* collateral is debited
-/// by the seized net debit (the lock is released first, so the debit always
-/// fits). The net creditors are still funded from the pool and end up made
-/// whole, exactly as in the all-voluntary path.
+/// debtor's position flips to `Defaulted` and its netted guarantees are
+/// remunerated, releasing the locked collateral. The debtor's collateral `total`
+/// is reconciled from chain by the event handler (covered in chain_clearing),
+/// not by this chain-free test.
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn defaulted_debtor_has_total_collateral_debited() -> anyhow::Result<()> {
+async fn defaulted_debtor_is_marked_and_lock_released() -> anyhow::Result<()> {
     let service = setup_cycle_service().await?;
     let cycle_id = "debtor-default-cycle";
     let participants = build_three_party_cycle(&service, cycle_id).await?;
@@ -248,34 +227,16 @@ async fn defaulted_debtor_has_total_collateral_debited() -> anyhow::Result<()> {
     let onchain = evm::cycle_id_hash(cycle_id);
 
     // alice never pays: at finality her collateral is seized, surfacing as a
-    // DebtorDefaulted event for her net debit of 9. bob and carol are then
-    // funded from the pool just like the voluntary path.
+    // DebtorDefaulted event. bob and carol are then funded from the pool just
+    // like the voluntary path.
     service
-        .process_defaulted_debtor(
-            onchain,
-            alice.clone(),
-            asset.to_string(),
-            U256::from(9u64),
-            event_meta("0xdefault-alice"),
-        )
+        .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xdefault-alice"))
         .await?;
     service
-        .process_credit_claim(
-            onchain,
-            bob.clone(),
-            asset.to_string(),
-            U256::from(6u64),
-            event_meta("0xclaim-bob"),
-        )
+        .process_credit_claim(onchain, bob.clone(), event_meta("0xclaim-bob"))
         .await?;
     service
-        .process_credit_claim(
-            onchain,
-            carol.clone(),
-            asset.to_string(),
-            U256::from(3u64),
-            event_meta("0xclaim-carol"),
-        )
+        .process_credit_claim(onchain, carol.clone(), event_meta("0xclaim-carol"))
         .await?;
 
     service.finalize_cycle(cycle_id).await?;
@@ -290,22 +251,12 @@ async fn defaulted_debtor_has_total_collateral_debited() -> anyhow::Result<()> {
         "net debtor should be marked Defaulted"
     );
 
-    // Every lock is released. The defaulted debtor's *total* shrinks by the
-    // seized net debit (10 - 9 = 1); the funded creditors grow by their net
-    // credit (bob 4 + 6, carol 1 + 3).
-    let expected_totals = [(alice, 10 - 9u64), (bob, 4 + 6), (carol, 1 + 3)];
+    // Every lock is released (total is reconciled from chain by the handler).
     for (who, _) in locks {
         assert_eq!(
             read_locked_collateral(ctx, who, asset).await?,
             U256::ZERO,
             "locked collateral not released for {who}"
-        );
-    }
-    for (who, expected) in expected_totals {
-        assert_eq!(
-            read_collateral(ctx, who, asset).await?,
-            U256::from(expected),
-            "unexpected total collateral for {who}"
         );
     }
     assert!(

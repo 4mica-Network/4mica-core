@@ -30,9 +30,6 @@ impl EthereumEventHandler for CoreService {
         info!("Deposit by {user:?} of {amount}, asset={asset}");
 
         let block_number = block_number_from_log(&log)?;
-        // Reconcile the off-chain total directly from chain: sync_balance_from_chain is authoritative
-        // and idempotent, and any separate credit would just be overwritten by it. Relying on it
-        // alone also makes the handler safe to re-run after a crash (4MCA-M05) with no transaction.
         self.sync_balance_from_chain(user, asset, block_number)
             .await?;
         Ok(())
@@ -142,19 +139,19 @@ impl EthereumEventHandler for CoreService {
             cycleId,
             creditor,
             asset,
-            amount,
+            ..
         } = *log.log_decode()?.data();
 
         let meta = self.event_meta_from_log(&log)?;
-        self.process_credit_claim(
-            cycleId,
-            creditor.to_string(),
-            asset.to_string(),
-            amount,
-            meta,
-        )
-        .await
-        .map_err(BlockchainListenerError::from)
+        let block_number = block_number_from_log(&log)?;
+        self.process_credit_claim(cycleId, creditor.to_string(), meta)
+            .await
+            .map_err(BlockchainListenerError::from)?;
+        // Reconcile the creditor's total from chain
+        // after the settlement transaction has released its locked collateral.
+        self.sync_balance_from_chain(creditor, asset, block_number)
+            .await?;
+        Ok(())
     }
 
     #[measure(record_event_handler_time, name = "debtor_defaulted")]
@@ -163,13 +160,19 @@ impl EthereumEventHandler for CoreService {
             cycleId,
             debtor,
             asset,
-            amount,
+            ..
         } = *log.log_decode()?.data();
 
         let meta = self.event_meta_from_log(&log)?;
-        self.process_defaulted_debtor(cycleId, debtor.to_string(), asset.to_string(), amount, meta)
+        let block_number = block_number_from_log(&log)?;
+        self.process_defaulted_debtor(cycleId, debtor.to_string(), meta)
             .await
-            .map_err(BlockchainListenerError::from)
+            .map_err(BlockchainListenerError::from)?;
+        // Reconcile the debtor's total from chain
+        // after the seizure has been mirrored and its locked collateral released.
+        self.sync_balance_from_chain(debtor, asset, block_number)
+            .await?;
+        Ok(())
     }
 
     #[measure(record_event_handler_time, name = "cycle_finalized")]
