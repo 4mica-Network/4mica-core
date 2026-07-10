@@ -142,24 +142,6 @@ pub async fn mark_blockchain_event_processed(
 }
 
 #[measure(record_db_time)]
-pub async fn delete_blockchain_event(
-    ctx: &PersistCtx,
-    chain_id: u64,
-    block_number: u64,
-    block_hash: &str,
-    log_index: u64,
-) -> Result<(), PersistDbError> {
-    blockchain_event::Entity::delete_many()
-        .filter(blockchain_event::Column::ChainId.eq(chain_id as i64))
-        .filter(blockchain_event::Column::BlockNumber.eq(block_number as i64))
-        .filter(blockchain_event::Column::BlockHash.eq(block_hash))
-        .filter(blockchain_event::Column::LogIndex.eq(log_index as i64))
-        .exec(ctx.db.as_ref())
-        .await?;
-    Ok(())
-}
-
-#[measure(record_db_time)]
 pub async fn get_blockchain_events_after(
     ctx: &PersistCtx,
     chain_id: u64,

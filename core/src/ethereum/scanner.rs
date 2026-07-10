@@ -487,20 +487,12 @@ impl EthereumEventScanner {
                         }
                         // Retryable but retries exhausted: a sustained infra outage (DB/RPC down),
                         // not a property of this event. Abort the batch and let the next scan retry
-                        // the whole range; delete the stored row so the handler runs again then (a
-                        // kept row would be skipped as already-stored).
+                        // the whole range. The row stays `Pending`, so the next scan re-runs its
+                        // handler (4MCA-M05) — no need to delete and re-store it.
                         HandlerFailureAction::Abort => {
                             error!(
                                 "Event handler exhausted {max_retries} retries; aborting scan: {e}"
                             );
-                            Self::delete_stored_event_best_effort(
-                                persist_ctx,
-                                chain_id,
-                                block_number,
-                                &block_hash_str,
-                                log_index,
-                            )
-                            .await;
                             return Err(e);
                         }
                         // Deterministic failure: dead-letter and skip so a single un-handleable
@@ -527,20 +519,13 @@ impl EthereumEventScanner {
                                     break;
                                 }
                                 Err(mark_err) => {
-                                    // Could not persist the dead-letter (DB issue). Delete the row
-                                    // so the event is reprocessed next scan rather than silently
-                                    // skipped-but-unrecorded, then abort.
+                                    // Could not persist the dead-letter (DB issue). Abort; the row
+                                    // stays `Pending`, so the next scan re-runs the handler and
+                                    // re-attempts the dead-letter (4MCA-M05) rather than silently
+                                    // skipping the event.
                                     error!(
                                         "Failed to record dead-letter for {signature}: {mark_err}"
                                     );
-                                    Self::delete_stored_event_best_effort(
-                                        persist_ctx,
-                                        chain_id,
-                                        block_number,
-                                        &block_hash_str,
-                                        log_index,
-                                    )
-                                    .await;
                                     return Err(e);
                                 }
                             }
@@ -551,26 +536,6 @@ impl EthereumEventScanner {
         }
 
         Ok(())
-    }
-
-    async fn delete_stored_event_best_effort(
-        persist_ctx: &PersistCtx,
-        chain_id: u64,
-        block_number: u64,
-        block_hash: &str,
-        log_index: u64,
-    ) {
-        if let Err(err) = repo::delete_blockchain_event(
-            persist_ctx,
-            chain_id,
-            block_number,
-            block_hash,
-            log_index,
-        )
-        .await
-        {
-            error!("Failed to delete blockchain event: {err}");
-        }
     }
 
     async fn block_hash_at(
