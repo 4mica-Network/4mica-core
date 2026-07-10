@@ -2,7 +2,6 @@ use alloy::eips::BlockId;
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
-use entities::sea_orm_active_enums::CollateralEventType;
 use log::{debug, error, info, warn};
 use metrics_4mica::measure;
 
@@ -30,17 +29,10 @@ impl EthereumEventHandler for CoreService {
         } = *log.log_decode()?.data();
         info!("Deposit by {user:?} of {amount}, asset={asset}");
 
-        let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
-        repo::credit_collateral_with_event_on(
-            self.inner.persist_ctx.db.as_ref(),
-            user.to_string(),
-            asset.to_string(),
-            amount,
-            CollateralEventType::Deposit,
-            Some(meta),
-        )
-        .await?;
+        // Reconcile the off-chain total directly from chain: sync_balance_from_chain is authoritative
+        // and idempotent, and any separate credit would just be overwritten by it. Relying on it
+        // alone also makes the handler safe to re-run after a crash (4MCA-M05) with no transaction.
         self.sync_balance_from_chain(user, asset, block_number)
             .await?;
         Ok(())
@@ -328,6 +320,10 @@ impl CoreService {
                 "failed to load on-chain collateral for user {user} asset {asset}: {err}"
             ))
         })?;
+
+        // A deposit may be a user's first interaction, so ensure the user row exists before writing
+        // its balance (sync is the sole balance writer on the deposit path now).
+        repo::ensure_user_exists_on(self.inner.persist_ctx.db.as_ref(), &user.to_string()).await?;
 
         repo::sync_user_asset_total(
             &self.inner.persist_ctx,

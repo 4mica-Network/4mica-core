@@ -44,6 +44,7 @@ pub async fn store_blockchain_event(
         signature: Set(signature.to_string()),
         address: Set(address.to_string()),
         data: Set(data.to_string()),
+        status: Set(Some(BlockchainEventStatus::Pending)),
         created_at: Set(now()),
         ..Default::default()
     };
@@ -101,14 +102,36 @@ pub async fn mark_blockchain_event_dead_lettered(
 }
 
 #[measure(record_db_time)]
-pub async fn delete_blockchain_event(
+pub async fn get_blockchain_event_status(
+    ctx: &PersistCtx,
+    chain_id: u64,
+    block_number: u64,
+    block_hash: &str,
+    log_index: u64,
+) -> Result<Option<Option<BlockchainEventStatus>>, PersistDbError> {
+    let row = blockchain_event::Entity::find()
+        .filter(blockchain_event::Column::ChainId.eq(chain_id as i64))
+        .filter(blockchain_event::Column::BlockNumber.eq(block_number as i64))
+        .filter(blockchain_event::Column::BlockHash.eq(block_hash))
+        .filter(blockchain_event::Column::LogIndex.eq(log_index as i64))
+        .one(ctx.db.as_ref())
+        .await?;
+    Ok(row.map(|r| r.status))
+}
+
+#[measure(record_db_time)]
+pub async fn mark_blockchain_event_processed(
     ctx: &PersistCtx,
     chain_id: u64,
     block_number: u64,
     block_hash: &str,
     log_index: u64,
 ) -> Result<(), PersistDbError> {
-    blockchain_event::Entity::delete_many()
+    blockchain_event::Entity::update_many()
+        .col_expr(
+            blockchain_event::Column::Status,
+            BlockchainEventStatus::Processed.as_enum(),
+        )
         .filter(blockchain_event::Column::ChainId.eq(chain_id as i64))
         .filter(blockchain_event::Column::BlockNumber.eq(block_number as i64))
         .filter(blockchain_event::Column::BlockHash.eq(block_hash))
