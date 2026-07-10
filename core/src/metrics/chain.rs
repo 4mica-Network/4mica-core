@@ -183,3 +183,17 @@ pub fn record_undercollateralized_sync(asset: &str) {
     };
     UndercollateralizedSyncTotalMetric::get(&labels).increment(1);
 }
+
+#[derive(Debug, Clone, MetricLabels)]
+pub struct WithdrawalExceedsFreeLabels {
+    pub asset: String,
+}
+#[derive(Clone, Metric)]
+#[counter(labels = WithdrawalExceedsFreeLabels, name = "withdrawal_exceeds_free_total")]
+pub struct WithdrawalExceedsFreeTotalMetric;
+pub fn record_withdrawal_exceeds_free(asset: &str) {
+    let labels = WithdrawalExceedsFreeLabels {
+        asset: asset.to_string(),
+    };
+    WithdrawalExceedsFreeTotalMetric::get(&labels).increment(1);
+}

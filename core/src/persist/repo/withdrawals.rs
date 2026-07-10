@@ -4,6 +4,7 @@ use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
 use entities::sea_orm_active_enums::WithdrawalStatus;
 use entities::withdrawal;
+use log::warn;
 use metrics_4mica::measure;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter,
@@ -48,11 +49,27 @@ pub async fn request_withdrawal_with_event(
             Box::pin(async move {
                 let asset_balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
 
-                let user_collateral = U256::from_str(&asset_balance.total)
+                let total = U256::from_str(&asset_balance.total)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                if amount > user_collateral {
-                    return Err(PersistDbError::InsufficientCollateral);
+                let locked = U256::from_str(&asset_balance.locked)
+                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+
+                let free = total.saturating_sub(locked);
+                if amount > free {
+                    warn!(
+                        "withdrawal request of {amount} for user {user_address} asset {asset_address} exceeds free collateral (total {total} - locked {locked}); recording anyway (already on-chain) — user is exiting guarantee-backing collateral"
+                    );
+                    crate::metrics::record_withdrawal_exceeds_free(&asset_address);
                 }
+                update_user_balance_and_version_on(
+                    txn,
+                    &user_address,
+                    &asset_address,
+                    asset_balance.version,
+                    total,
+                    locked,
+                )
+                .await?;
 
                 let now = Utc::now().naive_utc();
                 let ts = Utc
