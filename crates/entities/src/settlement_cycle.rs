@@ -17,6 +17,9 @@ pub struct Model {
     pub payment_submission_deadline: DateTime,
     pub payment_finality_deadline: DateTime,
     pub status: SettlementCycleStatus,
+    /// `false` while an optimistic chain-driven transition awaits its confirming
+    /// chain event; `true` for off-chain states and once the event is mirrored.
+    pub status_confirmed: bool,
     #[sea_orm(column_type = "Text")]
     pub gross_payable_amount: String,
     #[sea_orm(column_type = "Text")]

@@ -10,7 +10,10 @@ use entities::sea_orm_active_enums::{
 use entities::{clearing_batch, cycle_exposure_edge, cycle_participant_position, settlement_cycle};
 use metrics_4mica::measure;
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    Set,
+};
 
 pub struct CreateSettlementCycleInput {
     pub id: String,
@@ -121,6 +124,7 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
         payment_submission_deadline: Set(input.payment_submission_deadline),
         payment_finality_deadline: Set(input.payment_finality_deadline),
         status: Set(SettlementCycleStatus::Open),
+        status_confirmed: Set(true),
         gross_payable_amount: Set("0".to_string()),
         gross_receivable_amount: Set("0".to_string()),
         net_settlement_amount: Set("0".to_string()),
@@ -179,6 +183,72 @@ pub async fn list_netting_computed_cycles_commit_due_on<C: ConnectionTrait>(
     Ok(rows)
 }
 
+/// PaymentWindowOpen cycles whose `CycleCommitted` event never confirmed them within
+/// the retry window (`updated_at <= stale_before`) — candidates for a commit re-drive.
+/// Unconfirmed cycles in `status` whose confirming event never arrived within the retry window
+/// (`updated_at <= stale_before`) — candidates for the owning step to re-drive.
+#[measure(record_db_time)]
+async fn list_unconfirmed_retry_due_on<C: ConnectionTrait>(
+    conn: &C,
+    status: SettlementCycleStatus,
+    stale_before: NaiveDateTime,
+) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
+    let rows = settlement_cycle::Entity::find()
+        .filter(settlement_cycle::Column::Status.eq(status))
+        .filter(settlement_cycle::Column::StatusConfirmed.eq(false))
+        .filter(settlement_cycle::Column::UpdatedAt.lte(stale_before))
+        .order_by_asc(settlement_cycle::Column::UpdatedAt)
+        .all(conn)
+        .await?;
+    Ok(rows)
+}
+
+pub async fn list_commit_retry_due_on<C: ConnectionTrait>(
+    conn: &C,
+    stale_before: NaiveDateTime,
+) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
+    list_unconfirmed_retry_due_on(conn, SettlementCycleStatus::PaymentWindowOpen, stale_before)
+        .await
+}
+
+pub async fn list_settling_retry_due_on<C: ConnectionTrait>(
+    conn: &C,
+    stale_before: NaiveDateTime,
+) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
+    list_unconfirmed_retry_due_on(conn, SettlementCycleStatus::Settling, stale_before).await
+}
+
+pub async fn list_shortfall_retry_due_on<C: ConnectionTrait>(
+    conn: &C,
+    stale_before: NaiveDateTime,
+) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
+    list_unconfirmed_retry_due_on(conn, SettlementCycleStatus::Shortfall, stale_before).await
+}
+
+pub async fn list_finalize_retry_due_on<C: ConnectionTrait>(
+    conn: &C,
+    stale_before: NaiveDateTime,
+) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
+    list_unconfirmed_retry_due_on(conn, SettlementCycleStatus::Finalized, stale_before).await
+}
+
+/// Count unconfirmed cycles in `status` whose `anchor` deadline is at or before `before`.
+#[measure(record_db_time)]
+pub async fn count_unconfirmed_cycles_before_on<C: ConnectionTrait>(
+    conn: &C,
+    status: SettlementCycleStatus,
+    anchor: settlement_cycle::Column,
+    before: NaiveDateTime,
+) -> Result<u64, PersistDbError> {
+    let count = settlement_cycle::Entity::find()
+        .filter(settlement_cycle::Column::Status.eq(status))
+        .filter(settlement_cycle::Column::StatusConfirmed.eq(false))
+        .filter(anchor.lte(before))
+        .count(conn)
+        .await?;
+    Ok(count)
+}
+
 #[measure(record_db_time)]
 pub async fn list_payment_window_cycles_finality_due_on<C: ConnectionTrait>(
     conn: &C,
@@ -186,6 +256,7 @@ pub async fn list_payment_window_cycles_finality_due_on<C: ConnectionTrait>(
 ) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
     let rows = settlement_cycle::Entity::find()
         .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::PaymentWindowOpen))
+        .filter(settlement_cycle::Column::StatusConfirmed.eq(true))
         .filter(settlement_cycle::Column::PaymentFinalityDeadline.lte(now))
         .order_by_asc(settlement_cycle::Column::PaymentFinalityDeadline)
         .all(conn)
@@ -194,11 +265,12 @@ pub async fn list_payment_window_cycles_finality_due_on<C: ConnectionTrait>(
 }
 
 #[measure(record_db_time)]
-pub async fn list_settling_cycles_on<C: ConnectionTrait>(
+pub async fn list_confirmed_settling_cycles_on<C: ConnectionTrait>(
     conn: &C,
 ) -> Result<Vec<settlement_cycle::Model>, PersistDbError> {
     let rows = settlement_cycle::Entity::find()
         .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Settling))
+        .filter(settlement_cycle::Column::StatusConfirmed.eq(true))
         .order_by_asc(settlement_cycle::Column::PaymentFinalityDeadline)
         .all(conn)
         .await?;
@@ -270,6 +342,9 @@ pub async fn mark_cycle_netting_computed_on<C: ConnectionTrait>(
     Ok(result.rows_affected == 1)
 }
 
+/// Optimistically advance a committed cycle to `PaymentWindowOpen` (unconfirmed).
+/// Also matches an already-unconfirmed `PaymentWindowOpen` cycle so a reorg re-drive
+/// refreshes `updated_at`, resetting its retry window.
 #[measure(record_db_time)]
 pub async fn mark_cycle_payment_window_open_on<C: ConnectionTrait>(
     conn: &C,
@@ -281,9 +356,21 @@ pub async fn mark_cycle_payment_window_open_on<C: ConnectionTrait>(
 ) -> Result<bool, PersistDbError> {
     let result = settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
-        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::NettingComputed))
+        .filter(
+            Condition::any()
+                .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::NettingComputed))
+                .add(
+                    Condition::all()
+                        .add(
+                            settlement_cycle::Column::Status
+                                .eq(SettlementCycleStatus::PaymentWindowOpen),
+                        )
+                        .add(settlement_cycle::Column::StatusConfirmed.eq(false)),
+                ),
+        )
         .set(settlement_cycle::ActiveModel {
             status: Set(SettlementCycleStatus::PaymentWindowOpen),
+            status_confirmed: Set(false),
             commit_tx_hash: Set(commit_tx_hash),
             payment_submission_deadline: Set(payment_submission_deadline),
             payment_finality_deadline: Set(payment_finality_deadline),
@@ -295,8 +382,11 @@ pub async fn mark_cycle_payment_window_open_on<C: ConnectionTrait>(
     Ok(result.rows_affected == 1)
 }
 
+/// Confirm `PaymentWindowOpen` from the mirrored `CycleCommitted` event, also
+/// covering the case where the optimistic write never landed and the cycle is
+/// still `NettingComputed`.
 #[measure(record_db_time)]
-pub async fn mark_cycle_payment_window_open_by_id_on<C: ConnectionTrait>(
+pub async fn confirm_cycle_committed_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
     commit_tx_hash: Option<String>,
@@ -304,9 +394,21 @@ pub async fn mark_cycle_payment_window_open_by_id_on<C: ConnectionTrait>(
 ) -> Result<bool, PersistDbError> {
     let result = settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
-        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::NettingComputed))
+        .filter(
+            Condition::any()
+                .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::NettingComputed))
+                .add(
+                    Condition::all()
+                        .add(
+                            settlement_cycle::Column::Status
+                                .eq(SettlementCycleStatus::PaymentWindowOpen),
+                        )
+                        .add(settlement_cycle::Column::StatusConfirmed.eq(false)),
+                ),
+        )
         .set(settlement_cycle::ActiveModel {
             status: Set(SettlementCycleStatus::PaymentWindowOpen),
+            status_confirmed: Set(true),
             commit_tx_hash: Set(commit_tx_hash),
             updated_at: Set(now),
             ..Default::default()
@@ -316,6 +418,8 @@ pub async fn mark_cycle_payment_window_open_by_id_on<C: ConnectionTrait>(
     Ok(result.rows_affected == 1)
 }
 
+/// Advance into `Settling` (unconfirmed), also re-matching an unconfirmed `Settling` cycle
+/// so a retry refreshes `updated_at` and resets its retry window.
 #[measure(record_db_time)]
 pub async fn mark_cycle_settling_on<C: ConnectionTrait>(
     conn: &C,
@@ -324,9 +428,18 @@ pub async fn mark_cycle_settling_on<C: ConnectionTrait>(
 ) -> Result<bool, PersistDbError> {
     let result = settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
-        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::PaymentWindowOpen))
+        .filter(
+            Condition::any()
+                .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::PaymentWindowOpen))
+                .add(
+                    Condition::all()
+                        .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Settling))
+                        .add(settlement_cycle::Column::StatusConfirmed.eq(false)),
+                ),
+        )
         .set(settlement_cycle::ActiveModel {
             status: Set(SettlementCycleStatus::Settling),
+            status_confirmed: Set(false),
             updated_at: Set(now),
             ..Default::default()
         })
@@ -335,9 +448,33 @@ pub async fn mark_cycle_settling_on<C: ConnectionTrait>(
     Ok(result.rows_affected == 1)
 }
 
-/// Mark a settling cycle terminally closed in Shortfall because recovered collateral could not
-/// cover creditor claims. The cycle is closed, creditors having been (or being)
-/// paid a pro-rata share on-chain.
+/// Confirm a `Settling`/`Shortfall` cycle; callers call this only once the ledger is fully
+/// resolved (no unpaid debtors, no unclaimed creditors).
+#[measure(record_db_time)]
+pub async fn confirm_cycle_resolved_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = settlement_cycle::Entity::update_many()
+        .filter(settlement_cycle::Column::Id.eq(cycle_id))
+        .filter(settlement_cycle::Column::Status.is_in([
+            SettlementCycleStatus::Settling,
+            SettlementCycleStatus::Shortfall,
+        ]))
+        .filter(settlement_cycle::Column::StatusConfirmed.eq(false))
+        .set(settlement_cycle::ActiveModel {
+            status_confirmed: Set(true),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Advance a `Settling` cycle into `Shortfall` (unconfirmed), also re-matching an unconfirmed
+/// `Shortfall` cycle so a retry refreshes `updated_at`. Confirmed only once fully resolved.
 #[measure(record_db_time)]
 pub async fn mark_cycle_shortfall_on<C: ConnectionTrait>(
     conn: &C,
@@ -346,12 +483,41 @@ pub async fn mark_cycle_shortfall_on<C: ConnectionTrait>(
 ) -> Result<bool, PersistDbError> {
     let result = settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
-        .filter(settlement_cycle::Column::Status.is_in([
-            SettlementCycleStatus::PaymentWindowOpen,
-            SettlementCycleStatus::Settling,
-        ]))
+        .filter(
+            Condition::any()
+                .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Settling))
+                .add(
+                    Condition::all()
+                        .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Shortfall))
+                        .add(settlement_cycle::Column::StatusConfirmed.eq(false)),
+                ),
+        )
         .set(settlement_cycle::ActiveModel {
             status: Set(SettlementCycleStatus::Shortfall),
+            status_confirmed: Set(false),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Mirror the on-chain `CycleShortfall` event by advancing a `Settling` cycle into `Shortfall`
+/// if Core's own optimistic mark never landed. Leaves it unconfirmed — full resolution
+/// (via [`confirm_cycle_resolved_on`]) is the confirmation source, not this event.
+#[measure(record_db_time)]
+pub async fn ensure_cycle_shortfall_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = settlement_cycle::Entity::update_many()
+        .filter(settlement_cycle::Column::Id.eq(cycle_id))
+        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Settling))
+        .set(settlement_cycle::ActiveModel {
+            status: Set(SettlementCycleStatus::Shortfall),
+            status_confirmed: Set(false),
             updated_at: Set(now),
             ..Default::default()
         })
@@ -371,6 +537,7 @@ pub async fn short_circuit_frozen_cycle_on<C: ConnectionTrait>(
         .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Frozen))
         .set(settlement_cycle::ActiveModel {
             status: Set(SettlementCycleStatus::Finalized),
+            status_confirmed: Set(true),
             updated_at: Set(now),
             ..Default::default()
         })
@@ -379,20 +546,72 @@ pub async fn short_circuit_frozen_cycle_on<C: ConnectionTrait>(
     Ok(result.rows_affected == 1)
 }
 
+/// Optimistically advance a confirmed `Settling` cycle to `Finalized` (unconfirmed) right after
+/// submitting `finalizeCycle`. Confirmation waits for the `CycleFinalized` event.
 #[measure(record_db_time)]
-pub async fn mark_cycle_finalized_on<C: ConnectionTrait>(
+pub async fn mark_cycle_finalized_optimistic_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
     now: NaiveDateTime,
 ) -> Result<bool, PersistDbError> {
     let result = settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
-        .filter(settlement_cycle::Column::Status.is_in([
-            SettlementCycleStatus::PaymentWindowOpen,
-            SettlementCycleStatus::Settling,
-        ]))
+        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Settling))
+        .filter(settlement_cycle::Column::StatusConfirmed.eq(true))
         .set(settlement_cycle::ActiveModel {
             status: Set(SettlementCycleStatus::Finalized),
+            status_confirmed: Set(false),
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Reset the retry window of an unconfirmed `Finalized` cycle after a re-submit of `finalizeCycle`,
+/// so it isn't re-driven every tick while waiting for the `CycleFinalized` event.
+#[measure(record_db_time)]
+pub async fn touch_cycle_finalize_retry_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = settlement_cycle::Entity::update_many()
+        .filter(settlement_cycle::Column::Id.eq(cycle_id))
+        .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Finalized))
+        .filter(settlement_cycle::Column::StatusConfirmed.eq(false))
+        .set(settlement_cycle::ActiveModel {
+            updated_at: Set(now),
+            ..Default::default()
+        })
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Confirm `Finalized` from the mirrored `CycleFinalized` event, also covering the case where
+/// the optimistic write never landed and the cycle is still `Settling`.
+#[measure(record_db_time)]
+pub async fn confirm_cycle_finalized_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+    now: NaiveDateTime,
+) -> Result<bool, PersistDbError> {
+    let result = settlement_cycle::Entity::update_many()
+        .filter(settlement_cycle::Column::Id.eq(cycle_id))
+        .filter(
+            Condition::any()
+                .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Settling))
+                .add(
+                    Condition::all()
+                        .add(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Finalized))
+                        .add(settlement_cycle::Column::StatusConfirmed.eq(false)),
+                ),
+        )
+        .set(settlement_cycle::ActiveModel {
+            status: Set(SettlementCycleStatus::Finalized),
+            status_confirmed: Set(true),
             updated_at: Set(now),
             ..Default::default()
         })
@@ -633,6 +852,24 @@ pub async fn list_unpaid_debtors_for_cycle_on<C: ConnectionTrait>(
         .all(conn)
         .await?;
     Ok(rows)
+}
+
+/// Whether the cycle's ledger is fully resolved: no participant still `Unpaid` (debtor) or
+/// `Claimable` (creditor). This is the confirmation condition for `Settling`/`Shortfall`.
+#[measure(record_db_time)]
+pub async fn is_cycle_ledger_resolved_on<C: ConnectionTrait>(
+    conn: &C,
+    cycle_id: &str,
+) -> Result<bool, PersistDbError> {
+    let outstanding = cycle_participant_position::Entity::find()
+        .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
+        .filter(cycle_participant_position::Column::Status.is_in([
+            ParticipantCycleStatus::Unpaid,
+            ParticipantCycleStatus::Claimable,
+        ]))
+        .count(conn)
+        .await?;
+    Ok(outstanding == 0)
 }
 
 #[measure(record_db_time)]

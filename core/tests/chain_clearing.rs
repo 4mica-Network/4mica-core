@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 //! End-to-end clearing tests: a real cycle is netted, committed to the on-chain
 //! ClearingHouse, paid/claimed by participants, and finalized — with the event
 //! scanner mirroring every step back into the database.

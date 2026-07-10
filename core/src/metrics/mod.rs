@@ -11,8 +11,8 @@ pub mod misc;
 
 pub use chain::{
     ContractErrorKind, EventTxStatus, PaymentTxStatus, record_blockchain_safe_head,
-    record_contract_call_error, record_processed_event_tx, record_processed_payment_tx,
-    record_scanned_event_tx_block, record_scanned_payment_tx_block,
+    record_contract_call_error, record_hanging_unconfirmed_cycles, record_processed_event_tx,
+    record_processed_payment_tx, record_scanned_event_tx_block, record_scanned_payment_tx_block,
 };
 pub use health::HealthCheckTask;
 pub use misc::record_active_tab_refetch;

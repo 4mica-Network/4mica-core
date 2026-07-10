@@ -79,6 +79,15 @@ pub struct ScannedEventTxBlockMetric;
 #[gauge(labels = (), name = "blockchain_safe_head")]
 pub struct BlockchainSafeHeadMetric;
 
+#[derive(Debug, Clone, MetricLabels)]
+pub struct HangingCycleLabels {
+    pub status: String,
+}
+
+#[derive(Clone, Metric)]
+#[gauge(labels = HangingCycleLabels, name = "hanging_unconfirmed_settlement_cycles")]
+pub struct HangingUnconfirmedCyclesMetric;
+
 /// Whether a failed contract call reverted on-chain (with decodable revert data)
 /// or failed for a transport/RPC reason.
 #[derive(Debug, Clone)]
@@ -147,4 +156,11 @@ pub fn record_scanned_payment_tx_block(block_number: u64) {
 
 pub fn record_scanned_event_tx_block(block_number: u64) {
     ScannedEventTxBlockMetric::get(&()).set(block_number as f64);
+}
+
+pub fn record_hanging_unconfirmed_cycles(status: &str, count: u64) {
+    let labels = HangingCycleLabels {
+        status: status.to_string(),
+    };
+    HangingUnconfirmedCyclesMetric::get(&labels).set(count as f64);
 }

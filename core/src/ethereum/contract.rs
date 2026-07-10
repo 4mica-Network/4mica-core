@@ -84,19 +84,23 @@ pub mod abi {
 
         #[derive(Debug)]
         event SettlementSkipped(bytes32 indexed cycleId, address indexed participant, string reason);
+
+        #[derive(Debug)]
+        event CycleShortfall(bytes32 indexed cycleId, uint256 funded, uint256 totalNetCredit);
     }
 }
 
 // Re-export events at the file root for convenient `use crate::ethereum::contract::*;`
 pub use abi::{
     AaveConfigured, CollateralDeposited, CollateralWithdrawn, CreditorClaimed, CycleCommitted,
-    CycleFinalized, DebtorDefaulted, DebtorPaid, GuaranteeVersionUpdated, ProtocolYieldClaimed,
-    SettlementSkipped, StablecoinAssetUpdated, SurplusATokensClaimed, VerificationKeyUpdated,
-    WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested, YieldFeeBpsUpdated,
+    CycleFinalized, CycleShortfall, DebtorDefaulted, DebtorPaid, GuaranteeVersionUpdated,
+    ProtocolYieldClaimed, SettlementSkipped, StablecoinAssetUpdated, SurplusATokensClaimed,
+    VerificationKeyUpdated, WithdrawalCanceled, WithdrawalGracePeriodUpdated, WithdrawalRequested,
+    YieldFeeBpsUpdated,
 };
 
 /// Human-readable ABI signatures for all contract events.
-pub const EVENT_SIGNATURES: [&str; 18] = [
+pub const EVENT_SIGNATURES: [&str; 19] = [
     CollateralDeposited::SIGNATURE,
     CollateralWithdrawn::SIGNATURE,
     WithdrawalRequested::SIGNATURE,
@@ -115,10 +119,11 @@ pub const EVENT_SIGNATURES: [&str; 18] = [
     DebtorDefaulted::SIGNATURE,
     CycleFinalized::SIGNATURE,
     SettlementSkipped::SIGNATURE,
+    CycleShortfall::SIGNATURE,
 ];
 
 /// Keccak256 topic0 hashes for the above events (as `B256`).
-pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
+pub const EVENT_SIGNATURE_HASHES: [B256; 19] = [
     CollateralDeposited::SIGNATURE_HASH,
     CollateralWithdrawn::SIGNATURE_HASH,
     WithdrawalRequested::SIGNATURE_HASH,
@@ -137,6 +142,7 @@ pub const EVENT_SIGNATURE_HASHES: [B256; 18] = [
     DebtorDefaulted::SIGNATURE_HASH,
     CycleFinalized::SIGNATURE_HASH,
     SettlementSkipped::SIGNATURE_HASH,
+    CycleShortfall::SIGNATURE_HASH,
 ];
 
 /// Convenience: return all event names as a Vec.
@@ -331,7 +337,7 @@ pub mod contract_abi {
 mod tests {
     use super::*;
 
-    const EXPECTED_EVENT_SIGNATURES: [&str; 18] = [
+    const EXPECTED_EVENT_SIGNATURES: [&str; 19] = [
         "CollateralDeposited(address,address,uint256)",
         "CollateralWithdrawn(address,address,uint256)",
         "WithdrawalRequested(address,address,uint256,uint256)",
@@ -350,6 +356,7 @@ mod tests {
         "DebtorDefaulted(bytes32,address,address,uint256)",
         "CycleFinalized(bytes32)",
         "SettlementSkipped(bytes32,address,string)",
+        "CycleShortfall(bytes32,uint256,uint256)",
     ];
 
     #[test]
