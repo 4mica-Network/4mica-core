@@ -22,7 +22,10 @@ mod common;
 
 use common::cycle_fixtures::{create_frozen_cycle, setup_cycle_service};
 use common::db::{clear_all_tables, setup_db_test_env};
-use common::fixtures::{ensure_user, ensure_user_with_collateral, random_address, read_collateral};
+use common::fixtures::{
+    ensure_user, ensure_user_with_collateral, random_address, read_collateral,
+    set_locked_collateral,
+};
 use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_PAYMENT_READ};
 
 const ADMIN_WALLET_ROLE: &str = "admin";
@@ -124,26 +127,71 @@ async fn weird_identifiers_do_not_crash() -> anyhow::Result<()> {
 // ════════════════════════ withdrawals (repo state machine) ════════════════════════
 #[test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn withdrawal_more_than_collateral_fails() -> anyhow::Result<()> {
+async fn withdrawal_exceeding_free_is_recorded_not_rejected() -> anyhow::Result<()> {
     let (_cfg, ctx) = setup_db_test_env().await?;
     let user_addr = random_address();
 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
-    let res = repo::request_withdrawal(
+    repo::request_withdrawal(
         &ctx,
         user_addr.clone(),
         DEFAULT_ASSET_ADDRESS.to_string(),
         1,
         U256::from(10u64),
     )
-    .await;
+    .await?;
 
-    assert!(res.is_err());
+    // The over-free request is still recorded as a pending withdrawal...
+    let pending = withdrawal::Entity::find()
+        .filter(withdrawal::Column::UserAddress.eq(user_addr.clone()))
+        .filter(withdrawal::Column::AssetAddress.eq(DEFAULT_ASSET_ADDRESS))
+        .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("over-free withdrawal request should still be recorded");
+    assert_eq!(pending.requested_amount, U256::from(10u64).to_string());
 
+    // ...and it does not move `total` (a request only records a pending withdrawal).
     assert_eq!(
         read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
         U256::from(5u64)
     );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+#[serial_test::file_serial(db)]
+async fn withdrawal_request_bumps_balance_version_to_serialise_with_locks() -> anyhow::Result<()> {
+    let (_cfg, ctx) = setup_db_test_env().await?;
+    let user_addr = random_address();
+    ensure_user_with_collateral(&ctx, &user_addr, U256::from(100u64)).await?;
+    set_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS, U256::from(30u64)).await?;
+
+    let before = repo::get_user_asset_balance(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS)
+        .await?
+        .expect("balance exists");
+
+    // free = 100 - 30 = 70; a 50 request is within free.
+    repo::request_withdrawal(
+        &ctx,
+        user_addr.clone(),
+        DEFAULT_ASSET_ADDRESS.to_string(),
+        1,
+        U256::from(50u64),
+    )
+    .await?;
+
+    let after = repo::get_user_asset_balance(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS)
+        .await?
+        .expect("balance exists");
+
+    assert!(
+        after.version > before.version,
+        "withdrawal request must bump the balance version to serialise with concurrent locks"
+    );
+    assert_eq!(after.total, U256::from(100u64).to_string());
+    assert_eq!(after.locked, U256::from(30u64).to_string());
 
     Ok(())
 }
