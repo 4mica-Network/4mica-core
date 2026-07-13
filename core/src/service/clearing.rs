@@ -587,10 +587,8 @@ impl CoreService {
     }
 
     /// Socialize a genuinely under-collateralised cycle: mark it `Shortfall` on-chain and fund
-    /// creditors their pro-rata share. Callers gate on the grace window. `markCycleShortfall` is
-    /// tolerant — it reverts harmlessly if the cycle is already in Shortfall (a retry, or a mark
-    /// that already landed), in which case the funding below still applies. Marks the cycle
-    /// `Shortfall` (unconfirmed) in the DB; full resolution confirms it later.
+    /// creditors their pro-rata share. Also marks the cycle `Shortfall` (unconfirmed)
+    /// in the DB; full resolution confirms it later.
     async fn drive_cycle_shortfall(
         &self,
         cycle_id: &str,
@@ -991,8 +989,21 @@ async fn maybe_confirm_resolved_cycle<C: sea_orm::ConnectionTrait>(
     cycle_id: &str,
     now: NaiveDateTime,
 ) -> ServiceResult<()> {
-    if repo::is_cycle_ledger_resolved_on(conn, cycle_id).await? {
-        repo::confirm_cycle_resolved_on(conn, cycle_id, now).await?;
+    if !repo::is_cycle_ledger_resolved_on(conn, cycle_id).await? {
+        return Ok(());
+    }
+    if !repo::confirm_cycle_resolved_on(conn, cycle_id, now).await? {
+        return Ok(());
+    }
+
+    // Shortfall is terminal and never reaches finalize, so sweep any residual Netted guarantees
+    // (e.g. flat participants that emit no role event) here to release their locked collateral.
+    // Settling cycles get this sweep when they finalize instead.
+    let is_shortfall = repo::get_cycle_by_id_on(conn, cycle_id)
+        .await?
+        .is_some_and(|cycle| cycle.status == SettlementCycleStatus::Shortfall);
+    if is_shortfall {
+        settle_remaining_netted_guarantees_for_cycle(conn, cycle_id, now).await?;
     }
     Ok(())
 }

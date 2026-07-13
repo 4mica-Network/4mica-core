@@ -183,8 +183,6 @@ pub async fn list_netting_computed_cycles_commit_due_on<C: ConnectionTrait>(
     Ok(rows)
 }
 
-/// PaymentWindowOpen cycles whose `CycleCommitted` event never confirmed them within
-/// the retry window (`updated_at <= stale_before`) — candidates for a commit re-drive.
 /// Unconfirmed cycles in `status` whose confirming event never arrived within the retry window
 /// (`updated_at <= stale_before`) — candidates for the owning step to re-drive.
 #[measure(record_db_time)]
