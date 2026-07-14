@@ -19,7 +19,7 @@
 //! ```
 
 use alloy_primitives::{Address, B256, U256, hex};
-use crypto::bls::KeyMaterial;
+use crypto::bls::{KeyMaterial, Zeroizing};
 use rpc::codec::encode_guarantee_claims;
 use rpc::{
     GUARANTEE_CLAIMS_VERSION, GUARANTEE_CLAIMS_VERSION_V2, PaymentGuaranteeClaims,
@@ -57,7 +57,7 @@ fn words_to_json(words: &[[u8; 32]]) -> Value {
 }
 
 fn build_v1_vector() -> Value {
-    let key = KeyMaterial::from_bytes(&TEST_SK).expect("valid secret key");
+    let key = KeyMaterial::from_bytes(Zeroizing::new(TEST_SK.to_vec())).expect("valid secret key");
     let verification_key = key.public_key().to_solidity_words().expect("g1 words");
 
     let domain = [0x11u8; 32];
@@ -97,7 +97,7 @@ fn build_v1_vector() -> Value {
 }
 
 fn build_v2_vector() -> Value {
-    let key = KeyMaterial::from_bytes(&TEST_SK).expect("valid secret key");
+    let key = KeyMaterial::from_bytes(Zeroizing::new(TEST_SK.to_vec())).expect("valid secret key");
     let verification_key = key.public_key().to_solidity_words().expect("g1 words");
 
     let domain = [0x22u8; 32];
@@ -177,7 +177,7 @@ fn fixture_path() -> std::path::PathBuf {
 
 #[test]
 fn guarantee_golden_vectors_match_fixture() {
-    let key = KeyMaterial::from_bytes(&TEST_SK).expect("valid secret key");
+    let key = KeyMaterial::from_bytes(Zeroizing::new(TEST_SK.to_vec())).expect("valid secret key");
 
     // Sanity: the Rust side must accept its own signatures before we ever ask Solidity to.
     let v1 = build_v1_vector();

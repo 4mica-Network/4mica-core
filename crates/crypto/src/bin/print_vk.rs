@@ -7,7 +7,6 @@
 //! flows) will reject valid certificates.
 //!
 //! Usage:
-//!   print-vk <bls_private_key_hex>
 //!   BLS_PRIVATE_KEY=0x.. print-vk
 //!
 //! By default it prints shell `export` lines so callers can `eval` the output:
@@ -15,18 +14,13 @@
 
 use std::str::FromStr;
 
-use crypto::bls::KeyMaterial;
+use crypto::bls::{KeyMaterial, Zeroizing};
 
 fn main() {
-    let key_hex = std::env::args()
-        .nth(1)
-        .or_else(|| std::env::var("BLS_PRIVATE_KEY").ok())
-        .unwrap_or_else(|| {
-            eprintln!(
-                "error: provide the BLS secret key as an argument or via BLS_PRIVATE_KEY env var"
-            );
-            std::process::exit(1);
-        });
+    let key_hex = Zeroizing::new(std::env::var("BLS_PRIVATE_KEY").unwrap_or_else(|_| {
+        eprintln!("error: provide the BLS secret key via the BLS_PRIVATE_KEY env var");
+        std::process::exit(1);
+    }));
 
     let key = KeyMaterial::from_str(key_hex.trim()).unwrap_or_else(|err| {
         eprintln!("error: invalid BLS secret key: {err}");

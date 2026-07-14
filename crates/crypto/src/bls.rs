@@ -10,7 +10,7 @@ use blst::{
     self, blst_p1_affine, blst_p2_affine,
     min_pk::{PublicKey as BlstPublicKey, SecretKey, Signature as BlstSignature},
 };
-use secrecy::zeroize::Zeroizing;
+pub use secrecy::zeroize::Zeroizing;
 use secrecy::{ExposeSecret, SecretBox};
 use thiserror::Error;
 
@@ -319,8 +319,8 @@ pub struct KeyMaterial(SecretBox<SecretKey>);
 
 impl KeyMaterial {
     /// Parse and validate a secret key from raw bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, BlsError> {
-        let sk = SecretKey::from_bytes(bytes).map_err(BlsError::InvalidSecretKey)?;
+    pub fn from_bytes(bytes: Zeroizing<Vec<u8>>) -> Result<Self, BlsError> {
+        let sk = SecretKey::from_bytes(&bytes).map_err(BlsError::InvalidSecretKey)?;
         Ok(Self(SecretBox::new(Box::new(sk))))
     }
 
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn bls_cert_serialization_is_stable() {
         let sk_bytes = [1u8; 32];
-        let key = KeyMaterial::from_bytes(&sk_bytes).expect("valid key");
+        let key = KeyMaterial::from_bytes(Zeroizing::new(sk_bytes.to_vec())).expect("valid key");
         let claims = BlsClaims::from_bytes(b"hello".to_vec());
         let cert = BLSCert::sign(&key, claims.clone()).expect("sign cert");
 
@@ -392,14 +392,15 @@ mod tests {
     #[test]
     fn verify_succeeds_and_fails() {
         let sk_bytes = [2u8; 32];
-        let key = KeyMaterial::from_bytes(&sk_bytes).expect("valid key");
+        let key = KeyMaterial::from_bytes(Zeroizing::new(sk_bytes.to_vec())).expect("valid key");
         let claims = BlsClaims::from_bytes(b"payload".to_vec());
         let cert = BLSCert::sign(&key, claims).expect("sign cert");
         let pk = key.public_key();
 
         assert!(cert.verify(&pk).is_ok());
 
-        let other_key = KeyMaterial::from_bytes(&[3u8; 32]).expect("valid key");
+        let other_key =
+            KeyMaterial::from_bytes(Zeroizing::new([3u8; 32].to_vec())).expect("valid key");
         let other_pk = other_key.public_key();
         let err = cert.verify(&other_pk).expect_err("mismatch should fail");
         assert!(matches!(err, BlsError::VerificationFailed));
