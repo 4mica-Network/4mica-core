@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "blockchain-4mica"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "alloy",
  "anyhow",
@@ -2044,7 +2044,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-4mica"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "alloy",
  "anyhow",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "derive-4mica"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "entities"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "alloy-primitives",
  "async-std",
@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "metrics-4mica"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "migration"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "async-std",
  "dotenv",
@@ -5181,7 +5181,7 @@ dependencies = [
 
 [[package]]
 name = "rpc-4mica"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -5512,7 +5512,7 @@ checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "sdk-4mica"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -6568,7 +6568,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "telemetry-exporter"
-version = "1.2.0"
+version = "2.0.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",
