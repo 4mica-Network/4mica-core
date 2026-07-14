@@ -277,15 +277,6 @@ impl CoreService {
         let now = Utc::now().timestamp().max(0) as u64;
         self.inner.last_scan_unix.store(now, Ordering::Relaxed);
     }
-
-    /// Re-evaluate the settlement-cycle solvency invariant against the currently known on-chain
-    /// `withdrawalGracePeriod`.
-    ///
-    /// Also guards the *freshness* of that cached value: the grace period is event-sourced from
-    /// `WithdrawalGracePeriodUpdated`, so if the scanner is wedged or lagging (4MCA-M02), an
-    /// on-chain grace *reduction* may be unprocessed and the cached value stale-high. Trusting it
-    /// would let issuance keep minting against a window that no longer holds, so a stale scanner is
-    /// itself a hard stop (4MCA-H02).
     pub(crate) fn check_settlement_timing_invariant(&self) -> anyhow::Result<()> {
         let now = Utc::now().timestamp().max(0) as u64;
         let last_scan = self.inner.last_scan_unix.load(Ordering::Relaxed);

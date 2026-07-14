@@ -164,3 +164,52 @@ pub fn record_hanging_unconfirmed_cycles(status: &str, count: u64) {
     };
     HangingUnconfirmedCyclesMetric::get(&labels).set(count as f64);
 }
+
+#[derive(Debug, Clone, MetricLabels)]
+pub struct DeadLetteredEventLabels {
+    pub signature: String,
+}
+
+#[derive(Clone, Metric)]
+#[counter(labels = DeadLetteredEventLabels, name = "dead_lettered_event_total")]
+pub struct DeadLetteredEventTotalMetric;
+pub fn record_dead_lettered_event(signature: &str) {
+    let labels = DeadLetteredEventLabels {
+        signature: signature.to_string(),
+    };
+    DeadLetteredEventTotalMetric::get(&labels).increment(1);
+}
+
+#[derive(Debug, Clone, MetricLabels)]
+pub struct UndercollateralizedSyncLabels {
+    pub asset: String,
+}
+
+/// A chain reconciliation found on-chain backing below already-locked collateral (INV-3 would be
+/// violated) and pinned `total` to `locked` instead. This should be unreachable under a correct
+/// deployment (a sufficient withdrawal grace period keeps collateral seizable before it can exit);
+/// a non-zero count signals a broken solvency invariant (e.g. grace period too short, M02/M07) and
+/// warrants investigation.
+#[derive(Clone, Metric)]
+#[counter(labels = UndercollateralizedSyncLabels, name = "undercollateralized_sync_total")]
+pub struct UndercollateralizedSyncTotalMetric;
+pub fn record_undercollateralized_sync(asset: &str) {
+    let labels = UndercollateralizedSyncLabels {
+        asset: asset.to_string(),
+    };
+    UndercollateralizedSyncTotalMetric::get(&labels).increment(1);
+}
+
+#[derive(Debug, Clone, MetricLabels)]
+pub struct WithdrawalExceedsFreeLabels {
+    pub asset: String,
+}
+#[derive(Clone, Metric)]
+#[counter(labels = WithdrawalExceedsFreeLabels, name = "withdrawal_exceeds_free_total")]
+pub struct WithdrawalExceedsFreeTotalMetric;
+pub fn record_withdrawal_exceeds_free(asset: &str) {
+    let labels = WithdrawalExceedsFreeLabels {
+        asset: asset.to_string(),
+    };
+    WithdrawalExceedsFreeTotalMetric::get(&labels).increment(1);
+}

@@ -5,8 +5,11 @@
 use alloy::primitives::U256;
 use alloy::providers::Provider;
 use alloy::providers::ext::AnvilApi;
+use alloy::rpc::types::Filter;
+use alloy::sol_types::SolEvent;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::ethereum::EthereumEventScanner;
+use core_service::ethereum::contract::CollateralDeposited;
 use core_service::ethereum::event_data::EventMeta;
 use core_service::persist::{PersistCtx, repo};
 use core_service::scheduler::Task;
@@ -85,12 +88,6 @@ async fn user_deposit_event_creates_user() -> anyhow::Result<()> {
 
     Ok(())
 }
-
-/// A reorg that re-mines a `CollateralDeposited` into a new block bypasses the
-/// block-hash-keyed dedup and double-credits the off-chain ETH total (4MCA-H04).
-/// ETH balances now self-heal: the next deposit event re-syncs the total from
-/// the authoritative on-chain balance, so an inflated total cannot persist and
-/// back unbacked guarantees.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
 async fn eth_balance_self_heals_from_reorg_double_credit() -> anyhow::Result<()> {
@@ -149,6 +146,87 @@ async fn eth_balance_self_heals_from_reorg_double_credit() -> anyhow::Result<()>
     await_collateral(persist_ctx, &user_addr, first + second).await?;
 
     Ok(())
+}
+
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn stored_but_unhandled_event_is_reprocessed_not_skipped() -> anyhow::Result<()> {
+    let env = setup_e2e_environment().await?;
+    let provider = env.provider.clone();
+    let contract = env.contract.clone();
+    let persist_ctx = env.core_service.persist_ctx();
+    let chain_id = env.cfg.ethereum_config.chain_id;
+    let user_addr = format!("{:#x}", env.signer_addr);
+    ensure_user(persist_ctx, &user_addr).await?;
+
+    let deposit_amount = U256::from(3_000_000_000_000_000_000u128);
+    let receipt = contract
+        .deposit()
+        .value(deposit_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let deposit_block = receipt
+        .block_number
+        .ok_or_else(|| anyhow::anyhow!("deposit receipt missing block number"))?;
+    let filter = Filter::new()
+        .address(*contract.address())
+        .event_signature(CollateralDeposited::SIGNATURE_HASH)
+        .from_block(deposit_block)
+        .to_block(deposit_block);
+    let logs = provider.get_logs(&filter).await?;
+    let log = logs
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no CollateralDeposited log in deposit block"))?;
+    let block_hash = log
+        .block_hash
+        .ok_or_else(|| anyhow::anyhow!("log missing block hash"))?;
+    let log_index = log
+        .log_index
+        .ok_or_else(|| anyhow::anyhow!("log missing log index"))?;
+    let tx_hash = log
+        .transaction_hash
+        .ok_or_else(|| anyhow::anyhow!("log missing tx hash"))?;
+
+    let inserted = repo::store_blockchain_event(
+        persist_ctx,
+        chain_id,
+        &format!("{:x}", CollateralDeposited::SIGNATURE_HASH),
+        deposit_block,
+        &format!("{:#x}", block_hash),
+        &format!("{:#x}", tx_hash),
+        log_index,
+        &format!("{:#x}", log.address()),
+        "{}",
+    )
+    .await?;
+    assert!(
+        inserted,
+        "pre-insert should create a fresh blockchain_event row for the deposit"
+    );
+    assert_eq!(
+        read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO,
+        "collateral must be zero before the handler runs"
+    );
+
+    // Confirm the block. The scanner now reaches it, finds the row already stored,
+    // and must still apply the deposit rather than skipping it.
+    mine_confirmations(&provider, 1).await?;
+
+    const TRIES: usize = 30;
+    for _ in 0..TRIES {
+        if read_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await? == deposit_amount
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!(
+        "deposit was never credited: a stored-but-unhandled event was skipped instead of \
+         reprocessed (4MCA-M05)"
+    );
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]

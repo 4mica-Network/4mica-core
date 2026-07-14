@@ -33,6 +33,7 @@ mod m20260612_000012_settlement_cycle_onchain_hash;
 mod m20260616_000013_rename_cycle_defaulted_to_settling;
 mod m20260618_000014_collateral_event_credit_default;
 mod m20260629_000015_settlement_cycle_status_shortfall;
+mod m20260707_000016_blockchain_event_dead_letter;
 mod m20260707_000016_settlement_cycle_status_confirmed;
 
 pub struct Migrator;
@@ -74,6 +75,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260616_000013_rename_cycle_defaulted_to_settling::Migration),
             Box::new(m20260618_000014_collateral_event_credit_default::Migration),
             Box::new(m20260629_000015_settlement_cycle_status_shortfall::Migration),
+            Box::new(m20260707_000016_blockchain_event_dead_letter::Migration),
             Box::new(m20260707_000016_settlement_cycle_status_confirmed::Migration),
         ]
     }

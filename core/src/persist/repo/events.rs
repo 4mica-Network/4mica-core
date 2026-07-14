@@ -1,10 +1,11 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use entities::sea_orm_active_enums::BlockchainEventStatus;
 use entities::{blockchain_block, blockchain_event, blockchain_event_cursor};
 use metrics_4mica::measure;
 use sea_orm::ColumnTrait;
-use sea_orm::sea_query::OnConflict;
-use sea_orm::{EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{ActiveEnum, EntityTrait, QueryFilter, QueryOrder, Set};
 
 use super::common::now;
 use crate::metrics::misc::record_db_time;
@@ -43,7 +44,9 @@ pub async fn store_blockchain_event(
         signature: Set(signature.to_string()),
         address: Set(address.to_string()),
         data: Set(data.to_string()),
+        status: Set(Some(BlockchainEventStatus::Pending)),
         created_at: Set(now()),
+        ..Default::default()
     };
 
     let affected = blockchain_event::Entity::insert(event)
@@ -62,15 +65,73 @@ pub async fn store_blockchain_event(
     Ok(affected == 1)
 }
 
+/// Mark a stored event as dead-lettered: its handler failed deterministically, so record
+/// the diagnostics and leave the row in place. The row's presence keeps `store_blockchain_event`
+/// idempotent (the next scan sees it already stored and skips the handler), so the poison event is
+/// permanently skipped rather than re-run — while `status`/`last_error` preserve it for operator
+/// follow-up. Callers must only invoke this for non-retryable failures.
+#[allow(clippy::too_many_arguments)]
 #[measure(record_db_time)]
-pub async fn delete_blockchain_event(
+pub async fn mark_blockchain_event_dead_lettered(
+    ctx: &PersistCtx,
+    chain_id: u64,
+    block_number: u64,
+    block_hash: &str,
+    log_index: u64,
+    attempts: i32,
+    last_error: &str,
+) -> Result<(), PersistDbError> {
+    blockchain_event::Entity::update_many()
+        .col_expr(
+            blockchain_event::Column::Status,
+            BlockchainEventStatus::DeadLettered.as_enum(),
+        )
+        .col_expr(blockchain_event::Column::Attempts, Expr::value(attempts))
+        .col_expr(
+            blockchain_event::Column::LastError,
+            Expr::value(last_error.to_string()),
+        )
+        .col_expr(blockchain_event::Column::FailedAt, Expr::value(now()))
+        .filter(blockchain_event::Column::ChainId.eq(chain_id as i64))
+        .filter(blockchain_event::Column::BlockNumber.eq(block_number as i64))
+        .filter(blockchain_event::Column::BlockHash.eq(block_hash))
+        .filter(blockchain_event::Column::LogIndex.eq(log_index as i64))
+        .exec(ctx.db.as_ref())
+        .await?;
+    Ok(())
+}
+
+#[measure(record_db_time)]
+pub async fn get_blockchain_event_status(
+    ctx: &PersistCtx,
+    chain_id: u64,
+    block_number: u64,
+    block_hash: &str,
+    log_index: u64,
+) -> Result<Option<Option<BlockchainEventStatus>>, PersistDbError> {
+    let row = blockchain_event::Entity::find()
+        .filter(blockchain_event::Column::ChainId.eq(chain_id as i64))
+        .filter(blockchain_event::Column::BlockNumber.eq(block_number as i64))
+        .filter(blockchain_event::Column::BlockHash.eq(block_hash))
+        .filter(blockchain_event::Column::LogIndex.eq(log_index as i64))
+        .one(ctx.db.as_ref())
+        .await?;
+    Ok(row.map(|r| r.status))
+}
+
+#[measure(record_db_time)]
+pub async fn mark_blockchain_event_processed(
     ctx: &PersistCtx,
     chain_id: u64,
     block_number: u64,
     block_hash: &str,
     log_index: u64,
 ) -> Result<(), PersistDbError> {
-    blockchain_event::Entity::delete_many()
+    blockchain_event::Entity::update_many()
+        .col_expr(
+            blockchain_event::Column::Status,
+            BlockchainEventStatus::Processed.as_enum(),
+        )
         .filter(blockchain_event::Column::ChainId.eq(chain_id as i64))
         .filter(blockchain_event::Column::BlockNumber.eq(block_number as i64))
         .filter(blockchain_event::Column::BlockHash.eq(block_hash))

@@ -22,8 +22,7 @@ use common::cycle_fixtures::{
     setup_cycle_service, store_payable_guarantee,
 };
 use common::fixtures::{
-    ensure_user_with_collateral, normalize_address, random_address, read_collateral,
-    read_locked_collateral,
+    ensure_user_with_collateral, normalize_address, random_address, read_locked_collateral,
 };
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS, ethereum::event_data::EventMeta, evm, persist::PersistCtx,
@@ -51,15 +50,12 @@ async fn claim(
     service: &CoreService,
     cycle_id: &str,
     creditor: &str,
-    amount: u64,
     tx: &str,
 ) -> anyhow::Result<()> {
     service
         .process_credit_claim(
             evm::cycle_id_hash(cycle_id),
             creditor.to_string(),
-            DEFAULT_ASSET_ADDRESS.to_string(),
-            U256::from(amount),
             event_meta(tx),
         )
         .await?;
@@ -92,17 +88,17 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
     }
     open_payment_window(&service, cycle_id).await?;
 
-    // alice pays from her wallet (her lock is released by settling her own guarantee);
-    // each creditor's claim credits its net credit back into collateral.
+    // alice pays and each creditor claims; each participant's lock is released by settling its
+    // own guarantee. (Collateral `total` is reconciled from chain, covered in chain_clearing.)
     service
         .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice, "0xpay")
         .await?;
-    claim(&service, cycle_id, bob, 6, "0xclaim-bob").await?;
-    claim(&service, cycle_id, carol, 3, "0xclaim-carol").await?;
+    claim(&service, cycle_id, bob, "0xclaim-bob").await?;
+    claim(&service, cycle_id, carol, "0xclaim-carol").await?;
 
-    // The finality job leaves a fully-resolved cycle confirmed in Settling; the
-    // CycleFinalized event then finalizes it and sweeps the residual netted guarantees
-    // (bob->carol, carol->alice) that no role event settled, releasing their locks.
+    // The finality job leaves a fully-resolved cycle confirmed in Settling; the CycleFinalized
+    // event then finalizes it. (Here every guarantee was already settled by its payer's role
+    // event, so the residual-netted sweep is a no-op — that path is covered by the shortfall test.)
     settle_confirmed(ctx, cycle_id).await?;
     service
         .process_cycle_finalized(evm::cycle_id_hash(cycle_id))
@@ -114,9 +110,6 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
             U256::ZERO,
             "locked collateral not released for {who}"
         );
-    }
-    for (who, total) in [(alice, 10u64), (bob, 4 + 6), (carol, 1 + 3)] {
-        assert_eq!(read_collateral(ctx, who, asset).await?, U256::from(total));
     }
     assert!(
         repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
@@ -131,9 +124,9 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
 }
 
 /// When a net debtor never pays, the finality job seizes its collateral on-chain and the
-/// `DebtorDefaulted` mirror reflects that: the position flips to `Defaulted` and its *total*
-/// collateral is debited by the seized net debit (the lock is released first, so the debit
-/// always fits). The net creditors are still funded from the pool and end up whole.
+/// `DebtorDefaulted` mirror flips the position to `Defaulted` and releases its lock. Once every
+/// debtor and creditor is resolved the cycle confirms. (The seized/funded `total` balances are
+/// reconciled from chain, covered in chain_clearing.)
 #[tokio::test]
 #[serial_test::file_serial(db)]
 async fn defaulted_debtor_is_seized_and_creditors_are_funded() -> anyhow::Result<()> {
@@ -154,16 +147,10 @@ async fn defaulted_debtor_is_seized_and_creditors_are_funded() -> anyhow::Result
     assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
     let onchain = evm::cycle_id_hash(cycle_id);
     service
-        .process_defaulted_debtor(
-            onchain,
-            alice.clone(),
-            asset.to_string(),
-            U256::from(9u64),
-            event_meta("0xdefault-alice"),
-        )
+        .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xdefault-alice"))
         .await?;
-    claim(&service, cycle_id, bob, 6, "0xclaim-bob").await?;
-    claim(&service, cycle_id, carol, 3, "0xclaim-carol").await?;
+    claim(&service, cycle_id, bob, "0xclaim-bob").await?;
+    claim(&service, cycle_id, carol, "0xclaim-carol").await?;
 
     let resolved = cycle(ctx, cycle_id).await?;
     assert_eq!(resolved.status, SettlementCycleStatus::Settling);
@@ -180,13 +167,10 @@ async fn defaulted_debtor_is_seized_and_creditors_are_funded() -> anyhow::Result
             .any(|p| &p.participant == alice && p.status == ParticipantCycleStatus::Defaulted)
     );
 
-    // Every lock released; alice's total shrinks by the seized net debit (10 - 9), the
-    // funded creditors grow by their net credit (bob 4 + 6, carol 1 + 3).
+    // Every lock is released. (Collateral `total` is reconciled from chain, covered in
+    // chain_clearing — the seize and creditor funding land as CollateralSeized/Credited events.)
     for who in [alice, bob, carol] {
         assert_eq!(read_locked_collateral(ctx, who, asset).await?, U256::ZERO);
-    }
-    for (who, total) in [(alice, 10 - 9u64), (bob, 4 + 6), (carol, 1 + 3)] {
-        assert_eq!(read_collateral(ctx, who, asset).await?, U256::from(total));
     }
     Ok(())
 }
@@ -224,15 +208,9 @@ async fn shortfall_resolution_releases_flat_participant_collateral() -> anyhow::
     // resolving event, so it confirms the shortfall and sweeps the flat pair's guarantees.
     let onchain = evm::cycle_id_hash(cycle_id);
     service
-        .process_defaulted_debtor(
-            onchain,
-            debtor.clone(),
-            asset.to_string(),
-            U256::from(10u64),
-            event_meta("0xseize"),
-        )
+        .process_defaulted_debtor(onchain, debtor.clone(), event_meta("0xseize"))
         .await?;
-    claim(&service, cycle_id, &creditor, 5, "0xclaim").await?;
+    claim(&service, cycle_id, &creditor, "0xclaim").await?;
 
     let resolved = cycle(ctx, cycle_id).await?;
     assert_eq!(resolved.status, SettlementCycleStatus::Shortfall);
@@ -310,11 +288,11 @@ async fn settling_confirms_only_when_ledger_fully_resolved() -> anyhow::Result<(
     service
         .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice, "0xpay")
         .await?;
-    claim(&service, cycle_id, bob, 6, "0xclaim-bob").await?;
+    claim(&service, cycle_id, bob, "0xclaim-bob").await?;
     assert!(!cycle(ctx, cycle_id).await?.status_confirmed);
 
     // The last claim resolves the ledger and confirms the cycle.
-    claim(&service, cycle_id, carol, 3, "0xclaim-carol").await?;
+    claim(&service, cycle_id, carol, "0xclaim-carol").await?;
     assert!(cycle(ctx, cycle_id).await?.status_confirmed);
     Ok(())
 }

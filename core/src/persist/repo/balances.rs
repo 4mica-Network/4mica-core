@@ -2,6 +2,7 @@ use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use alloy::primitives::U256;
 use entities::user_asset_balance;
+use log::warn;
 use metrics_4mica::measure;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, TransactionTrait};
@@ -157,12 +158,21 @@ pub async fn sync_user_asset_total(
                     .parse::<U256>()
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
 
+                // Never let a chain reconciliation drive `total` below `locked`:
+                let effective_total = new_total.max(locked);
+                if effective_total != new_total {
+                    warn!(
+                        "sync_user_asset_total: on-chain total {new_total} for user {user_address} asset {asset_address} is below locked {locked}; pinning total to locked (under-collateralised)"
+                    );
+                    crate::metrics::record_undercollateralized_sync(&asset_address);
+                }
+
                 update_user_balance_and_version_on(
                     txn,
                     &user_address,
                     &asset_address,
                     balance.version,
-                    new_total,
+                    effective_total,
                     locked,
                 )
                 .await

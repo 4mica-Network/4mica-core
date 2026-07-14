@@ -2,7 +2,6 @@ use alloy::eips::BlockId;
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
-use entities::sea_orm_active_enums::CollateralEventType;
 use log::{debug, error, info, warn};
 use metrics_4mica::measure;
 
@@ -30,17 +29,7 @@ impl EthereumEventHandler for CoreService {
         } = *log.log_decode()?.data();
         info!("Deposit by {user:?} of {amount}, asset={asset}");
 
-        let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
-        repo::credit_collateral_with_event_on(
-            self.inner.persist_ctx.db.as_ref(),
-            user.to_string(),
-            asset.to_string(),
-            amount,
-            CollateralEventType::Deposit,
-            Some(meta),
-        )
-        .await?;
         self.sync_balance_from_chain(user, asset, block_number)
             .await?;
         Ok(())
@@ -130,7 +119,7 @@ impl EthereumEventHandler for CoreService {
         let tx_hash = tx_hash_from_log(&log)?;
         self.process_cycle_committed(cycleId, &tx_hash)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)
     }
 
     #[measure(record_event_handler_time, name = "debtor_paid")]
@@ -141,7 +130,7 @@ impl EthereumEventHandler for CoreService {
         let tx_hash = tx_hash_from_log(&log)?;
         self.process_paid_debtor(cycleId, &debtor.to_string(), &tx_hash)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)
     }
 
     #[measure(record_event_handler_time, name = "creditor_claimed")]
@@ -150,19 +139,19 @@ impl EthereumEventHandler for CoreService {
             cycleId,
             creditor,
             asset,
-            amount,
+            ..
         } = *log.log_decode()?.data();
 
         let meta = self.event_meta_from_log(&log)?;
-        self.process_credit_claim(
-            cycleId,
-            creditor.to_string(),
-            asset.to_string(),
-            amount,
-            meta,
-        )
-        .await
-        .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+        let block_number = block_number_from_log(&log)?;
+        self.process_credit_claim(cycleId, creditor.to_string(), meta)
+            .await
+            .map_err(BlockchainListenerError::from)?;
+        // Reconcile the creditor's total from chain
+        // after the settlement transaction has released its locked collateral.
+        self.sync_balance_from_chain(creditor, asset, block_number)
+            .await?;
+        Ok(())
     }
 
     #[measure(record_event_handler_time, name = "debtor_defaulted")]
@@ -171,13 +160,19 @@ impl EthereumEventHandler for CoreService {
             cycleId,
             debtor,
             asset,
-            amount,
+            ..
         } = *log.log_decode()?.data();
 
         let meta = self.event_meta_from_log(&log)?;
-        self.process_defaulted_debtor(cycleId, debtor.to_string(), asset.to_string(), amount, meta)
+        let block_number = block_number_from_log(&log)?;
+        self.process_defaulted_debtor(cycleId, debtor.to_string(), meta)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)?;
+        // Reconcile the debtor's total from chain
+        // after the seizure has been mirrored and its locked collateral released.
+        self.sync_balance_from_chain(debtor, asset, block_number)
+            .await?;
+        Ok(())
     }
 
     #[measure(record_event_handler_time, name = "cycle_finalized")]
@@ -185,7 +180,7 @@ impl EthereumEventHandler for CoreService {
         let CycleFinalized { cycleId, .. } = *log.log_decode()?.data();
         self.process_cycle_finalized(cycleId)
             .await
-            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+            .map_err(BlockchainListenerError::from)
     }
 
     #[measure(record_event_handler_time, name = "cycle_shortfall")]
@@ -307,11 +302,6 @@ fn block_number_from_log(log: &Log) -> Result<u64, BlockchainListenerError> {
 }
 
 impl CoreService {
-    /// Overwrite the off-chain `total` for `(user, asset)` with the authoritative
-    /// on-chain collateral, leaving `locked` untouched. This makes event-sourced
-    /// balances self-heal from any double-applied event (e.g. a deposit re-mined
-    /// into a new block by a reorg, 4MCA-H04) rather than drifting permanently,
-    /// since issuance always gates on this reconciled total.
     async fn sync_balance_from_chain(
         &self,
         user: Address,
@@ -337,10 +327,14 @@ impl CoreService {
             return Ok(());
         }
         .map_err(|err| {
-            BlockchainListenerError::EventHandlerError(format!(
+            BlockchainListenerError::RpcFailure(format!(
                 "failed to load on-chain collateral for user {user} asset {asset}: {err}"
             ))
         })?;
+
+        // A deposit may be a user's first interaction, so ensure the user row exists before writing
+        // its balance (sync is the sole balance writer on the deposit path now).
+        repo::ensure_user_exists_on(self.inner.persist_ctx.db.as_ref(), &user.to_string()).await?;
 
         repo::sync_user_asset_total(
             &self.inner.persist_ctx,
@@ -396,7 +390,7 @@ impl CoreService {
             .call()
             .await
             .map_err(|err| {
-                BlockchainListenerError::EventHandlerError(format!(
+                BlockchainListenerError::RpcFailure(format!(
                     "failed to load stablecoin aToken for asset {asset}: {err}"
                 ))
             })?;
