@@ -153,6 +153,13 @@ impl EthereumConfig {
     }
 
     pub fn validate(&self, environment: Environment) -> anyhow::Result<()> {
+        Address::from_str(&self.contract_address).map_err(|_| {
+            anyhow::anyhow!(
+                "ETHEREUM_CONTRACT_ADDRESS is not a valid address: {:?}",
+                self.contract_address
+            )
+        })?;
+
         let mode = self.confirmation_mode()?;
         if mode != ConfirmationMode::Finalized {
             if environment.is_production() {

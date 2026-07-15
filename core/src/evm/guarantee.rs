@@ -93,10 +93,12 @@ fn eip712_digest(
     params: &CorePublicParameters,
     claims: &PaymentGuaranteeRequestClaims,
 ) -> ServiceResult<B256> {
+    let verifying_contract = parse_address("core contract", &params.contract_address)?;
     let domain = eip712_domain!(
-        name:     params.eip712_name.clone(),
-        version:  params.eip712_version.clone(),
-        chain_id: params.chain_id,
+        name:               params.eip712_name.clone(),
+        version:            params.eip712_version.clone(),
+        chain_id:           params.chain_id,
+        verifying_contract: verifying_contract,
     );
 
     match claims {
