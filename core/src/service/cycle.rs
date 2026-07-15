@@ -387,6 +387,7 @@ mod tests {
             default_batch_size: 50,
             shortfall_grace_secs: 21_600,
             settlement_retry_delay_secs: 1_800,
+            hanging_retry_windows: 3,
         };
         let now = Utc.with_ymd_and_hms(2026, 4, 27, 14, 37, 11).unwrap();
 

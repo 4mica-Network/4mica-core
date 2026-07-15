@@ -18,9 +18,6 @@ use crate::{
     service::{CoreService, netting::ParticipantLeaf},
 };
 
-/// Retry windows past the shortfall grace after which an unconfirmed cycle is treated as hanging.
-const HANGING_RETRY_WINDOWS: u64 = 3;
-
 impl CoreService {
     pub async fn commit_cycle_to_chain(&self, cycle_id: &str) -> ServiceResult<()> {
         let cycle = repo::get_cycle_by_id(&self.inner.persist_ctx, cycle_id)
@@ -269,7 +266,7 @@ impl CoreService {
         };
         let retry_window = secs(
             cfg.settlement_retry_delay_secs
-                .saturating_mul(HANGING_RETRY_WINDOWS),
+                .saturating_mul(cfg.hanging_retry_windows),
         )?;
         let grace = secs(cfg.shortfall_grace_secs)?;
 

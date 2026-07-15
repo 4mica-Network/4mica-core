@@ -352,6 +352,10 @@ pub struct SettlementCycleConfig {
     /// Ethereum finality so a re-drive only fires on a genuine reorg. Default 30 min.
     #[envconfig(from = "SETTLEMENT_RETRY_DELAY_SECS", default = "1800")]
     pub settlement_retry_delay_secs: u64,
+    /// Retry windows past its expected-confirmation deadline after which an unconfirmed
+    /// cycle is counted as hanging by the operator gauge.
+    #[envconfig(from = "SETTLEMENT_HANGING_RETRY_WINDOWS", default = "3")]
+    pub hanging_retry_windows: u64,
 }
 
 impl SettlementCycleConfig {
@@ -961,6 +965,7 @@ mod tests {
             default_batch_size: 50,
             shortfall_grace_secs: 21_600,
             settlement_retry_delay_secs: 1_800,
+            hanging_retry_windows: 3,
         }
     }
 
