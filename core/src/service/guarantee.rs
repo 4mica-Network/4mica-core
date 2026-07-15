@@ -171,6 +171,8 @@ impl CoreService {
             )));
         }
 
+        ensure_v2_issuance_allowed(&req.claims, self.inner.enable_v2_validation_lifecycle)?;
+
         info!(
             "Received cycle-native guarantee request variant {}; amount={}",
             request_version, amount
@@ -379,6 +381,20 @@ impl CoreService {
     }
 }
 
+fn ensure_v2_issuance_allowed(
+    claims: &PaymentGuaranteeRequestClaims,
+    v2_lifecycle_enabled: bool,
+) -> ServiceResult<()> {
+    if claims.validation_policy().is_some() && !v2_lifecycle_enabled {
+        return Err(ServiceError::InvalidParams(
+            "validation-gated (V2) guarantees cannot be issued: the validation lifecycle \
+             driver is not enabled (ENABLE_V2_VALIDATION_LIFECYCLE=false)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn settlement_status_for_request(
     claims: &PaymentGuaranteeRequestClaims,
 ) -> GuaranteeSettlementStatus {
@@ -443,5 +459,29 @@ mod tests {
             settlement_status_for_request(&v2_claims()),
             GuaranteeSettlementStatus::PendingValidation
         );
+    }
+
+    #[test]
+    fn v1_issuance_is_allowed_regardless_of_v2_lifecycle_flag() {
+        ensure_v2_issuance_allowed(&v1_claims(1), false)
+            .expect("immediate-finality (V1) guarantees are always issuable");
+        ensure_v2_issuance_allowed(&v1_claims(1), true)
+            .expect("immediate-finality (V1) guarantees are always issuable");
+    }
+
+    #[test]
+    fn v2_issuance_is_rejected_when_lifecycle_disabled() {
+        let err = ensure_v2_issuance_allowed(&v2_claims(), false)
+            .expect_err("validation-gated (V2) issuance must be refused without the driver");
+        assert!(
+            matches!(err, ServiceError::InvalidParams(_)),
+            "expected InvalidParams, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn v2_issuance_is_allowed_when_lifecycle_enabled() {
+        ensure_v2_issuance_allowed(&v2_claims(), true)
+            .expect("validation-gated (V2) issuance is permitted once the driver is enabled");
     }
 }

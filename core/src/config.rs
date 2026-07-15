@@ -216,6 +216,8 @@ pub struct GuaranteeConfig {
         default = "4MICA_VALIDATION_REQUEST_V2"
     )]
     pub validation_hash_canonicalization_version: String,
+    #[envconfig(from = "ENABLE_V2_VALIDATION_LIFECYCLE", default = "false")]
+    pub enable_v2_validation_lifecycle: bool,
 }
 
 impl GuaranteeConfig {
@@ -785,6 +787,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         v1.validate(Environment::Production)
             .expect("v1 config must be valid");
@@ -796,6 +799,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222"
                     .to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         v2.validate(Environment::Development)
             .expect("v2 config must be valid in development");
@@ -813,6 +817,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         let err = cfg
             .validate(Environment::Production)
@@ -831,6 +836,7 @@ mod tests {
             accepted_request_versions: "2".to_string(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         cfg.validate(Environment::Production)
             .expect_err("explicit V2 accepted set must be rejected in production");
@@ -843,6 +849,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         cfg.validate(Environment::Production)
             .expect("V1-only config must be valid in production");
@@ -856,6 +863,7 @@ mod tests {
             trusted_validation_registries:
                 "0x1111111111111111111111111111111111111111,not-an-address".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         let err = cfg
             .validate(Environment::Development)
@@ -873,6 +881,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "   ".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         let err = cfg
             .validate(Environment::Development)
@@ -890,6 +899,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         let err = cfg
             .validate(Environment::Development)
@@ -907,6 +917,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         let err = cfg
             .validate(Environment::Development)
@@ -921,6 +932,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
         let err = cfg
             .validate(Environment::Development)
@@ -938,6 +950,7 @@ mod tests {
             accepted_request_versions: String::new(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
 
         let versions = cfg
@@ -953,6 +966,7 @@ mod tests {
             accepted_request_versions: "2".to_string(),
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: false,
         };
 
         let versions = cfg

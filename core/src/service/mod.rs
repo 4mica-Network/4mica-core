@@ -58,6 +58,7 @@ pub struct Inner {
     public_params: CorePublicParameters,
     trusted_validation_registry_set: HashSet<Address>,
     accepted_guarantee_versions: HashSet<u64>,
+    enable_v2_validation_lifecycle: bool,
     guarantee_domains: HashMap<u64, [u8; 32]>,
     /// On-chain `withdrawalGracePeriod` (seconds)
     withdrawal_grace_period: AtomicU64,
@@ -222,6 +223,7 @@ impl CoreService {
             },
             trusted_validation_registry_set,
             accepted_guarantee_versions,
+            enable_v2_validation_lifecycle: guarantee_config.enable_v2_validation_lifecycle,
             guarantee_domains: deps.guarantee_domains,
             withdrawal_grace_period: AtomicU64::new(deps.withdrawal_grace_period),
             last_scan_unix: AtomicU64::new(0),
