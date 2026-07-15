@@ -20,21 +20,24 @@
 //! produced here verify directly in Solidity. When a level has an odd number of
 //! nodes, the final node is paired with itself.
 //!
-//! ## Second-preimage safety — a load-bearing caller invariant
+//! ## Second-preimage safety
 //!
-//! Leaves and internal nodes are both bare [`B256`] hashes, so this tree gives
-//! no *structural* protection against second-preimage attacks: an internal node
-//! value handed to [`verify_proof`] as a `leaf` verifies just fine, because the
-//! verifier cannot tell a leaf apart from an interior node. Safety therefore
-//! depends entirely on **consumers deriving every leaf from typed, fixed-shape
-//! arguments and never accepting a caller-supplied 64-byte leaf**. The
-//! ClearingHouse upholds this: its leaf preimage is a fixed 224-byte tuple
-//! `(chainId, clearingHouse, cycleId, asset, participant, amount, role)`, which
-//! can never collide with a 64-byte node preimage, and on-chain verification
-//! recomputes the leaf from those arguments rather than trusting the caller.
+//! A sorted-pair keccak tree gives no *value-level* way to tell a leaf hash
+//! apart from an internal-node hash, so a second-preimage attack works by
+//! presenting an interior node hash where a leaf is expected. [`verify_proof`]
+//! closes this structurally: it accepts only a [`LeafHash`], which can be
+//! obtained *only* by hashing a leaf preimage through [`LeafHash::from_preimage`],
+//! and that constructor rejects any 64-byte preimage — the exact width of an
+//! internal-node preimage (`left || right`). A raw [`B256`] can therefore never
+//! be passed as a leaf, and no internal-node value can be reconstructed as one.
 //!
-//! Do not add an API that verifies an externally supplied leaf hash, and keep
-//! leaf derivation longer than 64 bytes; either change reintroduces the attack.
+//! The ClearingHouse leaf is a fixed 224-byte tuple
+//! `(chainId, clearingHouse, cycleId, asset, participant, amount, role)`, well
+//! clear of the 64-byte node width, and on-chain verification recomputes the
+//! leaf from those typed arguments rather than trusting a caller-supplied hash.
+//! Keep leaf derivation longer than 64 bytes; a 64-byte leaf preimage would be
+//! rejected by [`LeafHash::from_preimage`] rather than silently reintroducing
+//! the attack.
 //!
 //! ## Proofs
 //!
@@ -52,21 +55,63 @@ use alloy::primitives::{B256, keccak256};
 /// Sorting the pair before hashing makes the result independent of left/right
 /// ordering, matching OpenZeppelin's sorted-pair Merkle verification.
 pub fn hash_pair(a: B256, b: B256) -> B256 {
+    const HALF: usize = NODE_PREIMAGE_LEN / 2;
     let (left, right) = if a <= b { (a, b) } else { (b, a) };
-    let mut encoded = [0u8; 64];
-    encoded[..32].copy_from_slice(left.as_slice());
-    encoded[32..].copy_from_slice(right.as_slice());
+    let mut encoded = [0u8; NODE_PREIMAGE_LEN];
+    encoded[..HALF].copy_from_slice(left.as_slice());
+    encoded[HALF..].copy_from_slice(right.as_slice());
     keccak256(encoded)
+}
+
+/// The byte width of an internal-node preimage: the two concatenated child
+/// hashes that [`hash_pair`] feeds to keccak256. Derived from [`B256`]'s size so
+/// it can never drift from the actual node encoding.
+const NODE_PREIMAGE_LEN: usize = 2 * size_of::<B256>();
+
+/// The keccak256 hash of a Merkle *leaf* preimage.
+///
+/// A `LeafHash` is the only value [`verify_proof`] accepts as a leaf, and it can
+/// be produced *only* by hashing a preimage through [`LeafHash::from_preimage`].
+/// That constructor rejects any preimage exactly [`NODE_PREIMAGE_LEN`] bytes
+/// long — the width of an internal-node preimage (`left || right`) — so an
+/// interior node hash can never be reconstructed and passed off as a leaf. This
+/// is the structural half of the tree's second-preimage safety (see the module
+/// docs); a raw [`B256`] cannot be used as a leaf at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeafHash(B256);
+
+impl LeafHash {
+    /// Hash a leaf preimage into a [`LeafHash`].
+    ///
+    /// Returns `None` when `preimage` is exactly [`NODE_PREIMAGE_LEN`] bytes,
+    /// since a preimage of that width could collide with an internal-node hash
+    /// and defeat second-preimage safety. Domain leaf encodings should be well
+    /// clear of 64 bytes (the ClearingHouse leaf is 224).
+    pub fn from_preimage(preimage: &[u8]) -> Option<Self> {
+        if preimage.len() == NODE_PREIMAGE_LEN {
+            return None;
+        }
+        Some(Self(keccak256(preimage)))
+    }
+
+    /// The underlying keccak256 hash, for use as a raw tree node (e.g. building a
+    /// [`MerkleTree`] or serializing a proof).
+    pub fn hash(self) -> B256 {
+        self.0
+    }
 }
 
 /// Verify that `proof` reconstructs `root` starting from `leaf`.
 ///
 /// This mirrors OpenZeppelin's `MerkleProof.verify`: each proof element is folded
 /// into the running hash with [`hash_pair`], and the final hash must equal `root`.
-pub fn verify_proof(proof: &[B256], root: B256, leaf: B256) -> bool {
-    let computed = proof
-        .iter()
-        .fold(leaf, |computed, sibling| hash_pair(computed, *sibling));
+///
+/// `leaf` is a [`LeafHash`] rather than a raw [`B256`] so that an internal-node
+/// value can never be presented here as a leaf.
+pub fn verify_proof(proof: &[B256], root: B256, leaf: LeafHash) -> bool {
+    let computed = proof.iter().fold(leaf.hash(), |computed, sibling| {
+        hash_pair(computed, *sibling)
+    });
     computed == root
 }
 
@@ -235,6 +280,12 @@ mod tests {
         keccak256([byte])
     }
 
+    /// The same one-byte leaf as [`leaf`], but as a [`LeafHash`] for feeding
+    /// [`verify_proof`]. `leaf(b) == leaf_hash(b).hash()`.
+    fn leaf_hash(byte: u8) -> LeafHash {
+        LeafHash::from_preimage(&[byte]).expect("a 1-byte preimage is not node-width")
+    }
+
     #[test]
     fn empty_tree_has_zero_root_and_no_proofs() {
         let tree = MerkleTree::from_leaves(Vec::<B256>::new());
@@ -251,7 +302,7 @@ mod tests {
         assert_eq!(tree.root(), only);
         // A lone leaf needs no siblings to reach the root.
         assert_eq!(tree.proof(only), Some(Vec::new()));
-        assert!(verify_proof(&[], tree.root(), only));
+        assert!(verify_proof(&[], tree.root(), leaf_hash(7)));
     }
 
     #[test]
@@ -313,9 +364,13 @@ mod tests {
         let leaves: Vec<B256> = (0u8..5).map(leaf).collect();
         let tree = MerkleTree::from_leaves(leaves.clone());
         let root = tree.root();
-        for l in leaves {
+        for byte in 0u8..5 {
+            let l = leaf(byte);
             let proof = tree.proof(l).expect("leaf is in the tree");
-            assert!(verify_proof(&proof, root, l), "proof failed for {l:#x}");
+            assert!(
+                verify_proof(&proof, root, leaf_hash(byte)),
+                "proof failed for {l:#x}"
+            );
         }
     }
 
@@ -340,6 +395,50 @@ mod tests {
         let wrong_root =
             B256::from_str("0x1111111111111111111111111111111111111111111111111111111111111111")
                 .unwrap();
-        assert!(!verify_proof(&proof, wrong_root, target));
+        assert!(!verify_proof(&proof, wrong_root, leaf_hash(2)));
+    }
+
+    #[test]
+    fn internal_node_value_cannot_be_reconstructed_as_a_leaf() {
+        // A four-leaf tree has genuine internal nodes at level 1.
+        let leaves: Vec<B256> = (0u8..4).map(leaf).collect();
+        let tree = MerkleTree::from_leaves(leaves.clone());
+
+        // The first level-1 node is hash_pair of the two smallest sorted leaves;
+        // reconstruct its exact 64-byte preimage (left || right, ascending).
+        let sorted: Vec<B256> = {
+            let mut s = leaves.clone();
+            s.sort();
+            s
+        };
+        let (l, r) = (sorted[0], sorted[1]);
+        let mut node_preimage = [0u8; 64];
+        node_preimage[..32].copy_from_slice(l.as_slice());
+        node_preimage[32..].copy_from_slice(r.as_slice());
+
+        // Sanity: this preimage really is an internal node of the tree.
+        let internal_node = keccak256(node_preimage);
+        assert_eq!(internal_node, tree.levels[1][0]);
+        assert_eq!(internal_node, hash_pair(l, r));
+
+        // The whole point: that 64-byte node preimage is refused by LeafHash, so
+        // the internal-node value can never be wrapped and handed to verify_proof
+        // as a leaf. verify_proof takes no raw B256, so there is no other path in.
+        assert!(LeafHash::from_preimage(&node_preimage).is_none());
+    }
+
+    #[test]
+    fn from_preimage_accepts_non_node_widths() {
+        // Anything but exactly 64 bytes is a valid leaf preimage.
+        assert!(LeafHash::from_preimage(&[]).is_some());
+        assert!(LeafHash::from_preimage(&[0u8; 63]).is_some());
+        assert!(LeafHash::from_preimage(&[0u8; 64]).is_none());
+        assert!(LeafHash::from_preimage(&[0u8; 65]).is_some());
+        assert!(LeafHash::from_preimage(&[0u8; 224]).is_some());
+        // The hash matches a bare keccak of the same preimage.
+        assert_eq!(
+            LeafHash::from_preimage(&[9u8]).unwrap().hash(),
+            keccak256([9u8])
+        );
     }
 }

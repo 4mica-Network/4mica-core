@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::Utc;
-use crypto::merkle::MerkleTree;
+use crypto::merkle::{LeafHash, MerkleTree};
 use entities::{
     clearing_batch, cycle_participant_position,
     sea_orm_active_enums::{ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus},
@@ -39,8 +39,7 @@ pub struct ParticipantLeaf {
     pub amount: U256,
     pub net_debit: U256,
     pub net_credit: U256,
-    /// The keccak256 leaf committed to the clearing batch Merkle tree.
-    pub leaf: B256,
+    pub leaf: LeafHash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,7 +121,7 @@ pub fn participant_leaves_for_positions(
 fn build_participant_merkle_tree(
     participant_leaves: &[ParticipantLeaf],
 ) -> ServiceResult<MerkleTree> {
-    let tree = MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf));
+    let tree = MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf.hash()));
     if tree.len() != participant_leaves.len() {
         return Err(ServiceError::Other(anyhow!(
             "clearing leaf collision: {} participant positions produced only {} distinct leaves",
@@ -435,7 +434,7 @@ impl CoreService {
                     "Clearing participant {participant} in settlement cycle {cycle_id}"
                 ))
             })?;
-        let proof = tree.proof(target.leaf).ok_or_else(|| {
+        let proof = tree.proof(target.leaf.hash()).ok_or_else(|| {
             ServiceError::NotFound(format!(
                 "Clearing participant {participant} in settlement cycle {cycle_id}"
             ))
@@ -450,7 +449,7 @@ impl CoreService {
             amount: target.amount,
             net_debit: target.net_debit,
             net_credit: target.net_credit,
-            leaf: target.leaf,
+            leaf: target.leaf.hash(),
             merkle_root: stored_root,
             proof,
         })
@@ -500,7 +499,7 @@ impl CoreService {
 
         let mut proofs = Vec::with_capacity(participant_leaves.len());
         for leaf in participant_leaves {
-            let proof = tree.proof(leaf.leaf).ok_or_else(|| {
+            let proof = tree.proof(leaf.leaf.hash()).ok_or_else(|| {
                 ServiceError::NotFound(format!(
                     "Clearing proof for participant {} in settlement cycle {cycle_id}",
                     leaf.participant
@@ -625,8 +624,8 @@ mod tests {
             .iter()
             .find(|leaf| leaf.role == ParticipantCycleRole::NetDebtor)
             .unwrap();
-        let tree = MerkleTree::from_leaves(leaves.iter().map(|leaf| leaf.leaf));
-        let proof = tree.proof(debtor_leaf.leaf).unwrap();
+        let tree = MerkleTree::from_leaves(leaves.iter().map(|leaf| leaf.leaf.hash()));
+        let proof = tree.proof(debtor_leaf.leaf.hash()).unwrap();
 
         assert_eq!(debtor_leaf.amount, U256::from(10));
         assert_eq!(debtor_leaf.net_debit, U256::from(10));

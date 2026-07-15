@@ -3,7 +3,8 @@
 //! [`hash_participant_leaf`] computes the keccak256 pre-image that mirrors the
 //! ClearingHouse contract so that proofs produced off-chain verify on-chain.
 
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, U256};
+use crypto::merkle::LeafHash;
 
 use crate::evm::{address_word, cycle_id_hash};
 use crate::service::netting::ClearingParticipantRole;
@@ -29,7 +30,7 @@ pub fn hash_participant_leaf(
     participant: Address,
     amount: U256,
     role: ClearingParticipantRole,
-) -> B256 {
+) -> LeafHash {
     let cycle_id = cycle_id_hash(cycle_id);
     let mut encoded = Vec::with_capacity(0xe0);
     encoded.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
@@ -39,13 +40,16 @@ pub fn hash_participant_leaf(
     encoded.extend_from_slice(&address_word(participant));
     encoded.extend_from_slice(&amount.to_be_bytes::<32>());
     encoded.extend_from_slice(&U256::from(role as u8).to_be_bytes::<32>());
-    keccak256(encoded)
+    // The 224-byte preimage is well clear of the 64-byte internal-node width, so
+    // this never returns None; it is what keeps the leaf second-preimage safe.
+    LeafHash::from_preimage(&encoded).expect("participant leaf preimage is 224 bytes, never 64")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::evm::cycle_id_hash;
+    use alloy::primitives::keccak256;
     use alloy_sol_types::SolValue;
     use crypto::merkle::{MerkleTree, verify_proof};
     use std::str::FromStr;
@@ -93,7 +97,7 @@ mod tests {
                 .abi_encode(),
         );
 
-        assert_eq!(actual, expected);
+        assert_eq!(actual.hash(), expected);
     }
 
     #[test]
@@ -134,8 +138,12 @@ mod tests {
             ClearingParticipantRole::NetDebtor,
         );
 
-        let tree = MerkleTree::from_leaves([debtor_leaf, creditor_leaf, other_debtor_leaf]);
-        let proof = tree.proof(debtor_leaf).unwrap();
+        let tree = MerkleTree::from_leaves([
+            debtor_leaf.hash(),
+            creditor_leaf.hash(),
+            other_debtor_leaf.hash(),
+        ]);
+        let proof = tree.proof(debtor_leaf.hash()).unwrap();
 
         assert!(verify_proof(&proof, tree.root(), debtor_leaf));
     }
