@@ -79,8 +79,8 @@ contract Core4MicaAaveForkTest is Test {
 
         core4Mica.setWithdrawalGracePeriod(4 hours);
 
-        _fundAndApprove(USER1, stablecoins[0], _depositAmount(stablecoins[0]) * 3);
-        _fundAndApprove(USER1, stablecoins[1], _depositAmount(stablecoins[1]) * 3);
+        _fundAndApprove(USER1, stablecoins[0], _largeDepositAmount(stablecoins[0]) * 3);
+        _fundAndApprove(USER1, stablecoins[1], _largeDepositAmount(stablecoins[1]) * 3);
     }
 
     function testFork_ConfigureAave_UsesLiveProviderAndReserveMembership() public view onlyIfForkConfigured {
