@@ -138,12 +138,8 @@ mod tests {
             ClearingParticipantRole::NetDebtor,
         );
 
-        let tree = MerkleTree::from_leaves([
-            debtor_leaf.hash(),
-            creditor_leaf.hash(),
-            other_debtor_leaf.hash(),
-        ]);
-        let proof = tree.proof(debtor_leaf.hash()).unwrap();
+        let tree = MerkleTree::from_leaves([debtor_leaf, creditor_leaf, other_debtor_leaf]);
+        let proof = tree.proof(debtor_leaf).unwrap();
 
         assert!(verify_proof(&proof, tree.root(), debtor_leaf));
     }

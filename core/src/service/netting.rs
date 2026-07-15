@@ -121,7 +121,7 @@ pub fn participant_leaves_for_positions(
 fn build_participant_merkle_tree(
     participant_leaves: &[ParticipantLeaf],
 ) -> ServiceResult<MerkleTree> {
-    let tree = MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf.hash()));
+    let tree = MerkleTree::from_leaves(participant_leaves.iter().map(|leaf| leaf.leaf));
     if tree.len() != participant_leaves.len() {
         return Err(ServiceError::Other(anyhow!(
             "clearing leaf collision: {} participant positions produced only {} distinct leaves",
@@ -434,7 +434,7 @@ impl CoreService {
                     "Clearing participant {participant} in settlement cycle {cycle_id}"
                 ))
             })?;
-        let proof = tree.proof(target.leaf.hash()).ok_or_else(|| {
+        let proof = tree.proof(target.leaf).ok_or_else(|| {
             ServiceError::NotFound(format!(
                 "Clearing participant {participant} in settlement cycle {cycle_id}"
             ))
@@ -499,7 +499,7 @@ impl CoreService {
 
         let mut proofs = Vec::with_capacity(participant_leaves.len());
         for leaf in participant_leaves {
-            let proof = tree.proof(leaf.leaf.hash()).ok_or_else(|| {
+            let proof = tree.proof(leaf.leaf).ok_or_else(|| {
                 ServiceError::NotFound(format!(
                     "Clearing proof for participant {} in settlement cycle {cycle_id}",
                     leaf.participant
@@ -624,8 +624,8 @@ mod tests {
             .iter()
             .find(|leaf| leaf.role == ParticipantCycleRole::NetDebtor)
             .unwrap();
-        let tree = MerkleTree::from_leaves(leaves.iter().map(|leaf| leaf.leaf.hash()));
-        let proof = tree.proof(debtor_leaf.leaf.hash()).unwrap();
+        let tree = MerkleTree::from_leaves(leaves.iter().map(|leaf| leaf.leaf));
+        let proof = tree.proof(debtor_leaf.leaf).unwrap();
 
         assert_eq!(debtor_leaf.amount, U256::from(10));
         assert_eq!(debtor_leaf.net_debit, U256::from(10));
