@@ -313,6 +313,47 @@ impl GuaranteeConfig {
                 "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when validation-gated guarantee versions are accepted"
             );
         }
+
+        // A zero timeout makes the very first validation sweep cancel every still-pending V2
+        // guarantee (releasing its collateral) before its on-chain validation can resolve.
+        if self.validation_timeout_secs == 0 {
+            bail!(
+                "VALIDATION_TIMEOUT_SECS must be > 0; a zero timeout cancels every pending \
+                 validation-gated (V2) guarantee on the first sweep before its validation resolves"
+            );
+        }
+        // The scheduler rejects a malformed pattern when the task is registered, but an empty
+        // value is a common misconfiguration worth catching here with a clear message.
+        if self.validation_poll_cron.trim().is_empty() {
+            bail!("VALIDATION_POLL_CRON must not be empty");
+        }
+        Ok(())
+    }
+
+    /// Cross-config timing invariant between the validation lifecycle and settlement cycles.
+    ///
+    /// A validation-gated (V2) guarantee must resolve (finalize or cancel) *before* its settlement
+    /// cycle is netted, otherwise a late finalize would move it into a cycle that can no longer
+    /// include it, stranding the payer's collateral (the driver guards this at runtime, but
+    /// keeping the timeout inside the resolution window makes the happy path safe by
+    /// construction). A guarantee issued at the very end of a cycle's open window has at most
+    /// `resolution_cutoff_secs` before that cycle resolves, so the validation timeout must be
+    /// strictly less than it. Only enforced when the lifecycle is enabled.
+    pub fn validate_against_settlement_cycle(
+        &self,
+        cycle: &SettlementCycleConfig,
+    ) -> anyhow::Result<()> {
+        if self.enable_v2_validation_lifecycle
+            && self.validation_timeout_secs >= cycle.resolution_cutoff_secs
+        {
+            bail!(
+                "VALIDATION_TIMEOUT_SECS ({}) must be < SETTLEMENT_RESOLUTION_CUTOFF_SECS ({}) so a \
+                 validation-gated (V2) guarantee always resolves before its settlement cycle is \
+                 netted; otherwise a late finalize would strand the payer's collateral",
+                self.validation_timeout_secs,
+                cycle.resolution_cutoff_secs
+            );
+        }
         Ok(())
     }
 }
@@ -635,6 +676,9 @@ impl AppConfig {
         settlement_cycle
             .validate()
             .context("Invalid settlement cycle config")?;
+        guarantee
+            .validate_against_settlement_cycle(&settlement_cycle)
+            .context("Invalid validation-lifecycle / settlement-cycle timing")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
         auth.validate(server_config.environment)
             .context("Invalid auth config")?;
@@ -815,6 +859,88 @@ mod tests {
             .trusted_validation_registry_allowlist()
             .expect("allowlist should parse");
         assert_eq!(allowlist.len(), 2);
+    }
+
+    /// A validation-gated V2 config in development with the lifecycle enabled and a 1h timeout.
+    fn v2_lifecycle_guarantee_config() -> GuaranteeConfig {
+        GuaranteeConfig {
+            max_accepted_version: 2,
+            accepted_request_versions: String::new(),
+            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
+            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+            enable_v2_validation_lifecycle: true,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
+        }
+    }
+
+    fn base_settlement_cycle_config() -> SettlementCycleConfig {
+        SettlementCycleConfig {
+            cycle_secs: 86400,
+            resolution_cutoff_secs: 21600,
+            clearing_commit_delay_secs: 900,
+            payment_submission_window_secs: 7200,
+            payment_finality_window_secs: 14400,
+            seizure_margin_secs: 21600,
+            default_batch_size: 50,
+            shortfall_grace_secs: 21600,
+            settlement_retry_delay_secs: 1800,
+            hanging_retry_windows: 3,
+        }
+    }
+
+    #[test]
+    fn guarantee_config_rejects_zero_validation_timeout() {
+        let mut cfg = v2_lifecycle_guarantee_config();
+        cfg.validation_timeout_secs = 0;
+        let err = cfg
+            .validate(Environment::Development)
+            .expect_err("a zero validation timeout must be rejected");
+        assert!(
+            err.to_string().contains("VALIDATION_TIMEOUT_SECS"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn guarantee_config_rejects_empty_validation_poll_cron() {
+        let mut cfg = v2_lifecycle_guarantee_config();
+        cfg.validation_poll_cron = "   ".to_string();
+        let err = cfg
+            .validate(Environment::Development)
+            .expect_err("an empty validation poll cron must be rejected");
+        assert!(
+            err.to_string().contains("VALIDATION_POLL_CRON"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn guarantee_timeout_must_be_within_settlement_resolution_window() {
+        let cycle = base_settlement_cycle_config();
+
+        // Timeout comfortably inside the resolution window: accepted.
+        let ok = v2_lifecycle_guarantee_config();
+        ok.validate_against_settlement_cycle(&cycle)
+            .expect("timeout < resolution cutoff must be accepted");
+
+        // Timeout at or beyond the resolution window strands late-issued V2 guarantees: rejected.
+        let mut too_long = v2_lifecycle_guarantee_config();
+        too_long.validation_timeout_secs = cycle.resolution_cutoff_secs;
+        let err = too_long
+            .validate_against_settlement_cycle(&cycle)
+            .expect_err("timeout >= resolution cutoff must be rejected");
+        assert!(
+            err.to_string().contains("VALIDATION_TIMEOUT_SECS"),
+            "unexpected error: {err}"
+        );
+
+        // The coupling only bites when the lifecycle is enabled.
+        let mut disabled = too_long.clone();
+        disabled.enable_v2_validation_lifecycle = false;
+        disabled
+            .validate_against_settlement_cycle(&cycle)
+            .expect("timing coupling must not apply when the lifecycle is disabled");
     }
 
     #[test]

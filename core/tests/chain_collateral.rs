@@ -225,7 +225,7 @@ async fn stored_but_unhandled_event_is_reprocessed_not_skipped() -> anyhow::Resu
     }
     panic!(
         "deposit was never credited: a stored-but-unhandled event was skipped instead of \
-         reprocessed (4MCA-M05)"
+         reprocessed"
     );
 }
 

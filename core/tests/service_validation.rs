@@ -38,6 +38,7 @@ use core_service::ethereum::{
 };
 use core_service::persist::{CycleGuaranteeData, PersistCtx, repo};
 use core_service::service::{CoreService, CoreServiceDeps};
+use sea_orm::{ConnectionTrait, Statement};
 
 #[path = "common/mod.rs"]
 mod common;
@@ -259,6 +260,23 @@ async fn guarantee_status(
     Ok(g.settlement_status)
 }
 
+/// Move a guarantee's `created_at` (its issuance instant, which the driver uses as the timeout
+/// anchor) into the past, so the timeout path can be exercised with a valid non-zero timeout.
+async fn backdate_guarantee_created_at(
+    ctx: &PersistCtx,
+    guarantee_id: &str,
+    seconds_ago: i64,
+) -> anyhow::Result<()> {
+    let ts = Utc::now().naive_utc() - chrono::Duration::seconds(seconds_ago);
+    let stmt = Statement::from_sql_and_values(
+        ctx.db.get_database_backend(),
+        r#"UPDATE "Guarantee" SET created_at = $1 WHERE guarantee_id = $2"#,
+        [ts.into(), guarantee_id.to_string().into()],
+    );
+    ctx.db.as_ref().execute(stmt).await?;
+    Ok(())
+}
+
 #[tokio::test]
 #[serial_test::file_serial(db)]
 async fn resolved_and_accepted_validation_finalizes_and_keeps_collateral_locked()
@@ -320,11 +338,13 @@ async fn unresolved_past_timeout_cancels_and_releases_collateral() -> anyhow::Re
     let cycle_id = "l02-cancel-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
     let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+    // Issued 2h ago, past the 1h timeout below, so the unresolved validation cancels.
+    backdate_guarantee_created_at(&ctx, &guarantee_id, 7200).await?;
 
-    // Unresolved validation (lastUpdate == 0) with a zero timeout forces an immediate cancel.
+    // Unresolved validation (lastUpdate == 0) past the timeout forces a cancel.
     let mut status = passing_status();
     status.last_update = U256::ZERO;
-    let service = build_service(&ctx, config, Some(status), 0);
+    let service = build_service(&ctx, config, Some(status), 3600);
     let summary = service.drive_pending_validations().await?;
 
     assert_eq!(summary.cancelled, 1, "one guarantee should be cancelled");
@@ -361,6 +381,94 @@ async fn unresolved_within_timeout_waits_and_keeps_pending() -> anyhow::Result<(
         read_locked_collateral(&ctx, &payer, DEFAULT_ASSET_ADDRESS).await?,
         U256::from(10u64)
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn accepted_validation_into_already_resolved_cycle_cancels_and_releases_collateral()
+-> anyhow::Result<()> {
+    let (config, ctx) = setup_db_test_env().await?;
+    clear_all_tables(&ctx).await?;
+    let cycle_id = "l02-stale-cycle";
+    create_frozen_cycle(&ctx, cycle_id).await?;
+    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+
+    // The cycle resolves (short-circuits straight to Finalized, as an all-pending cycle does)
+    // before the validation lands — e.g. the driver was down across the cycle's resolution
+    // window. The guarantee can no longer be included in any netting round.
+    assert!(
+        repo::short_circuit_frozen_cycle_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc())
+            .await?
+    );
+
+    // Even though the validation now passes, finalizing would strand the payer's collateral in a
+    // dead cycle (the L01/L02 failure, one hop downstream), so the driver cancels and releases.
+    let service = build_service(&ctx, config, Some(passing_status()), 3600);
+    let summary = service.drive_pending_validations().await?;
+
+    assert_eq!(
+        summary.cancelled, 1,
+        "a would-be finalize into a resolved cycle must cancel"
+    );
+    assert_eq!(
+        summary.finalized, 0,
+        "it must not finalize into a dead cycle"
+    );
+    assert_eq!(
+        guarantee_status(&ctx, &guarantee_id).await?,
+        GuaranteeSettlementStatus::Cancelled
+    );
+    assert_eq!(
+        read_locked_collateral(&ctx, &payer, DEFAULT_ASSET_ADDRESS).await?,
+        U256::ZERO
+    );
+    Ok(())
+}
+
+/// End-to-end forward link: a V2 guarantee that the driver finalizes is then picked up by netting
+/// exactly like a V1 one — it produces net-debtor/net-creditor positions. This closes the gap
+/// between the driver (which stops at `FinalizedPayable`) and settlement, which no prior test
+/// covered. The on-chain commit/seize/credit path past netting is identical to V1 (the clearing
+/// leaf carries no validation fields), so it is exercised by the existing V1 settlement tests.
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn finalized_v2_guarantee_is_netted_like_v1() -> anyhow::Result<()> {
+    let (config, ctx) = setup_db_test_env().await?;
+    clear_all_tables(&ctx).await?;
+    let cycle_id = "l02-net-cycle";
+    create_frozen_cycle(&ctx, cycle_id).await?;
+    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+
+    let service = build_service(&ctx, config, Some(passing_status()), 3600);
+    let summary = service.drive_pending_validations().await?;
+    assert_eq!(summary.finalized, 1);
+    assert_eq!(
+        guarantee_status(&ctx, &guarantee_id).await?,
+        GuaranteeSettlementStatus::FinalizedPayable
+    );
+
+    // Now net the (still `Frozen`) cycle: the finalized-from-V2 guarantee must contribute an
+    // exposure edge and net positions, proving it settles through the same path as V1.
+    service.compute_cycle_exposure_edges(cycle_id).await?;
+    service
+        .compute_cycle_participant_positions(cycle_id)
+        .await?;
+
+    let edges = repo::list_exposure_edges_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    assert_eq!(
+        edges.len(),
+        1,
+        "the finalized V2 guarantee must produce an edge"
+    );
+
+    let positions =
+        repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    let payer_position = positions
+        .iter()
+        .find(|p| p.participant == payer)
+        .expect("payer must have a net position");
+    assert_eq!(payer_position.net_debit, "10");
     Ok(())
 }
 

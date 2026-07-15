@@ -246,7 +246,7 @@ pub trait CoreContractApi: Send + Sync {
     ) -> Result<ClearingCycleView, CoreContractApiError>;
 
     /// Read the ERC-8004 validation status for `request_hash` from `registry`. Used by the V2
-    /// validation lifecycle driver (4MCA-L02) to decide whether a `PendingValidation` guarantee
+    /// validation lifecycle driver to decide whether a `PendingValidation` guarantee
     /// should be finalized, disputed, or left waiting.
     async fn get_validation_status(
         &self,

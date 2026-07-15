@@ -1,4 +1,4 @@
-//! V2 validation lifecycle driver (4MCA-L02).
+//! V2 validation lifecycle driver
 //!
 //! A validation-gated (V2) guarantee is stored `PendingValidation` at issuance. This module is
 //! the missing driver that moves it out of that state by observing the on-chain ERC-8004
@@ -12,10 +12,17 @@
 //! The resolved-branch acceptance predicate mirrors `ValidationRegistryGuaranteeDecoder`
 //! (`response >= min_validation_score`, validator match, agent match, tag match) so the
 //! off-chain decision agrees with the on-chain verifier. Without this driver a V2 guarantee is
-//! never netted or settled and its payer's collateral is stranded (4MCA-L01/L02).
+//!
+//! A resolved-and-accepted validation is only honored while its settlement cycle can still be
+//! netted (`Open`/`Frozen`). If the cycle already resolved before the validation landed — e.g.
+//! the driver was down across the cycle's resolution, or the validation timeout was configured
+//! longer than the cycle's resolution window — finalizing would move the guarantee into a dead
+//! cycle that never settles, stranding the payer's collateral (the same L01/L02 failure, one hop
+//! downstream). In that case the driver cancels and releases instead of finalizing.
 
 use chrono::Utc;
 use entities::guarantee;
+use entities::sea_orm_active_enums::SettlementCycleStatus;
 use log::{info, warn};
 use rpc::{
     PaymentGuaranteeRequest, PaymentGuaranteeRequestEssentials, PaymentGuaranteeValidationPolicyV2,
@@ -33,10 +40,23 @@ enum ValidationAction {
     Finalize,
     /// Validation resolved but violates the policy: dispute and release the payer's collateral.
     Dispute(&'static str),
-    /// Validation never resolved within the timeout: cancel and release the payer's collateral.
+    /// Validation cannot be honored (never resolved within the timeout, or resolved-and-accepted
+    /// but its cycle already resolved): cancel and release the payer's collateral.
     Cancel(&'static str),
     /// Validation is still pending within the timeout window: re-check next sweep.
     Wait,
+}
+
+/// A `PendingValidation` guarantee can only be finalized into a cycle whose participant set is not
+/// yet fixed — i.e. one still `Open` (will freeze and net later) or `Frozen` (about to net). Once
+/// a cycle reaches `NettingComputed` or any later/terminal state, a late finalize would never be
+/// included in a settlement and would strand the payer's collateral, so the driver cancels
+/// instead.
+fn cycle_still_nettable(status: &SettlementCycleStatus) -> bool {
+    matches!(
+        status,
+        SettlementCycleStatus::Open | SettlementCycleStatus::Frozen
+    )
 }
 
 /// Decide the lifecycle action for one guarantee. Pure and deterministic so it can be unit
@@ -185,6 +205,22 @@ impl CoreService {
             timeout_secs,
         );
 
+        // A resolved-and-accepted validation can only be finalized while its cycle is still
+        // nettable. If the cycle already resolved, finalizing would strand the payer's collateral
+        // in a dead cycle, so downgrade to a cancel that releases it instead.
+        let action = match action {
+            ValidationAction::Finalize
+                if !self
+                    .guarantee_cycle_still_nettable(&guarantee.cycle_id)
+                    .await? =>
+            {
+                ValidationAction::Cancel(
+                    "settlement cycle already resolved before validation landed",
+                )
+            }
+            other => other,
+        };
+
         match action {
             ValidationAction::Finalize => {
                 self.finalize_guarantee_payable(&guarantee.guarantee_id)
@@ -211,6 +247,16 @@ impl CoreService {
             ValidationAction::Wait => {}
         }
         Ok(action)
+    }
+
+    /// True if the guarantee's settlement cycle can still include it in a netting round. A missing
+    /// cycle (deleted, or an orphaned reference) is treated as not nettable so the guarantee is
+    /// cancelled and its collateral released rather than left stranded.
+    async fn guarantee_cycle_still_nettable(&self, cycle_id: &str) -> anyhow::Result<bool> {
+        let cycle = repo::get_cycle_by_id_on(self.inner.persist_ctx.db.as_ref(), cycle_id).await?;
+        Ok(cycle
+            .map(|c| cycle_still_nettable(&c.status))
+            .unwrap_or(false))
     }
 }
 
@@ -369,5 +415,25 @@ mod tests {
             decide(None, 0, 3600, 3600),
             ValidationAction::Cancel(_)
         ));
+    }
+
+    #[test]
+    fn only_open_and_frozen_cycles_are_nettable() {
+        assert!(cycle_still_nettable(&SettlementCycleStatus::Open));
+        assert!(cycle_still_nettable(&SettlementCycleStatus::Frozen));
+        for resolved in [
+            SettlementCycleStatus::NettingComputed,
+            SettlementCycleStatus::ClearingCommitted,
+            SettlementCycleStatus::PaymentWindowOpen,
+            SettlementCycleStatus::Finalized,
+            SettlementCycleStatus::Settling,
+            SettlementCycleStatus::Cancelled,
+            SettlementCycleStatus::Shortfall,
+        ] {
+            assert!(
+                !cycle_still_nettable(&resolved),
+                "{resolved:?} must not be nettable"
+            );
+        }
     }
 }
