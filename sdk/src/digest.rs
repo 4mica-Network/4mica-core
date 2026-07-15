@@ -21,10 +21,16 @@ pub fn eip712_digest_for_claims(
     params: &CorePublicParameters,
     claims: &PaymentGuaranteeRequestClaims,
 ) -> anyhow::Result<B256> {
+    // Must stay byte-identical to the operator's request domain
+    // (core/src/evm/guarantee.rs): bind the deployment's Core4Mica address so a
+    // request signature cannot be replayed against another 4Mica deployment on
+    // the same chain (4MCA-L06).
+    let verifying_contract = parse_addr("core contract", &params.contract_address)?;
     let domain = eip712_domain!(
-        name:     params.eip712_name.clone(),
-        version:  params.eip712_version.clone(),
-        chain_id: params.chain_id,
+        name:               params.eip712_name.clone(),
+        version:            params.eip712_version.clone(),
+        chain_id:           params.chain_id,
+        verifying_contract: verifying_contract,
     );
 
     match claims {

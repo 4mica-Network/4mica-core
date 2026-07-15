@@ -365,6 +365,7 @@ pub async fn build_signed_req(
             name: public_params.eip712_name.clone(),
             version: public_params.eip712_version.clone(),
             chain_id: public_params.chain_id,
+            verifying_contract: Address::from_str(&public_params.contract_address).unwrap(),
         );
         let msg = SolGuaranteeRequestClaimsV2 {
             user: Address::from_str(user_addr).unwrap(),
@@ -396,6 +397,7 @@ pub async fn build_signed_req(
         name: public_params.eip712_name.clone(),
         version: public_params.eip712_version.clone(),
         chain_id: public_params.chain_id,
+        verifying_contract: Address::from_str(&public_params.contract_address).unwrap(),
     );
     let msg = SolGuaranteeRequestClaimsV1 {
         user: Address::from_str(user_addr).unwrap(),
@@ -431,6 +433,7 @@ pub async fn build_eip712_signed_request(
         name:     params.eip712_name.clone(),
         version:  params.eip712_version.clone(),
         chain_id: params.chain_id,
+        verifying_contract: Address::from_str(&params.contract_address).unwrap(),
     );
 
     let recipient = Address::from(random::<[u8; 20]>());
@@ -537,6 +540,7 @@ pub async fn build_eip712_signed_request_v2(
         name: params.eip712_name.clone(),
         version: params.eip712_version.clone(),
         chain_id: params.chain_id,
+        verifying_contract: Address::from_str(&params.contract_address).unwrap(),
     ));
 
     let sig: Signature = wallet.sign_hash(&digest).await.expect("sign v2 eip712");

@@ -34,7 +34,7 @@ use common::contract::MockERC1271Wallet;
 async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -59,7 +59,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
 async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -109,7 +109,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
 
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -164,7 +164,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
 async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -195,7 +195,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
 async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -218,7 +218,7 @@ async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
 async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -241,7 +241,7 @@ async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
 async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -271,7 +271,7 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
 async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -301,7 +301,7 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
 async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
@@ -331,7 +331,7 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
 async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
-        contract_address: "".to_string(),
+        contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
