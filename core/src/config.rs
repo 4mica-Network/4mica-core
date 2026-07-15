@@ -218,6 +218,10 @@ pub struct GuaranteeConfig {
     pub validation_hash_canonicalization_version: String,
     #[envconfig(from = "ENABLE_V2_VALIDATION_LIFECYCLE", default = "false")]
     pub enable_v2_validation_lifecycle: bool,
+    #[envconfig(from = "VALIDATION_TIMEOUT_SECS", default = "3600")]
+    pub validation_timeout_secs: u64,
+    #[envconfig(from = "VALIDATION_POLL_CRON", default = "0 */1 * * * *")]
+    pub validation_poll_cron: String,
 }
 
 impl GuaranteeConfig {
@@ -788,6 +792,8 @@ mod tests {
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         v1.validate(Environment::Production)
             .expect("v1 config must be valid");
@@ -800,6 +806,8 @@ mod tests {
                     .to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         v2.validate(Environment::Development)
             .expect("v2 config must be valid in development");
@@ -818,6 +826,8 @@ mod tests {
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         let err = cfg
             .validate(Environment::Production)
@@ -837,6 +847,8 @@ mod tests {
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         cfg.validate(Environment::Production)
             .expect_err("explicit V2 accepted set must be rejected in production");
@@ -850,6 +862,8 @@ mod tests {
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         cfg.validate(Environment::Production)
             .expect("V1-only config must be valid in production");
@@ -864,6 +878,8 @@ mod tests {
                 "0x1111111111111111111111111111111111111111,not-an-address".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         let err = cfg
             .validate(Environment::Development)
@@ -882,6 +898,8 @@ mod tests {
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "   ".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         let err = cfg
             .validate(Environment::Development)
@@ -900,6 +918,8 @@ mod tests {
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         let err = cfg
             .validate(Environment::Development)
@@ -918,6 +938,8 @@ mod tests {
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         let err = cfg
             .validate(Environment::Development)
@@ -933,6 +955,8 @@ mod tests {
             trusted_validation_registries: String::new(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
         let err = cfg
             .validate(Environment::Development)
@@ -951,6 +975,8 @@ mod tests {
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
 
         let versions = cfg
@@ -967,6 +993,8 @@ mod tests {
             trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
             validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
             enable_v2_validation_lifecycle: false,
+            validation_timeout_secs: 3600,
+            validation_poll_cron: "0 */1 * * * *".to_string(),
         };
 
         let versions = cfg

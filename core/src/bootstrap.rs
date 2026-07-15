@@ -6,7 +6,7 @@ use core_service::{
     http,
     metrics::{HealthCheckTask, MetricsUpkeepTask, setup_metrics_recorder},
     scheduler::TaskScheduler,
-    service::{CoreService, cycle::SettlementCycleTask},
+    service::{CoreService, cycle::SettlementCycleTask, validation::ValidationLifecycleTask},
 };
 use env_logger::Env;
 use log::info;
@@ -57,6 +57,9 @@ pub async fn bootstrap() -> anyhow::Result<()> {
     scheduler.add_task(ethereum_scanner).await?;
     scheduler
         .add_task(Arc::new(SettlementCycleTask::new(service.clone())))
+        .await?;
+    scheduler
+        .add_task(Arc::new(ValidationLifecycleTask::new(service.clone())))
         .await?;
     scheduler
         .add_task(Arc::new(MetricsUpkeepTask::new(

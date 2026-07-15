@@ -308,7 +308,7 @@ impl CoreService {
                 GuaranteeSettlementStatus::PendingValidation,
             ],
             GuaranteeSettlementStatus::Disputed,
-            false,
+            true,
         )
         .await
     }

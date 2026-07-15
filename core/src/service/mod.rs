@@ -27,6 +27,7 @@ mod guarantee;
 pub mod health;
 pub mod netting;
 mod query;
+pub mod validation;
 
 /// Maximum tolerated event-scanner lag before the cached on-chain `withdrawalGracePeriod` is
 /// treated as untrustworthy for the settlement-timing invariant. A healthy scanner advances every
