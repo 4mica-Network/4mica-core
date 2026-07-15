@@ -175,6 +175,66 @@ async fn defaulted_debtor_is_seized_and_creditors_are_funded() -> anyhow::Result
     Ok(())
 }
 
+#[tokio::test]
+#[serial_test::file_serial(db)]
+async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
+    let service = setup_cycle_service().await?;
+    let cycle_id = "redelivered-default";
+    let participants = build_three_party_cycle(&service, cycle_id).await?;
+    let ctx = service.persist_ctx();
+    let asset = DEFAULT_ASSET_ADDRESS;
+
+    let (alice, bob, carol) = (&participants[0], &participants[1], &participants[2]);
+    for (who, locked) in [(alice, 10u64), (bob, 4), (carol, 1)] {
+        lock_collateral(ctx, who, locked).await?;
+    }
+    open_payment_window(&service, cycle_id).await?;
+    assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
+    let onchain = evm::cycle_id_hash(cycle_id);
+
+    // First delivery: flips alice to Defaulted, releases her lock, settles her
+    // netted guarantees.
+    service
+        .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xdefault-alice"))
+        .await?;
+    let after_first = cycle(ctx, cycle_id).await?;
+    let netted_after_first = repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+        .await?
+        .len();
+    assert_eq!(read_locked_collateral(ctx, alice, asset).await?, U256::ZERO);
+
+    // Re-delivery under a *different* tx/block hash bypasses the event dedup and
+    // re-runs the handler. It must change nothing.
+    service
+        .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xreorg-alice"))
+        .await?;
+
+    let positions =
+        repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    assert!(
+        positions
+            .iter()
+            .any(|p| &p.participant == alice && p.status == ParticipantCycleStatus::Defaulted),
+        "alice stays Defaulted after re-delivery"
+    );
+    assert_eq!(
+        read_locked_collateral(ctx, alice, asset).await?,
+        U256::ZERO,
+        "re-delivery must not touch collateral"
+    );
+    assert_eq!(
+        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+            .await?
+            .len(),
+        netted_after_first,
+        "re-delivery must not re-transition netted guarantees"
+    );
+    let after_second = cycle(ctx, cycle_id).await?;
+    assert_eq!(after_second.status, after_first.status);
+    assert_eq!(after_second.status_confirmed, after_first.status_confirmed);
+    Ok(())
+}
+
 /// A shortfall cycle is terminal — it never reaches finalize — so the residual-netted sweep
 /// has to run when it resolves, or flat participants would keep their collateral locked forever.
 #[tokio::test]
