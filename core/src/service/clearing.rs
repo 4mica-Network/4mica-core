@@ -810,7 +810,7 @@ impl CoreService {
                 let debtor = debtor.clone();
                 let tx_hash = tx_meta.tx_hash.clone();
                 Box::pin(async move {
-                    repo::mark_participant_position_status_on(
+                    let changed = repo::mark_participant_position_status_on(
                         txn,
                         &cycle_id,
                         &debtor,
@@ -820,6 +820,10 @@ impl CoreService {
                         now,
                     )
                     .await?;
+
+                    if !changed {
+                        return Ok(0);
+                    }
 
                     let guarantees = settle_netted_guarantees_for_payer(
                         txn,
