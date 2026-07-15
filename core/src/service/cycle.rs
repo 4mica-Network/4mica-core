@@ -188,11 +188,20 @@ impl CoreService {
 
     pub async fn commit_due_clearing_batches(&self) -> crate::error::ServiceResult<Vec<String>> {
         let now = Utc::now().naive_utc();
-        let due = repo::list_netting_computed_cycles_commit_due_on(
+        let mut due = repo::list_netting_computed_cycles_commit_due_on(
             self.inner.persist_ctx.db.as_ref(),
             now,
         )
         .await?;
+
+        // Also re-drive cycles committed optimistically whose CycleCommitted event never
+        // arrived within the retry window — the commit tx was likely reorged out.
+        let stale_before = self.settlement_stale_before(now)?;
+        due.extend(
+            repo::list_commit_retry_due_on(self.inner.persist_ctx.db.as_ref(), stale_before)
+                .await?,
+        );
+
         let mut committed = Vec::new();
         for cycle in due {
             let cycle_id = cycle.id.clone();
@@ -323,10 +332,27 @@ impl Task for SettlementCycleTask {
         }
         match self.0.settle_due_cycles().await {
             Ok(settled) if !settled.is_empty() => {
-                info!("settled {} settlement cycle(s) at finality", settled.len())
+                info!(
+                    "opened settlement for {} cycle(s) at finality",
+                    settled.len()
+                )
             }
             Ok(_) => {}
             Err(err) => warn!("failed to settle due cycles: {err:?}"),
+        }
+        match self.0.retry_shortfall_cycles().await {
+            Ok(retried) if !retried.is_empty() => {
+                info!("re-drove {} shortfall settlement cycle(s)", retried.len())
+            }
+            Ok(_) => {}
+            Err(err) => warn!("failed to retry shortfall cycles: {err:?}"),
+        }
+        match self.0.finalize_due_cycles().await {
+            Ok(finalized) if !finalized.is_empty() => {
+                info!("finalized {} settlement cycle(s)", finalized.len())
+            }
+            Ok(_) => {}
+            Err(err) => warn!("failed to finalize due cycles: {err:?}"),
         }
         match self.0.ensure_active_cycles().await {
             Ok(opened) if !opened.is_empty() => {
@@ -334,6 +360,10 @@ impl Task for SettlementCycleTask {
             }
             Ok(_) => {}
             Err(err) => warn!("failed to ensure active settlement cycles: {err:?}"),
+        }
+
+        if let Err(err) = self.0.record_hanging_cycles_gauge().await {
+            warn!("failed to record hanging settlement cycle gauge: {err:?}");
         }
 
         Ok(())
@@ -356,6 +386,8 @@ mod tests {
             seizure_margin_secs: 21_600,
             default_batch_size: 50,
             shortfall_grace_secs: 21_600,
+            settlement_retry_delay_secs: 1_800,
+            hanging_retry_windows: 3,
         };
         let now = Utc.with_ymd_and_hms(2026, 4, 27, 14, 37, 11).unwrap();
 

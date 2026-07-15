@@ -233,7 +233,12 @@ impl CoreContractProxy {
     pub async fn new(config: &AppConfig) -> Result<Self, CoreContractApiError> {
         let wallet = EthereumWallet::new(config.secrets.ethereum_private_key_signer.clone());
 
+        // Fetch the nonce from chain per tx rather than caching it locally. Writes are serialized
+        // by `tx_write_lock`, so there is no concurrency benefit to caching — and a cached nonce
+        // silently advances when a `.send()` reverts at gas estimation (e.g. a caught
+        // `CycleUnderfunded`), leaving every following tx stuck behind a nonce gap.
         let provider = ProviderBuilder::new()
+            .with_simple_nonce_management()
             .wallet(wallet)
             .connect(&config.ethereum_config.http_rpc_url)
             .await

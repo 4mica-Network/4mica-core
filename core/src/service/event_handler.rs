@@ -183,6 +183,14 @@ impl EthereumEventHandler for CoreService {
             .map_err(BlockchainListenerError::from)
     }
 
+    #[measure(record_event_handler_time, name = "cycle_shortfall")]
+    async fn handle_cycle_shortfall(&self, log: Log) -> Result<(), BlockchainListenerError> {
+        let CycleShortfall { cycleId, .. } = *log.log_decode()?.data();
+        self.process_cycle_shortfall(cycleId)
+            .await
+            .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
+    }
+
     /// Surface a participant the ClearingHouse skipped during settlement, classified by reason so
     /// the operator can tell a benign skip from a transient one from a genuine bug. This is
     /// observability only: it never mutates domain state and always succeeds, so a skip can never

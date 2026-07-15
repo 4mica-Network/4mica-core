@@ -3,13 +3,17 @@ use anyhow::Result;
 use chrono::{Duration, Utc};
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS,
+    evm,
     persist::{CycleGuaranteeData, PersistCtx, repo},
     service::CoreService,
 };
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 
 use super::db::{clear_all_tables, setup_db_test_env};
-use super::fixtures::{ensure_user, normalize_address, random_address};
+use super::fixtures::{
+    ensure_user, ensure_user_with_collateral, normalize_address, random_address,
+    set_locked_collateral,
+};
 
 pub async fn setup_cycle_service() -> Result<CoreService> {
     let (mut config, ctx) = setup_db_test_env().await?;
@@ -106,6 +110,50 @@ pub async fn store_pending_guarantee(
     )
     .await?;
     Ok(guarantee_id)
+}
+
+/// Give `who` `amount` of collateral and lock all of it — the state a participant is
+/// in after locking the gross value of its outgoing guarantee at issuance.
+pub async fn lock_collateral(ctx: &PersistCtx, who: &str, amount: u64) -> Result<()> {
+    ensure_user_with_collateral(ctx, who, U256::from(amount)).await?;
+    set_locked_collateral(ctx, who, DEFAULT_ASSET_ADDRESS, U256::from(amount)).await?;
+    Ok(())
+}
+
+/// Run the netting pipeline for a frozen cycle, leaving it `NettingComputed` with its
+/// guarantees netted and participant positions materialised.
+pub async fn net_cycle(service: &CoreService, cycle_id: &str) -> Result<()> {
+    service.compute_cycle_exposure_edges(cycle_id).await?;
+    service
+        .compute_cycle_participant_positions(cycle_id)
+        .await?;
+    service.build_clearing_batch(cycle_id).await?;
+    assert!(service.mark_cycle_netting_computed(cycle_id).await?);
+    Ok(())
+}
+
+/// Net a frozen cycle and open its payment window, confirmed by the mirrored
+/// `CycleCommitted` event — the common starting point for settlement-lifecycle tests.
+pub async fn open_payment_window(service: &CoreService, cycle_id: &str) -> Result<()> {
+    net_cycle(service, cycle_id).await?;
+
+    let ctx = service.persist_ctx();
+    let now = Utc::now().naive_utc();
+    assert!(
+        repo::mark_cycle_payment_window_open_on(
+            ctx.db.as_ref(),
+            cycle_id,
+            Some("0xcommit".to_string()),
+            now,
+            now,
+            now,
+        )
+        .await?
+    );
+    service
+        .process_cycle_committed(evm::cycle_id_hash(cycle_id), "0xcommit")
+        .await?;
+    Ok(())
 }
 
 pub async fn build_three_party_cycle(service: &CoreService, cycle_id: &str) -> Result<Vec<String>> {

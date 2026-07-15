@@ -25,6 +25,8 @@ pub trait EthereumEventHandler: Send + Sync {
 
     async fn handle_settlement_skipped(&self, log: Log) -> Result<(), BlockchainListenerError>;
 
+    async fn handle_cycle_shortfall(&self, log: Log) -> Result<(), BlockchainListenerError>;
+
     async fn handle_admin_event(
         &self,
         log: Log,

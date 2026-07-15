@@ -347,6 +347,15 @@ pub struct SettlementCycleConfig {
     /// Gives transient seize failures time to clear before losses are socialized.
     #[envconfig(from = "SETTLEMENT_SHORTFALL_GRACE_SECS", default = "21600")]
     pub shortfall_grace_secs: u64,
+    /// How long an optimistic chain-driven cycle transition may stay unconfirmed by
+    /// its chain event before the settlement driver re-drives it. Kept well above
+    /// Ethereum finality so a re-drive only fires on a genuine reorg. Default 30 min.
+    #[envconfig(from = "SETTLEMENT_RETRY_DELAY_SECS", default = "1800")]
+    pub settlement_retry_delay_secs: u64,
+    /// Retry windows past its expected-confirmation deadline after which an unconfirmed
+    /// cycle is counted as hanging by the operator gauge.
+    #[envconfig(from = "SETTLEMENT_HANGING_RETRY_WINDOWS", default = "3")]
+    pub hanging_retry_windows: u64,
 }
 
 impl SettlementCycleConfig {
@@ -955,6 +964,8 @@ mod tests {
             seizure_margin_secs: 21_600,
             default_batch_size: 50,
             shortfall_grace_secs: 21_600,
+            settlement_retry_delay_secs: 1_800,
+            hanging_retry_windows: 3,
         }
     }
 

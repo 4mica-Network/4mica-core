@@ -432,6 +432,9 @@ impl EthereumEventScanner {
                     Some(&SettlementSkipped::SIGNATURE_HASH) => {
                         handler.handle_settlement_skipped(log.clone()).await
                     }
+                    Some(&CycleShortfall::SIGNATURE_HASH) => {
+                        handler.handle_cycle_shortfall(log.clone()).await
+                    }
                     Some(&WithdrawalGracePeriodUpdated::SIGNATURE_HASH) => {
                         handler
                             .handle_admin_event(log.clone(), "WithdrawalGracePeriodUpdated")

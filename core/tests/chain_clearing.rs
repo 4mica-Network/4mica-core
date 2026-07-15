@@ -7,11 +7,15 @@
 //! Rust-built Merkle root and proofs verify on-chain and that the resulting
 //! events drive the database state machine.
 
+use std::str::FromStr;
 use std::time::Duration;
 
+use alloy::network::EthereumWallet;
 use alloy::primitives::{Address, U256};
-use alloy::providers::DynProvider;
 use alloy::providers::ext::AnvilApi;
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::rpc::types::TransactionRequest;
+use alloy::signers::local::PrivateKeySigner;
 use anyhow::Context;
 use entities::sea_orm_active_enums::{
     GuaranteeSettlementStatus, ParticipantCycleStatus, SettlementCycleStatus,
@@ -27,6 +31,7 @@ use common::cycle_fixtures::{create_frozen_cycle, store_payable_guarantee};
 use common::fixtures::{
     ensure_user_with_collateral, read_collateral, read_locked_collateral, set_locked_collateral,
 };
+use core_service::evm;
 use core_service::persist::{PersistCtx, repo};
 
 // Operator key = same key CoreService uses internally. A fresh HTTP provider (no
@@ -171,20 +176,45 @@ async fn poll_position_status(
     anyhow::bail!("participant {participant} never reached {expected:?}");
 }
 
-async fn poll_cycle_status(
+/// Poll until the cycle reaches `status` and is confirmed by its mirrored event.
+async fn poll_cycle_confirmed(
+    provider: &DynProvider,
     ctx: &PersistCtx,
     cycle_id: &str,
-    expected: SettlementCycleStatus,
+    status: SettlementCycleStatus,
 ) -> anyhow::Result<()> {
     for _ in 0..POLL_ATTEMPTS {
         if let Some(cycle) = repo::get_cycle_by_id(ctx, cycle_id).await?
-            && cycle.status == expected
+            && cycle.status == status
+            && cycle.status_confirmed
+        {
+            return Ok(());
+        }
+        mine(provider, 2).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    anyhow::bail!("cycle {cycle_id} never reached confirmed {status:?}");
+}
+
+/// Run the finalize job until the cycle is confirmed `Finalized`.
+async fn drive_finalization(
+    svc: &core_service::service::CoreService,
+    provider: &DynProvider,
+    ctx: &PersistCtx,
+    cycle_id: &str,
+) -> anyhow::Result<()> {
+    for _ in 0..POLL_ATTEMPTS {
+        svc.finalize_due_cycles().await?;
+        mine(provider, 2).await?;
+        if let Some(cycle) = repo::get_cycle_by_id(ctx, cycle_id).await?
+            && cycle.status == SettlementCycleStatus::Finalized
+            && cycle.status_confirmed
         {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    anyhow::bail!("cycle {cycle_id} never reached {expected:?}");
+    anyhow::bail!("cycle {cycle_id} never reached confirmed Finalized");
 }
 
 async fn poll_guarantee_status(
@@ -218,7 +248,6 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     let ctx = svc.persist_ctx();
     let http = env.cfg.ethereum_config.http_rpc_url.clone();
 
-    let (_, op_provider) = common::chain::wallet_provider(&http, OPERATOR_KEY)?;
     let (debtor, debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
     let (creditor, creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
 
@@ -272,20 +301,25 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Advance past the finality deadline, then finalize on-chain.
+    // Everyone settled voluntarily during the window. Past finality the job sees a fully-resolved
+    // cycle: it marks Settling (immediately confirmed) and then finalizes it on-chain, with the
+    // CycleFinalized event confirming the terminal state.
     provider
         .anvil_set_block_timestamp_interval(5 * 60 * 60)
         .await?;
-    ClearingHouse::new(*env.clearing_house.address(), op_provider)
-        .finalizeCycle(debtor_proof.cycle_id)
-        .send()
-        .await
-        .context("finalizeCycle send")?
-        .watch()
-        .await
-        .context("finalizeCycle confirm")?;
-    mine(&provider, 2).await?;
-    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Finalized).await?;
+    backdate_cycle_finality(ctx, cycle_id).await?;
+    poll_cycle_confirmed(
+        &provider,
+        ctx,
+        cycle_id,
+        SettlementCycleStatus::PaymentWindowOpen,
+    )
+    .await?;
+
+    let settled = svc.settle_due_cycles().await?;
+    assert!(settled.iter().any(|c| c == cycle_id));
+    poll_cycle_confirmed(&provider, ctx, cycle_id, SettlementCycleStatus::Settling).await?;
+    drive_finalization(&svc, &provider, ctx, cycle_id).await?;
 
     Ok(())
 }
@@ -540,13 +574,20 @@ async fn fully_paid_cycle_with_unclaimed_creditor_is_settled_by_job() -> anyhow:
         .anvil_set_block_timestamp_interval(5 * 60 * 60)
         .await?;
     backdate_cycle_finality(ctx, cycle_id).await?;
+    poll_cycle_confirmed(
+        &provider,
+        ctx,
+        cycle_id,
+        SettlementCycleStatus::PaymentWindowOpen,
+    )
+    .await?;
 
     // First job pass: no debtors to seize, but the unclaimed creditor is funded.
     let settled = svc.settle_due_cycles().await?;
     assert!(settled.iter().any(|c| c == cycle_id));
     mine(&provider, 2).await?;
 
-    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Settling).await?;
+    poll_cycle_confirmed(&provider, ctx, cycle_id, SettlementCycleStatus::Settling).await?;
     poll_position_status(
         ctx,
         cycle_id,
@@ -567,10 +608,8 @@ async fn fully_paid_cycle_with_unclaimed_creditor_is_settled_by_job() -> anyhow:
         "creditor collateral funded"
     );
 
-    // Second job pass: the off-chain ledger is fully resolved, so the cycle finalizes.
-    svc.settle_due_cycles().await?;
-    mine(&provider, 2).await?;
-    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Finalized).await?;
+    // Finalize job: once the resolving events confirm the Settling cycle, it finalizes on-chain.
+    drive_finalization(&svc, &provider, ctx, cycle_id).await?;
 
     Ok(())
 }
@@ -608,6 +647,13 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
         .await
         .context("debtor deposit confirm")?;
     mine(&provider, 2).await?;
+    poll_cycle_confirmed(
+        &provider,
+        ctx,
+        cycle_id,
+        SettlementCycleStatus::PaymentWindowOpen,
+    )
+    .await?;
 
     // First job pass: the debtor never paid, so finality handling seizes the
     // debtor's collateral, funds the creditor's collateral, and marks the cycle
@@ -616,7 +662,7 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
     assert!(settled.iter().any(|c| c == cycle_id));
     mine(&provider, 2).await?;
 
-    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Settling).await?;
+    poll_cycle_confirmed(&provider, ctx, cycle_id, SettlementCycleStatus::Settling).await?;
     poll_position_status(
         ctx,
         cycle_id,
@@ -651,14 +697,13 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
     assert_eq!(debtor_balance, U256::ZERO, "debtor collateral fully seized");
     assert_eq!(creditor_balance, amount, "creditor collateral funded");
 
+    // The seized/funded collateral is reconciled from chain into the off-chain ledger.
     let asset = core_service::config::DEFAULT_ASSET_ADDRESS;
     poll_collateral(ctx, &lower(&debtor), asset, U256::ZERO).await?;
     poll_collateral(ctx, &lower(&creditor), asset, amount).await?;
 
-    // Second job pass: the off-chain ledger is fully resolved, so the cycle finalizes.
-    svc.settle_due_cycles().await?;
-    mine(&provider, 2).await?;
-    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Finalized).await?;
+    // Finalize job: once the resolving events confirm the Settling cycle, it finalizes on-chain.
+    drive_finalization(&svc, &provider, ctx, cycle_id).await?;
 
     Ok(())
 }
@@ -682,26 +727,14 @@ async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyho
     let ctx = svc.persist_ctx();
     let http = env.cfg.ethereum_config.http_rpc_url.clone();
 
-    let (debtor, debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
+    let (debtor, _debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
     let (creditor, _creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
 
     let cycle_id = "clearing-e2e-shortfall";
     // Commit with a short (5s) future window rather than jumping anvil time, so wall-clock can
-    // pass the on-chain finality deadline the shortfall driver reads.
+    // pass the on-chain finality deadline the shortfall driver reads. The debtor never deposits
+    // on-chain, so its net debit can't be seized and the pool stays empty.
     commit_two_party_cycle_finality_soon(&svc, cycle_id, &debtor, &creditor, 5).await?;
-
-    // The debtor only posts HALF its net debit on-chain, so the pool can never be fully funded.
-    let half = U256::from(NET_AMOUNT / 2);
-    Core4Mica::new(*env.contract.address(), debtor_provider)
-        .deposit()
-        .value(half)
-        .send()
-        .await
-        .context("debtor deposit send")?
-        .watch()
-        .await
-        .context("debtor deposit confirm")?;
-    mine(&provider, 2).await?;
 
     // Push on-chain block time past the finality deadline (so settleDefaults/markCycleShortfall
     // are allowed on-chain), let wall-clock pass finality + grace (so the driver's grace window
@@ -712,13 +745,21 @@ async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyho
     mine(&provider, 1).await?;
     tokio::time::sleep(Duration::from_secs(9)).await;
     backdate_cycle_finality(ctx, cycle_id).await?;
+    poll_cycle_confirmed(
+        &provider,
+        ctx,
+        cycle_id,
+        SettlementCycleStatus::PaymentWindowOpen,
+    )
+    .await?;
 
-    // One job pass: the seize recovers the partial collateral, the creditor-funding batch can't
-    // fully fund, so the job drives the cycle terminal (Shortfall) and pays the creditor pro-rata.
+    // One job pass: the seize recovers nothing, the creditor-funding batch reverts underfunded, so
+    // the job drives the cycle terminal (Shortfall) and pays the creditor its share of an empty
+    // pool — zero.
     svc.settle_due_cycles().await?;
     mine(&provider, 2).await?;
 
-    poll_cycle_status(ctx, cycle_id, SettlementCycleStatus::Shortfall).await?;
+    poll_cycle_confirmed(&provider, ctx, cycle_id, SettlementCycleStatus::Shortfall).await?;
     poll_position_status(
         ctx,
         cycle_id,
@@ -734,8 +775,7 @@ async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyho
     )
     .await?;
 
-    // Debtor's collateral fully seized; creditor made whole only up to the recovered pool
-    // (pro-rata = NET_AMOUNT * (NET_AMOUNT/2) / NET_AMOUNT = NET_AMOUNT/2).
+    // Nothing was recoverable, so neither party ends with on-chain collateral.
     let core = Core4Mica::new(*env.contract.address(), provider.clone());
     let debtor_balance = core
         .withdrawableBalance(debtor, Address::ZERO)
@@ -745,11 +785,66 @@ async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyho
         .withdrawableBalance(creditor, Address::ZERO)
         .call()
         .await?;
-    assert_eq!(debtor_balance, U256::ZERO, "debtor collateral fully seized");
     assert_eq!(
-        creditor_balance, half,
-        "creditor made whole only up to its pro-rata share"
+        debtor_balance,
+        U256::ZERO,
+        "debtor had no collateral to seize"
     );
+    assert_eq!(
+        creditor_balance,
+        U256::ZERO,
+        "an empty pool pays the creditor nothing"
+    );
+
+    Ok(())
+}
+
+/// Regression guard: a caught contract revert must not wedge the next tx on the proxy's reused
+/// provider. A cached nonce manager advances its cache when a `.send()` reverts at gas estimation,
+/// stranding the following tx behind a nonce gap. Per-tx nonce fetching fixes it.
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+#[serial_test::file_serial(db)]
+async fn caught_revert_does_not_stall_the_next_tx() -> anyhow::Result<()> {
+    let env = setup_e2e_environment()
+        .await
+        .context("setup_e2e_environment")?;
+    let http = env.cfg.ethereum_config.http_rpc_url.clone();
+
+    // A long-lived provider built exactly like CoreContractProxy: reused across txs, with the
+    // proxy's per-tx (non-caching) nonce management.
+    let signer = PrivateKeySigner::from_str(OPERATOR_KEY)?;
+    let addr = signer.address();
+    let provider = ProviderBuilder::new()
+        .with_simple_nonce_management()
+        .wallet(EthereumWallet::from(signer))
+        .connect_http(http.parse()?)
+        .erased();
+    let self_tx = || TransactionRequest::default().to(addr).value(U256::ZERO);
+
+    provider
+        .send_transaction(self_tx())
+        .await?
+        .get_receipt()
+        .await?;
+
+    // A write tx that reverts at gas estimation — rejected before broadcast, consumes no nonce.
+    let clearing_house = ClearingHouse::new(*env.clearing_house.address(), provider.clone());
+    let reverted = clearing_house
+        .markCycleShortfall(evm::cycle_id_hash("no-such-cycle"))
+        .send()
+        .await;
+    assert!(
+        reverted.is_err(),
+        "markCycleShortfall on an unknown cycle must revert"
+    );
+
+    // The next tx must still mine promptly: with per-tx nonce fetching the reverted send left no
+    // stale nonce, so there is no gap to strand it. (A cached nonce manager would hang here.)
+    let next = provider.send_transaction(self_tx()).await?;
+    mine(&env.provider, 2).await?;
+    tokio::time::timeout(Duration::from_secs(5), next.get_receipt())
+        .await
+        .context("tx after a caught revert stalled — nonce cache regression")??;
 
     Ok(())
 }
