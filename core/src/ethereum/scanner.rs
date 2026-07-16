@@ -32,7 +32,7 @@ pub struct EthereumEventScanner {
     handler: Arc<dyn EthereumEventHandler>,
     /// Serialises scan runs. The cron fires every second, but a scan can take longer; without this
     /// two runs would process the same range concurrently and, because a not-yet-`Processed` event
-    /// is re-run, apply a handler twice (4MCA-M05 recovery must stay at-most-once under overlap).
+    /// is re-run, apply a handler twice (recovery must stay at-most-once under overlap).
     scan_lock: Arc<Mutex<()>>,
 }
 
@@ -491,7 +491,7 @@ impl EthereumEventScanner {
                         // Retryable but retries exhausted: a sustained infra outage (DB/RPC down),
                         // not a property of this event. Abort the batch and let the next scan retry
                         // the whole range. The row stays `Pending`, so the next scan re-runs its
-                        // handler (4MCA-M05) — no need to delete and re-store it.
+                        // handler — no need to delete and re-store it.
                         HandlerFailureAction::Abort => {
                             error!(
                                 "Event handler exhausted {max_retries} retries; aborting scan: {e}"
@@ -524,7 +524,7 @@ impl EthereumEventScanner {
                                 Err(mark_err) => {
                                     // Could not persist the dead-letter (DB issue). Abort; the row
                                     // stays `Pending`, so the next scan re-runs the handler and
-                                    // re-attempts the dead-letter (4MCA-M05) rather than silently
+                                    // re-attempts the dead-letter rather than silently
                                     // skipping the event.
                                     error!(
                                         "Failed to record dead-letter for {signature}: {mark_err}"

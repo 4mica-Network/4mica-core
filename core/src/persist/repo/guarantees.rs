@@ -367,6 +367,20 @@ pub async fn list_finalized_payable_guarantees_for_cycle_on<C: ConnectionTrait>(
         .await?;
     Ok(rows)
 }
+#[measure(record_db_time)]
+pub async fn list_pending_validation_guarantees_on<C: ConnectionTrait>(
+    conn: &C,
+) -> Result<Vec<guarantee::Model>, PersistDbError> {
+    let rows = guarantee::Entity::find()
+        .filter(
+            guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::PendingValidation),
+        )
+        .order_by_asc(guarantee::Column::CreatedAt)
+        .order_by_asc(guarantee::Column::GuaranteeId)
+        .all(conn)
+        .await?;
+    Ok(rows)
+}
 
 /// Count the `FinalizedPayable` guarantees in a cycle. Used to detect cycles
 /// with no payable exposure, which are short-circuited instead of being netted

@@ -65,6 +65,23 @@ pub struct GuaranteeVersionConfig {
     pub decoder: Address,
     pub enabled: bool,
 }
+#[derive(Debug, Clone)]
+pub struct ValidationStatus {
+    pub validator_address: Address,
+    pub agent_id: U256,
+    pub response: u8,
+    pub tag: String,
+    /// Unix seconds of the last update; `0` means the request is still unresolved (pending),
+    /// mirroring the on-chain `lastUpdate == 0` check in ValidationRegistryGuaranteeDecoder.
+    pub last_update: U256,
+}
+
+impl ValidationStatus {
+    /// True once the registry has recorded a result (`lastUpdate != 0`).
+    pub fn is_resolved(&self) -> bool {
+        !self.last_update.is_zero()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ClearingCommitInput {
@@ -227,6 +244,15 @@ pub trait CoreContractApi: Send + Sync {
         &self,
         cycle_id: B256,
     ) -> Result<ClearingCycleView, CoreContractApiError>;
+
+    /// Read the ERC-8004 validation status for `request_hash` from `registry`. Used by the V2
+    /// validation lifecycle driver to decide whether a `PendingValidation` guarantee
+    /// should be finalized, disputed, or left waiting.
+    async fn get_validation_status(
+        &self,
+        registry: Address,
+        request_hash: B256,
+    ) -> Result<ValidationStatus, CoreContractApiError>;
 }
 
 impl CoreContractProxy {
@@ -524,6 +550,26 @@ impl CoreContractApi for CoreContractProxy {
             payment_finality_deadline: cycle.paymentFinalityDeadline,
             status: cycle.status,
             exists: cycle.exists,
+        })
+    }
+
+    async fn get_validation_status(
+        &self,
+        registry: Address,
+        request_hash: B256,
+    ) -> Result<ValidationStatus, CoreContractApiError> {
+        let contract = IValidationRegistry::new(registry, self.provider.clone());
+        let status = contract
+            .getValidationStatus(request_hash)
+            .call()
+            .await
+            .observe("getValidationStatus")?;
+        Ok(ValidationStatus {
+            validator_address: status.validatorAddress,
+            agent_id: status.agentId,
+            response: status.response,
+            tag: status.tag,
+            last_update: status.lastUpdate,
         })
     }
 }
