@@ -1,9 +1,11 @@
 //! EVM leaf encoding for the clearing batch Merkle tree.
 //!
-//! [`hash_participant_leaf`] computes the keccak256 pre-image that mirrors the
-//! ClearingHouse contract so that proofs produced off-chain verify on-chain.
+//! [`hash_participant_leaf`] builds the leaf pre-image that mirrors the
+//! ClearingHouse contract and double-hashes it into a [`LeafHash`], so that
+//! proofs produced off-chain verify on-chain.
 
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, U256};
+use crypto::merkle::LeafHash;
 
 use crate::evm::{address_word, cycle_id_hash};
 use crate::service::netting::ClearingParticipantRole;
@@ -12,15 +14,15 @@ pub fn claim_cycle_id(cycle_id: &str) -> U256 {
     U256::from_be_bytes(crate::evm::cycle_id_hash(cycle_id).into())
 }
 
-/// Compute the keccak256 leaf for a single participant position.
+/// Compute the double-hashed Merkle leaf for a single participant position.
 ///
 /// The pre-image is the ABI-style concatenation of 32-byte words
 /// `(chainId, clearingHouse, cycleId, asset, participant, amount, role)`, which
-/// must stay byte-for-byte identical to the ClearingHouse contract.
-///
-/// This fixed 224-byte preimage is also what makes the Merkle tree
-/// second-preimage safe: it can never equal a 64-byte internal-node preimage.
-/// See the load-bearing caller invariant documented in [`crypto::merkle`].
+/// must stay byte-for-byte identical to `ClearingHouse.participantLeaf`.
+/// [`LeafHash::from_preimage`] then double-hashes it
+/// (`keccak256(keccak256(preimage))`), matching the contract's double hash and
+/// keeping every leaf in a domain disjoint from internal nodes — the tree's
+/// second-preimage safety, documented in [`crypto::merkle`].
 pub fn hash_participant_leaf(
     chain_id: u64,
     clearing_house_address: Address,
@@ -29,7 +31,7 @@ pub fn hash_participant_leaf(
     participant: Address,
     amount: U256,
     role: ClearingParticipantRole,
-) -> B256 {
+) -> LeafHash {
     let cycle_id = cycle_id_hash(cycle_id);
     let mut encoded = Vec::with_capacity(0xe0);
     encoded.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
@@ -39,13 +41,14 @@ pub fn hash_participant_leaf(
     encoded.extend_from_slice(&address_word(participant));
     encoded.extend_from_slice(&amount.to_be_bytes::<32>());
     encoded.extend_from_slice(&U256::from(role as u8).to_be_bytes::<32>());
-    keccak256(encoded)
+    LeafHash::from_preimage(&encoded)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::evm::cycle_id_hash;
+    use alloy::primitives::keccak256;
     use alloy_sol_types::SolValue;
     use crypto::merkle::{MerkleTree, verify_proof};
     use std::str::FromStr;
@@ -80,7 +83,8 @@ mod tests {
             ClearingParticipantRole::NetDebtor,
         );
 
-        let expected = keccak256(
+        // The on-chain leaf is the double hash keccak256(keccak256(abi.encode(..))).
+        let inner = keccak256(
             (
                 U256::from(chain_id),
                 clearing_house,
@@ -92,8 +96,9 @@ mod tests {
             )
                 .abi_encode(),
         );
+        let expected = keccak256(inner);
 
-        assert_eq!(actual, expected);
+        assert_eq!(actual.hash(), expected);
     }
 
     #[test]

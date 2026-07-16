@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::Utc;
-use crypto::merkle::MerkleTree;
+use crypto::merkle::{LeafHash, MerkleTree};
 use entities::{
     clearing_batch, cycle_participant_position,
     sea_orm_active_enums::{ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus},
@@ -39,8 +39,7 @@ pub struct ParticipantLeaf {
     pub amount: U256,
     pub net_debit: U256,
     pub net_credit: U256,
-    /// The keccak256 leaf committed to the clearing batch Merkle tree.
-    pub leaf: B256,
+    pub leaf: LeafHash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -450,7 +449,7 @@ impl CoreService {
             amount: target.amount,
             net_debit: target.net_debit,
             net_credit: target.net_credit,
-            leaf: target.leaf,
+            leaf: target.leaf.hash(),
             merkle_root: stored_root,
             proof,
         })

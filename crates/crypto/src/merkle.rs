@@ -1,79 +1,92 @@
 //! A keccak256 Merkle tree with sorted, deduplicated leaves.
 //!
-//! The tree is intentionally domain-agnostic: it operates purely on [`B256`]
-//! leaf hashes and knows nothing about what those hashes represent. Callers are
-//! responsible for deriving leaf hashes for their own domain.
-//!
 //! ## Construction
 //!
-//! Leaves are sorted ascending and deduplicated before the tree is built, so the
-//! resulting root and proofs are independent of insertion order and of repeated
-//! leaves. Build a tree either from an iterator of leaves via
+//! Leaves are sorted ascending and deduplicated first, so the root and proofs are
+//! independent of insertion order and repeated leaves. Build from an iterator via
 //! [`MerkleTree::from_leaves`], or incrementally with a [`MerkleTreeBuilder`]
-//! (see [`MerkleTree::builder`]) and finish with [`MerkleTreeBuilder::commit`].
+//! ([`MerkleTree::builder`] then [`MerkleTreeBuilder::commit`]).
 //!
 //! ## Hashing scheme
 //!
-//! Internal nodes are computed with [`hash_pair`], which concatenates the two
-//! child hashes in ascending byte order before applying keccak256. This matches
-//! OpenZeppelin's `MerkleProof` sorted-pair verification, so roots and proofs
-//! produced here verify directly in Solidity. When a level has an odd number of
-//! nodes, the final node is paired with itself.
+//! Internal nodes use [`hash_pair`]: the two child hashes are concatenated in
+//! ascending byte order and keccak256'd. This matches OpenZeppelin's sorted-pair
+//! `MerkleProof`, so roots and proofs verify unchanged in Solidity. An odd
+//! trailing node is paired with itself.
 //!
-//! ## Second-preimage safety — a load-bearing caller invariant
+//! Leaves are double-hashed: a [`LeafHash`] is `keccak256(keccak256(preimage))`,
+//! as in OpenZeppelin's `StandardMerkleTree`.
 //!
-//! Leaves and internal nodes are both bare [`B256`] hashes, so this tree gives
-//! no *structural* protection against second-preimage attacks: an internal node
-//! value handed to [`verify_proof`] as a `leaf` verifies just fine, because the
-//! verifier cannot tell a leaf apart from an interior node. Safety therefore
-//! depends entirely on **consumers deriving every leaf from typed, fixed-shape
-//! arguments and never accepting a caller-supplied 64-byte leaf**. The
-//! ClearingHouse upholds this: its leaf preimage is a fixed 224-byte tuple
-//! `(chainId, clearingHouse, cycleId, asset, participant, amount, role)`, which
-//! can never collide with a 64-byte node preimage, and on-chain verification
-//! recomputes the leaf from those arguments rather than trusting the caller.
+//! ## Second-preimage safety
 //!
-//! Do not add an API that verifies an externally supplied leaf hash, and keep
-//! leaf derivation longer than 64 bytes; either change reintroduces the attack.
+//! In a plain sorted-pair tree, leaves and internal nodes are indistinguishable
+//! 32-byte values, so an interior node value can be presented where a leaf is
+//! expected and still fold up to a valid root. Double-hashing separates the two
+//! by hash-input width: an internal node is keccak256 of a 64-byte input
+//! (`left || right`), a leaf is keccak256 of a 32-byte inner digest. The widths
+//! are disjoint, so short of a collision no leaf can equal a node. Any preimage
+//! length is safe, since the inner hash normalizes it to 32 bytes first.
+//!
+//! The type system holds the boundary: every leaf entry point takes a
+//! [`LeafHash`], never a raw [`B256`], and a `LeafHash` comes only from
+//! [`LeafHash::from_preimage`] — so a bare hash (e.g. an interior node read off
+//! the tree) can never enter as a leaf.
 //!
 //! ## Proofs
 //!
-//! [`MerkleTree::proof`] returns the sibling hashes needed to recompute the root
-//! from a single leaf. [`verify_proof`] (or OpenZeppelin's `MerkleProof.verify`
-//! on-chain) checks such a proof against a known root.
+//! [`MerkleTree::proof`] returns the sibling hashes that recompute the root from
+//! a leaf; [`verify_proof`] (or OpenZeppelin's `MerkleProof.verify`) checks one.
 
 use std::collections::BTreeSet;
 
 use alloy::primitives::{B256, keccak256};
 
-/// Hash two nodes into their parent using keccak256 over the ascending-ordered
-/// concatenation of the two hashes.
-///
-/// Sorting the pair before hashing makes the result independent of left/right
-/// ordering, matching OpenZeppelin's sorted-pair Merkle verification.
+/// Hash two child nodes into their parent: keccak256 of the two hashes
+/// concatenated in ascending byte order, so the result is order-independent.
 pub fn hash_pair(a: B256, b: B256) -> B256 {
+    const HALF: usize = NODE_PREIMAGE_LEN / 2;
     let (left, right) = if a <= b { (a, b) } else { (b, a) };
-    let mut encoded = [0u8; 64];
-    encoded[..32].copy_from_slice(left.as_slice());
-    encoded[32..].copy_from_slice(right.as_slice());
+    let mut encoded = [0u8; NODE_PREIMAGE_LEN];
+    encoded[..HALF].copy_from_slice(left.as_slice());
+    encoded[HALF..].copy_from_slice(right.as_slice());
     keccak256(encoded)
 }
 
-/// Verify that `proof` reconstructs `root` starting from `leaf`.
+/// Byte width of an internal-node preimage (two concatenated child hashes).
+const NODE_PREIMAGE_LEN: usize = 2 * size_of::<B256>();
+
+/// A double-hashed Merkle leaf value, `keccak256(keccak256(preimage))`.
 ///
-/// This mirrors OpenZeppelin's `MerkleProof.verify`: each proof element is folded
-/// into the running hash with [`hash_pair`], and the final hash must equal `root`.
-pub fn verify_proof(proof: &[B256], root: B256, leaf: B256) -> bool {
-    let computed = proof
-        .iter()
-        .fold(leaf, |computed, sibling| hash_pair(computed, *sibling));
+/// The only value accepted as a tree leaf, constructible only via
+/// [`LeafHash::from_preimage`]; see the module docs on second-preimage safety.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeafHash(B256);
+
+impl LeafHash {
+    /// Derive a leaf value, `keccak256(keccak256(preimage))`. Accepts a preimage
+    /// of any length.
+    pub fn from_preimage(preimage: &[u8]) -> Self {
+        Self(keccak256(keccak256(preimage)))
+    }
+
+    /// The underlying value, for use as a raw tree node.
+    pub fn hash(self) -> B256 {
+        self.0
+    }
+}
+
+/// Verify that `proof` reconstructs `root` from `leaf`.
+///
+/// Folds each proof element into the running hash with [`hash_pair`]; the result
+/// must equal `root`. Compatible with OpenZeppelin's `MerkleProof.verify`.
+pub fn verify_proof(proof: &[B256], root: B256, leaf: LeafHash) -> bool {
+    let computed = proof.iter().fold(leaf.hash(), |computed, sibling| {
+        hash_pair(computed, *sibling)
+    });
     computed == root
 }
 
 /// Incrementally collects leaves before committing them into a [`MerkleTree`].
-///
-/// Leaves are stored in a [`BTreeSet`], so insertion order does not matter and
-/// duplicates are dropped automatically.
 #[derive(Debug, Clone, Default)]
 pub struct MerkleTreeBuilder {
     leaves: BTreeSet<B256>,
@@ -86,13 +99,13 @@ impl MerkleTreeBuilder {
     }
 
     /// Add a single leaf. Returns `true` if the leaf was not already present.
-    pub fn insert(&mut self, leaf: B256) -> bool {
-        self.leaves.insert(leaf)
+    pub fn insert(&mut self, leaf: LeafHash) -> bool {
+        self.leaves.insert(leaf.hash())
     }
 
     /// Add many leaves at once.
-    pub fn extend(&mut self, leaves: impl IntoIterator<Item = B256>) {
-        self.leaves.extend(leaves);
+    pub fn extend(&mut self, leaves: impl IntoIterator<Item = LeafHash>) {
+        self.leaves.extend(leaves.into_iter().map(LeafHash::hash));
     }
 
     /// Number of distinct leaves added so far.
@@ -123,12 +136,11 @@ pub struct MerkleTree {
 }
 
 impl MerkleTree {
-    /// Build a tree from an iterator of leaves.
-    ///
-    /// Leaves are sorted ascending and deduplicated before the tree is built.
-    pub fn from_leaves(leaves: impl IntoIterator<Item = B256>) -> Self {
+    /// Build a tree from an iterator of leaves; sorted and deduplicated first.
+    pub fn from_leaves(leaves: impl IntoIterator<Item = LeafHash>) -> Self {
         let sorted: Vec<B256> = leaves
             .into_iter()
+            .map(LeafHash::hash)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -181,9 +193,9 @@ impl MerkleTree {
     }
 
     /// Whether `leaf` is one of the tree's leaves.
-    pub fn contains(&self, leaf: B256) -> bool {
+    pub fn contains(&self, leaf: LeafHash) -> bool {
         // Leaves are sorted, so a binary search is sufficient.
-        self.leaves().binary_search(&leaf).is_ok()
+        self.leaves().binary_search(&leaf.hash()).is_ok()
     }
 
     /// Number of distinct leaves.
@@ -198,9 +210,10 @@ impl MerkleTree {
 
     /// Produce a Merkle proof for `leaf`, or `None` if it is not in the tree.
     ///
-    /// The returned siblings, folded with [`hash_pair`] starting from `leaf`,
-    /// reconstruct [`MerkleTree::root`]; see [`verify_proof`].
-    pub fn proof(&self, leaf: B256) -> Option<Vec<B256>> {
+    /// The returned siblings, folded with [`hash_pair`] starting from the leaf
+    /// hash, reconstruct [`MerkleTree::root`]; see [`verify_proof`].
+    pub fn proof(&self, leaf: LeafHash) -> Option<Vec<B256>> {
+        let leaf = leaf.hash();
         let mut index = self.leaves().iter().position(|l| *l == leaf)?;
         let mut proof = Vec::with_capacity(self.levels.len().saturating_sub(1));
 
@@ -231,24 +244,32 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
+    /// An arbitrary 32-byte value, for exercising the raw-`B256` node helpers
+    /// ([`hash_pair`]) that operate below the [`LeafHash`] layer.
     fn leaf(byte: u8) -> B256 {
         keccak256([byte])
     }
 
+    /// A one-byte leaf as a [`LeafHash`], the type the tree and [`verify_proof`]
+    /// accept. Its value is the double hash `keccak256(keccak256([byte]))`.
+    fn leaf_hash(byte: u8) -> LeafHash {
+        LeafHash::from_preimage(&[byte])
+    }
+
     #[test]
     fn empty_tree_has_zero_root_and_no_proofs() {
-        let tree = MerkleTree::from_leaves(Vec::<B256>::new());
+        let tree = MerkleTree::from_leaves(Vec::<LeafHash>::new());
         assert!(tree.is_empty());
         assert_eq!(tree.len(), 0);
         assert_eq!(tree.root(), B256::ZERO);
-        assert_eq!(tree.proof(leaf(1)), None);
+        assert_eq!(tree.proof(leaf_hash(1)), None);
     }
 
     #[test]
     fn single_leaf_tree_is_its_own_root() {
-        let only = leaf(7);
+        let only = leaf_hash(7);
         let tree = MerkleTree::from_leaves([only]);
-        assert_eq!(tree.root(), only);
+        assert_eq!(tree.root(), only.hash());
         // A lone leaf needs no siblings to reach the root.
         assert_eq!(tree.proof(only), Some(Vec::new()));
         assert!(verify_proof(&[], tree.root(), only));
@@ -256,9 +277,9 @@ mod tests {
 
     #[test]
     fn root_is_order_independent() {
-        let a = leaf(1);
-        let b = leaf(2);
-        let c = leaf(3);
+        let a = leaf_hash(1);
+        let b = leaf_hash(2);
+        let c = leaf_hash(3);
         assert_eq!(
             MerkleTree::from_leaves([a, b, c]).root(),
             MerkleTree::from_leaves([c, a, b]).root(),
@@ -267,8 +288,8 @@ mod tests {
 
     #[test]
     fn duplicate_leaves_are_deduplicated() {
-        let a = leaf(1);
-        let b = leaf(2);
+        let a = leaf_hash(1);
+        let b = leaf_hash(2);
         assert_eq!(
             MerkleTree::from_leaves([a, b]).root(),
             MerkleTree::from_leaves([a, b, a, b, a]).root(),
@@ -278,7 +299,7 @@ mod tests {
 
     #[test]
     fn builder_matches_from_leaves() {
-        let leaves = [leaf(5), leaf(9), leaf(1), leaf(5)];
+        let leaves = [leaf_hash(5), leaf_hash(9), leaf_hash(1), leaf_hash(5)];
         let mut builder = MerkleTree::builder();
         for l in leaves {
             builder.insert(l);
@@ -290,7 +311,7 @@ mod tests {
 
     #[test]
     fn builder_extend_matches_inserts() {
-        let leaves = [leaf(8), leaf(2), leaf(4)];
+        let leaves = [leaf_hash(8), leaf_hash(2), leaf_hash(4)];
         let mut by_insert = MerkleTree::builder();
         for l in leaves {
             by_insert.insert(l);
@@ -310,36 +331,78 @@ mod tests {
     #[test]
     fn proofs_verify_for_every_leaf() {
         // Use an odd leaf count to exercise the self-pairing branch.
-        let leaves: Vec<B256> = (0u8..5).map(leaf).collect();
+        let leaves: Vec<LeafHash> = (0u8..5).map(leaf_hash).collect();
         let tree = MerkleTree::from_leaves(leaves.clone());
         let root = tree.root();
-        for l in leaves {
+        for byte in 0u8..5 {
+            let l = leaf_hash(byte);
             let proof = tree.proof(l).expect("leaf is in the tree");
-            assert!(verify_proof(&proof, root, l), "proof failed for {l:#x}");
+            assert!(
+                verify_proof(&proof, root, l),
+                "proof failed for byte {byte}"
+            );
         }
     }
 
     #[test]
     fn proof_for_absent_leaf_is_none() {
-        let tree = MerkleTree::from_leaves([leaf(1), leaf(2)]);
-        assert_eq!(tree.proof(leaf(99)), None);
+        let tree = MerkleTree::from_leaves([leaf_hash(1), leaf_hash(2)]);
+        assert_eq!(tree.proof(leaf_hash(99)), None);
     }
 
     #[test]
     fn contains_reports_membership() {
-        let tree = MerkleTree::from_leaves([leaf(1), leaf(2)]);
-        assert!(tree.contains(leaf(1)));
-        assert!(!tree.contains(leaf(3)));
+        let tree = MerkleTree::from_leaves([leaf_hash(1), leaf_hash(2)]);
+        assert!(tree.contains(leaf_hash(1)));
+        assert!(!tree.contains(leaf_hash(3)));
     }
 
     #[test]
     fn proof_does_not_verify_against_wrong_root() {
-        let tree = MerkleTree::from_leaves([leaf(1), leaf(2), leaf(3)]);
-        let target = leaf(2);
+        let tree = MerkleTree::from_leaves([leaf_hash(1), leaf_hash(2), leaf_hash(3)]);
+        let target = leaf_hash(2);
         let proof = tree.proof(target).unwrap();
         let wrong_root =
             B256::from_str("0x1111111111111111111111111111111111111111111111111111111111111111")
                 .unwrap();
         assert!(!verify_proof(&proof, wrong_root, target));
+    }
+
+    #[test]
+    fn leaf_domain_is_disjoint_from_internal_node_domain() {
+        // A four-leaf tree has a genuine internal node at level 1. Its value is a
+        // keccak256 of a 64-byte input (left || right); the double-hashed leaves
+        // are keccak256 of a 32-byte input. The domains cannot overlap.
+        let tree = MerkleTree::from_leaves((0u8..4).map(leaf_hash));
+        let internal_node = tree.levels[1][0];
+
+        // Reconstruct that node's exact 64-byte preimage from its two children
+        // (levels[0] is sorted ascending, so this matches hash_pair's ordering).
+        let (l, r) = (tree.levels[0][0], tree.levels[0][1]);
+        let mut node_preimage = [0u8; NODE_PREIMAGE_LEN];
+        node_preimage[..32].copy_from_slice(l.as_slice());
+        node_preimage[32..].copy_from_slice(r.as_slice());
+        assert_eq!(internal_node, keccak256(node_preimage), "sanity: real node");
+        assert_eq!(internal_node, hash_pair(l, r));
+
+        // Feeding the node's own 64-byte preimage through LeafHash double-hashes
+        // its 32-byte digest, landing in the leaf domain, not on `internal_node`.
+        assert_ne!(
+            LeafHash::from_preimage(&node_preimage).hash(),
+            internal_node
+        );
+    }
+
+    #[test]
+    fn from_preimage_double_hashes_any_width() {
+        // Every width yields the OZ double hash, including the 64-byte case.
+        for len in [0usize, 32, 63, 64, 65, 224] {
+            let preimage = vec![0xABu8; len];
+            assert_eq!(
+                LeafHash::from_preimage(&preimage).hash(),
+                keccak256(keccak256(&preimage)),
+                "double hash mismatch at width {len}",
+            );
+        }
     }
 }
