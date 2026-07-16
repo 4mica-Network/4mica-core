@@ -2,72 +2,47 @@
 //!
 //! ## Construction
 //!
-//! Leaves are sorted ascending and deduplicated before the tree is built, so the
-//! resulting root and proofs are independent of insertion order and of repeated
-//! leaves. Build a tree either from an iterator of leaves via
+//! Leaves are sorted ascending and deduplicated first, so the root and proofs are
+//! independent of insertion order and repeated leaves. Build from an iterator via
 //! [`MerkleTree::from_leaves`], or incrementally with a [`MerkleTreeBuilder`]
-//! (see [`MerkleTree::builder`]) and finish with [`MerkleTreeBuilder::commit`].
+//! ([`MerkleTree::builder`] then [`MerkleTreeBuilder::commit`]).
 //!
 //! ## Hashing scheme
 //!
-//! Internal nodes are computed with [`hash_pair`], which concatenates the two
-//! child hashes in ascending byte order before applying keccak256. This matches
-//! OpenZeppelin's `MerkleProof` sorted-pair verification, so roots and proofs
-//! produced here verify directly in Solidity. When a level has an odd number of
-//! nodes, the final node is paired with itself.
+//! Internal nodes use [`hash_pair`]: the two child hashes are concatenated in
+//! ascending byte order and keccak256'd. This matches OpenZeppelin's sorted-pair
+//! `MerkleProof`, so roots and proofs verify unchanged in Solidity. An odd
+//! trailing node is paired with itself.
 //!
-//! Leaves are *double-hashed*: a [`LeafHash`] is
-//! `keccak256(keccak256(preimage))`, the construction used by OpenZeppelin's
-//! `StandardMerkleTree`. Only the leaf derivation differs from a plain tree; the
-//! sorted-pair node hashing and on-chain `MerkleProof.verify` are untouched.
+//! Leaves are double-hashed: a [`LeafHash`] is `keccak256(keccak256(preimage))`,
+//! as in OpenZeppelin's `StandardMerkleTree`.
 //!
 //! ## Second-preimage safety
 //!
-//! A sorted-pair keccak tree stores leaves and internal nodes as the same
-//! 32-byte value, with no value-level way to tell them apart. That invites a
-//! second-preimage attack: an interior node value `N = keccak256(a || b)` is
-//! presented where a leaf is expected, and folding it up a proof still reaches
-//! the root even though `N` was never a leaf.
+//! In a plain sorted-pair tree, leaves and internal nodes are indistinguishable
+//! 32-byte values, so an interior node value can be presented where a leaf is
+//! expected and still fold up to a valid root. Double-hashing separates the two
+//! by hash-input width: an internal node is keccak256 of a 64-byte input
+//! (`left || right`), a leaf is keccak256 of a 32-byte inner digest. The widths
+//! are disjoint, so short of a collision no leaf can equal a node. Any preimage
+//! length is safe, since the inner hash normalizes it to 32 bytes first.
 //!
-//! Double-hashing closes this by **domain separation on hash-input width**. An
-//! internal node is `keccak256` of a 64-byte input (`left || right`); a leaf is
-//! `keccak256` of a 32-byte input (the inner `keccak256(preimage)` digest). The
-//! two input widths are disjoint, so — short of a keccak collision — no leaf
-//! value can ever equal an internal-node value. A preimage of any length is
-//! safe: the inner hash normalizes it to a 32-byte digest, so the leaf's
-//! preimage width never reaches the outer hash.
-//!
-//! The type system carries the other half of the guarantee. Every leaf entry
-//! point — [`MerkleTree::from_leaves`],
-//! [`MerkleTreeBuilder::insert`]/[`extend`](MerkleTreeBuilder::extend),
-//! [`MerkleTree::proof`], [`MerkleTree::contains`], and [`verify_proof`] — takes
-//! a [`LeafHash`], never a raw [`B256`], and a `LeafHash` can be produced *only*
-//! by [`LeafHash::from_preimage`]. So a bare `B256` (in particular an
-//! internal-node value read off the tree) cannot be passed in as a leaf, and any
-//! value that *is* passed in is by construction a double hash living in the leaf
-//! domain.
-//!
-//! On-chain the same split holds: `ClearingHouse.participantLeaf` double-hashes
-//! its typed `(chainId, clearingHouse, cycleId, asset, participant, amount,
-//! role)` tuple, and settlement recomputes the leaf from those arguments rather
-//! than trusting a caller-supplied hash — so a Rust-built root and proof verify
-//! against the same leaf domain the contract enforces.
+//! The type system holds the boundary: every leaf entry point takes a
+//! [`LeafHash`], never a raw [`B256`], and a `LeafHash` comes only from
+//! [`LeafHash::from_preimage`] — so a bare hash (e.g. an interior node read off
+//! the tree) can never enter as a leaf.
 //!
 //! ## Proofs
 //!
-//! [`MerkleTree::proof`] returns the sibling hashes needed to recompute the root
-//! from a single leaf. [`verify_proof`] (or OpenZeppelin's `MerkleProof.verify`
-//! on-chain) checks such a proof against a known root.
+//! [`MerkleTree::proof`] returns the sibling hashes that recompute the root from
+//! a leaf; [`verify_proof`] (or OpenZeppelin's `MerkleProof.verify`) checks one.
 
 use std::collections::BTreeSet;
 
 use alloy::primitives::{B256, keccak256};
 
-/// Hash two nodes into their parent using keccak256 over the ascending-ordered
-/// concatenation of the two hashes.
-///
-/// Sorting the pair before hashing makes the result independent of left/right
-/// ordering, matching OpenZeppelin's sorted-pair Merkle verification.
+/// Hash two child nodes into their parent: keccak256 of the two hashes
+/// concatenated in ascending byte order, so the result is order-independent.
 pub fn hash_pair(a: B256, b: B256) -> B256 {
     const HALF: usize = NODE_PREIMAGE_LEN / 2;
     let (left, right) = if a <= b { (a, b) } else { (b, a) };
@@ -77,51 +52,33 @@ pub fn hash_pair(a: B256, b: B256) -> B256 {
     keccak256(encoded)
 }
 
-/// The byte width of an internal-node preimage: the two concatenated child
-/// hashes that [`hash_pair`] feeds to keccak256. Derived from [`B256`]'s size so
-/// it can never drift from the actual node encoding.
+/// Byte width of an internal-node preimage (two concatenated child hashes).
 const NODE_PREIMAGE_LEN: usize = 2 * size_of::<B256>();
 
-/// A double-hashed Merkle *leaf* value: `keccak256(keccak256(preimage))`.
+/// A double-hashed Merkle leaf value, `keccak256(keccak256(preimage))`.
 ///
-/// A `LeafHash` is the only value the tree and [`verify_proof`] accept as a
-/// leaf, and it can be produced *only* by [`LeafHash::from_preimage`]. Because
-/// the outer keccak256 always consumes a 32-byte inner digest — never the
-/// 64-byte `left || right` an internal node hashes — a leaf value can never
-/// coincide with an internal-node value, and a raw [`B256`] (which might *be* an
-/// internal node) cannot be passed as a leaf at all. Together these are the
-/// tree's second-preimage safety; see the module docs.
+/// The only value accepted as a tree leaf, constructible only via
+/// [`LeafHash::from_preimage`]; see the module docs on second-preimage safety.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LeafHash(B256);
 
 impl LeafHash {
-    /// Derive a [`LeafHash`] from an arbitrary leaf preimage.
-    ///
-    /// Computes `keccak256(keccak256(preimage))` — the OpenZeppelin
-    /// `StandardMerkleTree` double hash. This is total: any preimage of any
-    /// length is accepted, because the inner hash collapses it to a 32-byte
-    /// digest before the outer hash, keeping every leaf in a hash-input domain
-    /// disjoint from the 64-byte internal-node domain (see the module docs). A
-    /// 64-byte preimage is as safe as any other.
+    /// Derive a leaf value, `keccak256(keccak256(preimage))`. Accepts a preimage
+    /// of any length.
     pub fn from_preimage(preimage: &[u8]) -> Self {
         Self(keccak256(keccak256(preimage)))
     }
 
-    /// The underlying leaf value, for use as a raw tree node (e.g. building a
-    /// [`MerkleTree`] or serializing a proof).
+    /// The underlying value, for use as a raw tree node.
     pub fn hash(self) -> B256 {
         self.0
     }
 }
 
-/// Verify that `proof` reconstructs `root` starting from `leaf`.
+/// Verify that `proof` reconstructs `root` from `leaf`.
 ///
-/// This mirrors OpenZeppelin's `MerkleProof.verify`: each proof element is folded
-/// into the running hash with [`hash_pair`], and the final hash must equal `root`.
-///
-/// `leaf` is a [`LeafHash`] rather than a raw [`B256`] so that an internal-node
-/// value can never be presented here as a leaf (see the module docs on
-/// second-preimage safety).
+/// Folds each proof element into the running hash with [`hash_pair`]; the result
+/// must equal `root`. Compatible with OpenZeppelin's `MerkleProof.verify`.
 pub fn verify_proof(proof: &[B256], root: B256, leaf: LeafHash) -> bool {
     let computed = proof.iter().fold(leaf.hash(), |computed, sibling| {
         hash_pair(computed, *sibling)
@@ -179,12 +136,7 @@ pub struct MerkleTree {
 }
 
 impl MerkleTree {
-    /// Build a tree from an iterator of leaves.
-    ///
-    /// Leaves are [`LeafHash`] rather than raw [`B256`], so only a double-hashed
-    /// value from [`LeafHash::from_preimage`] can enter the tree as a leaf; an
-    /// internal-node value can never be reinterpreted as one. They are sorted
-    /// ascending and deduplicated before the tree is built.
+    /// Build a tree from an iterator of leaves; sorted and deduplicated first.
     pub fn from_leaves(leaves: impl IntoIterator<Item = LeafHash>) -> Self {
         let sorted: Vec<B256> = leaves
             .into_iter()
@@ -433,11 +385,8 @@ mod tests {
         assert_eq!(internal_node, keccak256(node_preimage), "sanity: real node");
         assert_eq!(internal_node, hash_pair(l, r));
 
-        // The attack would need a LeafHash whose value equals `internal_node`.
-        // Feeding the node's own 64-byte preimage through LeafHash cannot do it:
-        // double-hashing hashes the 32-byte inner digest, not the 64-byte
-        // preimage, landing in the leaf domain instead. And verify_proof takes no
-        // raw B256, so there is no other path to inject `internal_node` as a leaf.
+        // Feeding the node's own 64-byte preimage through LeafHash double-hashes
+        // its 32-byte digest, landing in the leaf domain, not on `internal_node`.
         assert_ne!(
             LeafHash::from_preimage(&node_preimage).hash(),
             internal_node
