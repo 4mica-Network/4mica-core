@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{Client, PaymentSignature, SigningScheme, error::X402Error};
 use alloy::{
     primitives::{B256, U256},
     signers::Signer,
@@ -12,9 +13,6 @@ use rpc::{
     PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2,
     compute_validation_request_hash, compute_validation_subject_hash,
 };
-use serde::Serialize;
-
-use crate::{Client, PaymentSignature, SigningScheme, error::X402Error};
 
 pub mod model;
 
@@ -55,7 +53,7 @@ where
     }
 }
 
-/// High-level helper that handles the 402 -> tab -> signed-claim flow for a paid resource.
+/// High-level helper that handles the 402 -> signed-claim flow for a paid resource.
 #[derive(Clone)]
 pub struct X402Flow<S> {
     http: HttpClient,
@@ -86,10 +84,7 @@ where
             return Err(X402Error::InvalidScheme(payment_requirements.scheme));
         }
 
-        let tab = self
-            .request_tab(1, payment_requirements.clone(), user_address.clone(), None)
-            .await?;
-        let claims = Self::build_claims_request_v1(&payment_requirements, &tab, &user_address)?;
+        let claims = Self::build_claims_request_v1(&payment_requirements, &user_address)?;
         let signature = self
             .signer
             .sign_payment(
@@ -136,15 +131,7 @@ where
             return Err(X402Error::InvalidVersion("expected x402 version 2".into()));
         }
 
-        let tab = self
-            .request_tab(
-                2,
-                accepted.clone(),
-                user_address.clone(),
-                Some(payment_required.resource.clone()),
-            )
-            .await?;
-        let claims = Self::build_claims_request_v2(&accepted, &tab, &user_address)?;
+        let claims = Self::build_claims_request_v2(&accepted, &user_address)?;
         let signature = self
             .signer
             .sign_payment(
@@ -217,46 +204,11 @@ where
         })
     }
 
-    async fn request_tab<PR: X402PaymentRequirements + Serialize>(
-        &self,
-        x402_version: u8,
-        payment_requirements: PR,
-        user_address: String,
-        resource: Option<X402ResourceInfo>,
-    ) -> Result<TabResponse, X402Error> {
-        let extra: PaymentRequirementsExtra = match payment_requirements.extra() {
-            Some(extra) => serde_json::from_value(extra.clone())
-                .map_err(|e| X402Error::InvalidExtra(e.to_string()))?,
-            None => return Err(X402Error::InvalidExtra("extra is required".into())),
-        };
-        let Some(tab_url) = extra.tab_endpoint else {
-            return Err(X402Error::TabResolutionFailed("missing tabEndpoint".into()));
-        };
-
-        let payload = TabRequestParams {
-            x402_version,
-            user_address,
-            payment_requirements,
-            resource,
-        };
-
-        let response = self
-            .http
-            .post(tab_url)
-            .json(&payload)
-            .send()
-            .await?
-            .error_for_status()?;
-
-        Ok(response.json().await?)
-    }
-
     fn build_claims_request_v1(
         requirements: &impl X402PaymentRequirements,
-        tab: &TabResponse,
         user_address: &str,
     ) -> Result<PaymentGuaranteeRequestClaimsV1, X402Error> {
-        let payment_context = Self::build_payment_context(requirements, tab, user_address)?;
+        let payment_context = Self::build_payment_context(requirements)?;
 
         Ok(PaymentGuaranteeRequestClaimsV1::new(
             user_address.to_string(),
@@ -270,10 +222,9 @@ where
 
     fn build_claims_request_v2(
         requirements: &PaymentRequirementsV2,
-        tab: &TabResponse,
         user_address: &str,
     ) -> Result<PaymentGuaranteeRequestClaimsV2, X402Error> {
-        let payment_context = Self::build_payment_context(requirements, tab, user_address)?;
+        let payment_context = Self::build_payment_context(requirements)?;
         let extra = parse_payment_requirements_extra(requirements)?;
 
         let validation_subject_hash = compute_validation_subject_hash(
@@ -334,21 +285,10 @@ where
 
     fn build_payment_context(
         requirements: &impl X402PaymentRequirements,
-        tab: &TabResponse,
-        user_address: &str,
     ) -> Result<PaymentContext, X402Error> {
-        let req_id = match tab.next_req_id.as_deref() {
-            Some(raw) => parse_u256_field("nextReqId", raw)?,
-            None => U256::ZERO,
-        };
+        let req_id_bytes: [u8; 32] = rand::random();
+        let req_id = U256::from_be_bytes(req_id_bytes);
         let amount = parse_u256_field("amount", requirements.amount())?;
-
-        if !tab.user_address.eq_ignore_ascii_case(user_address) {
-            return Err(X402Error::UserMismatch {
-                found: tab.user_address.clone(),
-                expected: user_address.to_string(),
-            });
-        }
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

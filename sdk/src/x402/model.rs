@@ -1,5 +1,4 @@
 use alloy::primitives::Address;
-use reqwest::Url;
 use rpc::PaymentGuaranteeRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -46,8 +45,6 @@ impl X402PaymentRequirements for PaymentRequirements {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaymentRequirementsExtra {
-    #[serde(alias = "tabEndpoint")]
-    pub tab_endpoint: Option<Url>,
     #[serde(default, alias = "validationRegistryAddress")]
     pub validation_registry_address: Option<Address>,
     #[serde(default, alias = "validationChainId")]
@@ -86,25 +83,6 @@ pub struct X402SignedPayment {
 pub struct X402SettledPayment {
     pub payment: X402SignedPayment,
     pub settlement: Value,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TabRequestParams<TRequirements> {
-    pub x402_version: u8,
-    pub user_address: String,
-    pub payment_requirements: TRequirements,
-    pub resource: Option<X402ResourceInfo>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct TabResponse {
-    #[serde(alias = "tabId")]
-    pub tab_id: String,
-    #[serde(alias = "userAddress")]
-    pub user_address: String,
-    #[serde(alias = "nextReqId", alias = "reqId")]
-    pub next_req_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

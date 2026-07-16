@@ -5526,6 +5526,7 @@ dependencies = [
  "crypto-4mica",
  "dotenv",
  "log",
+ "rand 0.10.1",
  "reqwest 0.12.28",
  "reqwest 0.13.3",
  "reqwest-middleware",
