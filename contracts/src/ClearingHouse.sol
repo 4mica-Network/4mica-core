@@ -446,6 +446,12 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         return participantStates[cycleId][participant];
     }
 
+    /// @dev The leaf is double-hashed — keccak256(keccak256(preimage)), the
+    /// OpenZeppelin StandardMerkleTree construction. The outer hash consumes a
+    /// 32-byte digest while internal nodes hash 64-byte (left || right) inputs, so
+    /// the two domains are disjoint and no internal node can be replayed as a leaf
+    /// (second-preimage safety). Must stay byte-identical to Rust
+    /// `hash_participant_leaf`.
     function participantLeaf(bytes32 cycleId, address asset, address participant, uint256 amount, ParticipantRole role)
         public
         view
@@ -463,7 +469,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
             mstore(add(ptr, 0xa0), amount)
             mstore(add(ptr, 0xc0), roleValue)
             mstore(0x40, add(ptr, 0xe0))
-            leaf := keccak256(ptr, 0xe0)
+            mstore(0x00, keccak256(ptr, 0xe0))
+            leaf := keccak256(0x00, 0x20)
         }
     }
 
