@@ -11,8 +11,8 @@ use rpc::PaymentGuaranteeRequestClaims;
 use sdk_4mica::{
     PaymentSignature, SigningScheme,
     x402::{
-        FacilitatorSettleParams, FlowSigner, PaymentRequirements, PaymentRequirementsV2,
-        X402PaymentEnvelope, X402PaymentRequiredV2, X402ResourceInfo,
+        FlowSigner, PaymentRequirements, PaymentRequirementsV2, X402PaymentEnvelope,
+        X402PaymentRequiredV2, X402ResourceInfo,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -111,8 +111,8 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
                         error: Some("Payment is required to access this resource".into()),
                         resource: X402ResourceInfo {
                             url: "http://example.com/resource".into(),
-                            description: "Protected resource".into(),
-                            mime_type: "application/json".into(),
+                            description: Some("Protected resource".into()),
+                            mime_type: Some("application/json".into()),
                         },
                         accepts: vec![sample_requirements_v2()],
                         extensions: None,
@@ -136,14 +136,29 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
             "/settle",
             post({
                 let requirements = requirements.clone();
-                move |Json(body): Json<FacilitatorSettleParams>| {
+                move |Json(body): Json<serde_json::Value>| {
                     let requirements = requirements.clone();
                     async move {
-                        let decoded = BASE64_STANDARD
-                            .decode(&body.payment_header)
-                            .expect("decode payment header");
+                        let payload = body
+                            .get("paymentPayload")
+                            .expect("body must carry paymentPayload");
+                        assert!(
+                            payload.is_object(),
+                            "paymentPayload must be a decoded object, got {payload}"
+                        );
+                        assert!(
+                            body.get("paymentHeader").is_none(),
+                            "paymentHeader is not an x402 facilitator field"
+                        );
+                        assert!(body.get("paymentRequirements").is_some());
+                        assert_eq!(
+                            body.get("x402Version").and_then(|v| v.as_u64()),
+                            payload.get("x402Version").and_then(|v| v.as_u64()),
+                            "x402Version must track the payload, not a hardcoded 1"
+                        );
+
                         let envelope: X402PaymentEnvelope =
-                            serde_json::from_slice(&decoded).expect("parse envelope");
+                            serde_json::from_value(payload.clone()).expect("parse envelope");
 
                         match envelope.payload.claims {
                             PaymentGuaranteeRequestClaims::V1(claims) => {

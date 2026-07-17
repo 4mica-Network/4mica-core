@@ -106,15 +106,7 @@ where
             payload: payload.clone(),
         };
 
-        let envelope =
-            serde_json::to_vec(&envelope).map_err(|e| X402Error::EncodeEnvelope(e.to_string()))?;
-        let header = BASE64_STANDARD.encode(envelope);
-
-        Ok(X402SignedPayment {
-            header,
-            payload,
-            signature,
-        })
+        Self::finish(1, &envelope, payload, signature)
     }
 
     /// Build a signed payment envelope for the given payment requirements, for x402 version 2.
@@ -150,15 +142,30 @@ where
             x402_version: 2,
             accepted: accepted.clone(),
             payload: payload.clone(),
-            resource: payment_required.resource,
+            resource: Some(payment_required.resource),
+            extensions: payment_required.extensions,
         };
 
+        Self::finish(2, &envelope, payload, signature)
+    }
+
+    /// Encode a signed envelope once, keeping both the object form (for a facilitator's
+    /// `paymentPayload`) and the base64 form (for the payment request header).
+    fn finish(
+        x402_version: u8,
+        envelope: &impl serde::Serialize,
+        payload: PaymentGuaranteeRequest,
+        signature: PaymentSignature,
+    ) -> Result<X402SignedPayment, X402Error> {
         let envelope =
+            serde_json::to_value(envelope).map_err(|e| X402Error::EncodeEnvelope(e.to_string()))?;
+        let bytes =
             serde_json::to_vec(&envelope).map_err(|e| X402Error::EncodeEnvelope(e.to_string()))?;
-        let header = BASE64_STANDARD.encode(envelope);
 
         Ok(X402SignedPayment {
-            header,
+            header: BASE64_STANDARD.encode(bytes),
+            envelope,
+            x402_version,
             payload,
             signature,
         })
@@ -181,8 +188,8 @@ where
             .http
             .post(url)
             .json(&FacilitatorSettleParams {
-                x402_version: 1,
-                payment_header: payment.header.clone(),
+                x402_version: payment.x402_version,
+                payment_payload: payment.envelope.clone(),
                 payment_requirements,
             })
             .send()
