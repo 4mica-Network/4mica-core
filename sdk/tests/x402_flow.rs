@@ -4,7 +4,7 @@ use rpc::{
     PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestEssentials,
     compute_validation_request_hash, compute_validation_subject_hash,
 };
-use sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2};
+use sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2, X402Requirements};
 
 mod common;
 
@@ -204,7 +204,11 @@ async fn complete_payment_flow_through_facilitator() {
         .expect("sign payment");
 
     let settled = flow
-        .settle_payment(payment, payment_requirements.clone(), &server_url)
+        .settle_payment(
+            payment,
+            X402Requirements::V1(payment_requirements.clone()),
+            &server_url,
+        )
         .await
         .expect("settle payment");
 

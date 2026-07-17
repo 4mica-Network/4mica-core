@@ -12,23 +12,25 @@ pub trait X402PaymentRequirements {
     fn extra(&self) -> Option<&Value>;
 }
 
+pub const SCHEME_4MICA_CREDIT: &str = "4mica-credit";
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentRequirements {
     pub scheme: String,
     pub network: String,
     pub max_amount_required: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    #[serde(default)]
+    pub resource: String,
+    #[serde(default)]
+    pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
     pub pay_to: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_timeout_seconds: u64,
     pub asset: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
@@ -95,13 +97,29 @@ pub struct X402SettledPayment {
     pub payment: X402SignedPayment,
     pub settlement: Value,
 }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum X402Requirements {
+    V1(PaymentRequirements),
+    V2(PaymentRequirementsV2),
+}
+
+impl X402Requirements {
+    /// The x402 version whose shape this holds.
+    pub fn x402_version(&self) -> u8 {
+        match self {
+            Self::V1(_) => 1,
+            Self::V2(_) => 2,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FacilitatorSettleParams {
     pub x402_version: u8,
     pub payment_payload: Value,
-    pub payment_requirements: PaymentRequirements,
+    pub payment_requirements: X402Requirements,
 }
 
 // X402 V2 Models
@@ -114,8 +132,8 @@ pub struct PaymentRequirementsV2 {
     pub asset: String,
     pub amount: String,
     pub pay_to: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_timeout_seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }

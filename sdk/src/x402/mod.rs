@@ -80,7 +80,7 @@ where
         payment_requirements: PaymentRequirements,
         user_address: String,
     ) -> Result<X402SignedPayment, X402Error> {
-        if !payment_requirements.scheme.to_lowercase().contains("4mica") {
+        if payment_requirements.scheme != SCHEME_4MICA_CREDIT {
             return Err(X402Error::InvalidScheme(payment_requirements.scheme));
         }
 
@@ -116,7 +116,7 @@ where
         accepted: PaymentRequirementsV2,
         user_address: String,
     ) -> Result<X402SignedPayment, X402Error> {
-        if !accepted.scheme.to_lowercase().contains("4mica") {
+        if accepted.scheme != SCHEME_4MICA_CREDIT {
             return Err(X402Error::InvalidScheme(accepted.scheme));
         }
         if payment_required.x402_version != 2 {
@@ -175,9 +175,17 @@ where
     pub async fn settle_payment(
         &self,
         payment: X402SignedPayment,
-        payment_requirements: PaymentRequirements,
+        payment_requirements: X402Requirements,
         facilitator_url: &str,
     ) -> Result<X402SettledPayment, X402Error> {
+        if payment_requirements.x402_version() != payment.x402_version {
+            return Err(X402Error::InvalidVersion(format!(
+                "payment is x402 v{}, but requirements are x402 v{}",
+                payment.x402_version,
+                payment_requirements.x402_version(),
+            )));
+        }
+
         let base_url = Url::parse(facilitator_url)
             .map_err(|e| X402Error::InvalidFacilitatorUrl(e.to_string()))?;
         let url = base_url
