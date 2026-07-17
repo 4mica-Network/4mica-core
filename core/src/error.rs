@@ -1,4 +1,3 @@
-use alloy::signers::local::LocalSignerError;
 use alloy_primitives::U256;
 use anyhow::anyhow;
 use sea_orm::TransactionError as SeaTransactionError;
@@ -72,12 +71,6 @@ pub enum CoreContractApiError {
 
     #[error("Contract call failed: {0}")]
     ContractCall(String),
-
-    #[error("Private key error: {0}")]
-    InvalidPrivateKey(String),
-
-    #[error("Failed to decode ABI response: {0}")]
-    AbiError(#[from] alloy::sol_types::Error),
 
     #[error("Database operation failed: {0}")]
     DatabaseFailure(#[from] sea_orm::DbErr),
@@ -167,9 +160,6 @@ pub enum ServiceError {
     #[error("user suspended")]
     UserSuspended,
 
-    #[error("tab already closed")]
-    TabClosed,
-
     #[error("unauthorized: {0}")]
     Unauthorized(String),
 
@@ -180,9 +170,6 @@ pub enum ServiceError {
         "request timestamp {timestamp} predates the active settlement cycle that started at {cycle_start}; the request is stale or replayed from an earlier cycle"
     )]
     StaleTimestamp { timestamp: u64, cycle_start: i64 },
-
-    #[error("req_id not valid")]
-    InvalidRequestID,
 
     #[error("another guarantee with req_id {req_id} already exists")]
     DuplicateGuarantee { req_id: U256 },
@@ -262,13 +249,6 @@ impl From<PersistDbError> for ServiceError {
 }
 
 // ---------- Nice `From` conversions so we can use `?` everywhere ----------
-
-// Private key parsing (`.parse::<PrivateKeySigner>()?`)
-impl From<LocalSignerError> for CoreContractApiError {
-    fn from(e: LocalSignerError) -> Self {
-        CoreContractApiError::InvalidPrivateKey(e.to_string())
-    }
-}
 
 // Contract method calls: `tx.send().await?`, `pending.get_receipt().await?`
 //

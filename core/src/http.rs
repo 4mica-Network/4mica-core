@@ -131,13 +131,9 @@ impl From<ServiceError> for ApiError {
                 ApiError::new(StatusCode::BAD_REQUEST, "user not registered")
             }
             ServiceError::UserSuspended => ApiError::new(StatusCode::FORBIDDEN, "user suspended"),
-            ServiceError::TabClosed => ApiError::new(StatusCode::CONFLICT, "tab already closed"),
             ServiceError::Unauthorized(msg) => ApiError::new(StatusCode::UNAUTHORIZED, msg),
             ServiceError::FutureTimestamp => {
                 ApiError::new(StatusCode::BAD_REQUEST, "timestamp is in the future")
-            }
-            ServiceError::InvalidRequestID => {
-                ApiError::new(StatusCode::BAD_REQUEST, "req_id not valid")
             }
             ServiceError::DuplicateGuarantee { req_id } => ApiError::new(
                 StatusCode::BAD_REQUEST,
