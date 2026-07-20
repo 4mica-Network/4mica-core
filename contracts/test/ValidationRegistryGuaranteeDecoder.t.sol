@@ -48,7 +48,7 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
         Guarantee memory decoded = decoder.decode(abi.encode(g));
         assertEq(decoded.domain, g.domain);
-        assertEq(decoded.tabId, g.tabId);
+        assertEq(decoded.cycleId, g.cycleId);
         assertEq(decoded.reqId, g.reqId);
         assertEq(decoded.client, g.client);
         assertEq(decoded.recipient, g.recipient);
@@ -227,7 +227,7 @@ contract ValidationRegistryGuaranteeDecoderTest is Test, ValidationBindingConsta
 
     function _canonicalV2() internal view returns (ValidationRegistryGuaranteeDecoder.GuaranteeV2 memory g) {
         g.domain = keccak256("DOMAIN");
-        g.tabId = 101;
+        g.cycleId = 101;
         g.reqId = 1;
         g.client = address(0x1111);
         g.recipient = address(0x2222);

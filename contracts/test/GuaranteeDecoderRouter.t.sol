@@ -11,7 +11,7 @@ import {BlsHelper} from "../src/BlsHelpers.sol";
 contract MockGuaranteeModuleV3 is IGuaranteeVersionModule {
     struct GuaranteeV3 {
         bytes32 domain;
-        uint256 tabId;
+        uint256 cycleId;
         uint256 reqId;
         address client;
         address recipient;
@@ -27,7 +27,7 @@ contract MockGuaranteeModuleV3 is IGuaranteeVersionModule {
         GuaranteeV3 memory g = abi.decode(payload, (GuaranteeV3));
         return Guarantee({
             domain: g.domain,
-            tabId: g.tabId,
+            cycleId: g.cycleId,
             reqId: g.reqId,
             client: g.client,
             recipient: g.recipient,
@@ -43,7 +43,7 @@ contract VersionMismatchModule is IGuaranteeVersionModule {
     function decodeModule(bytes calldata) external pure override returns (Guarantee memory) {
         return Guarantee({
             domain: bytes32(uint256(1)),
-            tabId: 1,
+            cycleId: 1,
             reqId: 1,
             client: address(0x111),
             recipient: address(0x222),
@@ -96,7 +96,7 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
 
         assertEq(decoded.version, ROUTED_VERSION);
         assertEq(decoded.domain, g3.domain);
-        assertEq(decoded.tabId, g3.tabId);
+        assertEq(decoded.cycleId, g3.cycleId);
         assertEq(decoded.reqId, g3.reqId);
         assertEq(decoded.client, g3.client);
         assertEq(decoded.recipient, g3.recipient);
@@ -176,7 +176,7 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
         Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(outerGuarantee, signature);
         assertEq(decoded.version, ROUTED_VERSION);
         assertEq(decoded.domain, domainV3);
-        assertEq(decoded.tabId, g3.tabId);
+        assertEq(decoded.cycleId, g3.cycleId);
         assertEq(decoded.reqId, g3.reqId);
     }
 
@@ -197,7 +197,7 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
     function _g3(bytes32 domain, uint64 version) internal view returns (MockGuaranteeModuleV3.GuaranteeV3 memory) {
         return MockGuaranteeModuleV3.GuaranteeV3({
             domain: domain,
-            tabId: 77,
+            cycleId: 77,
             reqId: 11,
             client: USER1,
             recipient: USER2,

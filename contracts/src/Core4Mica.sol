@@ -16,7 +16,7 @@ import {Core4MicaAccounting} from "./libraries/Core4MicaAccounting.sol";
 
 struct Guarantee {
     bytes32 domain;
-    uint256 tabId;
+    uint256 cycleId;
     uint256 reqId;
     address client;
     address recipient;

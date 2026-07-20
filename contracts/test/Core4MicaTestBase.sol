@@ -156,7 +156,7 @@ abstract contract Core4MicaTestBase is Test {
     }
 
     function _guarantee(
-        uint256 tabId,
+        uint256 cycleId,
         uint256 tabTimestamp,
         address client,
         address recipient,
@@ -166,7 +166,7 @@ abstract contract Core4MicaTestBase is Test {
     ) internal view returns (Guarantee memory) {
         return Guarantee({
             domain: core4Mica.guaranteeDomainSeparator(),
-            tabId: tabId,
+            cycleId: cycleId,
             reqId: reqId,
             client: client,
             recipient: recipient,
@@ -179,14 +179,14 @@ abstract contract Core4MicaTestBase is Test {
     }
 
     function _ethGuarantee(
-        uint256 tabId,
+        uint256 cycleId,
         uint256 tabTimestamp,
         address client,
         address recipient,
         uint256 reqId,
         uint256 amount
     ) internal view returns (Guarantee memory) {
-        return _guarantee(tabId, tabTimestamp, client, recipient, reqId, amount, ETH_ASSET);
+        return _guarantee(cycleId, tabTimestamp, client, recipient, reqId, amount, ETH_ASSET);
     }
 
     function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {

@@ -74,7 +74,7 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
 
         assertEq(g.version, 1, "version");
         assertEq(g.domain, domain, "domain");
-        assertEq(g.tabId, vm.parseJsonUint(vectors, ".v1.expected.tabId"), "tabId");
+        assertEq(g.cycleId, vm.parseJsonUint(vectors, ".v1.expected.cycleId"), "cycleId");
         assertEq(g.reqId, vm.parseJsonUint(vectors, ".v1.expected.reqId"), "reqId");
         assertEq(g.client, vm.parseJsonAddress(vectors, ".v1.expected.client"), "client");
         assertEq(g.recipient, vm.parseJsonAddress(vectors, ".v1.expected.recipient"), "recipient");
@@ -113,7 +113,7 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
 
         assertEq(g.version, 2, "version");
         assertEq(g.domain, domain, "domain");
-        assertEq(g.tabId, vm.parseJsonUint(vectors, ".v2.expected.tabId"), "tabId");
+        assertEq(g.cycleId, vm.parseJsonUint(vectors, ".v2.expected.cycleId"), "cycleId");
         assertEq(g.reqId, vm.parseJsonUint(vectors, ".v2.expected.reqId"), "reqId");
         assertEq(g.client, vm.parseJsonAddress(vectors, ".v2.expected.client"), "client");
         assertEq(g.recipient, vm.parseJsonAddress(vectors, ".v2.expected.recipient"), "recipient");
