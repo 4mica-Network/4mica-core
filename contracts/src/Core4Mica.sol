@@ -30,6 +30,37 @@ interface IGuaranteeDecoder {
     function decode(bytes calldata data) external view returns (Guarantee memory);
 }
 
+/// @notice Minimal EIP-3009 interface for pulling tokens via a signed `receiveWithAuthorization`.
+/// Implemented by USDC and other FiatToken-style stablecoins. The `to` field is bound inside the
+/// signed payload and the token requires `msg.sender == to`, so the receiving contract must be the
+/// caller and cannot be redirected by a relayer.
+interface IERC3009 {
+    function receiveWithAuthorization(
+        address from,
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+}
+
+/// @notice A client's EIP-3009 authorization to move `value` (equal to the deposit amount) from
+/// `from` into the Core4Mica contract. Any caller may submit it; collateral is always credited to
+/// `from` (the signer), never `msg.sender`.
+struct ReceiveAuthorization {
+    address from;
+    uint256 validAfter;
+    uint256 validBefore;
+    bytes32 nonce;
+    uint8 v;
+    bytes32 r;
+    bytes32 s;
+}
+
 /// @title Core4Mica
 /// @notice Manages user collateral, delayed withdrawals, and make-whole payouts.
 contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
@@ -452,6 +483,32 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         emit CollateralDeposited(msg.sender, asset, amount);
     }
 
+    /// @notice Deposit stablecoin collateral on behalf of `auth.from` using an EIP-3009
+    /// `receiveWithAuthorization` signature. Any caller (e.g. a gasless facilitator that sponsors
+    /// the transaction) may submit this; collateral is always credited to `auth.from` (the signer),
+    /// never `msg.sender`. The authorization binds `to = address(this)` and `value = amount` inside
+    /// the user's signature, so the caller can neither redirect the funds nor alter the amount.
+    /// @param asset The stablecoin to deposit.
+    /// @param amount The deposit amount; must equal the `value` the user signed over.
+    /// @param auth The client's EIP-3009 authorization (from, validity window, nonce, signature).
+    function depositStablecoinWithAuthorization(address asset, uint256 amount, ReceiveAuthorization calldata auth)
+        external
+        nonReentrant
+        stablecoin(asset)
+        nonZero(amount)
+        whenNotPaused
+    {
+        // Pull `amount` straight from the signer into this contract. The token verifies the EIP-712
+        // signature and enforces `msg.sender == to`, which is this contract. Nonce replay protection
+        // and the validity window are enforced by the token itself.
+        IERC3009(asset)
+            .receiveWithAuthorization(
+                auth.from, address(this), amount, auth.validAfter, auth.validBefore, auth.nonce, auth.v, auth.r, auth.s
+            );
+        _supplyAndCreditUserStablecoin(auth.from, asset, amount);
+        emit CollateralDeposited(auth.from, asset, amount);
+    }
+
     function requestWithdrawal(uint256 amount) external nonZero(amount) whenNotPaused {
         requestWithdrawalInternal(msg.sender, ETH_ASSET, amount);
     }
@@ -504,7 +561,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         if (request.timestamp == 0) revert NoWithdrawalRequested();
         // Use the grace period snapshotted at request time, not the current global value, so a
         // reduction applies only to new requests and never shortens an in-flight one.
-        if (block.timestamp < request.timestamp + request.gracePeriod) {
+        uint256 nowTs = block.timestamp;
+        if (nowTs < request.timestamp + request.gracePeriod) {
             revert GracePeriodNotElapsed();
         }
 
@@ -1155,8 +1213,15 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     /// Supplies `amount` of `asset` (pulled from `from`) into Aave and credits it to
     /// `user`'s collateral, mirroring [`depositStablecoin`] accounting.
     function _creditUserStablecoin(address user, address asset, uint256 amount, address from) internal {
-        address aToken = _requireAToken(asset);
         IERC20(asset).safeTransferFrom(from, address(this), amount);
+        _supplyAndCreditUserStablecoin(user, asset, amount);
+    }
+
+    /// Supplies `amount` of `asset` (already held by this contract) into Aave and credits the scaled
+    /// position to `user`. Callers must have moved the tokens into this contract first — either via
+    /// `safeTransferFrom` (see `_creditUserStablecoin`) or an EIP-3009 `receiveWithAuthorization`.
+    function _supplyAndCreditUserStablecoin(address user, address asset, uint256 amount) internal {
+        address aToken = _requireAToken(asset);
 
         uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
         _ensureDepositApproval(asset, amount);
