@@ -5525,6 +5525,7 @@ dependencies = [
  "core-service",
  "crypto-4mica",
  "dotenv",
+ "entities",
  "log",
  "rand 0.10.1",
  "reqwest 0.12.28",

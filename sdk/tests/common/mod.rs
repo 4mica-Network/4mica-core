@@ -1,7 +1,12 @@
 #![allow(dead_code)]
 
+use alloy::network::TransactionBuilder;
+use alloy::providers::{Provider, ProviderBuilder, ext::AnvilApi};
+use alloy::rpc::types::TransactionRequest;
 use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
+use alloy::sol;
+use alloy::sol_types::SolCall;
 use anyhow::{Context, bail};
 use core_service::persist::{PersistCtx, repo};
 use crypto::hex::DecodeHexError;
@@ -13,7 +18,24 @@ use serde::Deserialize;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
+pub mod clearing;
 pub mod x402;
+
+sol! {
+    #[sol(rpc)]
+    contract OwnedERC20 {
+        function mint(address to, uint256 amount) external;
+        function owner() external view returns (address);
+        function balanceOf(address account) external view returns (uint256);
+    }
+}
+
+sol! {
+    #[sol(rpc)]
+    contract Core4MicaView {
+        function withdrawalGracePeriod() external view returns (uint256);
+    }
+}
 
 pub const ETH_ASSET_ADDRESS: Address = Address::ZERO;
 const LOCAL_CORE_E2E_ENV: &str = "SDK_LOCAL_E2E";
@@ -121,6 +143,105 @@ pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::R
         }
         bail!("anvil_mine failed: code={code}, message={message}");
     }
+    Ok(())
+}
+
+/// Resolve the Ethereum RPC URL the core service is bound to, from its public params.
+pub async fn eth_rpc_url<S>(config: &Config<S>) -> anyhow::Result<String> {
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    Ok(rpc_proxy.get_public_params().await?.ethereum_http_rpc_url)
+}
+
+/// Fast-forward the anvil chain clock by `seconds` and mine a block so the new
+/// timestamp takes effect. Used to elapse on-chain time-locks (e.g. the
+/// withdrawal grace period) without waiting in wall-clock time. No-op on RPCs
+/// that don't expose `evm_increaseTime`.
+pub async fn advance_chain_time<S>(config: &Config<S>, seconds: u64) -> anyhow::Result<()> {
+    let url = eth_rpc_url(config).await?;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "evm_increaseTime",
+            "params": [seconds]
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let payload: serde_json::Value = response.json().await?;
+    if let Some(err) = payload.get("error") {
+        let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or_default();
+        let message = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if code == -32601 || message.contains("Method not found") {
+            return Ok(());
+        }
+        bail!("evm_increaseTime failed: code={code}, message={message}");
+    }
+    // Mine a block so the increased time is reflected in `block.timestamp`.
+    mine_confirmations(config, 1).await
+}
+
+/// Read the contract's current withdrawal grace period (seconds).
+pub async fn withdrawal_grace_period<S>(config: &Config<S>) -> anyhow::Result<u64> {
+    let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
+    if let Some(token) = &config.bearer_token {
+        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    }
+    let public_params = rpc_proxy.get_public_params().await?;
+    let contract_address = Address::from_str(&public_params.contract_address)?;
+    let provider = ProviderBuilder::new()
+        .connect(&public_params.ethereum_http_rpc_url)
+        .await?;
+    let grace = Core4MicaView::new(contract_address, &provider)
+        .withdrawalGracePeriod()
+        .call()
+        .await?;
+    Ok(grace.to::<u64>())
+}
+
+/// Mint `amount` of an owner-mintable test ERC20 to `user` by impersonating the
+/// token owner on anvil (the forked token's owner is not an anvil account, so it
+/// first gets funded with gas ETH).
+pub async fn fund_user_with_erc20(
+    rpc_url: &str,
+    token: Address,
+    user: Address,
+    amount: U256,
+) -> anyhow::Result<()> {
+    let provider = ProviderBuilder::new().connect(rpc_url).await?;
+    // An owner-mintable forked token mints from its owner; an unrestricted mock
+    // (no `owner()`) is minted straight from the recipient.
+    let minter = match OwnedERC20::new(token, &provider).owner().call().await {
+        Ok(owner) => owner,
+        Err(_) => user,
+    };
+
+    provider.anvil_impersonate_account(minter).await?;
+    // A forked token's owner is not an anvil account and holds no gas ETH, so top
+    // it up. Never touch the recipient's own balance — anvil_set_balance
+    // overwrites, and clobbering it would starve later deposits from that account.
+    if minter != user {
+        provider
+            .anvil_set_balance(minter, U256::from(10u64).pow(U256::from(18)))
+            .await?;
+    }
+
+    let mint = OwnedERC20::mintCall { to: user, amount };
+    let tx = TransactionRequest::default()
+        .with_from(minter)
+        .with_to(token)
+        .with_input(mint.abi_encode());
+    provider.send_transaction(tx).await?.watch().await?;
+
+    provider.anvil_stop_impersonating_account(minter).await?;
     Ok(())
 }
 

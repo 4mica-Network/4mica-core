@@ -55,4 +55,5 @@ serial_test = { version = "3.2.0", features = ["file_locks"] }
 axum = { workspace = true, features = ["macros", "json"] }
 serde_json = { workspace = true }
 core-service = { path = "../core" }
+entities = { workspace = true }
 dotenv = { workspace = true }
