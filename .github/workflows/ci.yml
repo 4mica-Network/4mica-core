@@ -170,7 +170,7 @@ jobs:
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
           GUARANTEE_REQUEST_VERSION: "2"
           TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
-        run: cargo test --workspace --exclude sdk-4mica --exclude core-service
+        run: cargo test --workspace --exclude sdk-4mica --exclude integration-tests --exclude core-service
 
       - name: Run core tests (no external core-service running)
         env:
@@ -199,4 +199,9 @@ jobs:
           done
 
       - name: Run SDK unit tests
-        run: cargo test -p sdk-4mica
+        # sdk-4mica holds the offline unit tests. integration-tests holds the
+        # live-stack e2e tests, which self-skip without SDK_LOCAL_E2E — running
+        # them here keeps them compiling without needing an external core-service.
+        run: |
+          cargo test -p sdk-4mica
+          cargo test -p integration-tests
