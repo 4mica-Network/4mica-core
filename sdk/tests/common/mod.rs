@@ -12,7 +12,7 @@ use core_service::persist::{PersistCtx, repo};
 use crypto::hex::DecodeHexError;
 use rpc::RpcProxy;
 use sdk_4mica::{
-    Address, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
+    Address, Client, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
 };
 use serde::Deserialize;
 use std::str::FromStr;
@@ -38,6 +38,7 @@ sol! {
 }
 
 pub const ETH_ASSET_ADDRESS: Address = Address::ZERO;
+pub const LOCAL_CORE_URL: &str = "http://localhost:3000";
 const LOCAL_CORE_E2E_ENV: &str = "SDK_LOCAL_E2E";
 const ROLE_USER: &str = "user";
 const ROLE_RECIPIENT: &str = "recipient";
@@ -447,4 +448,65 @@ pub async fn build_authed_recipient_config(
         SCOPE_GUARANTEE_ISSUE.to_string(),
     ];
     build_authed_config(base_url, private_key, ROLE_RECIPIENT, &scopes).await
+}
+
+/// Authenticated user-role client (and its config) against the local core.
+pub async fn authed_user_client(
+    private_key: &str,
+) -> anyhow::Result<(Config<PrivateKeySigner>, Client<PrivateKeySigner>)> {
+    let config = build_authed_user_config(LOCAL_CORE_URL, private_key).await?;
+    let client = Client::new(config.clone()).await?;
+    Ok((config, client))
+}
+
+/// Authenticated recipient-role client (payment:read + guarantee:issue).
+pub async fn authed_recipient_client(
+    private_key: &str,
+) -> anyhow::Result<(Config<PrivateKeySigner>, Client<PrivateKeySigner>)> {
+    let config = build_authed_recipient_config(LOCAL_CORE_URL, private_key).await?;
+    let client = Client::new(config.clone()).await?;
+    Ok((config, client))
+}
+
+/// Core's recorded total collateral for `asset`, used as a deposit baseline.
+pub async fn core_total(client: &Client<PrivateKeySigner>, asset: Address) -> anyhow::Result<U256> {
+    Ok(client
+        .recipient
+        .get_user_asset_balance(asset.to_string())
+        .await?
+        .map_or(U256::ZERO, |balance| balance.total))
+}
+
+/// Core's on-chain view of the signer's `asset` position, erroring if absent.
+pub async fn user_asset(
+    client: &Client<PrivateKeySigner>,
+    asset: Address,
+) -> anyhow::Result<UserInfo> {
+    let assets = client.user.get_user().await?;
+    extract_asset_info(&assets, asset)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("asset {asset} not found in user info"))
+}
+
+pub async fn deposit_collateral_and_await(
+    client: &Client<PrivateKeySigner>,
+    config: &Config<PrivateKeySigner>,
+    erc20_token: Option<String>,
+    amount: U256,
+) -> anyhow::Result<()> {
+    let asset = match &erc20_token {
+        Some(token) => Address::from_str(token)?,
+        None => ETH_ASSET_ADDRESS,
+    };
+    let total_before = core_total(client, asset).await?;
+
+    if let Some(token) = &erc20_token {
+        let rpc_url = eth_rpc_url(config).await?;
+        fund_user_with_erc20(&rpc_url, asset, config.signer.address(), amount).await?;
+        client.user.approve_erc20(token.clone(), amount).await?;
+    }
+
+    client.user.deposit(amount, erc20_token).await?;
+    mine_confirmations(config, 2).await?;
+    wait_for_collateral_increase(&client.recipient, asset, total_before, amount).await
 }

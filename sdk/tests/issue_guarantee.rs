@@ -1,11 +1,12 @@
-use alloy::primitives::Address;
+use alloy::primitives::{Address, utils::parse_ether};
 use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{Client, Config, PaymentGuaranteeRequestClaims, SigningScheme, U256};
 use std::str::FromStr;
+
 mod common;
+
 use crate::common::{
-    ETH_ASSET_ADDRESS, build_authed_recipient_config, eth_rpc_url, fund_user_with_erc20, get_now,
-    mine_confirmations, wait_for_collateral_increase,
+    ETH_ASSET_ADDRESS, authed_recipient_client, deposit_collateral_and_await, get_now,
 };
 
 const WALLET_KEY: &str = "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba";
@@ -18,13 +19,11 @@ async fn test_issue_and_verify_payment_guarantee() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let config = build_authed_recipient_config("http://localhost:3000", WALLET_KEY).await?;
+    let (config, client) = authed_recipient_client(WALLET_KEY).await?;
     let wallet_address = config.signer.address();
-    let client = Client::new(config.clone()).await?;
-    let rpc_url = eth_rpc_url(&config).await?;
 
     // Native ETH first, then every ERC20 the deployment supports (USDC, etc.).
-    issue_and_verify_for_asset(&client, &config, wallet_address, None, 18, &rpc_url).await?;
+    issue_and_verify_for_asset(&client, &config, wallet_address, None, 18).await?;
 
     let supported = client.get_supported_tokens().await?;
     assert!(
@@ -38,7 +37,6 @@ async fn test_issue_and_verify_payment_guarantee() -> anyhow::Result<()> {
             wallet_address,
             Some(token.address.clone()),
             token.decimals,
-            &rpc_url,
         )
         .await
         .map_err(|err| anyhow::anyhow!("{} ({}): {err}", token.symbol, token.address))?;
@@ -53,42 +51,22 @@ async fn issue_and_verify_for_asset(
     wallet_address: Address,
     erc20_token: Option<String>,
     decimals: u8,
-    rpc_url: &str,
 ) -> anyhow::Result<()> {
     let asset_address = match &erc20_token {
         Some(token) => Address::from_str(token)?,
         None => ETH_ASSET_ADDRESS,
     };
+
     let unit = U256::from(10u64).pow(U256::from(decimals));
-    let deposit_amount = unit;
     let guarantee_amount = unit / U256::from(10u64);
 
-    let balance_before = client
+    let locked_before = client
         .recipient
         .get_user_asset_balance(asset_address.to_string())
-        .await?;
-    let total_before = balance_before.as_ref().map_or(U256::ZERO, |b| b.total);
-    let locked_before = balance_before.as_ref().map_or(U256::ZERO, |b| b.locked);
-    if let Some(token) = &erc20_token {
-        fund_user_with_erc20(rpc_url, asset_address, wallet_address, deposit_amount).await?;
-        client
-            .user
-            .approve_erc20(token.clone(), deposit_amount)
-            .await?;
-    }
+        .await?
+        .map_or(U256::ZERO, |balance| balance.locked);
 
-    client
-        .user
-        .deposit(deposit_amount, erc20_token.clone())
-        .await?;
-    mine_confirmations(config, 2).await?;
-    wait_for_collateral_increase(
-        &client.recipient,
-        asset_address,
-        total_before,
-        deposit_amount,
-    )
-    .await?;
+    deposit_collateral_and_await(client, config, erc20_token.clone(), unit).await?;
 
     let req_id = U256::from(get_now().as_nanos());
     let claims = PaymentGuaranteeRequestClaims::new(
@@ -97,7 +75,7 @@ async fn issue_and_verify_for_asset(
         req_id,
         guarantee_amount,
         get_now().as_secs(),
-        erc20_token.clone(),
+        erc20_token,
     );
 
     let signature = client
@@ -109,7 +87,6 @@ async fn issue_and_verify_for_asset(
         .recipient
         .issue_payment_guarantee(claims.clone(), signature.signature, SigningScheme::Eip712)
         .await?;
-
     let verified = client.recipient.verify_payment_guarantee(&cert)?;
 
     assert_eq!(
@@ -148,36 +125,17 @@ async fn test_issue_duplicate_guarantee_is_rejected() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let config = build_authed_recipient_config("http://localhost:3000", WALLET_KEY).await?;
+    let (config, client) = authed_recipient_client(WALLET_KEY).await?;
     let wallet_address = config.signer.address();
-    let client = Client::new(config.clone()).await?;
 
-    let guarantee_amount = U256::from(50_000_000_000_000_000u128); // 0.05 ETH
-    let deposit_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
-
-    let total_before = client
-        .recipient
-        .get_user_asset_balance(ETH_ASSET_ADDRESS.to_string())
-        .await?
-        .map(|balance| balance.total)
-        .unwrap_or(U256::ZERO);
-
-    client.user.deposit(deposit_amount, None).await?;
-    mine_confirmations(&config, 2).await?;
-    wait_for_collateral_increase(
-        &client.recipient,
-        ETH_ASSET_ADDRESS,
-        total_before,
-        deposit_amount,
-    )
-    .await?;
+    deposit_collateral_and_await(&client, &config, None, parse_ether("1")?).await?;
 
     let req_id = U256::from(get_now().as_nanos());
     let claims = PaymentGuaranteeRequestClaims::new(
         wallet_address.to_string(),
         wallet_address.to_string(),
         req_id,
-        guarantee_amount,
+        parse_ether("0.05")?,
         get_now().as_secs(),
         None,
     );
@@ -197,7 +155,6 @@ async fn test_issue_duplicate_guarantee_is_rejected() -> anyhow::Result<()> {
         )
         .await?;
 
-    // Replaying the identical request is rejected.
     let err = client
         .recipient
         .issue_payment_guarantee(claims.clone(), signature.signature, SigningScheme::Eip712)

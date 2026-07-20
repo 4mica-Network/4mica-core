@@ -1,6 +1,6 @@
-use alloy::primitives::Address;
+use alloy::primitives::{Address, utils::parse_ether};
 use sdk_4mica::{
-    Client, U256,
+    U256,
     error::{FinalizeWithdrawalError, RequestWithdrawalError},
 };
 use std::str::FromStr;
@@ -9,9 +9,8 @@ use std::time::Duration;
 mod common;
 
 use crate::common::{
-    ETH_ASSET_ADDRESS, advance_chain_time, build_authed_user_config, eth_rpc_url,
-    extract_asset_info, fund_user_with_erc20, mine_confirmations, wait_for_collateral_increase,
-    withdrawal_grace_period,
+    ETH_ASSET_ADDRESS, advance_chain_time, authed_user_client, deposit_collateral_and_await,
+    user_asset, withdrawal_grace_period,
 };
 
 #[tokio::test]
@@ -22,66 +21,34 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Setup user client
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
-    )
-    .await?;
+    let (config, client) =
+        authed_user_client("0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97")
+            .await?;
 
-    let _user_address = user_config.signer.address().to_string();
-    let user_client = Client::new(user_config.clone()).await?;
+    let collateral_before = user_asset(&client, ETH_ASSET_ADDRESS).await?.collateral;
+    let deposit_amount = parse_ether("1")?;
+    deposit_collateral_and_await(&client, &config, None, deposit_amount).await?;
 
-    // Step 1: User deposits collateral (1 ETH)
-    let user_info_initial = user_client.user.get_user().await?;
-    let eth_asset_before = common::extract_asset_info(&user_info_initial, ETH_ASSET_ADDRESS)
-        .expect("ETH asset not found");
-
-    let deposit_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
-    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
-    mine_confirmations(&user_config, 2).await?;
-
-    // Step 2: User requests withdrawal (0.5 ETH)
-    let withdrawal_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
-    let _receipt = user_client
+    // Request a 0.5 ETH withdrawal; it should be recorded against the asset.
+    let withdrawal_amount = parse_ether("0.5")?;
+    client
         .user
         .request_withdrawal(withdrawal_amount, None)
         .await?;
-
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 3: Check withdrawal request was recorded
-    let user_info_after_request = user_client.user.get_user().await?;
-    let eth_asset_after_request =
-        common::extract_asset_info(&user_info_after_request, ETH_ASSET_ADDRESS)
-            .expect("ETH asset not found");
-    assert_eq!(
-        eth_asset_after_request.withdrawal_request_amount,
-        withdrawal_amount
-    );
-    assert!(eth_asset_after_request.withdrawal_request_timestamp > 0);
+    let after_request = user_asset(&client, ETH_ASSET_ADDRESS).await?;
+    assert_eq!(after_request.withdrawal_request_amount, withdrawal_amount);
+    assert!(after_request.withdrawal_request_timestamp > 0);
 
-    // Step 4: Cancel the withdrawal
-    let _receipt = user_client.user.cancel_withdrawal(None).await?;
-
+    // Cancel it; the request clears and collateral is left unchanged.
+    client.user.cancel_withdrawal(None).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 5: Verify withdrawal was cancelled
-    let user_info_after_cancel = user_client.user.get_user().await?;
-    let eth_asset_after_cancel =
-        common::extract_asset_info(&user_info_after_cancel, ETH_ASSET_ADDRESS)
-            .expect("ETH asset not found");
-    assert_eq!(
-        eth_asset_after_cancel.withdrawal_request_amount,
-        U256::from(0)
-    );
-    assert_eq!(eth_asset_after_cancel.withdrawal_request_timestamp, 0);
-
-    // Collateral should remain unchanged
-    assert_eq!(
-        eth_asset_after_cancel.collateral,
-        eth_asset_before.collateral + deposit_amount
-    );
+    let after_cancel = user_asset(&client, ETH_ASSET_ADDRESS).await?;
+    assert_eq!(after_cancel.withdrawal_request_amount, U256::ZERO);
+    assert_eq!(after_cancel.withdrawal_request_timestamp, 0);
+    assert_eq!(after_cancel.collateral, collateral_before + deposit_amount);
 
     Ok(())
 }
@@ -94,51 +61,24 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
         return Ok(());
     }
 
-    // Setup user client
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        // Default anvil account with prefunded ETH for gas on local fork/dev networks.
-        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-    )
-    .await?;
+    // Default anvil account, prefunded with ETH for gas on local fork/dev networks.
+    let (config, client) =
+        authed_user_client("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+            .await?;
 
-    let user_client = Client::new(user_config.clone()).await?;
+    deposit_collateral_and_await(&client, &config, None, parse_ether("2")?).await?;
 
-    // Step 1: User deposits collateral (2 ETH)
-    let core_total_before = user_client
-        .recipient
-        .get_user_asset_balance(ETH_ASSET_ADDRESS.to_string())
-        .await?
-        .map(|info| info.total)
-        .unwrap_or(U256::ZERO);
-    let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
-    mine_confirmations(&user_config, 1).await?;
-
-    wait_for_collateral_increase(
-        &user_client.recipient,
-        ETH_ASSET_ADDRESS,
-        core_total_before,
-        deposit_amount,
-    )
-    .await?;
-
-    // Step 2: User requests withdrawal (1 ETH)
-    let withdrawal_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
-    let _receipt = user_client
+    client
         .user
-        .request_withdrawal(withdrawal_amount, None)
+        .request_withdrawal(parse_ether("1")?, None)
         .await?;
-
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 3: Finalize withdrawal
-    let result = user_client.user.finalize_withdrawal(None).await;
-
-    // Should fail with GracePeriodNotElapsed error
+    // Finalizing before the grace period elapses must be rejected.
+    let result = client.user.finalize_withdrawal(None).await;
     assert!(
         matches!(result, Err(FinalizeWithdrawalError::GracePeriodNotElapsed)),
-        "Expected withdrawal finalize to fail due to grace period not elapsed"
+        "expected withdrawal finalize to fail due to grace period not elapsed"
     );
 
     Ok(())
@@ -152,49 +92,21 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Setup user client
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
-    )
-    .await?;
+    let (config, client) =
+        authed_user_client("0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6")
+            .await?;
 
-    let user_client = Client::new(user_config.clone()).await?;
+    deposit_collateral_and_await(&client, &config, None, parse_ether("0.5")?).await?;
 
-    // Step 1: User deposits collateral (0.5 ETH)
-    let core_total_before = user_client
-        .recipient
-        .get_user_asset_balance(ETH_ASSET_ADDRESS.to_string())
-        .await?
-        .map(|info| info.total)
-        .unwrap_or(U256::ZERO);
-    let deposit_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
-    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
-    mine_confirmations(&user_config, 1).await?;
-
-    wait_for_collateral_increase(
-        &user_client.recipient,
-        ETH_ASSET_ADDRESS,
-        core_total_before,
-        deposit_amount,
-    )
-    .await?;
-
-    // Step 2: Try to request withdrawal for more than deposited
-    let user_info = user_client.user.get_user().await?;
-    let eth_asset =
-        common::extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
-
-    let withdrawal_amount = eth_asset.collateral + U256::from(1_000_000_000_000_000_000u128);
-    let result = user_client
+    // Requesting more than the deposited collateral must be rejected.
+    let collateral = user_asset(&client, ETH_ASSET_ADDRESS).await?.collateral;
+    let result = client
         .user
-        .request_withdrawal(withdrawal_amount, None)
+        .request_withdrawal(collateral + parse_ether("1")?, None)
         .await;
-
-    // Should fail with InsufficientAvailable error
     assert!(
         matches!(result, Err(RequestWithdrawalError::InsufficientAvailable)),
-        "Expected withdrawal request to fail due to insufficient collateral"
+        "expected withdrawal request to fail due to insufficient collateral"
     );
 
     Ok(())
@@ -209,59 +121,33 @@ async fn test_withdrawal_finalizes_after_grace_period() -> anyhow::Result<()> {
     }
 
     // Fresh anvil account (#3) so no prior locked collateral blocks the withdrawal.
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
-    )
-    .await?;
-    let user_client = Client::new(user_config.clone()).await?;
+    let (config, client) =
+        authed_user_client("0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6")
+            .await?;
 
-    // Step 1: deposit 1 ETH of collateral.
-    let core_total_before = user_client
-        .recipient
-        .get_user_asset_balance(ETH_ASSET_ADDRESS.to_string())
-        .await?
-        .map(|info| info.total)
-        .unwrap_or(U256::ZERO);
-    let deposit_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
-    let _receipt = user_client.user.deposit(deposit_amount, None).await?;
-    mine_confirmations(&user_config, 1).await?;
-    wait_for_collateral_increase(
-        &user_client.recipient,
-        ETH_ASSET_ADDRESS,
-        core_total_before,
-        deposit_amount,
-    )
-    .await?;
+    deposit_collateral_and_await(&client, &config, None, parse_ether("1")?).await?;
+    let collateral_before = user_asset(&client, ETH_ASSET_ADDRESS).await?.collateral;
 
-    let collateral_before =
-        extract_asset_info(&user_client.user.get_user().await?, ETH_ASSET_ADDRESS)
-            .expect("ETH asset not found")
-            .collateral;
-
-    // Step 2: request a 0.5 ETH withdrawal.
-    let withdrawal_amount = U256::from(500_000_000_000_000_000u128); // 0.5 ETH
-    let _receipt = user_client
+    let withdrawal_amount = parse_ether("0.5")?;
+    client
         .user
         .request_withdrawal(withdrawal_amount, None)
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 3: fast-forward the chain past the grace period snapshotted at request
-    // time, then finalize. The grace defaults to weeks, so advancing wall-clock
-    // time is impractical — we elapse it on anvil instead.
-    let grace = withdrawal_grace_period(&user_config).await?;
-    advance_chain_time(&user_config, grace + 60).await?;
-
-    let _receipt = user_client.user.finalize_withdrawal(None).await?;
+    // Fast-forward the chain past the grace period snapshotted at request time,
+    // then finalize. The grace defaults to weeks, so advancing wall-clock time is
+    // impractical — we elapse it on anvil instead.
+    let grace = withdrawal_grace_period(&config).await?;
+    advance_chain_time(&config, grace + 60).await?;
+    client.user.finalize_withdrawal(None).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 4: the request is cleared and collateral dropped by the withdrawn amount.
-    let user_info = user_client.user.get_user().await?;
-    let eth_asset = extract_asset_info(&user_info, ETH_ASSET_ADDRESS).expect("ETH asset not found");
-    assert_eq!(eth_asset.withdrawal_request_amount, U256::ZERO);
-    assert_eq!(eth_asset.withdrawal_request_timestamp, 0);
-    assert_eq!(eth_asset.collateral, collateral_before - withdrawal_amount);
+    // The request is cleared and collateral dropped by the withdrawn amount.
+    let eth = user_asset(&client, ETH_ASSET_ADDRESS).await?;
+    assert_eq!(eth.withdrawal_request_amount, U256::ZERO);
+    assert_eq!(eth.withdrawal_request_timestamp, 0);
+    assert_eq!(eth.collateral, collateral_before - withdrawal_amount);
 
     Ok(())
 }
@@ -275,16 +161,12 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     }
 
     // Fresh anvil account (#4), prefunded with ETH for gas.
-    let user_config = build_authed_user_config(
-        "http://localhost:3000",
-        "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
-    )
-    .await?;
-    let user_address = user_config.signer.address();
-    let user_client = Client::new(user_config.clone()).await?;
+    let (config, client) =
+        authed_user_client("0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a")
+            .await?;
 
-    // Pick the first ERC20 the contract accepts on this deployment.
-    let supported = user_client.get_supported_tokens().await?;
+    // Pick the first ERC20 the deployment supports.
+    let supported = client.get_supported_tokens().await?;
     let token = supported
         .tokens
         .first()
@@ -292,57 +174,30 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     let token_address = Address::from_str(&token.address)?;
     let amount = U256::from(10u64).pow(U256::from(token.decimals)); // 1 whole token
 
-    // Step 1: fund, approve, and deposit the ERC20 as collateral.
-    let rpc_url = eth_rpc_url(&user_config).await?;
-    fund_user_with_erc20(&rpc_url, token_address, user_address, amount).await?;
-    let total_before = user_client
-        .recipient
-        .get_user_asset_balance(token.address.clone())
-        .await?
-        .map(|balance| balance.total)
-        .unwrap_or(U256::ZERO);
-    user_client
-        .user
-        .approve_erc20(token.address.clone(), amount)
-        .await?;
-    user_client
-        .user
-        .deposit(amount, Some(token.address.clone()))
-        .await?;
-    mine_confirmations(&user_config, 2).await?;
-    wait_for_collateral_increase(&user_client.recipient, token_address, total_before, amount)
-        .await?;
+    deposit_collateral_and_await(&client, &config, Some(token.address.clone()), amount).await?;
 
-    // Step 2: request a withdrawal of half the deposited ERC20.
+    // Request a withdrawal of half; it is recorded against the ERC20 asset.
     let withdrawal_amount = amount / U256::from(2u64);
-    user_client
+    client
         .user
         .request_withdrawal(withdrawal_amount, Some(token.address.clone()))
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Step 3: the request is recorded against the ERC20 asset.
-    let user_info = user_client.user.get_user().await?;
-    let asset_after_request =
-        extract_asset_info(&user_info, token_address).expect("ERC20 asset not found");
-    assert_eq!(
-        asset_after_request.withdrawal_request_amount,
-        withdrawal_amount
-    );
-    assert!(asset_after_request.withdrawal_request_timestamp > 0);
+    let after_request = user_asset(&client, token_address).await?;
+    assert_eq!(after_request.withdrawal_request_amount, withdrawal_amount);
+    assert!(after_request.withdrawal_request_timestamp > 0);
 
-    // Step 4: cancel and verify the request is cleared.
-    user_client
+    // Cancel and verify the request clears.
+    client
         .user
         .cancel_withdrawal(Some(token.address.clone()))
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let user_info_after_cancel = user_client.user.get_user().await?;
-    let asset_after_cancel =
-        extract_asset_info(&user_info_after_cancel, token_address).expect("ERC20 asset not found");
-    assert_eq!(asset_after_cancel.withdrawal_request_amount, U256::ZERO);
-    assert_eq!(asset_after_cancel.withdrawal_request_timestamp, 0);
+    let after_cancel = user_asset(&client, token_address).await?;
+    assert_eq!(after_cancel.withdrawal_request_amount, U256::ZERO);
+    assert_eq!(after_cancel.withdrawal_request_timestamp, 0);
 
     Ok(())
 }

@@ -1,11 +1,9 @@
-use sdk_4mica::{Client, U256};
+use sdk_4mica::U256;
 use std::str::FromStr;
 
 mod common;
 
-use crate::common::{
-    build_authed_recipient_config, build_authed_user_config, eth_rpc_url, get_now,
-};
+use crate::common::{authed_recipient_client, authed_user_client, eth_rpc_url, get_now};
 
 /// Anvil accounts #6 (debtor) and #7 (creditor), prefunded with ETH for gas and
 /// the on-chain payment on the local stack.
@@ -28,14 +26,10 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let base_url = "http://localhost:3000";
-    let debtor_config = build_authed_user_config(base_url, DEBTOR_KEY).await?;
-    let creditor_config = build_authed_recipient_config(base_url, CREDITOR_KEY).await?;
+    let (debtor_config, debtor) = authed_user_client(DEBTOR_KEY).await?;
+    let (creditor_config, creditor) = authed_recipient_client(CREDITOR_KEY).await?;
     let debtor_address = debtor_config.signer.address();
     let creditor_address = creditor_config.signer.address();
-
-    let debtor = Client::new(debtor_config.clone()).await?;
-    let creditor = Client::new(creditor_config.clone()).await?;
 
     let amount = U256::from(1_000_000_000_000_000u64); // 0.001 ETH net debit
     let cycle_id = format!("e2e-pay-debit:{}", get_now().as_nanos());
