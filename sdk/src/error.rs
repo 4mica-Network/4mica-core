@@ -218,15 +218,6 @@ pub enum GetUserError {
 }
 
 #[derive(Debug, Error)]
-pub enum CreateTabError {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-
-    #[error(transparent)]
-    Rpc(#[from] ApiClientError),
-}
-
-#[derive(Debug, Error)]
 pub enum IssuePaymentGuaranteeError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
@@ -263,16 +254,12 @@ pub enum X402Error {
     InvalidVersion(String),
     #[error("invalid facilitator url: {0}")]
     InvalidFacilitatorUrl(String),
-    #[error("failed to resolve tab endpoint: {0}")]
-    TabResolutionFailed(String),
     #[error("failed to encode payment envelope: {0}")]
     EncodeEnvelope(String),
     #[error("invalid paymentRequirements.extra: {0}")]
     InvalidExtra(String),
     #[error("invalid number for field {field}: {source}")]
     InvalidNumber { field: String, source: Error },
-    #[error("user mismatch in paymentRequirements: found {found}, expected {expected}")]
-    UserMismatch { found: String, expected: String },
     #[error("settlement failed with status {status}: {body}")]
     SettlementFailed { status: StatusCode, body: Value },
     #[error(transparent)]

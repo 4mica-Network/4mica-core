@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{Client, PaymentSignature, SigningScheme, error::X402Error};
 use alloy::{
     primitives::{B256, U256},
     signers::Signer,
@@ -12,9 +13,6 @@ use rpc::{
     PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2,
     compute_validation_request_hash, compute_validation_subject_hash,
 };
-use serde::Serialize;
-
-use crate::{Client, PaymentSignature, SigningScheme, error::X402Error};
 
 pub mod model;
 
@@ -55,7 +53,7 @@ where
     }
 }
 
-/// High-level helper that handles the 402 -> tab -> signed-claim flow for a paid resource.
+/// High-level helper that handles the 402 -> signed-claim flow for a paid resource.
 #[derive(Clone)]
 pub struct X402Flow<S> {
     http: HttpClient,
@@ -82,14 +80,11 @@ where
         payment_requirements: PaymentRequirements,
         user_address: String,
     ) -> Result<X402SignedPayment, X402Error> {
-        if !payment_requirements.scheme.to_lowercase().contains("4mica") {
+        if payment_requirements.scheme != SCHEME_4MICA_CREDIT {
             return Err(X402Error::InvalidScheme(payment_requirements.scheme));
         }
 
-        let tab = self
-            .request_tab(1, payment_requirements.clone(), user_address.clone(), None)
-            .await?;
-        let claims = Self::build_claims_request_v1(&payment_requirements, &tab, &user_address)?;
+        let claims = Self::build_claims_request_v1(&payment_requirements, &user_address)?;
         let signature = self
             .signer
             .sign_payment(
@@ -111,15 +106,7 @@ where
             payload: payload.clone(),
         };
 
-        let envelope =
-            serde_json::to_vec(&envelope).map_err(|e| X402Error::EncodeEnvelope(e.to_string()))?;
-        let header = BASE64_STANDARD.encode(envelope);
-
-        Ok(X402SignedPayment {
-            header,
-            payload,
-            signature,
-        })
+        Self::finish(1, &envelope, payload, signature)
     }
 
     /// Build a signed payment envelope for the given payment requirements, for x402 version 2.
@@ -129,22 +116,14 @@ where
         accepted: PaymentRequirementsV2,
         user_address: String,
     ) -> Result<X402SignedPayment, X402Error> {
-        if !accepted.scheme.to_lowercase().contains("4mica") {
+        if accepted.scheme != SCHEME_4MICA_CREDIT {
             return Err(X402Error::InvalidScheme(accepted.scheme));
         }
         if payment_required.x402_version != 2 {
             return Err(X402Error::InvalidVersion("expected x402 version 2".into()));
         }
 
-        let tab = self
-            .request_tab(
-                2,
-                accepted.clone(),
-                user_address.clone(),
-                Some(payment_required.resource.clone()),
-            )
-            .await?;
-        let claims = Self::build_claims_request_v2(&accepted, &tab, &user_address)?;
+        let claims = Self::build_claims_request_v2(&accepted, &user_address)?;
         let signature = self
             .signer
             .sign_payment(
@@ -163,15 +142,30 @@ where
             x402_version: 2,
             accepted: accepted.clone(),
             payload: payload.clone(),
-            resource: payment_required.resource,
+            resource: Some(payment_required.resource),
+            extensions: payment_required.extensions,
         };
 
+        Self::finish(2, &envelope, payload, signature)
+    }
+
+    /// Encode a signed envelope once, keeping both the object form (for a facilitator's
+    /// `paymentPayload`) and the base64 form (for the payment request header).
+    fn finish(
+        x402_version: u8,
+        envelope: &impl serde::Serialize,
+        payload: PaymentGuaranteeRequest,
+        signature: PaymentSignature,
+    ) -> Result<X402SignedPayment, X402Error> {
         let envelope =
+            serde_json::to_value(envelope).map_err(|e| X402Error::EncodeEnvelope(e.to_string()))?;
+        let bytes =
             serde_json::to_vec(&envelope).map_err(|e| X402Error::EncodeEnvelope(e.to_string()))?;
-        let header = BASE64_STANDARD.encode(envelope);
 
         Ok(X402SignedPayment {
-            header,
+            header: BASE64_STANDARD.encode(bytes),
+            envelope,
+            x402_version,
             payload,
             signature,
         })
@@ -181,9 +175,17 @@ where
     pub async fn settle_payment(
         &self,
         payment: X402SignedPayment,
-        payment_requirements: PaymentRequirements,
+        payment_requirements: X402Requirements,
         facilitator_url: &str,
     ) -> Result<X402SettledPayment, X402Error> {
+        if payment_requirements.x402_version() != payment.x402_version {
+            return Err(X402Error::InvalidVersion(format!(
+                "payment is x402 v{}, but requirements are x402 v{}",
+                payment.x402_version,
+                payment_requirements.x402_version(),
+            )));
+        }
+
         let base_url = Url::parse(facilitator_url)
             .map_err(|e| X402Error::InvalidFacilitatorUrl(e.to_string()))?;
         let url = base_url
@@ -194,8 +196,8 @@ where
             .http
             .post(url)
             .json(&FacilitatorSettleParams {
-                x402_version: 1,
-                payment_header: payment.header.clone(),
+                x402_version: payment.x402_version,
+                payment_payload: payment.envelope.clone(),
                 payment_requirements,
             })
             .send()
@@ -217,46 +219,11 @@ where
         })
     }
 
-    async fn request_tab<PR: X402PaymentRequirements + Serialize>(
-        &self,
-        x402_version: u8,
-        payment_requirements: PR,
-        user_address: String,
-        resource: Option<X402ResourceInfo>,
-    ) -> Result<TabResponse, X402Error> {
-        let extra: PaymentRequirementsExtra = match payment_requirements.extra() {
-            Some(extra) => serde_json::from_value(extra.clone())
-                .map_err(|e| X402Error::InvalidExtra(e.to_string()))?,
-            None => return Err(X402Error::InvalidExtra("extra is required".into())),
-        };
-        let Some(tab_url) = extra.tab_endpoint else {
-            return Err(X402Error::TabResolutionFailed("missing tabEndpoint".into()));
-        };
-
-        let payload = TabRequestParams {
-            x402_version,
-            user_address,
-            payment_requirements,
-            resource,
-        };
-
-        let response = self
-            .http
-            .post(tab_url)
-            .json(&payload)
-            .send()
-            .await?
-            .error_for_status()?;
-
-        Ok(response.json().await?)
-    }
-
     fn build_claims_request_v1(
         requirements: &impl X402PaymentRequirements,
-        tab: &TabResponse,
         user_address: &str,
     ) -> Result<PaymentGuaranteeRequestClaimsV1, X402Error> {
-        let payment_context = Self::build_payment_context(requirements, tab, user_address)?;
+        let payment_context = Self::build_payment_context(requirements)?;
 
         Ok(PaymentGuaranteeRequestClaimsV1::new(
             user_address.to_string(),
@@ -270,10 +237,9 @@ where
 
     fn build_claims_request_v2(
         requirements: &PaymentRequirementsV2,
-        tab: &TabResponse,
         user_address: &str,
     ) -> Result<PaymentGuaranteeRequestClaimsV2, X402Error> {
-        let payment_context = Self::build_payment_context(requirements, tab, user_address)?;
+        let payment_context = Self::build_payment_context(requirements)?;
         let extra = parse_payment_requirements_extra(requirements)?;
 
         let validation_subject_hash = compute_validation_subject_hash(
@@ -334,21 +300,10 @@ where
 
     fn build_payment_context(
         requirements: &impl X402PaymentRequirements,
-        tab: &TabResponse,
-        user_address: &str,
     ) -> Result<PaymentContext, X402Error> {
-        let req_id = match tab.next_req_id.as_deref() {
-            Some(raw) => parse_u256_field("nextReqId", raw)?,
-            None => U256::ZERO,
-        };
+        let req_id_bytes: [u8; 32] = rand::random();
+        let req_id = U256::from_be_bytes(req_id_bytes);
         let amount = parse_u256_field("amount", requirements.amount())?;
-
-        if !tab.user_address.eq_ignore_ascii_case(user_address) {
-            return Err(X402Error::UserMismatch {
-                found: tab.user_address.clone(),
-                expected: user_address.to_string(),
-            });
-        }
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
