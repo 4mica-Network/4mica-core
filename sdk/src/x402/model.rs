@@ -1,5 +1,4 @@
 use alloy::primitives::Address;
-use reqwest::Url;
 use rpc::PaymentGuaranteeRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,19 +12,27 @@ pub trait X402PaymentRequirements {
     fn extra(&self) -> Option<&Value>;
 }
 
+pub const SCHEME_4MICA_CREDIT: &str = "4mica-credit";
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentRequirements {
     pub scheme: String,
     pub network: String,
     pub max_amount_required: String,
-    pub resource: Option<String>,
-    pub description: Option<String>,
+    #[serde(default)]
+    pub resource: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
     pub pay_to: String,
-    pub max_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_timeout_seconds: u64,
     pub asset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
 
@@ -46,8 +53,6 @@ impl X402PaymentRequirements for PaymentRequirements {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaymentRequirementsExtra {
-    #[serde(alias = "tabEndpoint")]
-    pub tab_endpoint: Option<Url>,
     #[serde(default, alias = "validationRegistryAddress")]
     pub validation_registry_address: Option<Address>,
     #[serde(default, alias = "validationChainId")]
@@ -76,7 +81,12 @@ pub struct X402PaymentEnvelope {
 /// Final signed payment envelope plus the resolved paymentRequirements and claims.
 #[derive(Debug, Clone, Deserialize)]
 pub struct X402SignedPayment {
+    /// Base64 of `envelope`, for the `X-PAYMENT` (v1) / `PAYMENT-SIGNATURE` (v2) request header.
     pub header: String,
+    /// The decoded envelope. Facilitators take this as `paymentPayload`, an object — the base64
+    /// form is only ever an HTTP header value.
+    pub envelope: Value,
+    pub x402_version: u8,
     pub payload: PaymentGuaranteeRequest,
     pub signature: PaymentSignature,
 }
@@ -87,32 +97,29 @@ pub struct X402SettledPayment {
     pub payment: X402SignedPayment,
     pub settlement: Value,
 }
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TabRequestParams<TRequirements> {
-    pub x402_version: u8,
-    pub user_address: String,
-    pub payment_requirements: TRequirements,
-    pub resource: Option<X402ResourceInfo>,
+#[serde(untagged)]
+pub enum X402Requirements {
+    V1(PaymentRequirements),
+    V2(PaymentRequirementsV2),
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct TabResponse {
-    #[serde(alias = "tabId")]
-    pub tab_id: String,
-    #[serde(alias = "userAddress")]
-    pub user_address: String,
-    #[serde(alias = "nextReqId", alias = "reqId")]
-    pub next_req_id: Option<String>,
+impl X402Requirements {
+    /// The x402 version whose shape this holds.
+    pub fn x402_version(&self) -> u8 {
+        match self {
+            Self::V1(_) => 1,
+            Self::V2(_) => 2,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FacilitatorSettleParams {
     pub x402_version: u8,
-    pub payment_header: String,
-    pub payment_requirements: PaymentRequirements,
+    pub payment_payload: Value,
+    pub payment_requirements: X402Requirements,
 }
 
 // X402 V2 Models
@@ -125,7 +132,9 @@ pub struct PaymentRequirementsV2 {
     pub asset: String,
     pub amount: String,
     pub pay_to: String,
-    pub max_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_timeout_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
 
@@ -162,17 +171,21 @@ impl From<PaymentRequirements> for PaymentRequirementsV2 {
 #[serde(rename_all = "camelCase")]
 pub struct X402ResourceInfo {
     pub url: String,
-    pub description: String,
-    pub mime_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct X402PaymentRequiredV2 {
     pub x402_version: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub resource: X402ResourceInfo,
     pub accepts: Vec<PaymentRequirementsV2>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<Value>,
 }
 
@@ -182,5 +195,10 @@ pub struct X402PaymentEnvelopeV2 {
     pub x402_version: u8,
     pub accepted: PaymentRequirementsV2,
     pub payload: PaymentGuaranteeRequest,
-    pub resource: X402ResourceInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<X402ResourceInfo>,
+    /// Echoed back from `PaymentRequired.extensions`. Spec v2 §5.1.2 requires the client to
+    /// return at least the info the server advertised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Value>,
 }

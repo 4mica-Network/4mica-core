@@ -11,9 +11,8 @@ use rpc::PaymentGuaranteeRequestClaims;
 use sdk_4mica::{
     PaymentSignature, SigningScheme,
     x402::{
-        FacilitatorSettleParams, FlowSigner, PaymentRequirements, PaymentRequirementsV2,
-        TabRequestParams, TabResponse, X402PaymentEnvelope, X402PaymentRequiredV2,
-        X402ResourceInfo,
+        FlowSigner, PaymentRequirements, PaymentRequirementsV2, X402PaymentEnvelope,
+        X402PaymentRequiredV2, X402ResourceInfo,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -44,34 +43,33 @@ pub struct ResourceResponse {
     pub error: String,
 }
 
-pub fn sample_requirements(tab_endpoint: &str) -> PaymentRequirements {
+/// V1 requirements carry no `extra`: the field only ever existed to advertise a
+/// tab endpoint, and v1 claims have no validation policy.
+pub fn sample_requirements() -> PaymentRequirements {
     PaymentRequirements {
         scheme: "4mica-credit".into(),
         network: "polygon-amoy".into(),
         max_amount_required: "0xde0b6b3a7640000".into(),
-        resource: None,
-        description: None,
+        resource: "http://example.com/resource".into(),
+        description: "Protected resource".into(),
         mime_type: None,
         output_schema: None,
         pay_to: "0x000000000000000000000000000000000000dead".into(),
-        max_timeout_seconds: Some(300),
+        max_timeout_seconds: 300,
         asset: "0x000000000000000000000000000000000000c0de".into(),
-        extra: Some(serde_json::json!({
-            "tabEndpoint": tab_endpoint,
-        })),
+        extra: None,
     }
 }
 
-pub fn sample_requirements_v2(tab_endpoint: &str) -> PaymentRequirementsV2 {
+pub fn sample_requirements_v2() -> PaymentRequirementsV2 {
     PaymentRequirementsV2 {
         scheme: "4mica-credit".into(),
         network: "polygon-amoy".into(),
         asset: "0x000000000000000000000000000000000000c0de".into(),
         amount: "0xde0b6b3a7640000".into(),
         pay_to: "0x000000000000000000000000000000000000dead".into(),
-        max_timeout_seconds: Some(300),
+        max_timeout_seconds: 300,
         extra: Some(serde_json::json!({
-            "tabEndpoint": tab_endpoint,
             "validationRegistryAddress": Address::repeat_byte(0x11),
             "validationChainId": 84532u64,
             "validatorAddress": Address::repeat_byte(0x22),
@@ -107,53 +105,30 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
         .route(
             "/resource/v2",
             get({
-                let requirements = requirements.clone();
-                move || {
-                    let requirements = requirements.clone();
-                    async move {
-                        let payment_required = X402PaymentRequiredV2 {
-                            x402_version: 2,
-                            error: Some("Payment is required to access this resource".into()),
-                            resource: X402ResourceInfo {
-                                url: "http://example.com/resource".into(),
-                                description: "Protected resource".into(),
-                                mime_type: "application/json".into(),
-                            },
-                            accepts: vec![sample_requirements_v2(
-                                requirements
-                                    .extra
-                                    .as_ref()
-                                    .and_then(|extra| extra.get("tabEndpoint"))
-                                    .and_then(|value| value.as_str())
-                                    .expect("tab endpoint"),
-                            )],
-                            extensions: None,
-                        };
+                move || async move {
+                    let payment_required = X402PaymentRequiredV2 {
+                        x402_version: 2,
+                        error: Some("Payment is required to access this resource".into()),
+                        resource: X402ResourceInfo {
+                            url: "http://example.com/resource".into(),
+                            description: Some("Protected resource".into()),
+                            mime_type: Some("application/json".into()),
+                        },
+                        accepts: vec![sample_requirements_v2()],
+                        extensions: None,
+                    };
 
-                        let payment_header = serde_json::to_vec(&payment_required)
-                            .expect("serialize payment required");
-                        let payment_header = BASE64_STANDARD.encode(payment_header);
+                    let payment_header =
+                        serde_json::to_vec(&payment_required).expect("serialize payment required");
+                    let payment_header = BASE64_STANDARD.encode(payment_header);
 
-                        let mut headers = HeaderMap::new();
-                        headers.insert(
-                            "PAYMENT-REQUIRED",
-                            HeaderValue::from_str(&payment_header).expect("valid header value"),
-                        );
+                    let mut headers = HeaderMap::new();
+                    headers.insert(
+                        "PAYMENT-REQUIRED",
+                        HeaderValue::from_str(&payment_header).expect("valid header value"),
+                    );
 
-                        (StatusCode::PAYMENT_REQUIRED, headers)
-                    }
-                }
-            }),
-        )
-        .route(
-            "/tab",
-            post({
-                move |Json(body): Json<TabRequestParams<serde_json::Value>>| async move {
-                    Json(TabResponse {
-                        tab_id: "0x1234".into(),
-                        user_address: body.user_address,
-                        next_req_id: None,
-                    })
+                    (StatusCode::PAYMENT_REQUIRED, headers)
                 }
             }),
         )
@@ -161,19 +136,38 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
             "/settle",
             post({
                 let requirements = requirements.clone();
-                move |Json(body): Json<FacilitatorSettleParams>| {
+                move |Json(body): Json<serde_json::Value>| {
                     let requirements = requirements.clone();
                     async move {
-                        let decoded = BASE64_STANDARD
-                            .decode(&body.payment_header)
-                            .expect("decode payment header");
+                        let payload = body
+                            .get("paymentPayload")
+                            .expect("body must carry paymentPayload");
+                        assert!(
+                            payload.is_object(),
+                            "paymentPayload must be a decoded object, got {payload}"
+                        );
+                        assert!(
+                            body.get("paymentHeader").is_none(),
+                            "paymentHeader is not an x402 facilitator field"
+                        );
+                        assert!(body.get("paymentRequirements").is_some());
+                        assert_eq!(
+                            body.get("x402Version").and_then(|v| v.as_u64()),
+                            payload.get("x402Version").and_then(|v| v.as_u64()),
+                            "x402Version must track the payload, not a hardcoded 1"
+                        );
+
                         let envelope: X402PaymentEnvelope =
-                            serde_json::from_slice(&decoded).expect("parse envelope");
+                            serde_json::from_value(payload.clone()).expect("parse envelope");
 
                         match envelope.payload.claims {
                             PaymentGuaranteeRequestClaims::V1(claims) => {
                                 assert_eq!(claims.recipient_address, requirements.pay_to);
-                                assert_eq!(claims.req_id, U256::from(0));
+                                assert_ne!(
+                                    claims.req_id,
+                                    U256::ZERO,
+                                    "req_id must be a generated nonce, not the zero default"
+                                );
                             }
                             #[allow(unused)]
                             _ => panic!("legacy claims version found!"),
@@ -198,9 +192,7 @@ pub async fn spawn_mock_server() -> (String, tokio::task::JoinHandle<()>) {
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
 
-    let tab_endpoint = format!("http://{}/tab", addr);
-    let requirements = sample_requirements(&tab_endpoint);
-    let router = build_router(requirements);
+    let router = build_router(sample_requirements());
 
     let handle = tokio::spawn(async move {
         if let Err(err) = axum::serve(listener, router.into_make_service()).await {

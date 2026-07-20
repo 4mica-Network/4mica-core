@@ -20,6 +20,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 url = { workspace = true }
 alloy = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -45,13 +46,12 @@ reqwest-012 = { package = "reqwest", version = "0.12.4", optional = true, defaul
 [features]
 cdp = ["dep:cdp-sdk", "dep:reqwest-middleware", "dep:reqwest-012"]
 
+# The live-stack, DB-coupled e2e tests (and the `core-service`/`entities` deps
+# they need) live in the separate `sdk-e2e` crate so this crate stays portable
+# and free of in-repo path dependencies. What remains here are offline tests
+# that only exercise the SDK's own surface against mock HTTP servers.
 [dev-dependencies]
 tokio = { workspace = true }
 chrono = { workspace = true }
-alloy-provider = { workspace = true, features = ["anvil-api"] }
-test-log = { workspace = true }
 serial_test = { version = "3.2.0", features = ["file_locks"] }
 axum = { workspace = true, features = ["macros", "json"] }
-serde_json = { workspace = true }
-core-service = { path = "../core" }
-dotenv = { workspace = true }
