@@ -51,4 +51,43 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
         assertEq(g.asset, vm.parseJsonAddress(vectors, ".v1.expected.asset"), "asset");
         assertEq(g.timestamp, vm.parseJsonUint(vectors, ".v1.expected.timestamp"), "timestamp");
     }
+
+    function test_rustSignedV2Guarantee_verifiesAndDecodesOnChain() public {
+        BLS.G1Point memory vkey = _g1(".v2.verificationKey");
+        bytes32 domain = vm.parseJsonBytes32(vectors, ".v2.domain");
+        bytes memory guarantee = vm.parseJsonBytes(vectors, ".v2.guarantee");
+        BLS.G2Point memory signature = _g2(".v2.signature");
+
+        // The V2 binding commits to a specific registry address; place a configurable mock at
+        // that exact address so the decoder's lookup + checks pass against real on-chain code.
+        address registryAddr = vm.parseJsonAddress(vectors, ".v2.policy.validationRegistryAddress");
+        MockValidationRegistry impl = new MockValidationRegistry();
+        vm.etch(registryAddr, address(impl).code);
+        MockValidationRegistry(registryAddr)
+            .set(
+                vm.parseJsonAddress(vectors, ".v2.policy.validatorAddress"),
+                vm.parseJsonUint(vectors, ".v2.policy.validatorAgentId"),
+                uint8(vm.parseJsonUint(vectors, ".v2.policy.minValidationScore")) + 10, // response >= min score
+                vm.parseJsonString(vectors, ".v2.policy.requiredValidationTag"),
+                1 // lastUpdate != 0 => not pending
+            );
+
+        address[] memory trusted = new address[](1);
+        trusted[0] = registryAddr;
+        ValidationRegistryGuaranteeDecoder decoder = new ValidationRegistryGuaranteeDecoder(trusted);
+
+        core4Mica.configureGuaranteeVersion(2, vkey, domain, address(decoder), true);
+
+        Guarantee memory g = core4Mica.verifyAndDecodeGuarantee(guarantee, signature);
+
+        assertEq(g.version, 2, "version");
+        assertEq(g.domain, domain, "domain");
+        assertEq(g.cycleId, vm.parseJsonUint(vectors, ".v2.expected.cycleId"), "cycleId");
+        assertEq(g.reqId, vm.parseJsonUint(vectors, ".v2.expected.reqId"), "reqId");
+        assertEq(g.client, vm.parseJsonAddress(vectors, ".v2.expected.client"), "client");
+        assertEq(g.recipient, vm.parseJsonAddress(vectors, ".v2.expected.recipient"), "recipient");
+        assertEq(g.amount, vm.parseJsonUint(vectors, ".v2.expected.amount"), "amount");
+        assertEq(g.asset, vm.parseJsonAddress(vectors, ".v2.expected.asset"), "asset");
+        assertEq(g.timestamp, vm.parseJsonUint(vectors, ".v2.expected.timestamp"), "timestamp");
+    }
 }

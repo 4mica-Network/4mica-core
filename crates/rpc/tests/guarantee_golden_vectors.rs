@@ -81,6 +81,80 @@ fn build_v1_vector() -> Value {
     })
 }
 
+fn build_v2_vector() -> Value {
+    let key = KeyMaterial::from_bytes(Zeroizing::new(TEST_SK.to_vec())).expect("valid secret key");
+    let verification_key = key.public_key().to_solidity_words().expect("g1 words");
+
+    let domain = [0x22u8; 32];
+    let amount = U256::from(2_000u64);
+    let req_id = U256::from(11u64);
+    let timestamp = 1_700_000_500u64;
+
+    let subject_hash =
+        compute_validation_subject_hash(CLIENT, RECIPIENT, req_id, amount, ASSET, timestamp)
+            .expect("subject hash");
+
+    let mut policy = PaymentGuaranteeValidationPolicyV2 {
+        validation_registry_address: V2_REGISTRY.parse::<Address>().unwrap(),
+        validation_request_hash: B256::ZERO,
+        validation_chain_id: VECTOR_CHAIN_ID,
+        validator_address: V2_VALIDATOR.parse::<Address>().unwrap(),
+        validator_agent_id: U256::from(42u64),
+        min_validation_score: 80,
+        validation_subject_hash: B256::from(subject_hash),
+        job_hash: B256::repeat_byte(0x11),
+        required_validation_tag: "hard-finality".to_string(),
+    };
+    policy.validation_request_hash =
+        B256::from(compute_validation_request_hash(&policy).expect("request hash"));
+
+    let claims = PaymentGuaranteeClaims {
+        domain,
+        user_address: CLIENT.to_string(),
+        recipient_address: RECIPIENT.to_string(),
+        cycle_id: U256::from(101u64),
+        req_id,
+        amount,
+        asset_address: ASSET.to_string(),
+        timestamp,
+        version: GUARANTEE_CLAIMS_VERSION_V2,
+        validation_policy: Some(policy.clone()),
+    };
+
+    let guarantee = encode_guarantee_claims(claims.clone()).expect("encode v2 claims");
+    let signature = key.sign(&guarantee).to_solidity_words().expect("g2 words");
+
+    json!({
+        "domain": hex::encode_prefixed(domain),
+        "verificationKey": words_to_json(&verification_key),
+        "signature": words_to_json(&signature),
+        "guarantee": hex::encode_prefixed(&guarantee),
+        // Values the Foundry test must reproduce in its mock validation registry so the
+        // V2 decoder's post-decode validation passes.
+        "policy": {
+            "validationRegistryAddress": V2_REGISTRY,
+            "validationRequestHash": policy.validation_request_hash.to_string(),
+            "validationChainId": policy.validation_chain_id,
+            "validatorAddress": V2_VALIDATOR,
+            "validatorAgentId": policy.validator_agent_id.to_string(),
+            "minValidationScore": policy.min_validation_score,
+            "validationSubjectHash": policy.validation_subject_hash.to_string(),
+            "jobHash": policy.job_hash.to_string(),
+            "requiredValidationTag": policy.required_validation_tag,
+        },
+        "expected": {
+            "cycleId": claims.cycle_id.to_string(),
+            "reqId": claims.req_id.to_string(),
+            "client": CLIENT,
+            "recipient": RECIPIENT,
+            "amount": amount.to_string(),
+            "asset": ASSET,
+            "timestamp": claims.timestamp,
+            "version": claims.version,
+        }
+    })
+}
+
 fn fixture_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../contracts/test/fixtures/guarantee_vectors.json")
