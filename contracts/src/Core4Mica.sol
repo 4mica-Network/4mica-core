@@ -48,6 +48,35 @@ interface IERC3009 {
     ) external;
 }
 
+/// @notice Minimal Permit2 `SignatureTransfer` interface. Permit2 is the canonical singleton deployed
+/// at the same address on every chain; it verifies a signed `PermitTransferFrom` (supporting EIP-1271
+/// smart wallets) and pulls tokens on the owner's behalf. Unlike EIP-3009 this works for any ERC-20,
+/// but the owner must have granted a one-time ERC-20 approval to Permit2 for the asset.
+interface ISignatureTransfer {
+    struct TokenPermissions {
+        address token;
+        uint256 amount;
+    }
+
+    struct PermitTransferFrom {
+        TokenPermissions permitted;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct SignatureTransferDetails {
+        address to;
+        uint256 requestedAmount;
+    }
+
+    function permitTransferFrom(
+        PermitTransferFrom calldata permit,
+        SignatureTransferDetails calldata transferDetails,
+        address owner,
+        bytes calldata signature
+    ) external;
+}
+
 /// @notice A client's EIP-3009 authorization to move `value` (equal to the deposit amount) from
 /// `from` into the Core4Mica contract. Any caller may submit it; collateral is always credited to
 /// `from` (the signer), never `msg.sender`.
@@ -59,6 +88,17 @@ struct ReceiveAuthorization {
     uint8 v;
     bytes32 r;
     bytes32 s;
+}
+
+/// @notice A client's Permit2 `PermitTransferFrom` authorization to move the deposit amount from
+/// `from` into the Core4Mica contract via the canonical Permit2 contract. Any caller may submit it;
+/// collateral is always credited to `from` (the signer), never `msg.sender`. Requires a one-time
+/// ERC-20 approval from `from` to Permit2 for the deposited asset.
+struct Permit2Authorization {
+    address from;
+    uint256 nonce;
+    uint256 deadline;
+    bytes signature;
 }
 
 /// @title Core4Mica
@@ -128,6 +168,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     uint64 public constant INITIAL_GUARANTEE_VERSION = 1;
 
     address internal constant ETH_ASSET = address(0);
+
+    /// @notice Canonical Permit2 contract, deployed at the same address on every supported chain.
+    address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     mapping(address => bool) private stablecoinAssets;
     address[] private stablecoinAssetList;
     mapping(address => uint256) private stablecoinAssetIndexPlusOne;
@@ -507,6 +550,42 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
             );
         _supplyAndCreditUserStablecoin(auth.from, asset, amount);
         emit CollateralDeposited(auth.from, asset, amount);
+    }
+
+    /// @notice Deposit stablecoin collateral on behalf of `p.from` using a Permit2 `permitTransferFrom`
+    /// signature. Any caller (e.g. a gasless facilitator that sponsors the transaction) may submit this;
+    /// collateral is always credited to `p.from` (the signer), never `msg.sender`. The contract pins
+    /// `permitted.token = asset`, `permitted.amount = amount`, `to = address(this)`, and
+    /// `requestedAmount = amount`, and Permit2 sees `spender == address(this)` (bound into the signed
+    /// digest), so the caller can neither redirect the funds nor pull an amount the user did not sign.
+    /// Nonce replay protection and the deadline are enforced by Permit2 itself. Unlike the EIP-3009 path
+    /// this works for any ERC-20, but requires a one-time ERC-20 approval from `p.from` to Permit2.
+    /// @param asset The stablecoin to deposit; must equal the token the user signed over in the permit.
+    /// @param amount The deposit amount; must equal the `permitted.amount` the user signed.
+    /// @param p The client's Permit2 authorization (from, nonce, deadline, signature).
+    function depositStablecoinWithPermit2(address asset, uint256 amount, Permit2Authorization calldata p)
+        external
+        nonReentrant
+        stablecoin(asset)
+        nonZero(amount)
+        whenNotPaused
+    {
+        // Pull `amount` straight from the signer into this contract via Permit2. Permit2 verifies the
+        // EIP-712 signature against `p.from` and enforces the nonce/deadline; `to` is pinned to this
+        // contract so a relayer cannot redirect the funds.
+        ISignatureTransfer(PERMIT2)
+            .permitTransferFrom(
+                ISignatureTransfer.PermitTransferFrom({
+                permitted: ISignatureTransfer.TokenPermissions({token: asset, amount: amount}),
+                nonce: p.nonce,
+                deadline: p.deadline
+            }),
+                ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: amount}),
+                p.from,
+                p.signature
+            );
+        _supplyAndCreditUserStablecoin(p.from, asset, amount);
+        emit CollateralDeposited(p.from, asset, amount);
     }
 
     function requestWithdrawal(uint256 amount) external nonZero(amount) whenNotPaused {
