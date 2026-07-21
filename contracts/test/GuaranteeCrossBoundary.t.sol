@@ -51,5 +51,4 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
         assertEq(g.asset, vm.parseJsonAddress(vectors, ".v1.expected.asset"), "asset");
         assertEq(g.timestamp, vm.parseJsonUint(vectors, ".v1.expected.timestamp"), "timestamp");
     }
-
 }
