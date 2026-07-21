@@ -175,10 +175,10 @@ network call before signing.
 - `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
 - `asset`, `amount` (v2) or `maxAmountRequired` (v1), and `payTo`
 
-V1 needs no `extra`. V2 may carry an optional validation requirement in `extra`: `validator`
+Either version may carry an optional validation requirement in `extra.validation`: `validator`
 (a whitelisted validator identity), `subject` (0x bytes32), `deadline` (optional unix seconds),
-and `params` (0x-encoded, validator-specific policy). Omitting them leaves the payment
-un-gated.
+and `params` (0x-encoded, validator-specific policy). Omitting `extra.validation` leaves the
+payment un-gated.
 
 #### End-to-end client flow
 

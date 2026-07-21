@@ -52,13 +52,18 @@ impl X402PaymentRequirements for PaymentRequirements {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaymentRequirementsExtra {
-    /// Validator identity, as whitelisted by core. Its presence is what makes the payment
-    /// validation-gated.
+    /// Present when the payment is validation-gated.
     #[serde(default)]
-    pub validator: Option<String>,
+    pub validation: Option<ValidationExtra>,
+}
+
+/// The `extra.validation` object a resource server sends to gate a payment on a validator.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ValidationExtra {
+    /// Validator identity, as whitelisted by core.
+    pub validator: String,
     /// 0x-prefixed bytes32 the validator must approve.
-    #[serde(default)]
-    pub subject: Option<String>,
+    pub subject: String,
     /// Unix seconds; core tightens this to the settlement cycle's resolution cutoff.
     #[serde(default)]
     pub deadline: Option<u64>,

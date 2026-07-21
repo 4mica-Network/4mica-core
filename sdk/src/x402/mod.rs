@@ -71,7 +71,7 @@ where
             return Err(X402Error::InvalidScheme(payment_requirements.scheme));
         }
 
-        let claims = Self::build_claims_request_v1(&payment_requirements, &user_address)?;
+        let claims = Self::build_claims_request(&payment_requirements, &user_address)?;
         let signature = self
             .signer
             .sign_payment(claims.clone(), SigningScheme::Eip712)
@@ -107,7 +107,7 @@ where
             return Err(X402Error::InvalidVersion("expected x402 version 2".into()));
         }
 
-        let claims = Self::build_claims_request_v2(&accepted, &user_address)?;
+        let claims = Self::build_claims_request(&accepted, &user_address)?;
         let signature = self
             .signer
             .sign_payment(claims.clone(), SigningScheme::Eip712)
@@ -200,60 +200,36 @@ where
         })
     }
 
-    fn build_claims_request_v1(
+    /// Build the signed claims for a payment.
+    fn build_claims_request(
         requirements: &impl X402PaymentRequirements,
         user_address: &str,
     ) -> Result<PaymentGuaranteeRequestClaims, X402Error> {
         let payment_context = Self::build_payment_context(requirements)?;
 
-        Ok(PaymentGuaranteeRequestClaims::new(
+        let claims = PaymentGuaranteeRequestClaims::new(
             user_address.to_string(),
             requirements.pay_to().to_string(),
             payment_context.req_id,
             payment_context.amount,
             payment_context.timestamp,
             Some(requirements.asset().to_string()),
-        ))
-    }
-
-    /// x402 v2 requirements may make the payment validation-gated by naming a validator in
-    /// `extra`. The validator's own policy travels as opaque `params`, so this flow stays
-    /// agnostic to what any particular validator checks.
-    fn build_claims_request_v2(
-        requirements: &PaymentRequirementsV2,
-        user_address: &str,
-    ) -> Result<PaymentGuaranteeRequestClaims, X402Error> {
-        let payment_context = Self::build_payment_context(requirements)?;
-        let extra = parse_payment_requirements_extra(requirements)?;
-
-        let claims = PaymentGuaranteeRequestClaims::new(
-            user_address.to_string(),
-            requirements.pay_to.to_string(),
-            payment_context.req_id,
-            payment_context.amount,
-            payment_context.timestamp,
-            Some(requirements.asset.to_string()),
         );
 
-        let Some(validator) = extra.validator else {
+        let Some(validation) = parse_validation_extra(requirements)? else {
             return Ok(claims);
         };
 
-        let subject = extra
-            .subject
-            .as_deref()
-            .ok_or_else(|| X402Error::InvalidExtra("missing subject".into()))
-            .and_then(|raw| parse_b256_field("subject", raw))?;
-
-        let params = match extra.params.as_deref() {
+        let subject = parse_b256_field("subject", &validation.subject)?;
+        let params = match validation.params.as_deref() {
             Some(raw) => parse_bytes_field("params", raw)?,
             None => Bytes::new(),
         };
 
         Ok(claims.with_validation(ValidationRequirement {
-            validator,
+            validator: validation.validator,
             subject,
-            deadline: extra.deadline,
+            deadline: validation.deadline,
             params,
         }))
     }
@@ -285,14 +261,15 @@ struct PaymentContext {
     timestamp: u64,
 }
 
-fn parse_payment_requirements_extra(
+fn parse_validation_extra(
     requirements: &impl X402PaymentRequirements,
-) -> Result<PaymentRequirementsExtra, X402Error> {
-    match requirements.extra() {
-        Some(extra) => serde_json::from_value(extra.clone())
-            .map_err(|e| X402Error::InvalidExtra(e.to_string())),
-        None => Err(X402Error::InvalidExtra("extra is required".into())),
-    }
+) -> Result<Option<ValidationExtra>, X402Error> {
+    let Some(extra) = requirements.extra() else {
+        return Ok(None);
+    };
+    let parsed: PaymentRequirementsExtra = serde_json::from_value(extra.clone())
+        .map_err(|e| X402Error::InvalidExtra(e.to_string()))?;
+    Ok(parsed.validation)
 }
 
 fn parse_u256_field(field: &str, raw: &str) -> Result<U256, X402Error> {

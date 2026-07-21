@@ -73,10 +73,12 @@ pub fn sample_requirements_v2() -> PaymentRequirementsV2 {
         pay_to: "0x000000000000000000000000000000000000dead".into(),
         max_timeout_seconds: 300,
         extra: Some(serde_json::json!({
-            "validator": VALIDATOR_URI,
-            "subject": "0x1111111111111111111111111111111111111111111111111111111111111111",
-            "deadline": 1_800_003_600u64,
-            "params": "0x0a0b",
+            "validation": {
+                "validator": VALIDATOR_URI,
+                "subject": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                "deadline": 1_800_003_600u64,
+                "params": "0x0a0b",
+            }
         })),
     }
 }
