@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -11,13 +11,16 @@ use crate::{
     ethereum::{CoreContractApi, CoreContractProxy},
     persist::{PersistCtx, repo},
 };
-use alloy::primitives::Address;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use crypto::bls::KeyMaterial;
 use log::{error, info};
-use rpc::{CorePublicParameters, SupportedTokensResponse, UserSuspensionStatus};
+use rpc::{
+    CorePublicParameters, GUARANTEE_CLAIMS_VERSION, SUPPORTED_GUARANTEE_VERSIONS,
+    SupportedTokensResponse, UserSuspensionStatus,
+};
+use validators::ValidatorRegistry;
 
 pub mod auth;
 pub mod clearing;
@@ -57,9 +60,7 @@ fn scanner_grace_is_fresh(
 pub struct Inner {
     config: AppConfig,
     public_params: CorePublicParameters,
-    trusted_validation_registry_set: HashSet<Address>,
-    accepted_guarantee_versions: HashSet<u64>,
-    enable_v2_validation_lifecycle: bool,
+    validators: ValidatorRegistry,
     guarantee_domains: HashMap<u64, [u8; 32]>,
     /// On-chain `withdrawalGracePeriod` (seconds)
     withdrawal_grace_period: AtomicU64,
@@ -87,6 +88,7 @@ pub struct CoreServiceDeps {
     pub chain_id: u64,
     pub read_provider: DynProvider,
     pub guarantee_domains: HashMap<u64, [u8; 32]>,
+    pub validators: ValidatorRegistry,
     pub withdrawal_grace_period: u64,
 }
 
@@ -95,8 +97,7 @@ impl CoreService {
         let persist_ctx = PersistCtx::new().await?;
         let eth_cfg = config.ethereum_config.clone();
         let guarantee_config = config.guarantee.clone();
-        guarantee_config.validate(config.server_config.environment)?;
-        let accepted_guarantee_versions = guarantee_config.accepted_request_versions()?;
+        guarantee_config.validate()?;
 
         let contract_api = Arc::new(CoreContractProxy::new(&config).await?);
 
@@ -113,11 +114,11 @@ impl CoreService {
 
         let read_provider = Self::build_ws_provider(eth_cfg.clone()).await?;
         let mut guarantee_domains = HashMap::new();
-        for version in accepted_guarantee_versions {
+        for &version in SUPPORTED_GUARANTEE_VERSIONS {
             let version_config = contract_api.get_guarantee_version_config(version).await?;
             if !version_config.enabled {
                 anyhow::bail!(
-                    "accepted guarantee version {} is disabled on-chain",
+                    "supported guarantee version {} is disabled on-chain",
                     version
                 );
             }
@@ -144,6 +145,9 @@ impl CoreService {
                 "settlement cycle timing is incompatible with on-chain withdrawalGracePeriod",
             )?;
 
+        let validators =
+            ValidatorRegistry::build(&guarantee_config.validators()?, Some(read_provider.clone()))?;
+
         Self::new_with_dependencies(
             config,
             CoreServiceDeps {
@@ -152,6 +156,7 @@ impl CoreService {
                 chain_id: actual_chain_id,
                 read_provider,
                 guarantee_domains,
+                validators,
                 withdrawal_grace_period,
             },
         )
@@ -169,43 +174,14 @@ impl CoreService {
         let eip712_version = config.eip712.version.clone();
         let eth_config = config.ethereum_config.clone();
         let guarantee_config = config.guarantee.clone();
-        guarantee_config.validate(config.server_config.environment)?;
-        let trusted_validation_registries =
-            guarantee_config.trusted_validation_registry_allowlist()?;
-        let trusted_validation_registry_set: HashSet<Address> = trusted_validation_registries
-            .iter()
-            .map(|registry| {
-                registry.parse::<Address>().map_err(|_| {
-                    anyhow!(
-                        "invalid normalized trusted validation registry address: {}",
-                        registry
-                    )
-                })
-            })
-            .collect::<anyhow::Result<HashSet<Address>>>()?;
-        let max_accepted_version = guarantee_config.max_accepted_version;
-        let accepted_guarantee_versions = guarantee_config
-            .accepted_request_versions()?
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let validation_hash_canonicalization_version = guarantee_config
-            .validation_hash_canonicalization_version
-            .clone();
-        let mut accepted_guarantee_versions_public = accepted_guarantee_versions
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        accepted_guarantee_versions_public.sort_unstable();
-        let max_accepted_domain = deps
+        guarantee_config.validate()?;
+        let current_domain = deps
             .guarantee_domains
-            .get(&max_accepted_version)
+            .get(&GUARANTEE_CLAIMS_VERSION)
             .ok_or_else(|| {
-                anyhow!(
-                    "missing guarantee domain for max accepted guarantee version {}",
-                    max_accepted_version
-                )
+                anyhow!("missing guarantee domain for version {GUARANTEE_CLAIMS_VERSION}")
             })?;
-        let active_guarantee_domain_separator = crypto::hex::encode_hex(max_accepted_domain);
+        let guarantee_domain_separator = crypto::hex::encode_hex(current_domain);
 
         let inner = Inner {
             config,
@@ -216,15 +192,11 @@ impl CoreService {
                 eip712_name,
                 eip712_version,
                 chain_id: deps.chain_id,
-                max_accepted_guarantee_version: max_accepted_version,
-                accepted_guarantee_versions: accepted_guarantee_versions_public,
-                active_guarantee_domain_separator,
-                trusted_validation_registries,
-                validation_hash_canonicalization_version,
+                supported_guarantee_versions: SUPPORTED_GUARANTEE_VERSIONS.to_vec(),
+                guarantee_domain_separator,
+                validators: deps.validators.validators(),
             },
-            trusted_validation_registry_set,
-            accepted_guarantee_versions,
-            enable_v2_validation_lifecycle: guarantee_config.enable_v2_validation_lifecycle,
+            validators: deps.validators,
             guarantee_domains: deps.guarantee_domains,
             withdrawal_grace_period: AtomicU64::new(deps.withdrawal_grace_period),
             last_scan_unix: AtomicU64::new(0),

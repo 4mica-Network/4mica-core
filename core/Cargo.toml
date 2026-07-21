@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 rpc = { workspace = true }
+validators = { workspace = true }
 crypto = { workspace = true }
 blockchain = { workspace = true }
 metrics-4mica = { workspace = true }

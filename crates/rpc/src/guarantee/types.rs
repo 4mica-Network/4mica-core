@@ -1,29 +1,39 @@
-use alloy_primitives::{Address, B256, U256};
-use serde::{Deserialize, Serialize, de};
-use std::str::FromStr;
+use alloy_primitives::{B256, Bytes, U256};
+use serde::{Deserialize, Serialize};
 
-use super::{codec, compute_validation_request_hash, compute_validation_subject_hash};
+use super::codec;
 
 const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
+/// Current guarantee claims version. Clients always issue at this version; core accepts every
+/// version in [`super::SUPPORTED_GUARANTEE_VERSIONS`] so older clients keep working.
 pub const GUARANTEE_CLAIMS_VERSION: u64 = 1;
-pub const GUARANTEE_CLAIMS_VERSION_V2: u64 = 2;
 
+/// An agreement, reached out of band between payer and recipient and signed by the payer, that a
+/// guarantee only becomes payable once an external validator approves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaymentGuaranteeValidationPolicyV2 {
-    pub validation_registry_address: Address,
-    pub validation_request_hash: B256,
-    pub validation_chain_id: u64,
-    pub validator_address: Address,
-    pub validator_agent_id: U256,
-    pub min_validation_score: u8,
-    pub validation_subject_hash: B256,
-    #[serde(default)]
-    pub job_hash: B256,
-    #[serde(default)]
-    pub required_validation_tag: String,
+pub struct ValidationRequirement {
+    /// Validator identity, exact-matched against the operator's whitelist. By convention a URL
+    /// or a CAIP-10 account id; its adapter decides how to interpret it.
+    pub validator: String,
+    /// What must be validated. Must be unique per guarantee: a reused subject would let one
+    /// verdict satisfy another guarantee.
+    pub subject: B256,
+    /// Optional cap on how long validation may take, unix seconds. Core may tighten it to fit
+    /// the settlement cycle, never extend it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<u64>,
+    /// Validator-specific acceptance policy, parsed only by that validator's adapter.
+    #[serde(default, skip_serializing_if = "params_is_empty")]
+    pub params: Bytes,
 }
 
+fn params_is_empty(params: &Bytes) -> bool {
+    params.is_empty()
+}
+
+/// Guarantee claims as signed by core's BLS key and decoded on-chain. Validation is enforced
+/// off-chain and never enters this envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentGuaranteeClaims {
     pub domain: [u8; 32],
@@ -35,8 +45,6 @@ pub struct PaymentGuaranteeClaims {
     pub asset_address: String,
     pub timestamp: u64,
     pub version: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation_policy: Option<PaymentGuaranteeValidationPolicyV2>,
 }
 
 impl PaymentGuaranteeClaims {
@@ -55,24 +63,7 @@ impl PaymentGuaranteeClaims {
             asset_address: request.asset_address().to_string(),
             timestamp: request.timestamp(),
             version: request.version(),
-            validation_policy: request.validation_policy().cloned(),
         }
-    }
-
-    pub fn validate_v2_policy_binding(&self) -> anyhow::Result<()> {
-        let Some(policy) = &self.validation_policy else {
-            return Ok(());
-        };
-
-        validate_policy_binding(
-            &self.user_address,
-            &self.recipient_address,
-            self.req_id,
-            self.amount,
-            &self.asset_address,
-            self.timestamp,
-            policy,
-        )
     }
 }
 
@@ -89,12 +80,12 @@ impl TryFrom<&[u8]> for PaymentGuaranteeClaims {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let claims = codec::decode_guarantee_claims(value)?;
-        Ok(claims)
+        codec::decode_guarantee_claims(value)
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// V1 payment guarantee request claims, as signed by the payer's wallet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentGuaranteeRequestClaimsV1 {
     pub user_address: String,
     pub recipient_address: String,
@@ -102,340 +93,96 @@ pub struct PaymentGuaranteeRequestClaimsV1 {
     pub amount: U256,
     pub asset_address: String,
     pub timestamp: u64,
+    /// Present ⇒ the guarantee is validation-gated. Absent ⇒ payable at issuance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ValidationRequirement>,
 }
 
-impl PaymentGuaranteeRequestClaimsV1 {
-    pub fn new(
-        user_address: String,
-        recipient_address: String,
-        req_id: U256,
-        amount: U256,
-        timestamp: u64,
-        erc20_token: Option<String>,
-    ) -> Self {
-        let asset_address = erc20_token.unwrap_or(DEFAULT_ASSET_ADDRESS.to_string());
-        Self {
-            user_address,
-            recipient_address,
-            req_id,
-            amount,
-            asset_address,
-            timestamp,
-        }
-    }
-}
-
+/// A payment guarantee request, tagged by the claims version it was signed under.
+///
+/// To add VN: add a variant with its own claims struct, extend the accessors below and append N to
+/// [`super::SUPPORTED_GUARANTEE_VERSIONS`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PaymentGuaranteeRequestClaimsV2Unchecked {
-    pub user_address: String,
-    pub recipient_address: String,
-    pub req_id: U256,
-    pub amount: U256,
-    pub asset_address: String,
-    pub timestamp: u64,
-    #[serde(flatten)]
-    pub validation_policy: PaymentGuaranteeValidationPolicyV2,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PaymentGuaranteeRequestClaimsV2 {
-    pub user_address: String,
-    pub recipient_address: String,
-    pub req_id: U256,
-    pub amount: U256,
-    pub asset_address: String,
-    pub timestamp: u64,
-    #[serde(flatten)]
-    pub validation_policy: PaymentGuaranteeValidationPolicyV2,
-}
-
-#[derive(Debug, Clone)]
-pub struct PaymentGuaranteeRequestClaimsV2Builder {
-    user_address: String,
-    recipient_address: String,
-    req_id: U256,
-    amount: U256,
-    asset_address: String,
-    timestamp: u64,
-    validation_policy: Option<PaymentGuaranteeValidationPolicyV2>,
-}
-
-impl TryFrom<PaymentGuaranteeRequestClaimsV2Unchecked> for PaymentGuaranteeRequestClaimsV2 {
-    type Error = anyhow::Error;
-
-    fn try_from(value: PaymentGuaranteeRequestClaimsV2Unchecked) -> Result<Self, Self::Error> {
-        let claims = Self {
-            user_address: value.user_address,
-            recipient_address: value.recipient_address,
-            req_id: value.req_id,
-            amount: value.amount,
-            asset_address: value.asset_address,
-            timestamp: value.timestamp,
-            validation_policy: value.validation_policy,
-        };
-        claims.validate()?;
-        Ok(claims)
-    }
-}
-
-impl<'de> Deserialize<'de> for PaymentGuaranteeRequestClaimsV2 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let unchecked = PaymentGuaranteeRequestClaimsV2Unchecked::deserialize(deserializer)?;
-        unchecked.try_into().map_err(de::Error::custom)
-    }
-}
-
-impl PaymentGuaranteeRequestClaimsV2 {
-    pub fn builder(
-        user_address: String,
-        recipient_address: String,
-        req_id: U256,
-        amount: U256,
-        timestamp: u64,
-    ) -> PaymentGuaranteeRequestClaimsV2Builder {
-        PaymentGuaranteeRequestClaimsV2Builder {
-            user_address,
-            recipient_address,
-            req_id,
-            amount,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-            timestamp,
-            validation_policy: None,
-        }
-    }
-
-    /// Prefer [`PaymentGuaranteeRequestClaimsV2::builder`] — it is composable and avoids
-    /// the long parameter list. This constructor exists only for backward compatibility.
-    #[deprecated(note = "use PaymentGuaranteeRequestClaimsV2::builder() instead")]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        user_address: String,
-        recipient_address: String,
-        req_id: U256,
-        amount: U256,
-        timestamp: u64,
-        erc20_token: Option<String>,
-        validation_registry_address: String,
-        validation_request_hash: String,
-        validation_chain_id: u64,
-        validator_address: String,
-        validator_agent_id: U256,
-        min_validation_score: u8,
-        validation_subject_hash: String,
-        job_hash: String,
-        required_validation_tag: Option<String>,
-    ) -> anyhow::Result<Self> {
-        let validation_policy = PaymentGuaranteeValidationPolicyV2 {
-            validation_registry_address: parse_address(
-                "validation_registry_address",
-                &validation_registry_address,
-            )?,
-            validation_request_hash: parse_b256(
-                "validation_request_hash",
-                &validation_request_hash,
-            )?,
-            validation_chain_id,
-            validator_address: parse_address("validator_address", &validator_address)?,
-            validator_agent_id,
-            min_validation_score,
-            validation_subject_hash: parse_b256(
-                "validation_subject_hash",
-                &validation_subject_hash,
-            )?,
-            job_hash: parse_b256("job_hash", &job_hash)?,
-            required_validation_tag: required_validation_tag.unwrap_or_default(),
-        };
-        let mut builder = Self::builder(user_address, recipient_address, req_id, amount, timestamp)
-            .validation_policy(validation_policy);
-        if let Some(token) = erc20_token {
-            builder = builder.asset_address(token);
-        }
-        builder.build()
-    }
-
-    pub fn compute_validation_subject_hash(&self) -> anyhow::Result<[u8; 32]> {
-        compute_validation_subject_hash(
-            &self.user_address,
-            &self.recipient_address,
-            self.req_id,
-            self.amount,
-            &self.asset_address,
-            self.timestamp,
-        )
-    }
-
-    pub fn compute_validation_request_hash(&self) -> anyhow::Result<[u8; 32]> {
-        compute_validation_request_hash(&self.validation_policy)
-    }
-
-    pub fn validate(&self) -> anyhow::Result<()> {
-        validate_policy_binding(
-            &self.user_address,
-            &self.recipient_address,
-            self.req_id,
-            self.amount,
-            &self.asset_address,
-            self.timestamp,
-            &self.validation_policy,
-        )
-    }
-}
-
-impl PaymentGuaranteeRequestClaimsV2Builder {
-    pub fn asset_address(mut self, asset_address: String) -> Self {
-        self.asset_address = asset_address;
-        self
-    }
-
-    pub fn validation_policy(
-        mut self,
-        validation_policy: PaymentGuaranteeValidationPolicyV2,
-    ) -> Self {
-        self.validation_policy = Some(validation_policy);
-        self
-    }
-
-    pub fn build(self) -> anyhow::Result<PaymentGuaranteeRequestClaimsV2> {
-        let validation_policy = self
-            .validation_policy
-            .ok_or_else(|| anyhow::anyhow!("validation_policy is required for v2 claims"))?;
-        let claims = PaymentGuaranteeRequestClaimsV2 {
-            user_address: self.user_address,
-            recipient_address: self.recipient_address,
-            req_id: self.req_id,
-            amount: self.amount,
-            asset_address: self.asset_address,
-            timestamp: self.timestamp,
-            validation_policy,
-        };
-        claims.validate()?;
-        Ok(claims)
-    }
-}
-
-/// Validates that `validation_subject_hash` and `validation_request_hash` in the policy are
-/// canonical for the given payment intent fields. Used by both `PaymentGuaranteeRequestClaimsV2`
-/// and `PaymentGuaranteeClaims` to avoid duplicating this logic.
-#[allow(clippy::too_many_arguments)]
-fn validate_policy_binding(
-    user_address: &str,
-    recipient_address: &str,
-    req_id: U256,
-    amount: U256,
-    asset_address: &str,
-    timestamp: u64,
-    policy: &PaymentGuaranteeValidationPolicyV2,
-) -> anyhow::Result<()> {
-    if policy.job_hash == B256::ZERO {
-        anyhow::bail!("job_hash must be provided for V2 validation policy");
-    }
-
-    let expected_subject_hash = compute_validation_subject_hash(
-        user_address,
-        recipient_address,
-        req_id,
-        amount,
-        asset_address,
-        timestamp,
-    )?;
-    if policy.validation_subject_hash != B256::from(expected_subject_hash) {
-        anyhow::bail!("validation_subject_hash is not canonical for the payment intent fields");
-    }
-
-    let expected_request_hash = compute_validation_request_hash(policy)?;
-    if policy.validation_request_hash != B256::from(expected_request_hash) {
-        anyhow::bail!("validation_request_hash is not canonical for the validation policy fields");
-    }
-
-    Ok(())
-}
-
-fn parse_address(field: &str, value: &str) -> anyhow::Result<Address> {
-    Address::from_str(value).map_err(|_| anyhow::anyhow!("{field} is not a valid address: {value}"))
-}
-
-fn parse_b256(field: &str, value: &str) -> anyhow::Result<B256> {
-    B256::from_str(value)
-        .map_err(|_| anyhow::anyhow!("{field} is not a valid bytes32 hex value: {value}"))
-}
-
-pub trait PaymentGuaranteeRequestEssentials {
-    fn user_address(&self) -> &str;
-    fn recipient_address(&self) -> &str;
-    fn req_id(&self) -> U256;
-    fn amount(&self) -> U256;
-    fn asset_address(&self) -> &str;
-    fn timestamp(&self) -> u64;
-    fn validation_policy(&self) -> Option<&PaymentGuaranteeValidationPolicyV2>;
-}
-
-impl PaymentGuaranteeRequestEssentials for PaymentGuaranteeRequestClaims {
-    fn user_address(&self) -> &str {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(claims) => &claims.user_address,
-            PaymentGuaranteeRequestClaims::V2(claims) => &claims.user_address,
-        }
-    }
-
-    fn recipient_address(&self) -> &str {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(claims) => &claims.recipient_address,
-            PaymentGuaranteeRequestClaims::V2(claims) => &claims.recipient_address,
-        }
-    }
-
-    fn req_id(&self) -> U256 {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(claims) => claims.req_id,
-            PaymentGuaranteeRequestClaims::V2(claims) => claims.req_id,
-        }
-    }
-
-    fn amount(&self) -> U256 {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(claims) => claims.amount,
-            PaymentGuaranteeRequestClaims::V2(claims) => claims.amount,
-        }
-    }
-
-    fn asset_address(&self) -> &str {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(claims) => &claims.asset_address,
-            PaymentGuaranteeRequestClaims::V2(claims) => &claims.asset_address,
-        }
-    }
-
-    fn timestamp(&self) -> u64 {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(claims) => claims.timestamp,
-            PaymentGuaranteeRequestClaims::V2(claims) => claims.timestamp,
-        }
-    }
-
-    fn validation_policy(&self) -> Option<&PaymentGuaranteeValidationPolicyV2> {
-        match self {
-            PaymentGuaranteeRequestClaims::V1(_) => None,
-            PaymentGuaranteeRequestClaims::V2(claims) => Some(&claims.validation_policy),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "version")]
 pub enum PaymentGuaranteeRequestClaims {
     V1(PaymentGuaranteeRequestClaimsV1),
-    V2(Box<PaymentGuaranteeRequestClaimsV2>),
 }
 
 impl PaymentGuaranteeRequestClaims {
-    /// Returns the numeric version identifier for this claims variant.
+    /// Build claims at the current version.
+    pub fn new(
+        user_address: String,
+        recipient_address: String,
+        req_id: U256,
+        amount: U256,
+        timestamp: u64,
+        erc20_token: Option<String>,
+    ) -> Self {
+        Self::V1(PaymentGuaranteeRequestClaimsV1 {
+            user_address,
+            recipient_address,
+            req_id,
+            amount,
+            asset_address: erc20_token.unwrap_or_else(|| DEFAULT_ASSET_ADDRESS.to_string()),
+            timestamp,
+            validation: None,
+        })
+    }
+
+    pub fn with_validation(self, validation: ValidationRequirement) -> Self {
+        match self {
+            Self::V1(claims) => Self::V1(PaymentGuaranteeRequestClaimsV1 {
+                validation: Some(validation),
+                ..claims
+            }),
+        }
+    }
+
     pub fn version(&self) -> u64 {
         match self {
             Self::V1(_) => GUARANTEE_CLAIMS_VERSION,
-            Self::V2(_) => GUARANTEE_CLAIMS_VERSION_V2,
+        }
+    }
+
+    pub fn user_address(&self) -> &str {
+        match self {
+            Self::V1(claims) => &claims.user_address,
+        }
+    }
+
+    pub fn recipient_address(&self) -> &str {
+        match self {
+            Self::V1(claims) => &claims.recipient_address,
+        }
+    }
+
+    pub fn req_id(&self) -> U256 {
+        match self {
+            Self::V1(claims) => claims.req_id,
+        }
+    }
+
+    pub fn amount(&self) -> U256 {
+        match self {
+            Self::V1(claims) => claims.amount,
+        }
+    }
+
+    pub fn asset_address(&self) -> &str {
+        match self {
+            Self::V1(claims) => &claims.asset_address,
+        }
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            Self::V1(claims) => claims.timestamp,
+        }
+    }
+
+    pub fn validation(&self) -> Option<&ValidationRequirement> {
+        match self {
+            Self::V1(claims) => claims.validation.as_ref(),
         }
     }
 }

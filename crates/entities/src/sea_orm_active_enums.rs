@@ -63,6 +63,23 @@ pub enum UserTransactionStatus {
 #[sea_orm(
     rs_type = "String",
     db_type = "Enum",
+    enum_name = "guarantee_validation_status"
+)]
+pub enum GuaranteeValidationStatus {
+    #[sea_orm(string_value = "PENDING")]
+    Pending,
+    #[sea_orm(string_value = "APPROVED")]
+    Approved,
+    #[sea_orm(string_value = "REJECTED")]
+    Rejected,
+    #[sea_orm(string_value = "EXPIRED")]
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(
+    rs_type = "String",
+    db_type = "Enum",
     enum_name = "guarantee_settlement_status"
 )]
 pub enum GuaranteeSettlementStatus {

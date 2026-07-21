@@ -1,5 +1,5 @@
 //! Signature & SIWE verification (pure crypto, no service state):
-//! EIP-712/EIP-191 guarantee-request verification incl. V2 validation-policy
+//! EIP-712/EIP-191 guarantee-request verification incl. validation-requirement
 //! tamper detection, and SIWE EOA / ERC-1271 message verification.
 
 use alloy::network::EthereumWallet;
@@ -24,9 +24,18 @@ use test_log::test;
 #[path = "common/mod.rs"]
 mod common;
 use common::api::{
-    build_eip191_signed_request_v2, build_eip712_signed_request, build_eip712_signed_request_v2,
+    build_eip191_signed_validated_request, build_eip712_signed_request,
+    build_eip712_signed_validated_request,
 };
 use common::contract::MockERC1271Wallet;
+
+/// Reach into signed claims to corrupt them. Only tamper tests do this — production never
+/// mutates claims a wallet has already signed.
+fn v1_mut(claims: &mut PaymentGuaranteeRequestClaims) -> &mut PaymentGuaranteeRequestClaimsV1 {
+    match claims {
+        PaymentGuaranteeRequestClaims::V1(claims) => claims,
+    }
+}
 
 // ════════════════════════ guarantee-request signature verification ════════════════════════
 #[test_log::test(tokio::test)]
@@ -39,12 +48,10 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 1,
-        accepted_guarantee_versions: vec![1],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
 
@@ -64,24 +71,15 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 1,
-        accepted_guarantee_versions: vec![1],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
 
     let mut req = build_eip712_signed_request(&params, &wallet).await;
-    match &mut req.claims {
-        PaymentGuaranteeRequestClaims::V1(claims) => {
-            claims.amount = U256::from(999u64);
-        }
-        PaymentGuaranteeRequestClaims::V2(_) => {
-            panic!("test fixture builds only v1 guarantee requests");
-        }
-    }
+    v1_mut(&mut req.claims).amount = U256::from(999u64);
 
     let err = verify_guarantee_request_signature(&params, &req).unwrap_err();
     assert!(
@@ -114,12 +112,10 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 1,
-        accepted_guarantee_versions: vec![1],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
 
     let wallet = alloy::signers::local::PrivateKeySigner::random();
@@ -142,14 +138,14 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
     let sig: Signature = wallet.sign_hash(&digest).await.unwrap();
 
     let req = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            user_address: user.to_string(),
-            recipient_address: recipient.to_string(),
-            req_id: U256::ZERO,
-            amount: U256::from(1u64),
+        PaymentGuaranteeRequestClaims::new(
+            user.to_string(),
+            recipient.to_string(),
+            U256::ZERO,
+            U256::from(1u64),
             timestamp,
-            asset_address: "0x0000000000000000000000000000000000000000".into(),
-        }),
+            None,
+        ),
         crypto::hex::encode_hex(&sig.as_bytes()),
         SigningScheme::Eip191,
     );
@@ -169,12 +165,10 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 1,
-        accepted_guarantee_versions: vec![1],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
     let mut req = build_eip712_signed_request(&params, &wallet).await;
@@ -192,7 +186,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
+async fn verify_validated_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
@@ -200,22 +194,20 @@ async fn verify_v2_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 2,
-        accepted_guarantee_versions: vec![1, 2],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let req = build_eip712_signed_request_v2(&params, &wallet).await;
-    verify_guarantee_request_signature(&params, &req).expect("valid V2 EIP-712 must verify");
+    let req = build_eip712_signed_validated_request(&params, &wallet).await;
+    verify_guarantee_request_signature(&params, &req).expect("valid validated EIP-712 must verify");
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
+async fn verify_validated_eip191_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
@@ -223,22 +215,20 @@ async fn verify_v2_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 2,
-        accepted_guarantee_versions: vec![1, 2],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let req = build_eip191_signed_request_v2(&params, &wallet).await;
-    verify_guarantee_request_signature(&params, &req).expect("valid V2 EIP-191 must verify");
+    let req = build_eip191_signed_validated_request(&params, &wallet).await;
+    verify_guarantee_request_signature(&params, &req).expect("valid validated EIP-191 must verify");
     Ok(())
 }
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyhow::Result<()> {
+async fn verify_validated_signature_fails_if_subject_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
@@ -246,21 +236,18 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 2,
-        accepted_guarantee_versions: vec![1, 2],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let mut req = build_eip712_signed_request_v2(&params, &wallet).await;
-    match &mut req.claims {
-        PaymentGuaranteeRequestClaims::V2(claims) => {
-            claims.validation_policy.validation_request_hash = B256::repeat_byte(0x11);
-        }
-        PaymentGuaranteeRequestClaims::V1(_) => panic!("must be V2"),
-    }
+    let mut req = build_eip712_signed_validated_request(&params, &wallet).await;
+    v1_mut(&mut req.claims)
+        .validation
+        .as_mut()
+        .expect("validation")
+        .subject = B256::repeat_byte(0x11);
     let err = verify_guarantee_request_signature(&params, &req).expect_err("tamper must fail");
     assert!(format!("{err:?}").contains("Invalid signature"));
     Ok(())
@@ -268,7 +255,7 @@ async fn verify_v2_signature_fails_if_validation_request_hash_tampered() -> anyh
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Result<()> {
+async fn verify_validated_signature_fails_if_validator_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
@@ -276,21 +263,18 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 2,
-        accepted_guarantee_versions: vec![1, 2],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let mut req = build_eip712_signed_request_v2(&params, &wallet).await;
-    match &mut req.claims {
-        PaymentGuaranteeRequestClaims::V2(claims) => {
-            claims.validation_policy.validator_address = Address::from(random::<[u8; 20]>());
-        }
-        PaymentGuaranteeRequestClaims::V1(_) => panic!("must be V2"),
-    }
+    let mut req = build_eip712_signed_validated_request(&params, &wallet).await;
+    v1_mut(&mut req.claims)
+        .validation
+        .as_mut()
+        .expect("validation")
+        .validator = Address::from(random::<[u8; 20]>()).to_string();
     let err = verify_guarantee_request_signature(&params, &req).expect_err("tamper must fail");
     assert!(format!("{err:?}").contains("Invalid signature"));
     Ok(())
@@ -298,7 +282,7 @@ async fn verify_v2_signature_fails_if_validator_address_tampered() -> anyhow::Re
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyhow::Result<()> {
+async fn verify_validated_signature_fails_if_deadline_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
@@ -306,21 +290,18 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 2,
-        accepted_guarantee_versions: vec![1, 2],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let mut req = build_eip712_signed_request_v2(&params, &wallet).await;
-    match &mut req.claims {
-        PaymentGuaranteeRequestClaims::V2(claims) => {
-            claims.validation_policy.validation_subject_hash = B256::repeat_byte(0x22);
-        }
-        PaymentGuaranteeRequestClaims::V1(_) => panic!("must be V2"),
-    }
+    let mut req = build_eip712_signed_validated_request(&params, &wallet).await;
+    v1_mut(&mut req.claims)
+        .validation
+        .as_mut()
+        .expect("validation")
+        .deadline = Some(1_900_000_000);
     let err = verify_guarantee_request_signature(&params, &req).expect_err("tamper must fail");
     assert!(format!("{err:?}").contains("Invalid signature"));
     Ok(())
@@ -328,7 +309,7 @@ async fn verify_v2_signature_fails_if_validation_subject_hash_tampered() -> anyh
 
 #[test_log::test(tokio::test)]
 #[serial_test::file_serial(db)]
-async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyhow::Result<()> {
+async fn verify_validated_signature_fails_if_params_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
@@ -336,21 +317,18 @@ async fn verify_v2_signature_fails_if_required_validation_tag_tampered() -> anyh
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 2,
-        accepted_guarantee_versions: vec![1, 2],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
     };
     let wallet = alloy::signers::local::PrivateKeySigner::random();
-    let mut req = build_eip712_signed_request_v2(&params, &wallet).await;
-    match &mut req.claims {
-        PaymentGuaranteeRequestClaims::V2(claims) => {
-            claims.validation_policy.required_validation_tag = "soft-finality".to_string();
-        }
-        PaymentGuaranteeRequestClaims::V1(_) => panic!("must be V2"),
-    }
+    let mut req = build_eip712_signed_validated_request(&params, &wallet).await;
+    v1_mut(&mut req.claims)
+        .validation
+        .as_mut()
+        .expect("validation")
+        .params = vec![0xff].into();
     let err = verify_guarantee_request_signature(&params, &req).expect_err("tamper must fail");
     assert!(format!("{err:?}").contains("Invalid signature"));
     Ok(())

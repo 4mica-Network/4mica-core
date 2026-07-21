@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::U256;
 use axum::{
     Json, Router,
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -8,6 +8,9 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rpc::PaymentGuaranteeRequestClaims;
+
+/// Whitelisted validator identity used by the v2 requirements fixture.
+pub const VALIDATOR_URI: &str = "eip155:84532:0x2222222222222222222222222222222222222222";
 use sdk_4mica::{
     PaymentSignature, SigningScheme,
     x402::{
@@ -72,13 +75,10 @@ pub fn sample_requirements_v2(tab_endpoint: &str) -> PaymentRequirementsV2 {
         max_timeout_seconds: Some(300),
         extra: Some(serde_json::json!({
             "tabEndpoint": tab_endpoint,
-            "validationRegistryAddress": Address::repeat_byte(0x11),
-            "validationChainId": 84532u64,
-            "validatorAddress": Address::repeat_byte(0x22),
-            "validatorAgentId": "77",
-            "minValidationScore": 80u8,
-            "jobHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-            "requiredValidationTag": "hard-finality",
+            "validator": VALIDATOR_URI,
+            "subject": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "deadline": 1_800_003_600u64,
+            "params": "0x0a0b",
         })),
     }
 }
@@ -170,14 +170,9 @@ pub fn build_router(requirements: PaymentRequirements) -> Router {
                         let envelope: X402PaymentEnvelope =
                             serde_json::from_slice(&decoded).expect("parse envelope");
 
-                        match envelope.payload.claims {
-                            PaymentGuaranteeRequestClaims::V1(claims) => {
-                                assert_eq!(claims.recipient_address, requirements.pay_to);
-                                assert_eq!(claims.req_id, U256::from(0));
-                            }
-                            #[allow(unused)]
-                            _ => panic!("legacy claims version found!"),
-                        }
+                        let claims = envelope.payload.claims;
+                        assert_eq!(claims.recipient_address(), requirements.pay_to);
+                        assert_eq!(claims.req_id(), U256::from(0));
 
                         (
                             StatusCode::OK,

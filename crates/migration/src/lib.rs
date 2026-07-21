@@ -35,6 +35,7 @@ mod m20260618_000014_collateral_event_credit_default;
 mod m20260629_000015_settlement_cycle_status_shortfall;
 mod m20260707_000016_blockchain_event_dead_letter;
 mod m20260707_000017_settlement_cycle_status_confirmed;
+mod m20260717_000018_guarantee_validation;
 
 pub struct Migrator;
 
@@ -77,6 +78,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260629_000015_settlement_cycle_status_shortfall::Migration),
             Box::new(m20260707_000016_blockchain_event_dead_letter::Migration),
             Box::new(m20260707_000017_settlement_cycle_status_confirmed::Migration),
+            Box::new(m20260717_000018_guarantee_validation::Migration),
         ]
     }
 }

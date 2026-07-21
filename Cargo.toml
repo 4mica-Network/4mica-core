@@ -5,6 +5,7 @@ members = [
     "sdk",
     "crates/crypto",
     "crates/rpc",
+    "crates/validators",
     "crates/blockchain",
     "crates/migration",
     "crates/entities",
@@ -18,6 +19,7 @@ edition = "2024"
 
 [workspace.dependencies]
 rpc = { version = "2.0.0-alpha.1", path = "crates/rpc", package = "rpc-4mica" }
+validators = { version = "2.0.0-alpha.1", path = "crates/validators", package = "validators-4mica" }
 crypto = { version = "2.0.0-alpha.1", path = "crates/crypto", package = "crypto-4mica" }
 blockchain = { version = "2.0.0-alpha.1", path = "crates/blockchain", package = "blockchain-4mica" }
 migration = { version = "2.0.0-alpha.1", path = "crates/migration" }

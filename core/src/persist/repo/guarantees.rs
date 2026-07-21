@@ -9,10 +9,7 @@ use crypto::bls::BLSCert;
 use entities::guarantee;
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use metrics_4mica::measure;
-use rpc::{
-    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestEssentials,
-};
+use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };

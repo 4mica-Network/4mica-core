@@ -248,23 +248,6 @@ pub mod contract_abi {
             function decimals() external view returns (uint8);
         }
 
-        #[sol(rpc)]
-        contract IValidationRegistry {
-            /// ERC-8004 validation status lookup. `lastUpdate == 0` means the request is still
-            /// pending (unresolved). Mirrors contracts/src/interfaces/IValidationRegistry.sol and
-            /// the acceptance checks in ValidationRegistryGuaranteeDecoder.
-            function getValidationStatus(bytes32 requestHash)
-                external
-                view
-                returns (
-                    address validatorAddress,
-                    uint256 agentId,
-                    uint8 response,
-                    bytes32 responseHash,
-                    string memory tag,
-                    uint256 lastUpdate
-                );
-        }
 
         struct DebtorEntry {
             address debtor;

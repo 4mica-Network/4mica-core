@@ -1,44 +1,22 @@
-//! DB-level tests for the V2 validation lifecycle driver.
-//!
-//! A `PendingValidation` guarantee is inserted with a real serialized V2 request, then driven
-//! through `drive_pending_validations` against a mocked validation registry. Each test asserts
-//! both the resulting settlement status and the payer's locked collateral, exercising the DB
-//! query, request deserialization, on-chain-mirroring decision, transition, and collateral
-//! release that the pure-logic unit tests in `service::validation` do not cover.
+//! DB-level tests for the validation lifecycle driver, covering the persistence and collateral
+//! effects that the pure-logic unit tests in `service::validation` cannot reach.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use async_trait::async_trait;
-use chrono::Utc;
-use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
+use chrono::{Duration, NaiveDateTime, Utc};
+use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, GuaranteeValidationStatus};
 use rpc::{
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV2,
-    PaymentGuaranteeValidationPolicyV2, SigningScheme, SupportedTokenInfo,
-    compute_validation_request_hash, compute_validation_subject_hash,
+    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, SigningScheme, ValidationRequirement,
 };
-
-/// Validator identity the mocked `passing_status()` reports — the seeded policy must match it
-/// so a resolved-and-accepted validation finalizes.
-const VALIDATOR_AGENT_ID: u64 = 7;
-const MIN_SCORE: u8 = 80;
-const REQUIRED_TAG: &str = "hard-finality";
-
-fn validator_address() -> Address {
-    Address::repeat_byte(0x55)
-}
+use validators::{ValidatorAdapter, ValidatorRegistry, Verdict, VerdictStatus};
 
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS, Environment};
-use core_service::error::CoreContractApiError;
-use core_service::ethereum::{
-    ClearingCommitInput, ClearingCycleView, ClearingTxResult, CoreContractApi, CreditorSettlement,
-    DebtorSettlement, GuaranteeVersionConfig, ValidationStatus,
-};
 use core_service::persist::{CycleGuaranteeData, PersistCtx, repo};
 use core_service::service::{CoreService, CoreServiceDeps};
-use sea_orm::{ConnectionTrait, Statement};
 
 #[path = "common/mod.rs"]
 mod common;
@@ -46,182 +24,93 @@ use common::cycle_fixtures::{create_frozen_cycle, lock_collateral};
 use common::db::{clear_all_tables, setup_db_test_env};
 use common::fixtures::{normalize_address, random_address, read_locked_collateral};
 
-/// A `CoreContractApi` that only answers `get_validation_status`; every other call is
-/// unreachable in the validation sweep and panics if invoked.
-struct MockRegistryApi {
-    /// `Some(status)` is returned from `get_validation_status`; `None` simulates an unreadable
-    /// registry (the call returns an error, which the driver treats as "unresolved").
-    status: Option<ValidationStatus>,
+const VALIDATOR_URI: &str = "mock:validator";
+
+/// Reports a fixed verdict, so the driver can be exercised without a chain or an HTTP server.
+struct MockAdapter {
+    status: VerdictStatus,
 }
 
 #[async_trait]
-impl CoreContractApi for MockRegistryApi {
-    async fn get_chain_id(&self) -> Result<u64, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
+impl ValidatorAdapter for MockAdapter {
+    fn kind(&self) -> &str {
+        "mock"
     }
-    async fn get_guarantee_version_config(
-        &self,
-        _version: u64,
-    ) -> Result<GuaranteeVersionConfig, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
+
+    fn validate_requirement(&self, _req: &ValidationRequirement) -> anyhow::Result<()> {
+        Ok(())
     }
-    async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn commit_clearing_cycle(
-        &self,
-        _input: ClearingCommitInput,
-    ) -> Result<ClearingTxResult, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn settle_defaults_from_collateral_batch(
-        &self,
-        _cycle_id: B256,
-        _entries: Vec<DebtorSettlement>,
-    ) -> Result<ClearingTxResult, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn fund_creditors_from_pool_batch(
-        &self,
-        _cycle_id: B256,
-        _entries: Vec<CreditorSettlement>,
-    ) -> Result<ClearingTxResult, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn finalize_clearing_cycle(
-        &self,
-        _cycle_id: B256,
-    ) -> Result<ClearingTxResult, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn mark_cycle_shortfall(
-        &self,
-        _cycle_id: B256,
-    ) -> Result<ClearingTxResult, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn get_clearing_cycle(
-        &self,
-        _cycle_id: B256,
-    ) -> Result<ClearingCycleView, CoreContractApiError> {
-        unimplemented!("not used by the validation sweep")
-    }
-    async fn get_validation_status(
-        &self,
-        _registry: Address,
-        _request_hash: B256,
-    ) -> Result<ValidationStatus, CoreContractApiError> {
-        match &self.status {
-            Some(status) => Ok(status.clone()),
-            None => Err(CoreContractApiError::ContractCall(
-                "mock: registry unreadable".to_string(),
-            )),
-        }
+
+    async fn resolve(&self, req: &ValidationRequirement) -> anyhow::Result<Verdict> {
+        Ok(Verdict {
+            status: self.status,
+            subject: req.subject,
+            evidence: vec![0xAB].into(),
+            observed_at: Utc::now().timestamp() as u64,
+        })
     }
 }
 
-/// A lazy HTTP provider that never connects — the sweep only touches `contract_api` and the DB.
 fn dummy_provider() -> DynProvider {
     ProviderBuilder::new()
-        .connect_http("http://127.0.0.1:1".parse().unwrap())
+        .connect_http("http://127.0.0.1:1".parse().expect("valid url"))
         .erased()
 }
 
-/// Build a chain-free `CoreService` wired to `MockRegistryApi`, with the V2 lifecycle enabled.
 fn build_service(
     ctx: &PersistCtx,
     mut config: AppConfig,
-    status: Option<ValidationStatus>,
-    validation_timeout_secs: u64,
+    validators: ValidatorRegistry,
 ) -> CoreService {
     config.server_config.environment = Environment::Development;
-    config.guarantee.max_accepted_version = 1;
-    config.guarantee.accepted_request_versions = String::new();
-    config.guarantee.enable_v2_validation_lifecycle = true;
-    config.guarantee.validation_timeout_secs = validation_timeout_secs;
 
     let deps = CoreServiceDeps {
         persist_ctx: ctx.clone(),
-        contract_api: Arc::new(MockRegistryApi { status }),
+        contract_api: Arc::new(common::chain_stub::UnusedContractApi),
         chain_id: 1,
         read_provider: dummy_provider(),
         guarantee_domains: HashMap::from([(1u64, [0u8; 32])]),
+        validators,
         withdrawal_grace_period: 22 * 24 * 3600,
     };
     CoreService::new_with_dependencies(config, deps).expect("chain-free service builds")
 }
 
-/// Build a validation policy whose `validation_subject_hash` / `validation_request_hash` are
-/// canonical for the payment fields, so the request round-trips through the validating
-/// `Deserialize` exactly as a real issued request would. Validator identity matches
-/// `passing_status()`.
-fn canonical_policy(
-    user: &str,
-    recipient: &str,
-    req_id: u64,
-    amount: u64,
-    timestamp: u64,
-) -> anyhow::Result<PaymentGuaranteeValidationPolicyV2> {
-    let subject = compute_validation_subject_hash(
-        user,
-        recipient,
-        U256::from(req_id),
-        U256::from(amount),
-        DEFAULT_ASSET_ADDRESS,
-        timestamp,
-    )?;
-    let mut policy = PaymentGuaranteeValidationPolicyV2 {
-        validation_registry_address: Address::repeat_byte(0x33),
-        validation_request_hash: B256::ZERO,
-        validation_chain_id: 84532,
-        validator_address: validator_address(),
-        validator_agent_id: U256::from(VALIDATOR_AGENT_ID),
-        min_validation_score: MIN_SCORE,
-        validation_subject_hash: B256::from(subject),
-        job_hash: B256::repeat_byte(0x77),
-        required_validation_tag: REQUIRED_TAG.to_string(),
-    };
-    policy.validation_request_hash = B256::from(compute_validation_request_hash(&policy)?);
-    Ok(policy)
+fn mock_registry(status: VerdictStatus) -> ValidatorRegistry {
+    ValidatorRegistry::from_adapters([(
+        VALIDATOR_URI.to_string(),
+        Arc::new(MockAdapter { status }) as Arc<dyn ValidatorAdapter>,
+    )])
 }
 
-/// A resolved status that satisfies `canonical_policy()` exactly.
-fn passing_status() -> ValidationStatus {
-    ValidationStatus {
-        validator_address: validator_address(),
-        agent_id: U256::from(VALIDATOR_AGENT_ID),
-        response: MIN_SCORE,
-        tag: REQUIRED_TAG.to_string(),
-        last_update: U256::from(1_700_000_000u64),
-    }
-}
-
-/// Insert a `PendingValidation` V2 guarantee for `from -> to` and lock `amount` of the payer's
-/// collateral, as at issuance. Returns the (guarantee_id, normalized_from).
-async fn seed_pending_v2(
+/// Insert a `PendingValidation` guarantee plus its validation row for `from -> to`, and lock
+/// `amount` of the payer's collateral, as at issuance. Returns the (guarantee_id, payer).
+async fn seed_pending_validation(
     ctx: &PersistCtx,
     cycle_id: &str,
     amount: u64,
     req_id: u64,
+    deadline: NaiveDateTime,
 ) -> anyhow::Result<(String, String)> {
     let from = normalize_address(&random_address())?;
     let to = normalize_address(&random_address())?;
     lock_collateral(ctx, &from, amount).await?;
 
-    let timestamp = 1_700_000_000u64;
-    let validation_policy = canonical_policy(&from, &to, req_id, amount, timestamp)?;
-    let claims = PaymentGuaranteeRequestClaims::V2(Box::new(PaymentGuaranteeRequestClaimsV2 {
-        user_address: from.clone(),
-        recipient_address: to.clone(),
-        req_id: U256::from(req_id),
-        amount: U256::from(amount),
-        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-        timestamp,
-        validation_policy,
-    }));
+    let subject = B256::from(rand::random::<[u8; 32]>());
+    let claims = PaymentGuaranteeRequestClaims::new(
+        from.clone(),
+        to.clone(),
+        U256::from(req_id),
+        U256::from(amount),
+        1_700_000_000,
+        Some(DEFAULT_ASSET_ADDRESS.to_string()),
+    )
+    .with_validation(ValidationRequirement {
+        validator: VALIDATOR_URI.to_string(),
+        subject,
+        deadline: None,
+        params: Default::default(),
+    });
     let request = PaymentGuaranteeRequest {
         claims,
         signature: "0x00".to_string(),
@@ -235,7 +124,7 @@ async fn seed_pending_v2(
             guarantee_id: guarantee_id.clone(),
             cycle_id: cycle_id.to_string(),
             req_id: U256::from(req_id),
-            version: 2,
+            version: 1,
             from: from.clone(),
             to,
             asset: DEFAULT_ASSET_ADDRESS.to_string(),
@@ -247,7 +136,28 @@ async fn seed_pending_v2(
         },
     )
     .await?;
+
+    repo::store_guarantee_validation_on(
+        ctx.db.as_ref(),
+        repo::StoreGuaranteeValidationInput {
+            guarantee_id: guarantee_id.clone(),
+            validator: VALIDATOR_URI.to_string(),
+            subject: subject.to_string(),
+            deadline,
+            params: Vec::new(),
+        },
+    )
+    .await?;
+
     Ok((guarantee_id, from))
+}
+
+fn future_deadline() -> NaiveDateTime {
+    Utc::now().naive_utc() + Duration::hours(1)
+}
+
+fn past_deadline() -> NaiveDateTime {
+    Utc::now().naive_utc() - Duration::hours(1)
 }
 
 async fn guarantee_status(
@@ -260,40 +170,37 @@ async fn guarantee_status(
     Ok(g.settlement_status)
 }
 
-/// Move a guarantee's `created_at` (its issuance instant, which the driver uses as the timeout
-/// anchor) into the past, so the timeout path can be exercised with a valid non-zero timeout.
-async fn backdate_guarantee_created_at(
+async fn validation_status(
     ctx: &PersistCtx,
     guarantee_id: &str,
-    seconds_ago: i64,
-) -> anyhow::Result<()> {
-    let ts = Utc::now().naive_utc() - chrono::Duration::seconds(seconds_ago);
-    let stmt = Statement::from_sql_and_values(
-        ctx.db.get_database_backend(),
-        r#"UPDATE "Guarantee" SET created_at = $1 WHERE guarantee_id = $2"#,
-        [ts.into(), guarantee_id.to_string().into()],
-    );
-    ctx.db.as_ref().execute(stmt).await?;
-    Ok(())
+) -> anyhow::Result<GuaranteeValidationStatus> {
+    let v = repo::get_guarantee_validation_on(ctx.db.as_ref(), guarantee_id)
+        .await?
+        .expect("validation row exists");
+    Ok(v.status)
 }
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn resolved_and_accepted_validation_finalizes_and_keeps_collateral_locked()
--> anyhow::Result<()> {
+async fn approved_validation_finalizes_and_keeps_collateral_locked() -> anyhow::Result<()> {
     let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "l02-finalize-cycle";
+    let cycle_id = "validation-finalize-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+    let (guarantee_id, payer) =
+        seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
-    let service = build_service(&ctx, config, Some(passing_status()), 3600);
+    let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
     let summary = service.drive_pending_validations().await?;
 
     assert_eq!(summary.finalized, 1, "one guarantee should be finalized");
     assert_eq!(
         guarantee_status(&ctx, &guarantee_id).await?,
         GuaranteeSettlementStatus::FinalizedPayable
+    );
+    assert_eq!(
+        validation_status(&ctx, &guarantee_id).await?,
+        GuaranteeValidationStatus::Approved
     );
     // A finalized guarantee stays backed: the payer's collateral remains locked.
     assert_eq!(
@@ -305,16 +212,15 @@ async fn resolved_and_accepted_validation_finalizes_and_keeps_collateral_locked(
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn resolved_but_low_score_disputes_and_releases_collateral() -> anyhow::Result<()> {
+async fn rejected_validation_disputes_and_releases_collateral() -> anyhow::Result<()> {
     let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "l02-dispute-cycle";
+    let cycle_id = "validation-dispute-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+    let (guarantee_id, payer) =
+        seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
-    let mut status = passing_status();
-    status.response = 79; // below min_validation_score = 80
-    let service = build_service(&ctx, config, Some(status), 3600);
+    let service = build_service(&ctx, config, mock_registry(VerdictStatus::Rejected));
     let summary = service.drive_pending_validations().await?;
 
     assert_eq!(summary.disputed, 1, "one guarantee should be disputed");
@@ -322,7 +228,11 @@ async fn resolved_but_low_score_disputes_and_releases_collateral() -> anyhow::Re
         guarantee_status(&ctx, &guarantee_id).await?,
         GuaranteeSettlementStatus::Disputed
     );
-    // A disputed (validation-failed) guarantee never settles: release the payer's collateral.
+    assert_eq!(
+        validation_status(&ctx, &guarantee_id).await?,
+        GuaranteeValidationStatus::Rejected
+    );
+    // A rejected guarantee never settles: release the payer's collateral.
     assert_eq!(
         read_locked_collateral(&ctx, &payer, DEFAULT_ASSET_ADDRESS).await?,
         U256::ZERO
@@ -332,19 +242,15 @@ async fn resolved_but_low_score_disputes_and_releases_collateral() -> anyhow::Re
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn unresolved_past_timeout_cancels_and_releases_collateral() -> anyhow::Result<()> {
+async fn pending_past_deadline_cancels_and_releases_collateral() -> anyhow::Result<()> {
     let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "l02-cancel-cycle";
+    let cycle_id = "validation-cancel-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
-    // Issued 2h ago, past the 1h timeout below, so the unresolved validation cancels.
-    backdate_guarantee_created_at(&ctx, &guarantee_id, 7200).await?;
+    let (guarantee_id, payer) =
+        seed_pending_validation(&ctx, cycle_id, 10, 1, past_deadline()).await?;
 
-    // Unresolved validation (lastUpdate == 0) past the timeout forces a cancel.
-    let mut status = passing_status();
-    status.last_update = U256::ZERO;
-    let service = build_service(&ctx, config, Some(status), 3600);
+    let service = build_service(&ctx, config, mock_registry(VerdictStatus::Pending));
     let summary = service.drive_pending_validations().await?;
 
     assert_eq!(summary.cancelled, 1, "one guarantee should be cancelled");
@@ -353,6 +259,10 @@ async fn unresolved_past_timeout_cancels_and_releases_collateral() -> anyhow::Re
         GuaranteeSettlementStatus::Cancelled
     );
     assert_eq!(
+        validation_status(&ctx, &guarantee_id).await?,
+        GuaranteeValidationStatus::Expired
+    );
+    assert_eq!(
         read_locked_collateral(&ctx, &payer, DEFAULT_ASSET_ADDRESS).await?,
         U256::ZERO
     );
@@ -361,21 +271,25 @@ async fn unresolved_past_timeout_cancels_and_releases_collateral() -> anyhow::Re
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn unresolved_within_timeout_waits_and_keeps_pending() -> anyhow::Result<()> {
+async fn pending_before_deadline_waits() -> anyhow::Result<()> {
     let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "l02-wait-cycle";
+    let cycle_id = "validation-wait-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+    let (guarantee_id, payer) =
+        seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
-    // Registry unreadable (treated as unresolved) but the timeout has not elapsed: keep waiting.
-    let service = build_service(&ctx, config, None, 3600);
+    let service = build_service(&ctx, config, mock_registry(VerdictStatus::Pending));
     let summary = service.drive_pending_validations().await?;
 
     assert_eq!(summary.waiting, 1, "the guarantee should still be waiting");
     assert_eq!(
         guarantee_status(&ctx, &guarantee_id).await?,
         GuaranteeSettlementStatus::PendingValidation
+    );
+    assert_eq!(
+        validation_status(&ctx, &guarantee_id).await?,
+        GuaranteeValidationStatus::Pending
     );
     assert_eq!(
         read_locked_collateral(&ctx, &payer, DEFAULT_ASSET_ADDRESS).await?,
@@ -386,13 +300,14 @@ async fn unresolved_within_timeout_waits_and_keeps_pending() -> anyhow::Result<(
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn accepted_validation_into_already_resolved_cycle_cancels_and_releases_collateral()
+async fn approved_validation_into_already_resolved_cycle_cancels_and_releases_collateral()
 -> anyhow::Result<()> {
     let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "l02-stale-cycle";
+    let cycle_id = "validation-stale-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+    let (guarantee_id, payer) =
+        seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     // The cycle resolves (short-circuits straight to Finalized, as an all-pending cycle does)
     // before the validation lands — e.g. the driver was down across the cycle's resolution
@@ -403,8 +318,8 @@ async fn accepted_validation_into_already_resolved_cycle_cancels_and_releases_co
     );
 
     // Even though the validation now passes, finalizing would strand the payer's collateral in a
-    // dead cycle (the L01/L02 failure, one hop downstream), so the driver cancels and releases.
-    let service = build_service(&ctx, config, Some(passing_status()), 3600);
+    // dead cycle, so the driver cancels and releases.
+    let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
     let summary = service.drive_pending_validations().await?;
 
     assert_eq!(
@@ -426,21 +341,20 @@ async fn accepted_validation_into_already_resolved_cycle_cancels_and_releases_co
     Ok(())
 }
 
-/// End-to-end forward link: a V2 guarantee that the driver finalizes is then picked up by netting
-/// exactly like a V1 one — it produces net-debtor/net-creditor positions. This closes the gap
-/// between the driver (which stops at `FinalizedPayable`) and settlement, which no prior test
-/// covered. The on-chain commit/seize/credit path past netting is identical to V1 (the clearing
-/// leaf carries no validation fields), so it is exercised by the existing V1 settlement tests.
+/// End-to-end forward link: a validated guarantee the driver finalizes is then picked up by
+/// netting exactly like a plain one. This closes the gap between the driver (which stops at
+/// `FinalizedPayable`) and settlement.
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn finalized_v2_guarantee_is_netted_like_v1() -> anyhow::Result<()> {
+async fn finalized_validated_guarantee_is_netted_like_a_plain_one() -> anyhow::Result<()> {
     let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "l02-net-cycle";
+    let cycle_id = "validation-net-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+    let (guarantee_id, payer) =
+        seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
-    let service = build_service(&ctx, config, Some(passing_status()), 3600);
+    let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
     let summary = service.drive_pending_validations().await?;
     assert_eq!(summary.finalized, 1);
     assert_eq!(
@@ -448,8 +362,6 @@ async fn finalized_v2_guarantee_is_netted_like_v1() -> anyhow::Result<()> {
         GuaranteeSettlementStatus::FinalizedPayable
     );
 
-    // Now net the (still `Frozen`) cycle: the finalized-from-V2 guarantee must contribute an
-    // exposure edge and net positions, proving it settles through the same path as V1.
     service.compute_cycle_exposure_edges(cycle_id).await?;
     service
         .compute_cycle_participant_positions(cycle_id)
@@ -459,7 +371,7 @@ async fn finalized_v2_guarantee_is_netted_like_v1() -> anyhow::Result<()> {
     assert_eq!(
         edges.len(),
         1,
-        "the finalized V2 guarantee must produce an edge"
+        "the finalized validated guarantee must produce an edge"
     );
 
     let positions =
@@ -474,32 +386,22 @@ async fn finalized_v2_guarantee_is_netted_like_v1() -> anyhow::Result<()> {
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn disabled_lifecycle_flag_is_a_noop() -> anyhow::Result<()> {
-    let (mut config, ctx) = setup_db_test_env().await?;
+async fn empty_validator_whitelist_is_a_noop() -> anyhow::Result<()> {
+    let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "l02-disabled-cycle";
+    let cycle_id = "validation-disabled-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, _payer) = seed_pending_v2(&ctx, cycle_id, 10, 1).await?;
+    let (guarantee_id, _payer) =
+        seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
-    // build_service normally force-enables the flag; here we build one with it left off.
-    config.server_config.environment = Environment::Development;
-    config.guarantee.max_accepted_version = 1;
-    config.guarantee.accepted_request_versions = String::new();
-    config.guarantee.enable_v2_validation_lifecycle = false;
-    let deps = CoreServiceDeps {
-        persist_ctx: ctx.clone(),
-        contract_api: Arc::new(MockRegistryApi {
-            status: Some(passing_status()),
-        }),
-        chain_id: 1,
-        read_provider: dummy_provider(),
-        guarantee_domains: HashMap::from([(1u64, [0u8; 32])]),
-        withdrawal_grace_period: 22 * 24 * 3600,
-    };
-    let service = CoreService::new_with_dependencies(config, deps).expect("service builds");
-
+    let service = build_service(&ctx, config, ValidatorRegistry::default());
     let summary = service.drive_pending_validations().await?;
-    assert_eq!(summary, Default::default(), "disabled flag must be a no-op");
+
+    assert_eq!(
+        summary,
+        Default::default(),
+        "no whitelisted validators must be a no-op"
+    );
     assert_eq!(
         guarantee_status(&ctx, &guarantee_id).await?,
         GuaranteeSettlementStatus::PendingValidation

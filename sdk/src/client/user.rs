@@ -4,10 +4,7 @@ use alloy::{
     rpc::types::TransactionReceipt,
     signers::{Signature, Signer},
 };
-use rpc::{
-    ClearingSettlementActionResponse, PaymentGuaranteeRequestClaimsV1,
-    PaymentGuaranteeRequestClaimsV2, SigningScheme,
-};
+use rpc::{ClearingSettlementActionResponse, PaymentGuaranteeRequestClaims, SigningScheme};
 
 use crate::{
     PaymentSignature,
@@ -18,10 +15,6 @@ use crate::{
     error::{
         ApproveErc20Error, CancelWithdrawalError, ClearingSettlementError, DepositError,
         FinalizeWithdrawalError, GetUserError, RequestWithdrawalError, SignPaymentError,
-    },
-    guarantee::{
-        PaymentGuaranteeIntent, PaymentGuaranteeValidationInput, PreparedPaymentGuaranteeClaims,
-        PreparedPaymentGuaranteeRequest, prepare_payment_guarantee_claims,
     },
     sig::PaymentSigner,
     validators::validate_address,
@@ -39,7 +32,7 @@ impl<S> UserClient<S> {
     }
 
     pub fn guarantee_domain(&self) -> &[u8; 32] {
-        self.ctx.active_guarantee_domain()
+        self.ctx.guarantee_domain()
     }
 
     /// Allows the 4mica contract to spend ERC20 tokens on behalf of the user
@@ -348,7 +341,7 @@ impl<S> UserClient<S> {
 
     pub async fn sign_payment(
         &self,
-        claims: PaymentGuaranteeRequestClaimsV1,
+        claims: PaymentGuaranteeRequestClaims,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError>
     where
@@ -360,65 +353,10 @@ impl<S> UserClient<S> {
         let sig = self
             .ctx
             .signer()
-            .sign_request(&pub_params, claims, scheme)
+            .sign_claims(&pub_params, claims, scheme)
             .await?;
 
         Ok(sig)
-    }
-
-    pub async fn sign_payment_v2(
-        &self,
-        claims: PaymentGuaranteeRequestClaimsV2,
-        scheme: SigningScheme,
-    ) -> Result<PaymentSignature, SignPaymentError>
-    where
-        S: Signer + Send + Sync,
-    {
-        // TODO: Cache public parameters for a while
-        let pub_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
-
-        let sig = self
-            .ctx
-            .signer()
-            .sign_request_v2(&pub_params, claims, scheme)
-            .await?;
-
-        Ok(sig)
-    }
-
-    pub async fn sign_payment_auto(
-        &self,
-        intent: PaymentGuaranteeIntent,
-        validation: Option<PaymentGuaranteeValidationInput>,
-        scheme: SigningScheme,
-    ) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>
-    where
-        S: Signer + Send + Sync,
-    {
-        let public_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
-        let claims = prepare_payment_guarantee_claims(&public_params, intent, validation)
-            .map_err(|err| SignPaymentError::InvalidParams(err.to_string()))?;
-
-        let signature = match &claims {
-            PreparedPaymentGuaranteeClaims::V1(claims) => {
-                self.ctx
-                    .signer()
-                    .sign_request(&public_params, claims.clone(), scheme)
-                    .await?
-            }
-            PreparedPaymentGuaranteeClaims::V2(claims) => {
-                self.ctx
-                    .signer()
-                    .sign_request_v2(&public_params, claims.as_ref().clone(), scheme)
-                    .await?
-            }
-        };
-
-        Ok(PreparedPaymentGuaranteeRequest {
-            claims,
-            signature: signature.signature,
-            scheme: signature.scheme,
-        })
     }
 
     /// Requests a withdrawal of collateral from the user's account

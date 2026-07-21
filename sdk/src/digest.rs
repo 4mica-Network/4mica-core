@@ -1,30 +1,35 @@
 use std::str::FromStr;
 
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, keccak256};
 use alloy::sol_types::{SolStruct, SolValue};
 use alloy::{primitives::B256, sol_types::eip712_domain};
 use anyhow::anyhow;
 use rpc::{
     CorePublicParameters, PaymentGuaranteeRequestClaims, SolGuaranteeRequestClaimsV1,
-    SolGuaranteeRequestClaimsV2,
+    SolValidatedGuaranteeRequestClaimsV1, SolValidation, ValidationRequirement,
 };
 
 fn parse_addr(field: &'static str, value: &str) -> anyhow::Result<Address> {
     Address::from_str(value).map_err(|_| anyhow!("invalid {field}"))
 }
 
-// ── unified dispatch helpers ────────────────────────────────────────────────
+fn sol_validation(validation: &ValidationRequirement) -> SolValidation {
+    SolValidation {
+        validator: validation.validator.clone(),
+        subject: validation.subject,
+        deadline: validation.deadline.unwrap_or(0),
+        params: validation.params.clone(),
+    }
+}
 
-/// EIP-712 signing hash for any supported guarantee request version.
-/// Add a new `PaymentGuaranteeRequestClaims` variant here when introducing V3.
+/// EIP-712 signing hash for a guarantee request. Must stay byte-identical to the operator's
+/// request domain (core/src/evm/guarantee.rs): the deployment's Core4Mica address is bound in so a
+/// request signature cannot be replayed against another 4Mica deployment on the same chain
+/// (4MCA-L06).
 pub fn eip712_digest_for_claims(
     params: &CorePublicParameters,
     claims: &PaymentGuaranteeRequestClaims,
 ) -> anyhow::Result<B256> {
-    // Must stay byte-identical to the operator's request domain
-    // (core/src/evm/guarantee.rs): bind the deployment's Core4Mica address so a
-    // request signature cannot be replayed against another 4Mica deployment on
-    // the same chain (4MCA-L06).
     let verifying_contract = parse_addr("core contract", &params.contract_address)?;
     let domain = eip712_domain!(
         name:               params.eip712_name.clone(),
@@ -33,74 +38,59 @@ pub fn eip712_digest_for_claims(
         verifying_contract: verifying_contract,
     );
 
-    match claims {
-        PaymentGuaranteeRequestClaims::V1(c) => {
-            let message = SolGuaranteeRequestClaimsV1 {
-                user: parse_addr("claims.user_address", &c.user_address)?,
-                recipient: parse_addr("claims.recipient_address", &c.recipient_address)?,
-                reqId: c.req_id,
-                amount: c.amount,
-                asset: parse_addr("claims.asset_address", &c.asset_address)?,
-                timestamp: c.timestamp,
-            };
-            Ok(message.eip712_signing_hash(&domain))
+    let user = parse_addr("claims.user_address", claims.user_address())?;
+    let recipient = parse_addr("claims.recipient_address", claims.recipient_address())?;
+    let asset = parse_addr("claims.asset_address", claims.asset_address())?;
+
+    match claims.validation() {
+        None => Ok(SolGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
         }
-        PaymentGuaranteeRequestClaims::V2(c) => {
-            let message = SolGuaranteeRequestClaimsV2 {
-                user: parse_addr("claims.user_address", &c.user_address)?,
-                recipient: parse_addr("claims.recipient_address", &c.recipient_address)?,
-                reqId: c.req_id,
-                amount: c.amount,
-                asset: parse_addr("claims.asset_address", &c.asset_address)?,
-                timestamp: c.timestamp,
-                validationRegistryAddress: c.validation_policy.validation_registry_address,
-                validationRequestHash: c.validation_policy.validation_request_hash,
-                validationChainId: U256::from(c.validation_policy.validation_chain_id),
-                validatorAddress: c.validation_policy.validator_address,
-                validatorAgentId: c.validation_policy.validator_agent_id,
-                minValidationScore: c.validation_policy.min_validation_score,
-                validationSubjectHash: c.validation_policy.validation_subject_hash,
-                jobHash: c.validation_policy.job_hash,
-                requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
-            };
-            Ok(message.eip712_signing_hash(&domain))
+        .eip712_signing_hash(&domain)),
+        Some(validation) => Ok(SolValidatedGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+            validation: sol_validation(validation),
         }
+        .eip712_signing_hash(&domain)),
     }
 }
 
-/// EIP-191 signing hash for any supported guarantee request version.
-/// Add a new `PaymentGuaranteeRequestClaims` variant here when introducing V3.
+/// EIP-191 signing hash for a guarantee request.
 pub fn eip191_digest_for_claims(
     claims: &PaymentGuaranteeRequestClaims,
     user: Address,
     recipient: Address,
 ) -> anyhow::Result<B256> {
-    let data = match claims {
-        PaymentGuaranteeRequestClaims::V1(c) => SolGuaranteeRequestClaimsV1 {
+    let asset = parse_addr("claims.asset_address", claims.asset_address())?;
+
+    let data = match claims.validation() {
+        None => SolGuaranteeRequestClaimsV1 {
             user,
             recipient,
-            reqId: c.req_id,
-            amount: c.amount,
-            asset: parse_addr("claims.asset_address", &c.asset_address)?,
-            timestamp: c.timestamp,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
         }
         .abi_encode(),
-        PaymentGuaranteeRequestClaims::V2(c) => SolGuaranteeRequestClaimsV2 {
+        Some(validation) => SolValidatedGuaranteeRequestClaimsV1 {
             user,
             recipient,
-            reqId: c.req_id,
-            amount: c.amount,
-            asset: parse_addr("claims.asset_address", &c.asset_address)?,
-            timestamp: c.timestamp,
-            validationRegistryAddress: c.validation_policy.validation_registry_address,
-            validationRequestHash: c.validation_policy.validation_request_hash,
-            validationChainId: U256::from(c.validation_policy.validation_chain_id),
-            validatorAddress: c.validation_policy.validator_address,
-            validatorAgentId: c.validation_policy.validator_agent_id,
-            minValidationScore: c.validation_policy.min_validation_score,
-            validationSubjectHash: c.validation_policy.validation_subject_hash,
-            jobHash: c.validation_policy.job_hash,
-            requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+            validation: sol_validation(validation),
         }
         .abi_encode(),
     };
