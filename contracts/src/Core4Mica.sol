@@ -111,6 +111,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     // ========= Errors =========
     error AmountZero();
+    error ZeroCollateralCredit(address asset, uint256 amount);
     error InsufficientAvailable();
     error TransferFailed();
     error GracePeriodNotElapsed();
@@ -1307,6 +1308,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         _aavePool().supply(asset, amount, address(this), 0);
         uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
         uint256 scaledCredit = scaledAfter - scaledBefore;
+
+        // Aave mints scaled = amount.rayDiv(index), rounded down, so a deposit smaller than one
+        // scaled unit (dust relative to the current liquidity index) mints nothing. Crediting the
+        // face-value principal against a zero scaled balance would leave unbacked principal the user
+        // could never withdraw, so reject such dust deposits outright.
+        if (scaledCredit == 0) revert ZeroCollateralCredit(asset, amount);
 
         scaledStablecoinBalances[user][asset] += scaledCredit;
         totalUserScaledStablecoinBalances[asset] += scaledCredit;

@@ -84,6 +84,26 @@ contract Core4MicaDepositsTest is Core4MicaTestBase {
         core4Mica.depositStablecoin(address(usdc), 0);
     }
 
+    /// A deposit too small to mint even one scaled aToken unit (dust relative to the liquidity
+    /// index) would credit face-value principal with no scaled backing, so it must revert. (audit L-1)
+    function test_DepositStablecoin_RevertZeroScaledCredit() public {
+        // Advance the liquidity index above RAY so a 1-wei deposit rounds down to 0 scaled.
+        mockPool.setNormalizedIncome(address(usdc), 2e27);
+
+        vm.prank(USER1);
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.ZeroCollateralCredit.selector, address(usdc), 1));
+        core4Mica.depositStablecoin(address(usdc), 1);
+    }
+
+    /// Boundary: the smallest deposit that mints exactly one scaled unit still succeeds.
+    function test_DepositStablecoin_MinScaledCreditSucceeds() public {
+        mockPool.setNormalizedIncome(address(usdc), 2e27);
+
+        vm.prank(USER1);
+        core4Mica.depositStablecoin(address(usdc), 2); // mulDiv(2, RAY, 2*RAY) = 1 scaled
+        assertEq(core4Mica.collateral(USER1, address(usdc)), 2, "min deposit credited");
+    }
+
     function test_DepositStablecoin_USDT() public {
         uint256 amount = 750 ether;
         uint256 starting = usdt.balanceOf(USER1);

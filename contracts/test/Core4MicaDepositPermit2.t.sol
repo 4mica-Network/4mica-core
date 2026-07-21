@@ -51,6 +51,7 @@ contract MockPermit2 {
         address owner,
         bytes calldata signature
     ) external {
+        // forge-lint: disable-next-line(block-timestamp)
         require(block.timestamp <= permit.deadline, "Permit2: signature expired");
         require(transferDetails.requestedAmount <= permit.permitted.amount, "Permit2: amount exceeds permission");
         require(!usedNonce[owner][permit.nonce], "Permit2: nonce used");
@@ -72,7 +73,10 @@ contract MockPermit2 {
         require(ecrecover(digest, v, r, s) == owner, "Permit2: invalid signature");
 
         usedNonce[owner][permit.nonce] = true;
-        IERC20Like(permit.permitted.token).transferFrom(owner, transferDetails.to, transferDetails.requestedAmount);
+        require(
+            IERC20Like(permit.permitted.token).transferFrom(owner, transferDetails.to, transferDetails.requestedAmount),
+            "Permit2: transfer failed"
+        );
     }
 
     function _split(bytes calldata sig) internal pure returns (bytes32 r, bytes32 s, uint8 v) {
