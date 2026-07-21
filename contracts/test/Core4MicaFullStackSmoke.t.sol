@@ -6,8 +6,6 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 import {Core4Mica} from "../src/Core4Mica.sol";
-import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
-import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
 
@@ -17,7 +15,6 @@ contract Core4MicaFullStackSmokeTest is Test {
     uint64 private constant GUARDIAN_ROLE = 3;
     uint64 private constant FOURMICA_OPERATOR_ROLE = 4;
     uint64 private constant CLEARING_HOUSE_ROLE = 5;
-    uint64 private constant GUARANTEE_V2 = 2;
     uint32 private constant GOVERNANCE_DELAY = 72 hours;
     uint32 private constant TREASURY_DELAY = 72 hours;
     bytes32 private constant TEST_PRIVATE_KEY =
@@ -25,7 +22,7 @@ contract Core4MicaFullStackSmokeTest is Test {
     address private constant USDC = address(0xA0);
     address private constant USDT = address(0xB0);
 
-    function test_fullStackDeploymentConfiguresV1AndV2GuaranteeVersions() public {
+    function test_fullStackDeploymentConfiguresTheInitialGuaranteeVersion() public {
         address deployer = address(this);
         AccessManager manager = new AccessManager(deployer);
         BLS.G1Point memory verificationKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY);
@@ -34,17 +31,8 @@ contract Core4MicaFullStackSmokeTest is Test {
         stablecoins[0] = USDC;
         stablecoins[1] = USDT;
         Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins, 0);
-        GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
-
-        address[] memory trustedRegistries = new address[](1);
-        trustedRegistries[0] = address(0x8004AA63c570c570eBF15376c0dB199918BFe9Fb);
-        ValidationRegistryGuaranteeDecoder validationDecoder = new ValidationRegistryGuaranteeDecoder(trustedRegistries);
-
-        bytes32 v2Domain = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(core4Mica)));
-        core4Mica.configureGuaranteeVersion(GUARANTEE_V2, verificationKey, v2Domain, address(validationDecoder), true);
 
         _configureCoreRoles(manager, core4Mica, deployer);
-        _configureRouterRoles(manager, router);
 
         (BLS.G1Point memory v1Key, bytes32 v1Domain, address v1Decoder, bool v1Enabled) =
             core4Mica.getGuaranteeVersionConfig(core4Mica.INITIAL_GUARANTEE_VERSION());
@@ -52,15 +40,6 @@ contract Core4MicaFullStackSmokeTest is Test {
         assertEq(v1Domain, core4Mica.guaranteeDomainSeparator());
         assertEq(v1Decoder, address(0));
         _assertSameKey(v1Key, verificationKey);
-
-        (BLS.G1Point memory v2Key, bytes32 configuredV2Domain, address v2Decoder, bool v2Enabled) =
-            core4Mica.getGuaranteeVersionConfig(GUARANTEE_V2);
-        assertTrue(v2Enabled);
-        assertEq(configuredV2Domain, v2Domain);
-        assertEq(v2Decoder, address(validationDecoder));
-        _assertSameKey(v2Key, verificationKey);
-
-        assertTrue(validationDecoder.isTrustedValidationRegistry(trustedRegistries[0]));
     }
 
     function test_accessPolicySplitsGovernanceTreasuryGuardianAnd4micaOperatorRoles() public {
@@ -72,10 +51,8 @@ contract Core4MicaFullStackSmokeTest is Test {
         stablecoins[0] = USDC;
         stablecoins[1] = USDT;
         Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins, 0);
-        GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
 
         _configureCoreRoles(manager, core4Mica, deployer);
-        _configureRouterRoles(manager, router);
 
         assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.configureAave.selector), GOVERNANCE_ROLE);
         assertEq(
@@ -90,8 +67,6 @@ contract Core4MicaFullStackSmokeTest is Test {
         );
         assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.pause.selector), GUARDIAN_ROLE);
         assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.unpause.selector), GOVERNANCE_ROLE);
-        assertEq(manager.getTargetFunctionRole(address(router), router.setVersionModule.selector), GOVERNANCE_ROLE);
-        assertEq(manager.getTargetFunctionRole(address(router), router.freezeVersion.selector), GOVERNANCE_ROLE);
 
         ClearingHouse clearingHouse = new ClearingHouse(address(manager), address(core4Mica));
         _configureClearingHouseRoles(manager, clearingHouse, core4Mica);
@@ -149,15 +124,6 @@ contract Core4MicaFullStackSmokeTest is Test {
         manager.grantRole(TREASURY_ROLE, deployer, TREASURY_DELAY);
         manager.grantRole(GUARDIAN_ROLE, deployer, 0);
         manager.grantRole(FOURMICA_OPERATOR_ROLE, deployer, 0);
-    }
-
-    function _configureRouterRoles(AccessManager manager, GuaranteeDecoderRouter router) internal {
-        manager.setTargetFunctionRole(
-            address(router), _asSingletonArray(router.setVersionModule.selector), GOVERNANCE_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(router), _asSingletonArray(router.freezeVersion.selector), GOVERNANCE_ROLE
-        );
     }
 
     function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse, Core4Mica core4Mica)

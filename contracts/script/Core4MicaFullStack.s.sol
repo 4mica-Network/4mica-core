@@ -6,14 +6,11 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 import {Core4Mica} from "../src/Core4Mica.sol";
-import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
-import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 import {MockERC20} from "../test/Core4MicaTestBase.sol";
 
-/// @notice Deploys full guarantee stack:
-/// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder + ClearingHouse.
+/// @notice Deploys full guarantee stack: AccessManager + Core4Mica + ClearingHouse.
 ///
 /// Required env:
 /// - DEPLOYER_PRIVATE_KEY
@@ -26,11 +23,6 @@ import {MockERC20} from "../test/Core4MicaTestBase.sol";
 /// - STABLECOINS_COUNT=<n> and STABLECOIN_0..n-1
 /// - DEPLOY_MOCK_STABLECOINS=true deploys STABLECOINS_COUNT fresh
 ///   ERC20s and registers those instead of reading STABLECOIN_* (local dev only).
-///
-/// Validation registry allowlist:
-/// - TRUSTED_VALIDATION_REGISTRY=<address>
-///   OR
-/// - TRUSTED_VALIDATION_REGISTRIES_COUNT=<n> and TRUSTED_VALIDATION_REGISTRY_0..n-1
 ///
 /// Deterministic deployment:
 /// - CREATE2_SALT (optional, default "4mica-core-v1")
@@ -66,7 +58,6 @@ contract Core4MicaFullStackScript is Script {
     uint64 public constant FOURMICA_OPERATOR_ROLE = 4;
     // Immediate role held only by the ClearingHouse so it can move collateral in Core4Mica.
     uint64 public constant CLEARING_HOUSE_ROLE = 5;
-    uint64 public constant GUARANTEE_V2 = 2;
     // AccessManager built-in admin role (OpenZeppelin AccessManager.ADMIN_ROLE == 0).
     uint64 public constant ADMIN_ROLE = 0;
 
@@ -86,8 +77,6 @@ contract Core4MicaFullStackScript is Script {
     struct FullStackDeployment {
         AccessManager manager;
         Core4Mica core4Mica;
-        GuaranteeDecoderRouter router;
-        ValidationRegistryGuaranteeDecoder validationDecoder;
         ClearingHouse clearingHouse;
     }
 
@@ -95,7 +84,6 @@ contract Core4MicaFullStackScript is Script {
         address deployer;
         address managerAdmin;
         address[] stablecoins;
-        address[] trustedRegistries;
         bytes32 baseSalt;
         BLS.G1Point guaranteeVerificationKey;
         uint256 minWithdrawalGracePeriod;
@@ -122,7 +110,6 @@ contract Core4MicaFullStackScript is Script {
             initialAdmin,
             config.guaranteeVerificationKey,
             config.stablecoins,
-            config.trustedRegistries,
             config.minWithdrawalGracePeriod
         );
         _configureDeployedStack(deployment, config);
@@ -135,10 +122,7 @@ contract Core4MicaFullStackScript is Script {
 
         console.log("AccessManager:", address(deployment.manager));
         console.log("Core4Mica:", address(deployment.core4Mica));
-        console.log("GuaranteeDecoderRouter:", address(deployment.router));
-        console.log("ValidationRegistryGuaranteeDecoder:", address(deployment.validationDecoder));
         console.log("ClearingHouse:", address(deployment.clearingHouse));
-        console.log("Trusted registries count:", config.trustedRegistries.length);
         console.log("AccessManager admin:", config.managerAdmin);
         console.log("Hardened governance:", config.hardenedGovernance);
         console.log("CREATE2 base salt:");
@@ -156,7 +140,6 @@ contract Core4MicaFullStackScript is Script {
         config.deployer = deployer;
         config.managerAdmin = vm.envOr("ACCESS_MANAGER_ADMIN", deployer);
         config.stablecoins = stablecoins;
-        config.trustedRegistries = _loadTrustedValidationRegistries();
         config.baseSalt = keccak256(bytes(vm.envOr("CREATE2_SALT", string("4mica-core-v1"))));
         config.guaranteeVerificationKey = BLS.G1Point({
             x_a: vm.envBytes32("VK_X0"),
@@ -310,14 +293,7 @@ contract Core4MicaFullStackScript is Script {
         _assertStablecoinReadback(deployment.core4Mica, config.stablecoins);
         _configureOptionalAave(deployment.core4Mica, config.stablecoins);
 
-        bytes32 v2Domain =
-            keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(deployment.core4Mica)));
-        deployment.core4Mica
-            .configureGuaranteeVersion(
-                GUARANTEE_V2, config.guaranteeVerificationKey, v2Domain, address(deployment.validationDecoder), true
-            );
         _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
-        _configureRouterRoles(deployment.manager, deployment.router);
         _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse, deployment.core4Mica);
     }
 
@@ -326,7 +302,6 @@ contract Core4MicaFullStackScript is Script {
         address initialAdmin,
         BLS.G1Point memory guaranteeVerificationKey,
         address[] memory stablecoins,
-        address[] memory trustedRegistries,
         uint256 minWithdrawalGracePeriod
     ) internal returns (FullStackDeployment memory deployment) {
         address managerAddress = DeterministicCreate2.deploy(
@@ -340,14 +315,6 @@ contract Core4MicaFullStackScript is Script {
                 abi.encode(managerAddress, guaranteeVerificationKey, stablecoins, minWithdrawalGracePeriod)
             )
         );
-        address routerAddress = DeterministicCreate2.deploy(
-            _deriveSalt(baseSalt, "GUARANTEE_DECODER_ROUTER"),
-            abi.encodePacked(type(GuaranteeDecoderRouter).creationCode, abi.encode(managerAddress))
-        );
-        address validationDecoderAddress = DeterministicCreate2.deploy(
-            _deriveSalt(baseSalt, "VALIDATION_REGISTRY_GUARANTEE_DECODER"),
-            abi.encodePacked(type(ValidationRegistryGuaranteeDecoder).creationCode, abi.encode(trustedRegistries))
-        );
         address clearingHouseAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CLEARING_HOUSE"),
             abi.encodePacked(type(ClearingHouse).creationCode, abi.encode(managerAddress, core4MicaAddress))
@@ -355,8 +322,6 @@ contract Core4MicaFullStackScript is Script {
 
         deployment.manager = AccessManager(managerAddress);
         deployment.core4Mica = Core4Mica(payable(core4MicaAddress));
-        deployment.router = GuaranteeDecoderRouter(routerAddress);
-        deployment.validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
         deployment.clearingHouse = ClearingHouse(payable(clearingHouseAddress));
     }
 
@@ -394,15 +359,6 @@ contract Core4MicaFullStackScript is Script {
         );
     }
 
-    function _configureRouterRoles(AccessManager manager, GuaranteeDecoderRouter router) internal {
-        manager.setTargetFunctionRole(
-            address(router), _asSingletonArray(router.setVersionModule.selector), GOVERNANCE_ROLE
-        );
-        manager.setTargetFunctionRole(
-            address(router), _asSingletonArray(router.freezeVersion.selector), GOVERNANCE_ROLE
-        );
-    }
-
     function _configureClearingHouseRoles(AccessManager manager, ClearingHouse clearingHouse, Core4Mica core4Mica)
         internal
     {
@@ -434,24 +390,6 @@ contract Core4MicaFullStackScript is Script {
             );
         }
         manager.grantRole(CLEARING_HOUSE_ROLE, address(clearingHouse), 0);
-    }
-
-    function _loadTrustedValidationRegistries() internal view returns (address[] memory registries) {
-        uint256 count = vm.envOr("TRUSTED_VALIDATION_REGISTRIES_COUNT", uint256(0));
-        if (count > 0) {
-            registries = new address[](count);
-            for (uint256 i = 0; i < count; i++) {
-                string memory key = string.concat("TRUSTED_VALIDATION_REGISTRY_", vm.toString(i));
-                registries[i] = vm.envAddress(key);
-                require(registries[i] != address(0), "trusted registry is zero");
-            }
-            return registries;
-        }
-
-        address single = vm.envOr("TRUSTED_VALIDATION_REGISTRY", address(0));
-        require(single != address(0), "trusted validation registry required");
-        registries = new address[](1);
-        registries[0] = single;
     }
 
     function _asSingletonArray(bytes4 selector) internal pure returns (bytes4[] memory arr) {

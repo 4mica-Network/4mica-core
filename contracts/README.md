@@ -64,8 +64,7 @@ Targeted guarantee versioning suites:
 
 ```bash
 forge test --match-path test/Core4MicaGuaranteeVersions.t.sol
-forge test --match-path test/ValidationRegistryGuaranteeDecoder.t.sol
-forge test --match-path test/GuaranteeDecoderRouter.t.sol
+forge test --match-path test/GuaranteeCrossBoundary.t.sol
 ```
 
 ---
@@ -99,13 +98,12 @@ forge script script/Core4Mica.s.sol:Core4MicaScript \
 Core4Mica deployed at: 0x1234abcd...
 ```
 
-### 3b. Full stack deploy (Core + guarantee decoders)
+### 3b. Full stack deploy
 
 Deploys:
 - `AccessManager`
 - `Core4Mica`
-- `GuaranteeDecoderRouter`
-- `ValidationRegistryGuaranteeDecoder`
+- `ClearingHouse`
 
 ```bash
 forge script script/Core4MicaFullStack.s.sol:Core4MicaFullStackScript \
@@ -148,16 +146,6 @@ forge script script/ConfigureGuaranteeVersion.s.sol:ConfigureGuaranteeVersionScr
     -vvvv
 ```
 
-Decoder-only deployment (with trusted-registry readback checks):
-
-```bash
-forge script script/DeployValidationRegistryGuaranteeDecoder.s.sol:DeployValidationRegistryGuaranteeDecoderScript \
-    --rpc-url $DEPLOY_RPC_URL \
-    --broadcast \
-    --via-ir \
-    -vvvv
-```
-
 `ConfigureGuaranteeVersion` supports reusing an existing key from another version:
 - `GUARANTEE_REUSE_EXISTING_KEY=true`
 - optional `GUARANTEE_KEY_SOURCE_VERSION` (defaults to `1`)
@@ -178,11 +166,10 @@ through the canonical deterministic deployer (`0x4e59...`) with:
 - same `CREATE2_SALT`
 - same init code (constructor args + bytecode)
 
-If constructor inputs differ per chain (for example `ACCESS_MANAGER_ADMIN`, verification key, or trusted registry list), the resulting address will differ.
+If constructor inputs differ per chain (for example `ACCESS_MANAGER_ADMIN` or the verification key), the resulting address will differ.
 
 Runbook:
 - `GUARANTEE_VERSIONING.md`
-- `GUARANTEE_V2_ACTIVATION.md`
 ---
 
 ### 📜 Getting the ABI

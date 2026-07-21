@@ -4,37 +4,6 @@ pragma solidity ^0.8.29;
 import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
 import {Guarantee} from "../src/Core4Mica.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
-import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
-import {IValidationRegistry} from "../src/interfaces/IValidationRegistry.sol";
-
-/// Minimal validation registry whose response is configured to satisfy the V2 decoder's
-/// post-decode checks for the golden-vector policy.
-contract MockValidationRegistry is IValidationRegistry {
-    address private validator;
-    uint256 private agentId;
-    uint8 private response;
-    string private tag;
-    uint256 private lastUpdate;
-
-    function set(address validator_, uint256 agentId_, uint8 response_, string memory tag_, uint256 lastUpdate_)
-        external
-    {
-        validator = validator_;
-        agentId = agentId_;
-        response = response_;
-        tag = tag_;
-        lastUpdate = lastUpdate_;
-    }
-
-    function getValidationStatus(bytes32)
-        external
-        view
-        override
-        returns (address, uint256, uint8, bytes32, string memory, uint256)
-    {
-        return (validator, agentId, response, bytes32(0), tag, lastUpdate);
-    }
-}
 
 /// Proves that a guarantee ABI-encoded and BLS-signed by the Rust core
 /// (crates/rpc/tests/guarantee_golden_vectors.rs) actually verifies AND decodes on-chain.
@@ -83,42 +52,4 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
         assertEq(g.timestamp, vm.parseJsonUint(vectors, ".v1.expected.timestamp"), "timestamp");
     }
 
-    function test_rustSignedV2Guarantee_verifiesAndDecodesOnChain() public {
-        BLS.G1Point memory vkey = _g1(".v2.verificationKey");
-        bytes32 domain = vm.parseJsonBytes32(vectors, ".v2.domain");
-        bytes memory guarantee = vm.parseJsonBytes(vectors, ".v2.guarantee");
-        BLS.G2Point memory signature = _g2(".v2.signature");
-
-        // The V2 binding commits to a specific registry address; place a configurable mock at
-        // that exact address so the decoder's lookup + checks pass against real on-chain code.
-        address registryAddr = vm.parseJsonAddress(vectors, ".v2.policy.validationRegistryAddress");
-        MockValidationRegistry impl = new MockValidationRegistry();
-        vm.etch(registryAddr, address(impl).code);
-        MockValidationRegistry(registryAddr)
-            .set(
-                vm.parseJsonAddress(vectors, ".v2.policy.validatorAddress"),
-                vm.parseJsonUint(vectors, ".v2.policy.validatorAgentId"),
-                uint8(vm.parseJsonUint(vectors, ".v2.policy.minValidationScore")) + 10, // response >= min score
-                vm.parseJsonString(vectors, ".v2.policy.requiredValidationTag"),
-                1 // lastUpdate != 0 => not pending
-            );
-
-        address[] memory trusted = new address[](1);
-        trusted[0] = registryAddr;
-        ValidationRegistryGuaranteeDecoder decoder = new ValidationRegistryGuaranteeDecoder(trusted);
-
-        core4Mica.configureGuaranteeVersion(2, vkey, domain, address(decoder), true);
-
-        Guarantee memory g = core4Mica.verifyAndDecodeGuarantee(guarantee, signature);
-
-        assertEq(g.version, 2, "version");
-        assertEq(g.domain, domain, "domain");
-        assertEq(g.tabId, vm.parseJsonUint(vectors, ".v2.expected.tabId"), "tabId");
-        assertEq(g.reqId, vm.parseJsonUint(vectors, ".v2.expected.reqId"), "reqId");
-        assertEq(g.client, vm.parseJsonAddress(vectors, ".v2.expected.client"), "client");
-        assertEq(g.recipient, vm.parseJsonAddress(vectors, ".v2.expected.recipient"), "recipient");
-        assertEq(g.amount, vm.parseJsonUint(vectors, ".v2.expected.amount"), "amount");
-        assertEq(g.asset, vm.parseJsonAddress(vectors, ".v2.expected.asset"), "asset");
-        assertEq(g.timestamp, vm.parseJsonUint(vectors, ".v2.expected.timestamp"), "timestamp");
-    }
 }
