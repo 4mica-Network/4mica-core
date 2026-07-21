@@ -151,6 +151,37 @@ contract Core4MicaDepositPermit2Test is Core4MicaTestBase {
         return _authorization(address(usdc), permittedAmount, block.timestamp + 1 hours, nonce);
     }
 
+    /// Sign a Permit2 permit with an arbitrary key, `from`, and `spender`, so tests can forge
+    /// wrong-signer / wrong-spender cases.
+    function _authorizationFull(
+        uint256 pk,
+        address from,
+        address spender,
+        address token,
+        uint256 permittedAmount,
+        uint256 deadline,
+        uint256 nonce
+    ) internal view returns (Permit2Authorization memory auth) {
+        bytes32 tokenPermissions = keccak256(
+            abi.encode(keccak256("TokenPermissions(address token,uint256 amount)"), token, permittedAmount)
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "PermitTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline)TokenPermissions(address token,uint256 amount)"
+                ),
+                tokenPermissions,
+                spender,
+                nonce,
+                deadline
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _permit2Domain(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        auth =
+            Permit2Authorization({from: from, nonce: nonce, deadline: deadline, signature: abi.encodePacked(r, s, v)});
+    }
+
     /// The core guarantee: a third party submits the tx, but the *signer* is credited.
     function test_DepositWithPermit2_CreditsSignerNotSubmitter() public {
         Permit2Authorization memory auth = _validAuthorization(AMOUNT, 1);
@@ -237,5 +268,125 @@ contract Core4MicaDepositPermit2Test is Core4MicaTestBase {
         vm.prank(FACILITATOR);
         vm.expectRevert();
         core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, auth);
+    }
+
+    // ========================= Edge cases =========================
+
+    uint256 internal constant SIGNER2_PK = 0xB0B;
+
+    /// Without the one-time ERC-20 approval to Permit2, the pull fails at the token allowance check.
+    function test_DepositWithPermit2_RevertNoPermit2Approval() public {
+        uint256 pk = 0xC0DE;
+        address noApprove = vm.addr(pk);
+        usdc.mint(noApprove, 10_000 ether); // has balance, but never approved Permit2
+
+        Permit2Authorization memory auth =
+            _authorizationFull(pk, noApprove, address(core4Mica), address(usdc), AMOUNT, block.timestamp + 1 hours, 20);
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("ALLOWANCE"));
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, auth);
+    }
+
+    /// Approved Permit2 but insufficient token balance → the pull reverts.
+    function test_DepositWithPermit2_RevertInsufficientBalance() public {
+        uint256 pk = 0xD00D;
+        address broke = vm.addr(pk);
+        vm.prank(broke);
+        usdc.approve(PERMIT2, type(uint256).max); // approves but has zero balance
+
+        Permit2Authorization memory auth =
+            _authorizationFull(pk, broke, address(core4Mica), address(usdc), AMOUNT, block.timestamp + 1 hours, 21);
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("BALANCE"));
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, auth);
+    }
+
+    /// A tampered signature no longer recovers to the owner.
+    function test_DepositWithPermit2_RevertTamperedSignature() public {
+        Permit2Authorization memory auth = _validAuthorization(AMOUNT, 22);
+        auth.signature[10] = bytes1(uint8(auth.signature[10]) ^ 0x01); // flip a bit in r
+
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("Permit2: invalid signature"));
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, auth);
+    }
+
+    /// A signature from a key other than `from` is rejected.
+    function test_DepositWithPermit2_RevertWrongSigner() public {
+        // Signed by SIGNER2_PK but claims `from = signer`.
+        Permit2Authorization memory auth = _authorizationFull(
+            SIGNER2_PK, signer, address(core4Mica), address(usdc), AMOUNT, block.timestamp + 1 hours, 23
+        );
+
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("Permit2: invalid signature"));
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, auth);
+    }
+
+    /// A permit signed for a different spender cannot be redeemed through Core4Mica (spender is bound).
+    function test_DepositWithPermit2_RevertWrongSpender() public {
+        address otherSpender = address(0xBEEF);
+        Permit2Authorization memory auth =
+            _authorizationFull(SIGNER_PK, signer, otherSpender, address(usdc), AMOUNT, block.timestamp + 1 hours, 24);
+
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("Permit2: invalid signature"));
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, auth);
+    }
+
+    /// Two independent signers keep isolated balances.
+    function test_DepositWithPermit2_TwoSignersIsolated() public {
+        address signer2 = vm.addr(SIGNER2_PK);
+        usdc.mint(signer2, 10_000 ether);
+        vm.prank(signer2);
+        usdc.approve(PERMIT2, type(uint256).max);
+
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, _validAuthorization(AMOUNT, 25));
+
+        Permit2Authorization memory auth2 = _authorizationFull(
+            SIGNER2_PK, signer2, address(core4Mica), address(usdc), 300 ether, block.timestamp + 1 hours, 26
+        );
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithPermit2(address(usdc), 300 ether, auth2);
+
+        assertEq(core4Mica.collateral(signer, address(usdc)), AMOUNT, "signer 1 isolated");
+        assertEq(core4Mica.collateral(signer2, address(usdc)), 300 ether, "signer 2 isolated");
+    }
+
+    /// A deadline exactly equal to the current timestamp is still valid (`now <= deadline`).
+    function test_DepositWithPermit2_DeadlineExactBoundarySucceeds() public {
+        Permit2Authorization memory auth =
+            _authorizationFull(SIGNER_PK, signer, address(core4Mica), address(usdc), AMOUNT, block.timestamp, 27);
+
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, auth);
+        assertEq(core4Mica.collateral(signer, address(usdc)), AMOUNT, "deposit at deadline boundary");
+    }
+
+    /// A dust permit that mints zero scaled aTokens is rejected (audit L-1) on the Permit2 path too.
+    function test_DepositWithPermit2_RevertZeroScaledCredit() public {
+        mockPool.setNormalizedIncome(address(usdc), 2e27);
+        Permit2Authorization memory auth = _validAuthorization(1, 28);
+
+        vm.prank(FACILITATOR);
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.ZeroCollateralCredit.selector, address(usdc), 1));
+        core4Mica.depositStablecoinWithPermit2(address(usdc), 1, auth);
+    }
+
+    /// End-to-end: gasless Permit2 deposit, then the signer withdraws it back after the grace period.
+    function test_DepositWithPermit2_ThenWithdraw() public {
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithPermit2(address(usdc), AMOUNT, _validAuthorization(AMOUNT, 29));
+
+        vm.prank(signer);
+        core4Mica.requestWithdrawal(address(usdc), AMOUNT);
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+
+        vm.prank(signer);
+        core4Mica.finalizeWithdrawal(address(usdc));
+
+        assertEq(core4Mica.collateral(signer, address(usdc)), 0, "balance drained");
+        assertEq(usdc.balanceOf(signer), 10_000 ether, "signer made whole");
     }
 }

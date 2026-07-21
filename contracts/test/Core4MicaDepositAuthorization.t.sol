@@ -162,6 +162,33 @@ contract Core4MicaDepositAuthorizationTest is Core4MicaTestBase {
         return _authorization(value, 0, block.timestamp + 1 hours, nonce);
     }
 
+    /// Sign an authorization with an arbitrary key and `from`, so tests can forge wrong-signer cases.
+    function _authorizationWithKey(
+        uint256 pk,
+        address from,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce
+    ) internal view returns (ReceiveAuthorization memory auth) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                token.RECEIVE_WITH_AUTHORIZATION_TYPEHASH(),
+                from,
+                address(core4Mica),
+                value,
+                validAfter,
+                validBefore,
+                nonce
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", token.DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        auth = ReceiveAuthorization({
+            from: from, validAfter: validAfter, validBefore: validBefore, nonce: nonce, v: v, r: r, s: s
+        });
+    }
+
     /// The core guarantee: a third party submits the tx, but the *signer* is credited.
     function test_DepositWithAuthorization_CreditsSignerNotSubmitter() public {
         ReceiveAuthorization memory auth = _validAuthorization(AMOUNT, bytes32(uint256(1)));
@@ -252,5 +279,110 @@ contract Core4MicaDepositAuthorizationTest is Core4MicaTestBase {
         vm.prank(FACILITATOR);
         vm.expectRevert();
         core4Mica.depositStablecoinWithAuthorization(address(token), AMOUNT, auth);
+    }
+
+    // ========================= Edge cases =========================
+
+    uint256 internal constant SIGNER2_PK = 0xB0B;
+    address internal constant FACILITATOR2 = address(0xCAFE);
+
+    /// An authorization whose `validAfter` is still in the future is rejected by the token.
+    function test_DepositWithAuthorization_RevertNotYetValid() public {
+        ReceiveAuthorization memory auth =
+            _authorization(AMOUNT, block.timestamp + 1000, block.timestamp + 2000, bytes32(uint256(11)));
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("EIP3009: authorization is not yet valid"));
+        core4Mica.depositStablecoinWithAuthorization(address(token), AMOUNT, auth);
+    }
+
+    /// `validBefore == now` is already expired (the token requires `now < validBefore`).
+    function test_DepositWithAuthorization_RevertValidBeforeBoundary() public {
+        ReceiveAuthorization memory auth = _authorization(AMOUNT, 0, block.timestamp, bytes32(uint256(12)));
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("EIP3009: authorization is expired"));
+        core4Mica.depositStablecoinWithAuthorization(address(token), AMOUNT, auth);
+    }
+
+    /// A tampered signature no longer recovers to `from`.
+    function test_DepositWithAuthorization_RevertTamperedSignature() public {
+        ReceiveAuthorization memory auth = _validAuthorization(AMOUNT, bytes32(uint256(13)));
+        auth.r = bytes32(uint256(auth.r) ^ 1); // flip one bit
+
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("EIP3009: invalid signature"));
+        core4Mica.depositStablecoinWithAuthorization(address(token), AMOUNT, auth);
+    }
+
+    /// A signature from a key other than `from` is rejected (relayer cannot forge for a victim).
+    function test_DepositWithAuthorization_RevertWrongSigner() public {
+        ReceiveAuthorization memory auth =
+            _authorizationWithKey(SIGNER2_PK, signer, AMOUNT, 0, block.timestamp + 1 hours, bytes32(uint256(14)));
+
+        vm.prank(FACILITATOR);
+        vm.expectRevert(bytes("EIP3009: invalid signature"));
+        core4Mica.depositStablecoinWithAuthorization(address(token), AMOUNT, auth);
+    }
+
+    /// Two different relayers submit two authorizations; both credit the signer and accumulate.
+    function test_DepositWithAuthorization_TwoRelayersBothCreditSigner() public {
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithAuthorization(
+            address(token), AMOUNT, _validAuthorization(AMOUNT, bytes32(uint256(15)))
+        );
+        vm.prank(FACILITATOR2);
+        core4Mica.depositStablecoinWithAuthorization(
+            address(token), 400 ether, _validAuthorization(400 ether, bytes32(uint256(16)))
+        );
+
+        assertEq(core4Mica.collateral(signer, address(token)), AMOUNT + 400 ether, "signer accumulated");
+        assertEq(core4Mica.collateral(FACILITATOR, address(token)), 0, "relayer 1 not credited");
+        assertEq(core4Mica.collateral(FACILITATOR2, address(token)), 0, "relayer 2 not credited");
+    }
+
+    /// Two independent signers keep isolated balances.
+    function test_DepositWithAuthorization_TwoSignersIsolated() public {
+        address signer2 = vm.addr(SIGNER2_PK);
+        token.mint(signer2, 10_000 ether);
+
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithAuthorization(
+            address(token), AMOUNT, _validAuthorization(AMOUNT, bytes32(uint256(17)))
+        );
+
+        ReceiveAuthorization memory auth2 =
+            _authorizationWithKey(SIGNER2_PK, signer2, 300 ether, 0, block.timestamp + 1 hours, bytes32(uint256(18)));
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithAuthorization(address(token), 300 ether, auth2);
+
+        assertEq(core4Mica.collateral(signer, address(token)), AMOUNT, "signer 1 isolated");
+        assertEq(core4Mica.collateral(signer2, address(token)), 300 ether, "signer 2 isolated");
+    }
+
+    /// A dust authorization that mints zero scaled aTokens is rejected (audit L-1) on the gasless path too.
+    function test_DepositWithAuthorization_RevertZeroScaledCredit() public {
+        mockPool.setNormalizedIncome(address(token), 2e27);
+        ReceiveAuthorization memory auth = _validAuthorization(1, bytes32(uint256(19)));
+
+        vm.prank(FACILITATOR);
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.ZeroCollateralCredit.selector, address(token), 1));
+        core4Mica.depositStablecoinWithAuthorization(address(token), 1, auth);
+    }
+
+    /// End-to-end: gasless deposit, then the signer withdraws it back after the grace period.
+    function test_DepositWithAuthorization_ThenWithdraw() public {
+        vm.prank(FACILITATOR);
+        core4Mica.depositStablecoinWithAuthorization(
+            address(token), AMOUNT, _validAuthorization(AMOUNT, bytes32(uint256(20)))
+        );
+
+        vm.prank(signer);
+        core4Mica.requestWithdrawal(address(token), AMOUNT);
+        vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
+
+        vm.prank(signer);
+        core4Mica.finalizeWithdrawal(address(token));
+
+        assertEq(core4Mica.collateral(signer, address(token)), 0, "balance drained");
+        assertEq(token.balanceOf(signer), 10_000 ether, "signer made whole");
     }
 }
