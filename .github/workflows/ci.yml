@@ -87,7 +87,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: foundry-toolchain
-        uses: foundry-rs/foundry-toolchain@v1.4.0
+        uses: foundry-rs/foundry-toolchain@v1
 
       - name: Start anvil (Prague)
         run: |
