@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core",
     "sdk",
+    "integration-tests",
     "crates/crypto",
     "crates/rpc",
     "crates/validators",

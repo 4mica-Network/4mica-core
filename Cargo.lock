@@ -3473,6 +3473,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "integration-tests"
+version = "0.0.0"
+dependencies = [
+ "alloy",
+ "alloy-provider",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "core-service",
+ "crypto-4mica",
+ "dotenv",
+ "entities",
+ "reqwest 0.13.3",
+ "rpc-4mica",
+ "sdk-4mica",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "test-log",
+ "tokio",
+]
+
+[[package]]
 name = "io-lifetimes"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5516,17 +5541,15 @@ name = "sdk-4mica"
 version = "2.0.0-alpha.1"
 dependencies = [
  "alloy",
- "alloy-provider",
  "anyhow",
  "async-trait",
  "axum",
  "base64",
  "cdp-sdk",
  "chrono",
- "core-service",
  "crypto-4mica",
- "dotenv",
  "log",
+ "rand 0.10.1",
  "reqwest 0.12.28",
  "reqwest 0.13.3",
  "reqwest-middleware",
@@ -5534,7 +5557,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
- "test-log",
  "thiserror 2.0.18",
  "tokio",
  "url",

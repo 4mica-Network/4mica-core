@@ -1,7 +1,6 @@
-use alloy::primitives::B256;
-use alloy::primitives::U256;
+use alloy::primitives::{B256, U256};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2};
+use sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2, X402Requirements};
 
 mod common;
 
@@ -73,8 +72,7 @@ async fn sign_payment_v2_respects_payment_requirements() {
     let claims = envelope.payload.claims;
     assert_eq!(claims.recipient_address(), accepted.pay_to);
 
-    // The validation requirement travels verbatim from `accepted.extra`: the flow never
-    // interprets a validator's policy.
+    // The validation requirement travels verbatim from `accepted.extra`.
     let validation = claims
         .validation()
         .expect("validation requirement from extra");
@@ -88,7 +86,7 @@ async fn sign_payment_v2_respects_payment_requirements() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn sign_payment_requests_tab_correctly() {
+async fn sign_payment_generates_unique_req_id() {
     let user_address = "0x0000000000000000000000000000000000000002";
     let (server_url, handle) = common::x402::spawn_mock_server().await;
 
@@ -98,19 +96,29 @@ async fn sign_payment_requests_tab_correctly() {
             .expect("fetch resource");
 
     let flow: X402Flow<MockSigner> = X402Flow::new(MockSigner).expect("flow");
-    let payment = flow
+    let first = flow
         .sign_payment(payment_requirements.clone(), user_address.to_string())
         .await
-        .expect("sign payment v2");
+        .expect("sign payment");
+    let second = flow
+        .sign_payment(payment_requirements.clone(), user_address.to_string())
+        .await
+        .expect("sign payment");
 
-    assert_eq!(payment.payload.claims.req_id(), U256::ZERO);
+    assert_ne!(first.payload.claims.req_id(), U256::ZERO);
+    assert_ne!(
+        first.payload.claims.req_id(),
+        second.payload.claims.req_id(),
+        "identical requirements must still yield distinct req_ids, or core rejects \
+         the second payment as a DuplicateGuarantee"
+    );
 
     handle.abort();
 }
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn sign_payment_v2_requests_tab_correctly() {
+async fn sign_payment_v2_generates_unique_req_id() {
     let user_address = "0x0000000000000000000000000000000000000002";
     let (server_url, handle) = common::x402::spawn_mock_server().await;
 
@@ -122,7 +130,15 @@ async fn sign_payment_v2_requests_tab_correctly() {
     let accepted = payment_required.accepts.first().expect("accepted");
 
     let flow: X402Flow<MockSigner> = X402Flow::new(MockSigner).expect("flow");
-    let payment = flow
+    let first = flow
+        .sign_payment_v2(
+            payment_required.clone(),
+            accepted.clone(),
+            user_address.to_string(),
+        )
+        .await
+        .expect("sign payment v2");
+    let second = flow
         .sign_payment_v2(
             payment_required.clone(),
             accepted.clone(),
@@ -131,8 +147,14 @@ async fn sign_payment_v2_requests_tab_correctly() {
         .await
         .expect("sign payment v2");
 
-    assert_eq!(payment.payload.claims.req_id(), U256::ZERO);
-    assert!(payment.payload.claims.validation().is_some());
+    assert_ne!(first.payload.claims.req_id(), U256::ZERO);
+    assert_ne!(
+        first.payload.claims.req_id(),
+        second.payload.claims.req_id(),
+        "identical requirements must still yield distinct req_ids, or core rejects \
+         the second payment as a DuplicateGuarantee"
+    );
+    assert!(first.payload.claims.validation().is_some());
 
     handle.abort();
 }
@@ -155,7 +177,11 @@ async fn complete_payment_flow_through_facilitator() {
         .expect("sign payment");
 
     let settled = flow
-        .settle_payment(payment, payment_requirements.clone(), &server_url)
+        .settle_payment(
+            payment,
+            X402Requirements::V1(payment_requirements.clone()),
+            &server_url,
+        )
         .await
         .expect("settle payment");
 

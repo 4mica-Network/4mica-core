@@ -81,7 +81,7 @@ sol! {
 
         struct Guarantee {
             bytes32 domain;
-            uint256 tabId;
+            uint256 cycleId;
             uint256 reqId;
             address client;
             address recipient;

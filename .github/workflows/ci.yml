@@ -170,7 +170,7 @@ jobs:
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
           GUARANTEE_REQUEST_VERSION: "2"
           TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
-        run: cargo test --workspace --exclude sdk-4mica --exclude core-service
+        run: cargo test --workspace --exclude sdk-4mica --exclude integration-tests --exclude core-service
 
       - name: Run core tests (no external core-service running)
         env:
@@ -198,94 +198,10 @@ jobs:
             cargo test -p core-service --test "$test_name"
           done
 
-      - name: Prepare SDK test database
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Run SDK unit tests
+        # sdk-4mica holds the offline unit tests. integration-tests holds the
+        # live-stack e2e tests, which self-skip without SDK_LOCAL_E2E — running
+        # them here keeps them compiling without needing an external core-service.
         run: |
-          set -euo pipefail
-          SDK_DB_NAME=core_sdk
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS ${SDK_DB_NAME};"
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${SDK_DB_NAME};"
-          python - <<'PY' >> "$GITHUB_ENV"
-          import os
-          from urllib.parse import urlparse, urlunparse
-
-          url = os.environ["DATABASE_URL"]
-          db_name = os.environ.get("SDK_DB_NAME", "core_sdk")
-          parsed = urlparse(url)
-          updated = parsed._replace(path=f"/{db_name}")
-          print(f"SDK_DATABASE_URL={urlunparse(updated)}")
-          PY
-
-      - name: Run migrations (sdk db)
-        working-directory: crates/migration
-        env:
-          DATABASE_URL: ${{ env.SDK_DATABASE_URL }}
-        run: cargo run -- up
-
-      - name: Start API service (sdk tests)
-        working-directory: core
-        env:
-          DATABASE_URL: ${{ env.SDK_DATABASE_URL }}
-          SERVER_HOST: 0.0.0.0
-          SERVER_PORT: 3000
-          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
-          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          PUBLIC_ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
-          SERVER_ENVIRONMENT: "development"
-          CONFIRMATION_MODE: "depth"
-          NUMBER_OF_BLOCKS_TO_CONFIRM: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
-          ETHEREUM_CLEARING_HOUSE_ADDRESS: ${{ env.ETHEREUM_CLEARING_HOUSE_ADDRESS }}
-          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
-          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-          ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
-          CRON_JOB_SETTINGS: "*/3 * * * * *"
-          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
-          GUARANTEE_REQUEST_VERSION: "2"
-          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
-        run: |
-          # Stream API logs to the job output while persisting to api.log
-          stdbuf -oL -eL cargo run -p core-service 2>&1 | tee api.log &
-          for i in {1..30}; do
-            if nc -z 127.0.0.1 3000; then
-              echo "API is up!"
-              break
-            fi
-            echo "Waiting for API..."
-            sleep 20
-          done
-          cat api.log
-
-      - name: Wait for listener readiness (sdk tests)
-        run: |
-          for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:3000/core/health >/dev/null; then
-              echo "Listener is ready!"
-              exit 0
-            fi
-            echo "Waiting for listener..."
-            sleep 5
-          done
-          echo "Listener readiness timed out"
-          exit 1
-
-      - name: Run SDK tests
-        env:
-          # Opt in to the e2e suite; without this the tests self-skip.
-          SDK_LOCAL_E2E: "1"
-          DATABASE_URL: ${{ env.SDK_DATABASE_URL }}
-          BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
-          ETHEREUM_HTTP_RPC_URL: http://127.0.0.1:8545
-          ETHEREUM_WS_RPC_URL: ws://127.0.0.1:8545
-          SERVER_ENVIRONMENT: "development"
-          CONFIRMATION_MODE: "depth"
-          NUMBER_OF_BLOCKS_TO_CONFIRM: "1"
-          ETHEREUM_CONTRACT_ADDRESS: ${{ env.ETHEREUM_CONTRACT_ADDRESS }}
-          ETHEREUM_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
-          ETHEREUM_CHAIN_ID: ${{ secrets.ETHEREUM_CHAIN_ID }}
-          CRON_JOB_SETTINGS: "*/3 * * * * *"
-          ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
-          GUARANTEE_REQUEST_VERSION: "2"
-          TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
-        run: cargo test -p sdk-4mica -j 1 -- --test-threads=1
+          cargo test -p sdk-4mica
+          cargo test -p integration-tests

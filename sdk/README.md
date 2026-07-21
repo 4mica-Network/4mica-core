@@ -8,8 +8,8 @@ The official Rust SDK for interacting with the 4Mica payment network.
 
 4Mica is a payment network that enables cryptographically-enforced lines of credit for autonomous payments. The SDK provides:
 
-- **User Client**: Deposit collateral, sign payments, and manage withdrawals in ETH or ERC20 tokens
-- **Recipient Client**: Issue and verify payment guarantees, and claim settled credit from user collateral
+- **User Client**: Deposit collateral, sign payments, pay net debits, and manage withdrawals in ETH or ERC20 tokens
+- **Recipient Client**: Issue and verify payment guarantees, and claim net credits at cycle settlement
 - **X402 Flow Helper**: Generate X-PAYMENT headers for 402-protected HTTP resources via an X402-compatible service
 - **Validated Guarantees**: Build and verify guarantees gated on an external validator's approval
 
@@ -19,8 +19,34 @@ Add the SDK to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sdk-4mica = "0.6.0"
+sdk-4mica = "2.0.0-alpha.1"
 ```
+
+Examples below that build claims by hand also use `rand` to generate a `req_id` nonce; add
+`rand = "0.10"` if you do the same. `X402Flow` generates the nonce internally, so callers
+using it need nothing extra.
+
+## Settlement Cycles
+
+Payments settle in **cycles**, not in long-lived per-counterparty tabs.
+
+A cycle is a fixed, wall-clock-aligned window scoped to a single asset. Every guarantee
+core issues is bound to the cycle that is open at the time — you never name a cycle when
+paying, and `req_id` is a random nonce you generate rather than a value you fetch. When
+the window closes, all guarantees in it are netted multilaterally into one net debit or
+net credit per participant, committed on-chain as a Merkle root, and settled.
+
+A `cycle_id` is the text form `{asset_address}:{period_start}`, for example
+`0x0000000000000000000000000000000000000000:1784210160`. You obtain one from the
+guarantee claims (`claims.cycle_id`) or from your settlement tooling, then pass it to the
+clearing methods below.
+
+That gives each side one settlement call per cycle:
+
+- Payers who owe: `user.pay_net_debit(cycle_id)`
+- Recipients who are owed: `recipient.claim_net_credit(cycle_id)`
+
+Both are single netted amounts covering every payment in the window, not one call per payment.
 
 ## Guarantee Versions
 
@@ -131,20 +157,28 @@ Add `dotenv = "0.15"` to your app dependencies if you load `.env` files this way
 
 The SDK provides client interfaces for both sides of the payment flow plus a helper to bridge HTTP 402 resources:
 
-- `UserClient`: payer controls collateral and signs payments
-- `RecipientClient`: payment recipient issues and verifies guarantees, and claims settled credit
+- `UserClient`: payer controls collateral, signs payments, and pays net debits
+- `RecipientClient`: payment recipient issues and verifies guarantees, and claims net credits
 - `X402Flow`: builds X-PAYMENT headers for X402-protected HTTP endpoints
 
 ### X402 flow (HTTP 402)
 
-The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Required` response into an X-PAYMENT header (and optional `/settle` call) that the facilitator will accept. The examples in `https://github.com/4mica-Network/x402-4mica/examples` model the expected flow: the client speaks to the resource server, and the resource server talks to the facilitator for `/tabs`, `/verify`, and `/settle`.
+The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Required` response into an X-PAYMENT header (and optional `/settle` call) that the facilitator will accept. The examples in `https://github.com/4mica-Network/x402-4mica/examples` model the expected flow: the client speaks to the resource server, and the resource server talks to the facilitator for `/verify` and `/settle`.
+
+Signing is entirely local. `X402Flow` generates a random `req_id` nonce itself and makes no
+network call before signing.
 
 #### What the SDK expects from `paymentRequirements`
 
 `sdk-4mica` accepts the canonical X402 JSON (camelCase). At minimum you need:
 
 - `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
-  `X402Flow` will refresh the tab by calling `extra.tabEndpoint` before signing.
+- `asset`, `amount` (v2) or `maxAmountRequired` (v1), and `payTo`
+
+V1 needs no `extra`. V2 may carry an optional validation requirement in `extra`: `validator`
+(a whitelisted validator identity), `subject` (0x bytes32), `deadline` (optional unix seconds),
+and `params` (0x-encoded, validator-specific policy). Omitting them leaves the payment
+un-gated.
 
 #### End-to-end client flow
 
@@ -318,8 +352,14 @@ Notes:
 #### UserClient Methods
 
 - `approve_erc20(token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the 4Mica contract to spend ERC20 tokens on behalf of the user
+- `approve_clearing_house_erc20(cycle_id: String, token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the ClearingHouse to spend ERC20 tokens before paying a net debit in that asset
 - `deposit(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, DepositError>`: Deposit collateral in ETH or ERC20 token
 - `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
+- `get_principal_balance(asset: String) -> Result<U256, GetUserError>`: Get the user's principal balance for an asset
+- `get_withdrawable_balance(asset: String) -> Result<U256, GetUserError>`: Get the user's withdrawable balance for an asset
+- `get_stablecoin_position(asset: String) -> Result<StablecoinPosition, GetUserError>`: Get the user's yield-bearing stablecoin position
+- `get_clearing_pay_net_debit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Fetch the prepared `payNetDebit` call (amount, proof, contract) for a cycle
+- `pay_net_debit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Pay the caller's committed net debit for a cycle
 - `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment; the claims carry an optional `validation` requirement
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
@@ -334,6 +374,10 @@ Notes:
 - `get_user_asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get the recipient's balance for one asset
 - `get_clearing_claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Prepare the on-chain call that claims a settled cycle's net credit
 - `claim_net_credit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Claim the recipient's net credit for a cycle
+
+> **Note:** `BLSCert` now exposes typed claims and signatures. Use `cert.claims().to_hex()` or `cert.signature().to_hex()` when you need hex strings.
+
+> **Note:** Each method returns a specific error type that provides detailed information about what went wrong. See the [Error Handling](#error-handling) section for comprehensive documentation and examples.
 
 ### User Client (Payer)
 
@@ -400,14 +444,18 @@ for user_info in user_assets {
 ```rust
 use sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
 
-// Create payment claims for ETH payment
+// Create payment claims for ETH payment.
+// req_id is a random per-request nonce (see the note below); core binds the
+// guarantee to the active settlement cycle for you.
+let req_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
+
 let claims = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(), // user_address
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(), // recipient_address
-    U256::ZERO,                                                // req_id (random nonce, see note below)
-    U256::from(1_000_000_000_000_000_000u128),                 // amount (1 ETH)
-    1704067200,                                                // timestamp
-    None,                                                      // erc20_token (None for ETH)
+    req_id,                                                     // req_id
+    U256::from(1_000_000_000_000_000_000u128),                  // amount (1 ETH)
+    1704067200,                                                 // timestamp
+    None,                                                       // erc20_token (None for ETH)
 );
 
 // Sign using EIP-712 (recommended)
@@ -429,7 +477,7 @@ let usdc_token = "0x1234567890123456789012345678901234567890".to_string();
 let claims_usdc = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
-    U256::ZERO,
+    U256::from_be_bytes(rand::random::<[u8; 32]>()),
     U256::from(1000_000_000u128), // 1000 USDC
     1704067200,
     Some(usdc_token),
@@ -437,7 +485,7 @@ let claims_usdc = PaymentGuaranteeRequestClaims::new(
 let payment_sig_usdc = client.user.sign_payment(claims_usdc, SigningScheme::Eip712).await?;
 ```
 
-> **Note on `req_id`:** `req_id` is a per-request nonce, **not** a sequential counter. Use a freshly generated random `U256` for each guarantee request (the `U256::ZERO` above is only for a readable example). Replay protection comes from two independent checks: a request is bound to one settlement cycle via its signed `timestamp` (a request whose timestamp predates the active cycle is rejected as stale), and within a cycle the `(req_id, ...)` digest must be unique, so reusing a `req_id` for an otherwise-identical request is rejected as a duplicate. Random `req_id`s avoid accidental collisions; they do not need to increase or follow any order.
+> **Note on `req_id`:** `req_id` is a per-request nonce, **not** a sequential counter. Use a freshly generated random `U256` for each guarantee request. Replay protection comes from two independent checks: a request is bound to one settlement cycle via its signed `timestamp` (a request whose timestamp predates the active cycle is rejected as stale), and within a cycle the `(req_id, ...)` digest must be unique, so reusing a `req_id` for an otherwise-identical request is rejected as a duplicate. Random `req_id`s avoid accidental collisions; they do not need to increase or follow any order. `X402Flow` does this for you.
 
 #### Request Withdrawal
 
@@ -482,9 +530,32 @@ let receipt = client.user.finalize_withdrawal(Some(token_address)).await?;
 println!("USDC withdrawal finalized: {:?}", receipt.transaction_hash);
 ```
 
+#### Pay a Net Debit
+
+Once a cycle's netting is committed on-chain, a payer who ended the window owing money
+makes a single call covering every payment they made in it.
+
+```rust
+use sdk_4mica::U256;
+
+let cycle_id = "0x0000000000000000000000000000000000000000:1784210160".to_string();
+
+// For ERC20 assets, approve the ClearingHouse first. The clearing contract is a
+// different address from the Core4Mica contract that `approve_erc20` targets.
+let usdc = "0x1234567890123456789012345678901234567890".to_string();
+client
+    .user
+    .approve_clearing_house_erc20(cycle_id.clone(), usdc, U256::from(1000_000_000u128))
+    .await?;
+
+// Native-asset debits carry their value with the call; no approval needed.
+let receipt = client.user.pay_net_debit(cycle_id).await?;
+println!("Net debit paid: {:?}", receipt.transaction_hash);
+```
+
 ### Recipient Client
 
-The recipient client allows you to issue and verify payment guarantees, and claim settled credit from user collateral.
+The recipient client allows you to issue and verify payment guarantees, and to claim your netted credit once a cycle is committed on-chain.
 
 #### Issue Payment Guarantee
 
@@ -495,9 +566,8 @@ use sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
 let claims = PaymentGuaranteeRequestClaims::new(
     "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
     "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string(),
-    U256::from(1),
-    U256::ZERO,
-    U256::from(1_000_000_000_000_000_000u128), // 1 ETH
+    U256::from_be_bytes(rand::random::<[u8; 32]>()), // req_id
+    U256::from(1_000_000_000_000_000_000u128),       // 1 ETH
     1704067200,
     None, // None for ETH
 );
@@ -509,7 +579,30 @@ let bls_cert = client.recipient.issue_payment_guarantee(
     payment_sig.signature,
     payment_sig.scheme,
 ).await?;
-println!("BLS Certificate: {:?}", bls_cert);
+
+// Core stamped the active cycle onto the issued claims.
+let issued = client.recipient.verify_payment_guarantee(&bls_cert)?;
+println!("Guarantee bound to cycle: {:#x}", issued.cycle_id);
+```
+
+#### Claim a Net Credit
+
+Once a cycle's netting is committed on-chain, each net creditor makes a single call to
+collect everything owed to them for that cycle.
+
+```rust
+let cycle_id = "0x0000000000000000000000000000000000000000:1784210160".to_string();
+
+// Inspect the prepared call first (amount, Merkle proof, ClearingHouse address)
+let action = client
+    .recipient
+    .get_clearing_claim_net_credit_action(cycle_id.clone())
+    .await?;
+println!("claiming {} via {}", action.amount, action.contract_address);
+
+// Or just execute it
+let receipt = client.recipient.claim_net_credit(cycle_id).await?;
+println!("Net credit claimed: {:?}", receipt.transaction_hash);
 ```
 
 ## Complete Example
@@ -541,14 +634,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receipt = user_client.user.deposit(deposit_amount, None).await?;
     println!("Deposited collateral: {:?}", receipt.transaction_hash);
 
-    // 3. User signs a payment
+    // 3. User signs a payment. No setup call is needed first: core binds the
+    //    guarantee to whichever settlement cycle is open.
     let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
     let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
     let claims = PaymentGuaranteeRequestClaims::new(
         user_address.clone(),
         recipient_address.clone(),
-        U256::ZERO, // req_id: use a fresh random nonce in production
-        U256::from(1_000_000_000_000_000_000u128), // 1 ETH
+        U256::from_be_bytes(rand::random::<[u8; 32]>()), // req_id nonce
+        U256::from(1_000_000_000_000_000_000u128),       // 1 ETH
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
@@ -562,7 +656,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
-    println!("Guarantee issued");
+    let issued = recipient_client.recipient.verify_payment_guarantee(&bls_cert)?;
+    println!("Guarantee issued in cycle {:#x}", issued.cycle_id);
+
+    // 5. Later, once the cycle is netted and committed on-chain, each side makes
+    //    one settlement call covering every payment in that window:
+    //      user_client.user.pay_net_debit(cycle_id).await?;
+    //      recipient_client.recipient.claim_net_credit(cycle_id).await?;
 
     Ok(())
 }
@@ -610,8 +710,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let claims = PaymentGuaranteeRequestClaims::new(
         user_address.clone(),
         recipient_address.clone(),
-        U256::ZERO, // req_id: use a fresh random nonce in production
-        U256::from(1000_000_000u128), // 1,000 USDC
+        U256::from_be_bytes(rand::random::<[u8; 32]>()), // req_id nonce
+        U256::from(1000_000_000u128),                    // 1,000 USDC
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
@@ -625,7 +725,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .recipient
         .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
-    println!("Guarantee issued");
+    let issued = recipient_client.recipient.verify_payment_guarantee(&bls_cert)?;
+    println!("Guarantee issued in cycle {:#x}", issued.cycle_id);
+
+    // 5. At cycle settlement the payer approves the ClearingHouse for the ERC20
+    //    net debit, then pays it:
+    //      user_client.user.approve_clearing_house_erc20(cycle_id.clone(), usdc_token, amount).await?;
+    //      user_client.user.pay_net_debit(cycle_id).await?;
 
     Ok(())
 }
@@ -641,7 +747,7 @@ The SDK provides comprehensive, type-safe error handling with specific error typ
 // Import specific error types when needed
 use sdk_4mica::error::{
     ApproveErc20Error, DepositError, RequestWithdrawalError,
-    SignPaymentError, FinalizeWithdrawalError,
+    SignPaymentError, FinalizeWithdrawalError, ClearingSettlementError,
     IssuePaymentGuaranteeError, VerifyGuaranteeError, RecipientQueryError,
     // ... other error types as needed
 };
@@ -720,6 +826,16 @@ use sdk_4mica::error::{
 - `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown contract revert
 - `Transport(String)`: Provider or transport error
 
+#### Cycle Settlement Errors
+
+**`ClearingSettlementError`**
+
+- `InvalidParams(String)`: Invalid parameters in the prepared clearing action (e.g., malformed address or proof)
+- `Rpc(rpc::ApiClientError)`: RPC communication error
+- `Client(ClientError)`: Client initialization or provider error while preparing the transaction
+- `UnknownRevert { selector: u32, data: Vec<u8> }`: Unknown ClearingHouse revert
+- `Transport(String)`: Provider or transport error
+
 #### Payment Guarantee Errors
 
 **`IssuePaymentGuaranteeError`**
@@ -737,9 +853,10 @@ use sdk_4mica::error::{
 **`X402Error`**
 
 - `InvalidScheme(String)`: `paymentRequirements.scheme` must include `4mica`
+- `InvalidVersion(String)`: Unexpected x402 version
 - `InvalidFacilitatorUrl(String)`: Invalid facilitator `/settle` base URL
-- `TabResolutionFailed(String)` / `InvalidExtra(String)`: Issues resolving or parsing `paymentRequirements.extra`
-- `InvalidNumber { field, source }` / `UserMismatch { found, expected }`: Invalid numeric fields or wrong user in requirements
+- `InvalidExtra(String)`: Issues parsing `paymentRequirements.extra` (the validation requirement fields)
+- `InvalidNumber { field, source }`: Invalid numeric field in requirements
 - `EncodeEnvelope(String)`: Failed to encode the X-PAYMENT envelope
 - `SettlementFailed { status, body }`: Facilitator `/settle` returned a non-success status
 - `Signing(SignPaymentError)` / `Http(reqwest::Error)`: Errors while signing or making HTTP requests
@@ -776,8 +893,9 @@ cargo build --release
 - **Handle errors properly**: Always handle errors explicitly. The SDK provides specific error types for each failure scenario to help you build robust applications
 - **Check signer addresses**: For `RecipientClient` operations, ensure your signer address matches the recipient address. The SDK will return `InvalidParams` errors for mismatches
 - **Validate amounts**: The SDK prevents zero-amount transactions at the contract level, but you should validate amounts in your application for better UX
-- **ERC20 Approvals**: Always approve the 4Mica contract before depositing or paying with ERC20 tokens. Approve only the amount you need to minimize risk
-- **Asset Matching**: A guarantee's asset must match the collateral the payer deposited; the contract rejects mismatched assets
+- **ERC20 Approvals**: Always approve the 4Mica contract before depositing or paying with ERC20 tokens. Approve only the amount you need to minimize risk. Paying an ERC20 net debit needs a _separate_ approval for the ClearingHouse via `approve_clearing_house_erc20` — it is a different contract from the one `approve_erc20` targets
+- **Asset Matching**: Cycles are scoped to a single asset. Ensure the asset in your payment claims matches the asset you intend to settle in; the contract will reject mismatched assets
+- **Use random `req_id`s**: Never reuse or sequence `req_id`. A duplicate within a cycle is rejected, and `X402Flow` generates one for you
 - **Multi-Asset Management**: Each asset (ETH and each ERC20 token) has its own collateral balance and withdrawal request. Use `get_user()` to view all your asset balances
 
 ## License
