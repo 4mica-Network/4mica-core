@@ -274,8 +274,13 @@ impl CoreService {
             })
     }
 
-    pub async fn finalize_guarantee_payable(&self, guarantee_id: &str) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle(
+    pub async fn finalize_guarantee_payable_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        guarantee_id: &str,
+    ) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle_on(
+            conn,
             guarantee_id,
             &[
                 GuaranteeSettlementStatus::Issued,
@@ -287,8 +292,13 @@ impl CoreService {
         .await
     }
 
-    pub async fn dispute_guarantee(&self, guarantee_id: &str) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle(
+    pub async fn dispute_guarantee_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        guarantee_id: &str,
+    ) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle_on(
+            conn,
             guarantee_id,
             &[
                 GuaranteeSettlementStatus::Issued,
@@ -300,8 +310,13 @@ impl CoreService {
         .await
     }
 
-    pub async fn cancel_guarantee(&self, guarantee_id: &str) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle(
+    pub async fn cancel_guarantee_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        guarantee_id: &str,
+    ) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle_on(
+            conn,
             guarantee_id,
             &[
                 GuaranteeSettlementStatus::Issued,
@@ -313,17 +328,17 @@ impl CoreService {
         .await
     }
 
-    async fn transition_guarantee_lifecycle(
+    async fn transition_guarantee_lifecycle_on<C: ConnectionTrait>(
         &self,
+        conn: &C,
         guarantee_id: &str,
         allowed_from: &[GuaranteeSettlementStatus],
         target: GuaranteeSettlementStatus,
         release_locked_collateral: bool,
     ) -> ServiceResult<bool> {
-        let guarantee =
-            repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), guarantee_id)
-                .await?
-                .ok_or_else(|| ServiceError::NotFound(format!("Guarantee {guarantee_id}")))?;
+        let guarantee = repo::get_guarantee_by_id_on(conn, guarantee_id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("Guarantee {guarantee_id}")))?;
 
         if guarantee.settlement_status == target {
             return Ok(false);
@@ -335,36 +350,18 @@ impl CoreService {
             )));
         }
 
-        self.inner
-            .persist_ctx
-            .db
-            .transaction::<_, _, ServiceError>(|txn| {
-                let allowed_from = allowed_from.to_vec();
-                let guarantee = guarantee.clone();
-                let guarantee_id = guarantee_id.to_string();
-                let target = target.clone();
-                Box::pin(async move {
-                    let changed = repo::transition_guarantee_settlement_status_on(
-                        txn,
-                        &guarantee_id,
-                        &allowed_from,
-                        target,
-                        Utc::now().naive_utc(),
-                    )
-                    .await?;
-                    if changed && release_locked_collateral {
-                        repo::release_locked_collateral_for_guarantee_on(txn, &guarantee).await?;
-                    }
-                    Ok(changed)
-                })
-            })
-            .await
-            .map_err(|e| match e {
-                sea_orm::TransactionError::Transaction(inner) => inner,
-                sea_orm::TransactionError::Connection(err) => {
-                    PersistDbError::DatabaseFailure(err).into()
-                }
-            })
+        let changed = repo::transition_guarantee_settlement_status_on(
+            conn,
+            guarantee_id,
+            allowed_from,
+            target,
+            Utc::now().naive_utc(),
+        )
+        .await?;
+        if changed && release_locked_collateral {
+            repo::release_locked_collateral_for_guarantee_on(conn, &guarantee).await?;
+        }
+        Ok(changed)
     }
 }
 

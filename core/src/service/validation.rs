@@ -3,13 +3,13 @@
 //! A validation-gated guarantee is stored `PendingValidation` at issuance. This driver moves it
 //! out of that state by asking the guarantee's validator adapter for a verdict:
 //!
-//! - approved before the deadline  -> `finalize_guarantee_payable` (nets and settles normally)
-//! - rejected                      -> `dispute_guarantee`          (releases the payer's collateral)
-//! - still pending at the deadline -> `cancel_guarantee`           (releases the payer's collateral)
-//! - still pending before it       -> left `PendingValidation`     (re-checked next sweep)
+//! - approved before the deadline  -> `finalize_guarantee_payable_on` (nets and settles normally)
+//! - rejected                      -> `dispute_guarantee_on`          (releases the payer's collateral)
+//! - still pending at the deadline -> `cancel_guarantee_on`           (releases the payer's collateral)
+//! - still pending before it       -> left `PendingValidation`        (re-checked next sweep)
 //!
 //! Whether a validator's answer means approved or rejected is the adapter's decision, not this
-//! module's.
+//! module's. The transition and the validation record are written in a single transaction.
 
 use std::matches;
 
@@ -18,8 +18,10 @@ use entities::guarantee_validation;
 use entities::sea_orm_active_enums::{GuaranteeValidationStatus, SettlementCycleStatus};
 use log::{info, warn};
 use rpc::ValidationRequirement;
+use sea_orm::{ConnectionTrait, TransactionTrait};
 use validators::{Verdict, VerdictStatus};
 
+use crate::error::ServiceError;
 use crate::persist::repo;
 use crate::scheduler::{Task, async_trait};
 use crate::service::CoreService;
@@ -136,111 +138,102 @@ impl CoreService {
         };
 
         let verdict = adapter.resolve(&requirement).await?;
-        let action =
+        let decided =
             decide_validation_action(&verdict, &validation.subject, validation.deadline, now);
-
-        // A resolved-and-accepted validation can only be finalized while its cycle is still
-        // nettable. If the cycle already resolved, finalizing would strand the payer's collateral
-        // in a dead cycle, so downgrade to a cancel that releases it instead.
-        let action = match action {
-            ValidationAction::Finalize
-                if !self
-                    .guarantee_cycle_still_nettable(&validation.guarantee_id)
-                    .await? =>
-            {
-                ValidationAction::Cancel(
-                    "settlement cycle already resolved before validation landed",
-                )
-            }
-            other => other,
-        };
-
         let evidence = Some(verdict.evidence.to_vec());
+        let guarantee_id = validation.guarantee_id.clone();
+
+        // The guarantee transition and the validation record are one unit: a failure between them
+        // would leave a settled guarantee whose validation still reads pending, and the next sweep
+        // would try to transition it again.
+        let action = self
+            .inner
+            .persist_ctx
+            .db
+            .transaction::<_, ValidationAction, ServiceError>(|txn| {
+                let service = self.clone();
+                let guarantee_id = guarantee_id.clone();
+                let evidence = evidence.clone();
+                Box::pin(async move {
+                    // A resolved-and-accepted validation can only be finalized while its cycle is
+                    // still nettable. If the cycle already resolved, finalizing would strand the
+                    // payer's collateral in a dead cycle, so downgrade to a cancel that releases it.
+                    let action = match decided {
+                        ValidationAction::Finalize
+                            if !guarantee_cycle_still_nettable(txn, &guarantee_id).await? =>
+                        {
+                            ValidationAction::Cancel(
+                                "settlement cycle already resolved before validation landed",
+                            )
+                        }
+                        other => other,
+                    };
+
+                    let decision = match action {
+                        ValidationAction::Finalize => {
+                            service
+                                .finalize_guarantee_payable_on(txn, &guarantee_id)
+                                .await?;
+                            GuaranteeValidationStatus::Approved
+                        }
+                        ValidationAction::Dispute(_) => {
+                            service.dispute_guarantee_on(txn, &guarantee_id).await?;
+                            GuaranteeValidationStatus::Rejected
+                        }
+                        ValidationAction::Cancel(_) => {
+                            service.cancel_guarantee_on(txn, &guarantee_id).await?;
+                            GuaranteeValidationStatus::Expired
+                        }
+                        ValidationAction::Wait => {
+                            repo::record_guarantee_validation_poll_on(txn, &guarantee_id, evidence)
+                                .await?;
+                            return Ok(action);
+                        }
+                    };
+                    repo::decide_guarantee_validation_on(txn, &guarantee_id, decision, evidence)
+                        .await?;
+                    Ok(action)
+                })
+            })
+            .await
+            .map_err(|e| match e {
+                sea_orm::TransactionError::Transaction(inner) => anyhow::Error::from(inner),
+                sea_orm::TransactionError::Connection(err) => anyhow::Error::from(err),
+            })?;
+
         match action {
-            ValidationAction::Finalize => {
-                self.finalize_guarantee_payable(&validation.guarantee_id)
-                    .await?;
-                self.record_validation_decision(
-                    &validation.guarantee_id,
-                    GuaranteeValidationStatus::Approved,
-                    evidence,
-                )
-                .await?;
-                info!(
-                    "validation lifecycle: finalized guarantee {}",
-                    validation.guarantee_id
-                );
-            }
-            ValidationAction::Dispute(reason) => {
-                self.dispute_guarantee(&validation.guarantee_id).await?;
-                self.record_validation_decision(
-                    &validation.guarantee_id,
-                    GuaranteeValidationStatus::Rejected,
-                    evidence,
-                )
-                .await?;
-                info!(
-                    "validation lifecycle: disputed guarantee {} ({reason})",
-                    validation.guarantee_id
-                );
-            }
-            ValidationAction::Cancel(reason) => {
-                self.cancel_guarantee(&validation.guarantee_id).await?;
-                self.record_validation_decision(
-                    &validation.guarantee_id,
-                    GuaranteeValidationStatus::Expired,
-                    evidence,
-                )
-                .await?;
-                info!(
-                    "validation lifecycle: cancelled guarantee {} ({reason})",
-                    validation.guarantee_id
-                );
-            }
-            ValidationAction::Wait => {
-                repo::record_guarantee_validation_poll_on(
-                    self.inner.persist_ctx.db.as_ref(),
-                    &validation.guarantee_id,
-                    evidence,
-                )
-                .await?;
-            }
+            ValidationAction::Finalize => info!(
+                "validation lifecycle: finalized guarantee {}",
+                validation.guarantee_id
+            ),
+            ValidationAction::Dispute(reason) => info!(
+                "validation lifecycle: disputed guarantee {} ({reason})",
+                validation.guarantee_id
+            ),
+            ValidationAction::Cancel(reason) => info!(
+                "validation lifecycle: cancelled guarantee {} ({reason})",
+                validation.guarantee_id
+            ),
+            ValidationAction::Wait => {}
         }
         Ok(action)
     }
+}
 
-    async fn record_validation_decision(
-        &self,
-        guarantee_id: &str,
-        status: GuaranteeValidationStatus,
-        evidence: Option<Vec<u8>>,
-    ) -> anyhow::Result<()> {
-        repo::decide_guarantee_validation_on(
-            self.inner.persist_ctx.db.as_ref(),
-            guarantee_id,
-            status,
-            evidence,
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// True if the guarantee's settlement cycle can still include it in a netting round. A missing
-    /// guarantee or cycle is treated as not nettable so the guarantee is cancelled and its
-    /// collateral released rather than left stranded.
-    async fn guarantee_cycle_still_nettable(&self, guarantee_id: &str) -> anyhow::Result<bool> {
-        let Some(guarantee) =
-            repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), guarantee_id).await?
-        else {
-            return Ok(false);
-        };
-        let cycle =
-            repo::get_cycle_by_id_on(self.inner.persist_ctx.db.as_ref(), &guarantee.cycle_id)
-                .await?;
-        Ok(cycle
-            .map(|c| cycle_still_nettable(&c.status))
-            .unwrap_or(false))
-    }
+/// True if the guarantee's settlement cycle can still include it in a netting round. A missing
+/// guarantee or cycle is treated as not nettable so the guarantee is cancelled and its collateral
+/// released rather than left stranded.
+async fn guarantee_cycle_still_nettable<C: ConnectionTrait>(
+    conn: &C,
+    guarantee_id: &str,
+) -> Result<bool, ServiceError> {
+    let Some(guarantee) = repo::get_guarantee_by_id_on(conn, guarantee_id).await? else {
+        return Ok(false);
+    };
+    let cycle = repo::get_cycle_by_id_on(conn, &guarantee.cycle_id).await?;
+    Ok(cycle
+        .map(|c| cycle_still_nettable(&c.status))
+        .unwrap_or(false))
 }
 
 /// Scheduled task that periodically runs the validation lifecycle sweep.
