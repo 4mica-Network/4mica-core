@@ -81,6 +81,24 @@ pub fn map_pending_withdrawal_err(
     }
 }
 
+pub fn map_guarantee_validation_err(
+    err: DbErr,
+    guarantee_id: &str,
+    subject: &str,
+) -> PersistDbError {
+    if !is_unique_violation(&err) {
+        return PersistDbError::DatabaseFailure(err);
+    }
+    match constraint_name(&err).as_deref() {
+        Some("uniq_guarantee_validation_subject") => PersistDbError::InvariantViolation(format!(
+            "validation subject {subject} is already in use"
+        )),
+        _ => PersistDbError::InvariantViolation(format!(
+            "guarantee {guarantee_id} already has a validation requirement"
+        )),
+    }
+}
+
 pub fn parse_address(addr: impl AsRef<str>) -> Result<Address, PersistDbError> {
     Address::parse(addr)
 }

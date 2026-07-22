@@ -10,7 +10,7 @@ use sea_orm::{
 use crate::error::PersistDbError;
 use crate::metrics::misc::record_db_time;
 
-use super::common::is_unique_violation;
+use super::common::map_guarantee_validation_err;
 
 pub struct StoreGuaranteeValidationInput {
     pub guarantee_id: String,
@@ -27,7 +27,7 @@ pub async fn store_guarantee_validation_on<C: ConnectionTrait>(
 ) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
     let active_model = guarantee_validation::ActiveModel {
-        guarantee_id: Set(input.guarantee_id),
+        guarantee_id: Set(input.guarantee_id.clone()),
         validator: Set(input.validator),
         subject: Set(input.subject.clone()),
         deadline: Set(input.deadline),
@@ -43,16 +43,7 @@ pub async fn store_guarantee_validation_on<C: ConnectionTrait>(
     guarantee_validation::Entity::insert(active_model)
         .exec_without_returning(conn)
         .await
-        .map_err(|err| {
-            if is_unique_violation(&err) {
-                PersistDbError::InvariantViolation(format!(
-                    "validation subject {} is already in use",
-                    input.subject
-                ))
-            } else {
-                PersistDbError::DatabaseFailure(err)
-            }
-        })?;
+        .map_err(|err| map_guarantee_validation_err(err, &input.guarantee_id, &input.subject))?;
 
     Ok(())
 }

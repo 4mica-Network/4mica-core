@@ -38,8 +38,7 @@ impl MigrationTrait for Migration {
                     .col(
                         ColumnDef::new(GuaranteeValidation::Subject)
                             .text()
-                            .not_null()
-                            .unique_key(),
+                            .not_null(),
                     )
                     .col(
                         ColumnDef::new(GuaranteeValidation::Deadline)
@@ -93,6 +92,18 @@ impl MigrationTrait for Migration {
                             .on_delete(ForeignKeyAction::Cascade)
                             .on_update(ForeignKeyAction::Cascade),
                     )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .unique()
+                    .name("uniq_guarantee_validation_subject")
+                    .table(GuaranteeValidation::Table)
+                    .col(GuaranteeValidation::Subject)
                     .to_owned(),
             )
             .await?;
