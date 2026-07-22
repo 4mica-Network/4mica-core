@@ -1233,6 +1233,19 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         (uint256 principalConsumed, uint256 protocolScaledCredit) =
             _planStablecoinDebit(user, asset, withdrawalAmount, index);
 
+        // Dust edge, mirroring [`_seizeStablecoinToEscrow`]'s best-effort clamp: a scaled position
+        // can back up to ~1 base unit less than its recorded principal (Aave floors the scaled mint at
+        // deposit while `_userWithdrawableStablecoinBalance` optimistically reports the full principal).
+        // Withdrawing that full balance would round the scaled burn past the user's scaled balance and
+        // revert, stranding the user's own funds. Instead drain the whole position, pay out exactly
+        // what it redeems, and drop the <=1-unit remainder rather than reverting.
+        uint256 userScaled = scaledStablecoinBalances[user][asset];
+        if (_toScaledRoundUp(withdrawalAmount, index) + protocolScaledCredit > userScaled) {
+            withdrawalAmount = _toUnderlyingRoundDown(userScaled, index);
+            principalConsumed = stablecoinPrincipalBalances[user][asset];
+            protocolScaledCredit = 0;
+        }
+
         (uint256 scaledBurn, uint256 actualWithdrawn) =
             _withdrawStablecoinAndMeasureScaledBurn(asset, withdrawalAmount, recipient);
         if (actualWithdrawn < withdrawalAmount) {
