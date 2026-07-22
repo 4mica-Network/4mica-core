@@ -86,16 +86,21 @@ pub async fn record_guarantee_validation_poll_on<C: ConnectionTrait>(
     evidence: Option<Vec<u8>>,
 ) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
-    guarantee_validation::Entity::update_many()
+    let mut update = guarantee_validation::Entity::update_many()
         .col_expr(
             guarantee_validation::Column::LastPolledAt,
             Expr::value(Some(now)),
         )
-        .col_expr(
+        .col_expr(guarantee_validation::Column::UpdatedAt, Expr::value(now));
+
+    if evidence.as_ref().is_some_and(|bytes| !bytes.is_empty()) {
+        update = update.col_expr(
             guarantee_validation::Column::Evidence,
             Expr::value(evidence),
-        )
-        .col_expr(guarantee_validation::Column::UpdatedAt, Expr::value(now))
+        );
+    }
+
+    update
         .filter(guarantee_validation::Column::GuaranteeId.eq(guarantee_id))
         .exec(conn)
         .await?;
