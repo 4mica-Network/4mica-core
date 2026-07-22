@@ -11,6 +11,8 @@
 //! Whether a validator's answer means approved or rejected is the adapter's decision, not this
 //! module's.
 
+use std::matches;
+
 use chrono::{NaiveDateTime, Utc};
 use entities::guarantee_validation;
 use entities::sea_orm_active_enums::{GuaranteeValidationStatus, SettlementCycleStatus};

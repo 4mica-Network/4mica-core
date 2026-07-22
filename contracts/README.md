@@ -33,6 +33,7 @@ forge install
 Place the `.env` file in the project root (next to `foundry.toml`).
 
 **Example `.env`:**
+
 ```ini
 # Private key of your deployer account (do not commit this!)
 DEPLOYER_PRIVATE_KEY=0xabc123...deadbeef
@@ -94,6 +95,7 @@ forge script script/Core4Mica.s.sol:Core4MicaScript \
 ```
 
 **Example output:**
+
 ```yaml
 Core4Mica deployed at: 0x1234abcd...
 ```
@@ -101,6 +103,7 @@ Core4Mica deployed at: 0x1234abcd...
 ### 3b. Full stack deploy
 
 Deploys:
+
 - `AccessManager`
 - `Core4Mica`
 - `ClearingHouse`
@@ -114,27 +117,13 @@ forge script script/Core4MicaFullStack.s.sol:Core4MicaFullStackScript \
 ```
 
 Important env additions for full stack:
+
 - Stablecoin setup (optional):
   - `STABLECOINS_COUNT` + `STABLECOIN_0..n-1`
-- `TRUSTED_VALIDATION_REGISTRY` (single)
-  or
-- `TRUSTED_VALIDATION_REGISTRIES_COUNT` + `TRUSTED_VALIDATION_REGISTRY_0..n-1`
 - `CREATE2_SALT` (optional; defaults to `4mica-core-v1`)
 - `ACCESS_MANAGER_ADMIN` (optional; defaults to broadcaster)
-- V2 is configured and enabled by default during full-stack deployment.
-- V2 reuses the V1 guarantee key and derives its domain separator in-script.
 
 ### 4. Configure guarantee versions post-deploy
-
-Router/module wiring:
-
-```bash
-forge script script/ConfigureGuaranteeRouter.s.sol:ConfigureGuaranteeRouterScript \
-    --rpc-url $DEPLOY_RPC_URL \
-    --broadcast \
-    --via-ir \
-    -vvvv
-```
 
 Core version config:
 
@@ -147,6 +136,7 @@ forge script script/ConfigureGuaranteeVersion.s.sol:ConfigureGuaranteeVersionScr
 ```
 
 `ConfigureGuaranteeVersion` supports reusing an existing key from another version:
+
 - `GUARANTEE_REUSE_EXISTING_KEY=true`
 - optional `GUARANTEE_KEY_SOURCE_VERSION` (defaults to `1`)
 
@@ -163,13 +153,16 @@ Deployment scripts call `setStablecoinAssets(...)` automatically when `STABLECOI
 
 For same-address deployment across chains, scripts now use deterministic deployment (`CREATE2`)
 through the canonical deterministic deployer (`0x4e59...`) with:
+
 - same `CREATE2_SALT`
 - same init code (constructor args + bytecode)
 
 If constructor inputs differ per chain (for example `ACCESS_MANAGER_ADMIN` or the verification key), the resulting address will differ.
 
 Runbook:
+
 - `GUARANTEE_VERSIONING.md`
+
 ---
 
 ### 📜 Getting the ABI
@@ -206,15 +199,15 @@ after deployment via `AccessManager`.
 ---
 
 ## 📦 Current Deployment
+
 > **Latest contracts deployed at:**  
 > [https://holesky.4mica.xyz](https://holesky.4mica.xyz)
 
 - **AccessManager**  
-    Deployed at: `0x31676919335252527965da74b8dFFF589e23Ec81`
+   Deployed at: `0x31676919335252527965da74b8dFFF589e23Ec81`
 
 - **Core4Mica**  
-    Deployed at: `0xFE4eae5d84412B70b1f04b3F78351a654D28Da25`
-
+   Deployed at: `0xFE4eae5d84412B70b1f04b3F78351a654D28Da25`
 
 ## 📂 Project Structure
 
@@ -225,8 +218,7 @@ after deployment via `AccessManager`.
 ├── script/             # Deployment scripts
 │   ├── Core4Mica.s.sol
 │   ├── Core4MicaFullStack.s.sol
-│   ├── ConfigureGuaranteeVersion.s.sol
-│   └── ConfigureGuaranteeRouter.s.sol
+│   └── ConfigureGuaranteeVersion.s.sol
 ├── test/               # Foundry tests
 ├── .env                # Environment variables (ignored by git)
 ├── foundry.toml        # Foundry config

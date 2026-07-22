@@ -1,4 +1,4 @@
-# 4mica-core
+# Project guidelines
 
 ## Comments
 
@@ -7,7 +7,7 @@ Write comments only where code cannot speak for itself.
 - **Do** document public APIs (`pub` items): what it does, and any contract a caller
   must honor.
 - **Do** explain non-obvious logic: an invariant, a subtle ordering requirement, a
-  workaround, or *why* an approach was chosen when the obvious alternative is wrong.
+  workaround, or _why_ an approach was chosen when the obvious alternative is wrong.
 - **Don't** restate what the code already says. No `// increment counter`, no comments
   that paraphrase the function name, no section banners.
 - **Don't** narrate history or review context ("changed to fix X", "this is now
