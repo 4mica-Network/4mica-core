@@ -7,6 +7,7 @@
 //! - rejected                      -> `dispute_guarantee_on`          (releases the payer's collateral)
 //! - still pending at the deadline -> `cancel_guarantee_on`           (releases the payer's collateral)
 //! - still pending before it       -> left `PendingValidation`        (re-checked next sweep)
+//! - validator de-whitelisted      -> `finalize_guarantee_payable_on` (nothing gates it any more)
 //!
 //! Whether a validator's answer means approved or rejected is the adapter's decision, not this
 //! module's. The transition and the validation record are written in a single transaction.
@@ -32,7 +33,37 @@ enum ValidationAction {
     Finalize,
     Dispute(&'static str),
     Cancel(&'static str),
+    Skip,
     Wait,
+}
+
+impl ValidationAction {
+    fn from_verdict(
+        verdict: &Verdict,
+        expected_subject: &str,
+        deadline: NaiveDateTime,
+        now: NaiveDateTime,
+    ) -> Self {
+        // An answer about a different subject says nothing about this guarantee, so it can never
+        // dispute it — it stays unresolved and expires at its deadline like any other.
+        if verdict.subject.to_string() != expected_subject {
+            return if now >= deadline {
+                Self::Cancel("validator answered about a different subject")
+            } else {
+                Self::Wait
+            };
+        }
+
+        match verdict.status {
+            VerdictStatus::Approved if now < deadline => Self::Finalize,
+            VerdictStatus::Approved => Self::Cancel("validation approved after deadline"),
+            VerdictStatus::Rejected => Self::Dispute("validator rejected the guarantee"),
+            VerdictStatus::Pending if now >= deadline => {
+                Self::Cancel("validation did not resolve before deadline")
+            }
+            VerdictStatus::Pending => Self::Wait,
+        }
+    }
 }
 
 /// A guarantee can only be finalized into a cycle that has not yet netted. Finalizing into a
@@ -44,39 +75,13 @@ fn cycle_still_nettable(status: &SettlementCycleStatus) -> bool {
     )
 }
 
-/// A subject mismatch means the adapter answered about a different guarantee, which is never a
-/// reason to reject this one.
-fn decide_validation_action(
-    verdict: &Verdict,
-    expected_subject: &str,
-    deadline: NaiveDateTime,
-    now: NaiveDateTime,
-) -> ValidationAction {
-    if verdict.subject.to_string() != expected_subject {
-        return if now >= deadline {
-            ValidationAction::Cancel("validator answered about a different subject")
-        } else {
-            ValidationAction::Wait
-        };
-    }
-
-    match verdict.status {
-        VerdictStatus::Approved if now < deadline => ValidationAction::Finalize,
-        VerdictStatus::Approved => ValidationAction::Cancel("validation approved after deadline"),
-        VerdictStatus::Rejected => ValidationAction::Dispute("validator rejected the guarantee"),
-        VerdictStatus::Pending if now >= deadline => {
-            ValidationAction::Cancel("validation did not resolve before deadline")
-        }
-        VerdictStatus::Pending => ValidationAction::Wait,
-    }
-}
-
 /// Tally of one validation sweep, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationSweepSummary {
     pub finalized: usize,
     pub disputed: usize,
     pub cancelled: usize,
+    pub skipped: usize,
     pub waiting: usize,
     pub errored: usize,
 }
@@ -86,10 +91,6 @@ impl CoreService {
     /// validator and transition the guarantee accordingly. A per-guarantee failure is logged and
     /// skipped so one bad validator cannot stall the sweep.
     pub async fn drive_pending_validations(&self) -> anyhow::Result<ValidationSweepSummary> {
-        if self.inner.validators.is_empty() {
-            return Ok(ValidationSweepSummary::default());
-        }
-
         let now = Utc::now().naive_utc();
         let pending =
             repo::list_pending_guarantee_validations_on(self.inner.persist_ctx.db.as_ref()).await?;
@@ -100,6 +101,7 @@ impl CoreService {
                 Ok(ValidationAction::Finalize) => summary.finalized += 1,
                 Ok(ValidationAction::Dispute(_)) => summary.disputed += 1,
                 Ok(ValidationAction::Cancel(_)) => summary.cancelled += 1,
+                Ok(ValidationAction::Skip) => summary.skipped += 1,
                 Ok(ValidationAction::Wait) => summary.waiting += 1,
                 Err(err) => {
                     summary.errored += 1;
@@ -118,57 +120,18 @@ impl CoreService {
         validation: &guarantee_validation::Model,
         now: NaiveDateTime,
     ) -> anyhow::Result<ValidationAction> {
-        let adapter = self
-            .inner
-            .validators
-            .get(&validation.validator)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "validator {} is no longer whitelisted; guarantee {} will expire at its deadline",
-                    validation.validator,
-                    validation.guarantee_id
-                )
-            })?;
-
-        let requirement = ValidationRequirement {
-            validator: validation.validator.clone(),
-            subject: validation.subject.parse()?,
-            deadline: Some(validation.deadline.and_utc().timestamp().max(0) as u64),
-            params: validation.params.clone().into(),
-        };
-
-        let verdict = adapter.resolve(&requirement).await?;
-        let decided =
-            decide_validation_action(&verdict, &validation.subject, validation.deadline, now);
-        let evidence = Some(verdict.evidence.to_vec());
+        let (action, verdict) = self.run_adapter_and_decide_action(validation, now).await?;
+        let evidence = verdict.map(|v| v.evidence.to_vec());
         let guarantee_id = validation.guarantee_id.clone();
 
-        // The guarantee transition and the validation record are one unit: a failure between them
-        // would leave a settled guarantee whose validation still reads pending, and the next sweep
-        // would try to transition it again.
-        let action = self
-            .inner
+        self.inner
             .persist_ctx
             .db
-            .transaction::<_, ValidationAction, ServiceError>(|txn| {
+            .transaction::<_, (), ServiceError>(|txn| {
                 let service = self.clone();
                 let guarantee_id = guarantee_id.clone();
                 let evidence = evidence.clone();
                 Box::pin(async move {
-                    // A resolved-and-accepted validation can only be finalized while its cycle is
-                    // still nettable. If the cycle already resolved, finalizing would strand the
-                    // payer's collateral in a dead cycle, so downgrade to a cancel that releases it.
-                    let action = match decided {
-                        ValidationAction::Finalize
-                            if !guarantee_cycle_still_nettable(txn, &guarantee_id).await? =>
-                        {
-                            ValidationAction::Cancel(
-                                "settlement cycle already resolved before validation landed",
-                            )
-                        }
-                        other => other,
-                    };
-
                     let decision = match action {
                         ValidationAction::Finalize => {
                             service
@@ -184,15 +147,23 @@ impl CoreService {
                             service.cancel_guarantee_on(txn, &guarantee_id).await?;
                             GuaranteeValidationStatus::Expired
                         }
+                        ValidationAction::Skip => {
+                            // No validator gates it any more, so make it payable for its cycle.
+                            service
+                                .finalize_guarantee_payable_on(txn, &guarantee_id)
+                                .await?;
+                            GuaranteeValidationStatus::Skipped
+                        }
                         ValidationAction::Wait => {
                             repo::record_guarantee_validation_poll_on(txn, &guarantee_id, evidence)
                                 .await?;
-                            return Ok(action);
+                            return Ok(());
                         }
                     };
                     repo::decide_guarantee_validation_on(txn, &guarantee_id, decision, evidence)
                         .await?;
-                    Ok(action)
+
+                    Ok(())
                 })
             })
             .await
@@ -214,9 +185,56 @@ impl CoreService {
                 "validation lifecycle: cancelled guarantee {} ({reason})",
                 validation.guarantee_id
             ),
+            ValidationAction::Skip => info!(
+                "validation lifecycle: skipped guarantee {}",
+                validation.guarantee_id
+            ),
             ValidationAction::Wait => {}
         }
         Ok(action)
+    }
+
+    async fn run_adapter_and_decide_action(
+        &self,
+        validation: &guarantee_validation::Model,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<(ValidationAction, Option<Verdict>)> {
+        let Some(adapter) = self.inner.validators.get(&validation.validator) else {
+            warn!(
+                "validator {} is no longer whitelisted; skipping validation for guarantee {}",
+                validation.validator, validation.guarantee_id
+            );
+            return Ok((ValidationAction::Skip, None));
+        };
+
+        let requirement = ValidationRequirement {
+            validator: validation.validator.clone(),
+            subject: validation.subject.parse()?,
+            deadline: Some(validation.deadline.and_utc().timestamp().max(0) as u64),
+            params: validation.params.clone().into(),
+        };
+        let verdict = adapter.resolve(&requirement).await?;
+        let action =
+            ValidationAction::from_verdict(&verdict, &validation.subject, validation.deadline, now);
+
+        // Finalizing into a cycle that already resolved would strand the payer's collateral there,
+        // so a cancel that releases it is the only thing left to do.
+        let action = match action {
+            ValidationAction::Finalize
+                if !guarantee_cycle_still_nettable(
+                    self.persist_ctx().db.as_ref(),
+                    &validation.guarantee_id,
+                )
+                .await? =>
+            {
+                ValidationAction::Cancel(
+                    "settlement cycle already resolved before validation landed",
+                )
+            }
+            other => other,
+        };
+
+        Ok((action, Some(verdict)))
     }
 }
 
@@ -255,10 +273,11 @@ impl Task for ValidationLifecycleTask {
         let summary = self.0.drive_pending_validations().await?;
         if summary != ValidationSweepSummary::default() {
             info!(
-                "validation lifecycle sweep: finalized={}, disputed={}, cancelled={}, waiting={}, errored={}",
+                "validation lifecycle sweep: finalized={}, disputed={}, cancelled={}, skipped={}, waiting={}, errored={}",
                 summary.finalized,
                 summary.disputed,
                 summary.cancelled,
+                summary.skipped,
                 summary.waiting,
                 summary.errored
             );
@@ -292,68 +311,79 @@ mod tests {
         B256::repeat_byte(0x11)
     }
 
-    #[test]
-    fn approved_before_deadline_finalizes() {
-        let action = decide_validation_action(
-            &verdict(VerdictStatus::Approved, subject()),
+    fn action_at(status: VerdictStatus, now: i64) -> ValidationAction {
+        ValidationAction::from_verdict(
+            &verdict(status, subject()),
             &subject().to_string(),
             naive(1_000),
-            naive(500),
+            naive(now),
+        )
+    }
+
+    #[test]
+    fn approved_before_deadline_finalizes() {
+        assert_eq!(
+            action_at(VerdictStatus::Approved, 500),
+            ValidationAction::Finalize
         );
-        assert_eq!(action, ValidationAction::Finalize);
     }
 
     #[test]
     fn approved_after_deadline_cancels() {
-        let action = decide_validation_action(
-            &verdict(VerdictStatus::Approved, subject()),
-            &subject().to_string(),
-            naive(1_000),
-            naive(1_500),
-        );
-        assert!(matches!(action, ValidationAction::Cancel(_)));
+        assert!(matches!(
+            action_at(VerdictStatus::Approved, 1_500),
+            ValidationAction::Cancel(_)
+        ));
     }
 
     #[test]
     fn rejected_disputes_regardless_of_deadline() {
         for now in [500, 1_500] {
-            let action = decide_validation_action(
-                &verdict(VerdictStatus::Rejected, subject()),
-                &subject().to_string(),
-                naive(1_000),
-                naive(now),
-            );
-            assert!(matches!(action, ValidationAction::Dispute(_)));
+            assert!(matches!(
+                action_at(VerdictStatus::Rejected, now),
+                ValidationAction::Dispute(_)
+            ));
         }
     }
 
     #[test]
     fn pending_waits_then_cancels_at_the_deadline() {
-        let before = decide_validation_action(
-            &verdict(VerdictStatus::Pending, subject()),
-            &subject().to_string(),
-            naive(1_000),
-            naive(999),
+        assert_eq!(
+            action_at(VerdictStatus::Pending, 999),
+            ValidationAction::Wait
         );
-        assert_eq!(before, ValidationAction::Wait);
-
-        let after = decide_validation_action(
-            &verdict(VerdictStatus::Pending, subject()),
-            &subject().to_string(),
-            naive(1_000),
-            naive(1_000),
-        );
-        assert!(matches!(after, ValidationAction::Cancel(_)));
+        assert!(matches!(
+            action_at(VerdictStatus::Pending, 1_000),
+            ValidationAction::Cancel(_)
+        ));
     }
 
     #[test]
     fn subject_mismatch_never_disputes() {
-        let action = decide_validation_action(
+        let action = ValidationAction::from_verdict(
             &verdict(VerdictStatus::Rejected, B256::repeat_byte(0xAB)),
             &subject().to_string(),
             naive(1_000),
             naive(500),
         );
         assert_eq!(action, ValidationAction::Wait);
+    }
+
+    #[test]
+    fn only_pre_netting_cycles_are_nettable() {
+        assert!(cycle_still_nettable(&SettlementCycleStatus::Open));
+        assert!(cycle_still_nettable(&SettlementCycleStatus::Frozen));
+
+        for status in [
+            SettlementCycleStatus::NettingComputed,
+            SettlementCycleStatus::ClearingCommitted,
+            SettlementCycleStatus::PaymentWindowOpen,
+            SettlementCycleStatus::Finalized,
+            SettlementCycleStatus::Settling,
+            SettlementCycleStatus::Cancelled,
+            SettlementCycleStatus::Shortfall,
+        ] {
+            assert!(!cycle_still_nettable(&status), "{status:?} is not nettable");
+        }
     }
 }

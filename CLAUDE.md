@@ -1,5 +1,11 @@
 # Project guidelines
 
+## Tests and local infra
+
+The `Makefile` is the entry point for bringing up the local stack and running the test
+suites, including which stack each suite needs. Run `make help` and follow it rather than
+invoking `cargo test` directly.
+
 ## Comments
 
 Write comments only where code cannot speak for itself.

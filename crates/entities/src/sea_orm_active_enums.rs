@@ -74,6 +74,8 @@ pub enum GuaranteeValidationStatus {
     Rejected,
     #[sea_orm(string_value = "EXPIRED")]
     Expired,
+    #[sea_orm(string_value = "SKIPPED")]
+    Skipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]

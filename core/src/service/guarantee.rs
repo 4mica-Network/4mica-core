@@ -274,7 +274,7 @@ impl CoreService {
             })
     }
 
-    pub async fn finalize_guarantee_payable_on<C: ConnectionTrait>(
+    pub(super) async fn finalize_guarantee_payable_on<C: ConnectionTrait>(
         &self,
         conn: &C,
         guarantee_id: &str,
@@ -292,7 +292,7 @@ impl CoreService {
         .await
     }
 
-    pub async fn dispute_guarantee_on<C: ConnectionTrait>(
+    pub(super) async fn dispute_guarantee_on<C: ConnectionTrait>(
         &self,
         conn: &C,
         guarantee_id: &str,
@@ -310,7 +310,7 @@ impl CoreService {
         .await
     }
 
-    pub async fn cancel_guarantee_on<C: ConnectionTrait>(
+    pub(super) async fn cancel_guarantee_on<C: ConnectionTrait>(
         &self,
         conn: &C,
         guarantee_id: &str,

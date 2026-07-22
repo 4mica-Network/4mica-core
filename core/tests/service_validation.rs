@@ -384,27 +384,46 @@ async fn finalized_validated_guarantee_is_netted_like_a_plain_one() -> anyhow::R
     Ok(())
 }
 
+/// A guarantee whose validator has been de-whitelisted since issuance is no longer gated by
+/// anything, so it is finalized in time to take part in its cycle rather than left to expire.
 #[tokio::test]
 #[serial_test::file_serial(db)]
-async fn empty_validator_whitelist_is_a_noop() -> anyhow::Result<()> {
+async fn de_whitelisted_validator_skips_and_finalizes() -> anyhow::Result<()> {
     let (config, ctx) = setup_db_test_env().await?;
     clear_all_tables(&ctx).await?;
-    let cycle_id = "validation-disabled-cycle";
+    let cycle_id = "validation-skip-cycle";
     create_frozen_cycle(&ctx, cycle_id).await?;
-    let (guarantee_id, _payer) =
+    let (guarantee_id, payer) =
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
-    let service = build_service(&ctx, config, ValidatorRegistry::default());
+    // The registry is not empty, it just no longer carries the validator this guarantee named. The
+    // adapter it does carry would reject, so a skip is the only way the guarantee survives.
+    let other_validator = ValidatorRegistry::from_adapters([(
+        "mock:other".to_string(),
+        Arc::new(MockAdapter {
+            status: VerdictStatus::Rejected,
+        }) as Arc<dyn ValidatorAdapter>,
+    )]);
+    let service = build_service(&ctx, config, other_validator);
     let summary = service.drive_pending_validations().await?;
 
+    assert_eq!(summary.skipped, 1, "one guarantee should be skipped");
     assert_eq!(
-        summary,
-        Default::default(),
-        "no whitelisted validators must be a no-op"
+        summary.disputed, 0,
+        "an unreachable validator must not dispute"
     );
     assert_eq!(
         guarantee_status(&ctx, &guarantee_id).await?,
-        GuaranteeSettlementStatus::PendingValidation
+        GuaranteeSettlementStatus::FinalizedPayable
+    );
+    assert_eq!(
+        validation_status(&ctx, &guarantee_id).await?,
+        GuaranteeValidationStatus::Skipped
+    );
+    // Like any other finalized guarantee, it stays backed until its cycle settles.
+    assert_eq!(
+        read_locked_collateral(&ctx, &payer, DEFAULT_ASSET_ADDRESS).await?,
+        U256::from(10u64)
     );
     Ok(())
 }
