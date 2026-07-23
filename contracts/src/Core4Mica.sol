@@ -1203,10 +1203,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     }
 
     function _finalizeStablecoinWithdrawal(address user, address asset, WithdrawalRequest memory request) internal {
-        uint256 withdrawalAmount = Math.min(request.amount, _userWithdrawableStablecoinBalance(user, asset));
-        _debitUserStablecoin(user, asset, withdrawalAmount, user);
+        uint256 requested = Math.min(request.amount, _userWithdrawableStablecoinBalance(user, asset));
+        uint256 paidOut = _debitUserStablecoin(user, asset, requested, user);
         delete withdrawalRequests[user][asset];
-        emit CollateralWithdrawn(user, asset, withdrawalAmount);
+        emit CollateralWithdrawn(user, asset, paidOut);
     }
 
     function _planStablecoinDebit(address user, address asset, uint256 amount, uint256 index)

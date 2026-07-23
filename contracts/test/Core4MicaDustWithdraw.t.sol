@@ -50,6 +50,9 @@ contract Core4MicaDustWithdrawTest is Core4MicaTestBase {
         vm.warp(block.timestamp + core4Mica.withdrawalGracePeriod());
 
         uint256 before = usdc.balanceOf(USER1);
+        // The event must report the clamped payout, not the optimistic request it was derived from.
+        vm.expectEmit(true, true, false, true, address(core4Mica));
+        emit Core4Mica.CollateralWithdrawn(USER1, address(usdc), DUST_BACKED);
         vm.prank(USER1);
         core4Mica.finalizeWithdrawal(address(usdc));
 
