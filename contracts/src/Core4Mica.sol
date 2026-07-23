@@ -545,10 +545,16 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         // Pull `amount` straight from the signer into this contract. The token verifies the EIP-712
         // signature and enforces `msg.sender == to`, which is this contract. Nonce replay protection
         // and the validity window are enforced by the token itself.
+        uint256 balanceBefore = IERC20(asset).balanceOf(address(this));
         IERC3009(asset)
             .receiveWithAuthorization(
                 auth.from, address(this), amount, auth.validAfter, auth.validBefore, auth.nonce, auth.v, auth.r, auth.s
             );
+        // Verify the tokens actually arrived: `amount` is credited as principal and supplied to Aave,
+        // so a token that reports success while delivering less (e.g. fee-on-transfer) would leave
+        // unbacked principal. Requiring an exact delta rejects such tokens outright.
+        uint256 received = IERC20(asset).balanceOf(address(this)) - balanceBefore;
+        if (received != amount) revert ValueMismatch(amount, received);
         _supplyAndCreditUserStablecoin(auth.from, asset, amount);
         emit CollateralDeposited(auth.from, asset, amount);
     }
@@ -574,6 +580,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         // Pull `amount` straight from the signer into this contract via Permit2. Permit2 verifies the
         // EIP-712 signature against `p.from` and enforces the nonce/deadline; `to` is pinned to this
         // contract so a relayer cannot redirect the funds.
+        uint256 balanceBefore = IERC20(asset).balanceOf(address(this));
         ISignatureTransfer(PERMIT2)
             .permitTransferFrom(
                 ISignatureTransfer.PermitTransferFrom({
@@ -585,6 +592,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
                 p.from,
                 p.signature
             );
+        // Verify the tokens actually arrived: `amount` is credited as principal and supplied to Aave,
+        // so a token that reports success while delivering less (e.g. fee-on-transfer) would leave
+        // unbacked principal. Requiring an exact delta rejects such tokens outright.
+        uint256 received = IERC20(asset).balanceOf(address(this)) - balanceBefore;
+        if (received != amount) revert ValueMismatch(amount, received);
         _supplyAndCreditUserStablecoin(p.from, asset, amount);
         emit CollateralDeposited(p.from, asset, amount);
     }

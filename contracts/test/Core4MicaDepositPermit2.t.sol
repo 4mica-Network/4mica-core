@@ -2,10 +2,32 @@
 pragma solidity ^0.8.29;
 
 import {Core4MicaTestBase, MockERC20} from "./Core4MicaTestBase.sol";
+import {MockAToken} from "./helpers/MockAave.sol";
 import {Core4Mica, Permit2Authorization} from "../src/Core4Mica.sol";
 
 interface IERC20Like {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+/// ERC-20 that skims a fee on every transfer, so a Permit2 pull delivers less than the requested
+/// amount. Used to prove the deposit path rejects short-delivering tokens.
+contract MockERC20FeeOnTransfer is MockERC20 {
+    uint256 internal immutable feeBps;
+
+    constructor(string memory name_, string memory symbol_, uint8 decimals_, uint256 feeBps_)
+        MockERC20(name_, symbol_, decimals_)
+    {
+        feeBps = feeBps_;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal override {
+        uint256 fee = (amount * feeBps) / 10_000;
+        require(balanceOf[from] >= amount, "BALANCE");
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount - fee;
+        totalSupply -= fee;
+        emit Transfer(from, to, amount - fee);
+    }
 }
 
 /// Minimal Permit2 `SignatureTransfer` mock, mirroring the canonical Permit2's `permitTransferFrom`
@@ -372,6 +394,26 @@ contract Core4MicaDepositPermit2Test is Core4MicaTestBase {
         vm.prank(FACILITATOR);
         vm.expectRevert(abi.encodeWithSelector(Core4Mica.ZeroCollateralCredit.selector, address(usdc), 1));
         core4Mica.depositStablecoinWithPermit2(address(usdc), 1, auth);
+    }
+
+    /// A token that reports success while delivering less than the requested amount (fee-on-transfer)
+    /// is rejected by the balance-delta check, so no unbacked principal is ever credited.
+    function test_DepositWithPermit2_RevertShortDelivery() public {
+        MockERC20FeeOnTransfer feeToken = new MockERC20FeeOnTransfer("USD Coin", "USDC", 6, 100); // 1% fee
+        MockAToken feeAToken = new MockAToken(address(feeToken), address(mockPool), "Aave USDC", "aUSDC");
+        mockPool.setReserve(address(feeToken), address(feeAToken), 1e27);
+        mockDataProvider.setReserveAToken(address(feeToken), address(feeAToken));
+        core4Mica.addStablecoinAsset(address(feeToken), address(feeAToken));
+        feeToken.mint(signer, 10_000 ether);
+        vm.prank(signer);
+        feeToken.approve(PERMIT2, type(uint256).max);
+
+        Permit2Authorization memory auth = _authorization(address(feeToken), AMOUNT, block.timestamp + 1 hours, 30);
+
+        uint256 received = AMOUNT - (AMOUNT * 100) / 10_000;
+        vm.prank(FACILITATOR);
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.ValueMismatch.selector, AMOUNT, received));
+        core4Mica.depositStablecoinWithPermit2(address(feeToken), AMOUNT, auth);
     }
 
     /// End-to-end: gasless Permit2 deposit, then the signer withdraws it back after the grace period.

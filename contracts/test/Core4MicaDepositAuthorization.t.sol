@@ -101,11 +101,32 @@ contract MockERC3009 {
         return true;
     }
 
-    function _transfer(address from, address to, uint256 amount) internal {
+    function _transfer(address from, address to, uint256 amount) internal virtual {
         require(balanceOf[from] >= amount, "BALANCE");
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
         emit Transfer(from, to, amount);
+    }
+}
+
+/// EIP-3009 stablecoin that skims a fee on every transfer, so `receiveWithAuthorization` delivers
+/// less than the signed `value`. Used to prove the deposit path rejects short-delivering tokens.
+contract MockERC3009FeeOnTransfer is MockERC3009 {
+    uint256 internal immutable feeBps;
+
+    constructor(string memory name_, string memory symbol_, uint8 decimals_, uint256 feeBps_)
+        MockERC3009(name_, symbol_, decimals_)
+    {
+        feeBps = feeBps_;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal override {
+        uint256 fee = (amount * feeBps) / 10_000;
+        require(balanceOf[from] >= amount, "BALANCE");
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount - fee;
+        totalSupply -= fee;
+        emit Transfer(from, to, amount - fee);
     }
 }
 
@@ -366,6 +387,40 @@ contract Core4MicaDepositAuthorizationTest is Core4MicaTestBase {
         vm.prank(FACILITATOR);
         vm.expectRevert(abi.encodeWithSelector(Core4Mica.ZeroCollateralCredit.selector, address(token), 1));
         core4Mica.depositStablecoinWithAuthorization(address(token), 1, auth);
+    }
+
+    /// A token that reports success while delivering less than the signed `value` (fee-on-transfer)
+    /// is rejected by the balance-delta check, so no unbacked principal is ever credited.
+    function test_DepositWithAuthorization_RevertShortDelivery() public {
+        MockERC3009FeeOnTransfer feeToken = new MockERC3009FeeOnTransfer("USD Coin", "USDC", 6, 100); // 1% fee
+        MockAToken feeAToken = new MockAToken(address(feeToken), address(mockPool), "Aave USDC", "aUSDC");
+        mockPool.setReserve(address(feeToken), address(feeAToken), 1e27);
+        mockDataProvider.setReserveAToken(address(feeToken), address(feeAToken));
+        core4Mica.addStablecoinAsset(address(feeToken), address(feeAToken));
+        feeToken.mint(signer, 10_000 ether);
+
+        bytes32 nonce = bytes32(uint256(21));
+        bytes32 structHash = keccak256(
+            abi.encode(
+                feeToken.RECEIVE_WITH_AUTHORIZATION_TYPEHASH(),
+                signer,
+                address(core4Mica),
+                AMOUNT,
+                uint256(0),
+                block.timestamp + 1 hours,
+                nonce
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", feeToken.DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_PK, digest);
+        ReceiveAuthorization memory auth = ReceiveAuthorization({
+            from: signer, validAfter: 0, validBefore: block.timestamp + 1 hours, nonce: nonce, v: v, r: r, s: s
+        });
+
+        uint256 received = AMOUNT - (AMOUNT * 100) / 10_000;
+        vm.prank(FACILITATOR);
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.ValueMismatch.selector, AMOUNT, received));
+        core4Mica.depositStablecoinWithAuthorization(address(feeToken), AMOUNT, auth);
     }
 
     /// End-to-end: gasless deposit, then the signer withdraws it back after the grace period.
