@@ -7,6 +7,7 @@ use crate::{
         ClearingHouse::{self, ClearingHouseInstance},
         Core4Mica::{self, Core4MicaInstance},
         ERC20::{self, ERC20Instance},
+        PERMIT2_ADDRESS, Permit2,
     },
     error::{AuthError, ClientError},
     validators::{validate_address, validate_url},
@@ -219,6 +220,25 @@ impl<S> ClientCtx<S> {
 
     fn get_contract(&self) -> Core4MicaInstance<DynProvider> {
         Core4Mica::new(self.0.contract_address, self.0.provider.clone())
+    }
+
+    /// Reads a token's EIP-712 `DOMAIN_SEPARATOR()` via the read-only provider. Used to build the
+    /// EIP-3009 gasless-deposit signing hash against exactly what the token verifies.
+    async fn token_domain_separator(&self, token: Address) -> Result<B256, ClientError> {
+        ERC20::new(token, self.0.provider.clone())
+            .DOMAIN_SEPARATOR()
+            .call()
+            .await
+            .map_err(|e| ClientError::Provider(e.to_string()))
+    }
+
+    /// Reads the canonical Permit2 contract's EIP-712 `DOMAIN_SEPARATOR()`.
+    async fn permit2_domain_separator(&self) -> Result<B256, ClientError> {
+        Permit2::new(PERMIT2_ADDRESS, self.0.provider.clone())
+            .DOMAIN_SEPARATOR()
+            .call()
+            .await
+            .map_err(|e| ClientError::Provider(e.to_string()))
     }
 
     fn operator_public_key(&self) -> &BlsPublicKey {

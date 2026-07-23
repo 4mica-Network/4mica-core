@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use alloy::primitives::{Address, keccak256};
 use alloy::sol_types::{SolStruct, SolValue};
-use alloy::{primitives::B256, sol_types::eip712_domain};
+use alloy::{primitives::B256, sol, sol_types::eip712_domain};
 use anyhow::anyhow;
 use rpc::{
     CorePublicParameters, PaymentGuaranteeRequestClaims, SolGuaranteeRequestClaimsV1,
@@ -98,4 +98,83 @@ pub fn eip191_digest_for_claims(
     let mut prefixed = format!("\x19Ethereum Signed Message:\n{}", data.len()).into_bytes();
     prefixed.extend_from_slice(&data);
     Ok(keccak256(prefixed))
+}
+
+#[cfg(test)]
+mod deposit_tests {
+    use super::*;
+    use alloy::primitives::{address, b256};
+    use alloy::signers::{SignerSync, local::PrivateKeySigner};
+
+    // Canonical EIP-712 `encodeType` strings the tokens hash. If field order/types drift from
+    // these, the produced signature will not verify on-chain — so pin them exactly.
+    const ERC3009_TYPE: &str = "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
+    const PERMIT2_TYPE: &str = "PermitTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline)TokenPermissions(address token,uint256 amount)";
+
+    #[test]
+    fn receive_authorization_type_hash_matches_erc3009() {
+        let msg = ReceiveWithAuthorization {
+            from: Address::ZERO,
+            to: Address::ZERO,
+            value: U256::ZERO,
+            validAfter: U256::ZERO,
+            validBefore: U256::ZERO,
+            nonce: B256::ZERO,
+        };
+        assert_eq!(msg.eip712_type_hash(), keccak256(ERC3009_TYPE));
+    }
+
+    #[test]
+    fn permit_transfer_from_type_hash_matches_permit2() {
+        let msg = PermitTransferFrom {
+            permitted: TokenPermissions {
+                token: Address::ZERO,
+                amount: U256::ZERO,
+            },
+            spender: Address::ZERO,
+            nonce: U256::ZERO,
+            deadline: U256::ZERO,
+        };
+        assert_eq!(msg.eip712_type_hash(), keccak256(PERMIT2_TYPE));
+    }
+
+    #[test]
+    fn receive_authorization_digest_signature_recovers_to_signer() {
+        let signer = PrivateKeySigner::random();
+        // Arbitrary but fixed domain separator, standing in for the token's DOMAIN_SEPARATOR().
+        let domain = b256!("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+        let digest = eip712_digest_for_receive_authorization(
+            domain,
+            signer.address(),
+            address!("000000000000000000000000000000000000c0de"),
+            U256::from(1_000_000u64),
+            U256::ZERO,
+            U256::from(2_000_000_000u64),
+            b256!("dead00000000000000000000000000000000000000000000000000000000beef"),
+        );
+        let sig = signer.sign_hash_sync(&digest).expect("sign");
+        assert_eq!(
+            sig.recover_address_from_prehash(&digest).unwrap(),
+            signer.address()
+        );
+    }
+
+    #[test]
+    fn permit2_digest_signature_recovers_to_signer() {
+        let signer = PrivateKeySigner::random();
+        let domain = b256!("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100");
+        let digest = eip712_digest_for_permit2_transfer(
+            domain,
+            address!("000000000000000000000000000000000000da0c"),
+            U256::from(1_000_000u64),
+            address!("000000000000000000000000000000000000c0de"),
+            U256::from(42u64),
+            U256::from(2_000_000_000u64),
+        );
+        let sig = signer.sign_hash_sync(&digest).expect("sign");
+        assert_eq!(
+            sig.recover_address_from_prehash(&digest).unwrap(),
+            signer.address()
+        );
+    }
 }

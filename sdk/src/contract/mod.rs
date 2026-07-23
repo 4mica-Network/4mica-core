@@ -109,6 +109,30 @@ sol! {
             bytes32 y_c1_b;
         }
 
+        /// A client's EIP-3009 authorization to move the deposit amount from `from` into the
+        /// Core4Mica contract. Any caller may submit it; collateral is credited to `from`, the
+        /// signer, never `msg.sender`.
+        struct ReceiveAuthorization {
+            address from;
+            uint256 validAfter;
+            uint256 validBefore;
+            bytes32 nonce;
+            uint8 v;
+            bytes32 r;
+            bytes32 s;
+        }
+
+        /// A client's Permit2 `PermitTransferFrom` authorization to move the deposit amount from
+        /// `from` into the Core4Mica contract via the canonical Permit2 contract. Any caller may
+        /// submit it; collateral is credited to `from`, the signer, never `msg.sender`. Requires a
+        /// one-time ERC-20 approval from `from` to Permit2 for the deposited asset.
+        struct Permit2Authorization {
+            address from;
+            uint256 nonce;
+            uint256 deadline;
+            bytes signature;
+        }
+
         // ========= Constructor =========
         /// @param manager Address of AccessManager
         /// @param verificationKey Initial BLS verification key
@@ -121,6 +145,12 @@ sol! {
         // ========= User flows =========
         function deposit() external payable;
         function depositStablecoin(address asset, uint256 amount) external;
+        /// Gasless deposit: a third party (e.g. a facilitator sponsoring gas) submits an
+        /// EIP-3009 `receiveWithAuthorization` signature; collateral is credited to `auth.from`.
+        function depositStablecoinWithAuthorization(address asset, uint256 amount, ReceiveAuthorization calldata auth) external;
+        /// Gasless deposit via Permit2: a third party submits a `PermitTransferFrom` signature;
+        /// collateral is credited to `p.from`. Works for any ERC-20 with a prior Permit2 approval.
+        function depositStablecoinWithPermit2(address asset, uint256 amount, Permit2Authorization calldata p) external;
         function requestWithdrawal(uint256 amount) external;
         function requestWithdrawal(address asset, uint256 amount) external;
         function cancelWithdrawal() external;
@@ -200,6 +230,21 @@ sol! {
         function approve(address spender, uint256 amount) external returns (bool);
         function transfer(address to, uint256 amount) external returns (bool);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
+        /// EIP-712 domain separator, exposed by EIP-2612/EIP-3009 tokens (e.g. USDC). Used to build
+        /// the gasless-deposit signing hash without reconstructing name/version/chainId.
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+    }
+}
+
+/// Canonical Permit2 contract, deployed at the same address on every supported chain.
+pub const PERMIT2_ADDRESS: alloy::primitives::Address =
+    alloy::primitives::address!("000000000022D473030F116dDEE9F6B43aC78BA3");
+
+sol! {
+    #[sol(rpc)]
+    contract Permit2 {
+        /// Permit2's own EIP-712 domain separator, used to build the Permit2 gasless-deposit hash.
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
     }
 }
 
