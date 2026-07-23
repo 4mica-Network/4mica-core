@@ -84,7 +84,7 @@ pub struct ValidatorRegistry {
 impl ValidatorRegistry {
     /// Construct each entry's adapter from its `kind` and `config`. `provider` is handed to
     /// adapters that read chain state.
-    pub fn build(
+    pub async fn build(
         entries: &[ValidatorEntry],
         provider: Option<DynProvider>,
     ) -> anyhow::Result<Self> {
@@ -96,7 +96,7 @@ impl ValidatorRegistry {
                     let provider = provider.clone().context(
                         "erc8004 validators need a chain provider, but none is configured",
                     )?;
-                    Arc::new(Erc8004Adapter::new(&entry.uri, &entry.config, provider)?)
+                    Arc::new(Erc8004Adapter::new(&entry.uri, &entry.config, provider).await?)
                 }
                 unknown => bail!(
                     "unknown validator kind '{unknown}' for validator '{}'",

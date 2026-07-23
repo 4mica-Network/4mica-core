@@ -146,7 +146,8 @@ impl CoreService {
             )?;
 
         let validators =
-            ValidatorRegistry::build(&guarantee_config.validators()?, Some(read_provider.clone()))?;
+            ValidatorRegistry::build(&guarantee_config.validators()?, Some(read_provider.clone()))
+                .await?;
 
         Self::new_with_dependencies(
             config,
