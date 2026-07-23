@@ -773,6 +773,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         nonZero(amount)
     {
         uint256 scaledAmount = _toScaledRoundDown(amount, _currentIndex(asset));
+
+        if (scaledAmount == 0) revert ZeroCollateralCredit(asset, amount);
+
         uint256 escrowScaled = escrowScaledStablecoinBalances[asset];
         if (scaledAmount > escrowScaled) {
             revert EscrowScaledUnderflow(asset, scaledAmount, escrowScaled);
@@ -839,6 +842,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         _ensureDepositApproval(asset, amount);
         _aavePool().supply(asset, amount, address(this), 0);
         uint256 scaledCredit = IAToken(aToken).scaledBalanceOf(address(this)) - scaledBefore;
+
+        // A dust deposit mints no scaled aTokens, so the pulled tokens would be surrendered to Aave
+        // while the escrow grows by nothing. Reject instead of silently swallowing the caller's funds.
+        if (scaledCredit == 0) revert ZeroCollateralCredit(asset, amount);
 
         escrowScaledStablecoinBalances[asset] += scaledCredit;
         _syncSurplusScaledBalance(asset);

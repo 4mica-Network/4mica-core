@@ -228,6 +228,63 @@ contract Core4MicaSettlementTest is Core4MicaTestBase {
         _assertReconciled(address(usdc));
     }
 
+    /// A credit too small to be worth one scaled unit rounds down to zero scaled, which would give
+    /// the creditor face-value principal with no scaled backing — the same hazard as a dust deposit.
+    function test_CreditFromEscrowScaled_RevertZeroScaledCredit() public {
+        vm.prank(USER1);
+        core4Mica.depositStablecoin(address(usdc), DEPOSIT);
+        vm.prank(OPERATOR);
+        core4Mica.seizeCollateral(USER1, address(usdc), 60e6);
+
+        // Advance the liquidity index above RAY so a 1-wei credit rounds down to 0 scaled.
+        mockPool.setNormalizedIncome(address(usdc), 2e27);
+
+        vm.prank(OPERATOR);
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.ZeroCollateralCredit.selector, address(usdc), 1));
+        core4Mica.creditFromEscrowScaled(USER2, address(usdc), 1);
+    }
+
+    /// Boundary: the smallest credit that maps to exactly one scaled unit still succeeds.
+    function test_CreditFromEscrowScaled_MinScaledCreditSucceeds() public {
+        vm.prank(USER1);
+        core4Mica.depositStablecoin(address(usdc), DEPOSIT);
+        vm.prank(OPERATOR);
+        core4Mica.seizeCollateral(USER1, address(usdc), 60e6);
+
+        mockPool.setNormalizedIncome(address(usdc), 2e27);
+
+        vm.prank(OPERATOR);
+        core4Mica.creditFromEscrowScaled(USER2, address(usdc), 2); // mulDiv(2, RAY, 2*RAY) = 1 scaled
+        assertEq(core4Mica.collateral(USER2, address(usdc)), 2, "min credit applied");
+    }
+
+    /// A dust escrow deposit mints no scaled aTokens, so the pulled tokens would be handed to Aave
+    /// while the escrow grows by nothing.
+    function test_DepositToEscrow_RevertZeroScaledCredit() public {
+        mockPool.setNormalizedIncome(address(usdc), 2e27);
+
+        usdc.mint(OPERATOR, 1);
+        vm.startPrank(OPERATOR);
+        usdc.approve(address(core4Mica), 1);
+        vm.expectRevert(abi.encodeWithSelector(Core4Mica.ZeroCollateralCredit.selector, address(usdc), 1));
+        core4Mica.depositToEscrow(address(usdc), 1);
+        vm.stopPrank();
+    }
+
+    /// Boundary: the smallest escrow deposit that mints exactly one scaled unit still succeeds.
+    function test_DepositToEscrow_MinScaledCreditSucceeds() public {
+        mockPool.setNormalizedIncome(address(usdc), 2e27);
+
+        usdc.mint(OPERATOR, 2);
+        vm.startPrank(OPERATOR);
+        usdc.approve(address(core4Mica), 2);
+        core4Mica.depositToEscrow(address(usdc), 2); // mulDiv(2, RAY, 2*RAY) = 1 scaled
+        vm.stopPrank();
+
+        assertEq(core4Mica.escrowScaledBalance(address(usdc)), 1, "min escrow deposit credited");
+        _assertReconciled(address(usdc));
+    }
+
     // ===================== pause =====================
 
     /// The settlement hooks move collateral, so they must freeze while paused
