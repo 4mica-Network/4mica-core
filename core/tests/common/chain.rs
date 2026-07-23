@@ -26,6 +26,7 @@ use super::contract::{
     AccessManager::{self, AccessManagerInstance},
     ClearingHouse::{self, ClearingHouseInstance},
     Core4Mica::{self, Core4MicaInstance},
+    GuaranteeVerifier::{self, GuaranteeVerifierInstance},
     MockAToken, MockAavePool, MockAaveProtocolDataProvider,
     MockERC20::{self, MockERC20Instance},
     MockPoolAddressesProvider,
@@ -45,6 +46,7 @@ pub struct E2eEnvironment {
     _anvil: AnvilInstance,
     pub access_manager: AccessManagerInstance<DynProvider>,
     pub contract: Core4MicaInstance<DynProvider>,
+    pub guarantee_verifier: GuaranteeVerifierInstance<DynProvider>,
     pub clearing_house: ClearingHouseInstance<DynProvider>,
     pub usdc: MockERC20Instance<DynProvider>,
     pub usdt: MockERC20Instance<DynProvider>,
@@ -165,6 +167,7 @@ async fn deploy_contracts(
     admin_addr: Address,
 ) -> anyhow::Result<(
     Core4MicaInstance<DynProvider>,
+    GuaranteeVerifierInstance<DynProvider>,
     MockERC20Instance<DynProvider>,
     MockERC20Instance<DynProvider>,
     AccessManagerInstance<DynProvider>,
@@ -237,11 +240,19 @@ async fn deploy_contracts(
         .await?;
 
     let stablecoins = vec![*usdc.address(), *usdt.address()];
-    let contract = Core4Mica::deploy(
+    // Deployed first: Core4Mica records the verifier as an immutable constructor argument.
+    let guarantee_verifier = GuaranteeVerifier::deploy(
         provider.clone(),
         *access_manager.address(),
         dummy_verification_key(),
+    )
+    .await?;
+    let contract = Core4Mica::deploy(
+        provider.clone(),
+        *access_manager.address(),
+        *guarantee_verifier.address(),
         stablecoins,
+        alloy::primitives::U256::ZERO,
     )
     .await?;
     let a_tokens = vec![*mock_usdc_a_token.address(), *mock_usdt_a_token.address()];
@@ -262,7 +273,7 @@ async fn deploy_contracts(
         mock_provider.address()
     );
 
-    Ok((contract, usdc, usdt, access_manager))
+    Ok((contract, guarantee_verifier, usdc, usdt, access_manager))
 }
 
 /// Deploy the ClearingHouse and grant the operator role to `operator` (the test
@@ -346,7 +357,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     let anvil = Anvil::new().port(anvil_port).spawn();
     let (op_addr, op_provider) = wallet_provider(anvil.endpoint_url().as_str(), OPERATOR_KEY)?;
 
-    let (contract, usdc, usdt, access_manager) =
+    let (contract, guarantee_verifier, usdc, usdt, access_manager) =
         deploy_contracts(op_provider.clone(), op_addr).await?;
     let clearing_house =
         deploy_clearing_house(op_provider.clone(), &access_manager, &contract, op_addr).await?;
@@ -400,6 +411,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         _anvil: anvil,
         access_manager,
         contract,
+        guarantee_verifier,
         clearing_house,
         usdc,
         usdt,

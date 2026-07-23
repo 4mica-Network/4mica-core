@@ -7,7 +7,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
-import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
+import {Guarantee} from "../src/GuaranteeTypes.sol";
 import {IPoolAddressesProvider} from "../src/interfaces/IPoolAddressesProvider.sol";
 import {IAaveProtocolDataProvider} from "../src/interfaces/IAaveProtocolDataProvider.sol";
 import {IAToken} from "../src/interfaces/IAToken.sol";
@@ -35,6 +37,7 @@ contract Core4MicaAaveForkTest is Test {
 
     AccessManager internal manager;
     Core4Mica internal core4Mica;
+    GuaranteeVerifier internal guaranteeVerifier;
     BLS.G1Point internal testPublicKey;
 
     modifier onlyIfForkConfigured() {
@@ -64,7 +67,8 @@ contract Core4MicaAaveForkTest is Test {
         address[] memory supportedStablecoins = new address[](2);
         supportedStablecoins[0] = stablecoins[0];
         supportedStablecoins[1] = stablecoins[1];
-        core4Mica = new Core4Mica(address(manager), testPublicKey, supportedStablecoins, 0);
+        guaranteeVerifier = new GuaranteeVerifier(address(manager), testPublicKey);
+        core4Mica = new Core4Mica(address(manager), address(guaranteeVerifier), supportedStablecoins, 0);
 
         _grantGovernance(Core4Mica.configureAave.selector);
         _grantGovernance(Core4Mica.setYieldFeeBps.selector);
@@ -251,7 +255,7 @@ contract Core4MicaAaveForkTest is Test {
         address asset
     ) internal view returns (Guarantee memory) {
         return Guarantee({
-            domain: core4Mica.guaranteeDomainSeparator(),
+            domain: guaranteeVerifier.guaranteeDomainSeparator(),
             cycleId: cycleId,
             reqId: reqId,
             client: client,

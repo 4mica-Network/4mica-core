@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
 import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
-import {Core4Mica, IGuaranteeDecoder, Guarantee} from "../src/Core4Mica.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
+import {IGuaranteeDecoder, Guarantee} from "../src/GuaranteeTypes.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {BlsHelper} from "../src/BlsHelpers.sol";
 
@@ -56,10 +58,10 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
         bytes32 domainV2 = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(core4Mica)));
         BLS.G1Point memory publicKeyV2 = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
 
-        core4Mica.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
+        guaranteeVerifier.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
 
         (BLS.G1Point memory storedKey, bytes32 storedDomain, address storedDecoder, bool enabled) =
-            core4Mica.getGuaranteeVersionConfig(2);
+            guaranteeVerifier.getGuaranteeVersionConfig(2);
 
         assertTrue(enabled);
         assertEq(storedDomain, domainV2);
@@ -75,7 +77,7 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
         bytes memory encodedGuarantee = abi.encode(g2);
         BLS.G2Point memory signature = _signGuaranteeV2(g2, TEST_PRIVATE_KEY_V2);
         Guarantee memory decoded =
-            core4Mica.verifyAndDecodeGuarantee(abi.encode(uint64(2), encodedGuarantee), signature);
+            guaranteeVerifier.verifyAndDecodeGuarantee(abi.encode(uint64(2), encodedGuarantee), signature);
 
         assertEq(decoded.version, 2);
         assertEq(decoded.domain, domainV2);
@@ -92,8 +94,8 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
         bytes32 domainV2 = keccak256("DOMAIN_V2");
         BLS.G1Point memory publicKeyV2 = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
 
-        vm.expectRevert(abi.encodeWithSelector(Core4Mica.MissingGuaranteeDecoder.selector, uint64(2)));
-        core4Mica.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(0), true);
+        vm.expectRevert(abi.encodeWithSelector(GuaranteeVerifier.MissingGuaranteeDecoder.selector, uint64(2)));
+        guaranteeVerifier.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(0), true);
     }
 
     function test_configureGuaranteeVersion_revertUnauthorizedCaller() public {
@@ -102,72 +104,72 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
 
         vm.prank(USER1);
         vm.expectRevert(accessUnauthorizedError(USER1));
-        core4Mica.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
+        guaranteeVerifier.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
     }
 
     function test_configureGuaranteeVersion_revertVersionZero() public {
         BLS.G1Point memory publicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
-        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedGuaranteeVersion.selector, uint64(0)));
-        core4Mica.configureGuaranteeVersion(0, publicKey, keccak256("DOMAIN_V2"), address(decoder), true);
+        vm.expectRevert(abi.encodeWithSelector(GuaranteeVerifier.UnsupportedGuaranteeVersion.selector, uint64(0)));
+        guaranteeVerifier.configureGuaranteeVersion(0, publicKey, keccak256("DOMAIN_V2"), address(decoder), true);
     }
 
     function test_configureGuaranteeVersion_revertVersionOneWithDecoder() public {
         BLS.G1Point memory newKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
-        uint64 initialVersion = core4Mica.INITIAL_GUARANTEE_VERSION();
-        bytes32 currentDomain = core4Mica.guaranteeDomainSeparator();
-        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedGuaranteeVersion.selector, initialVersion));
-        core4Mica.configureGuaranteeVersion(initialVersion, newKey, currentDomain, address(0x123), true);
+        uint64 initialVersion = guaranteeVerifier.INITIAL_GUARANTEE_VERSION();
+        bytes32 currentDomain = guaranteeVerifier.guaranteeDomainSeparator();
+        vm.expectRevert(abi.encodeWithSelector(GuaranteeVerifier.UnsupportedGuaranteeVersion.selector, initialVersion));
+        guaranteeVerifier.configureGuaranteeVersion(initialVersion, newKey, currentDomain, address(0x123), true);
     }
 
     function test_configureGuaranteeVersion_revertMissingDomainWhenEnabled() public {
         BLS.G1Point memory publicKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
-        vm.expectRevert(Core4Mica.InvalidGuaranteeDomain.selector);
-        core4Mica.configureGuaranteeVersion(2, publicKey, bytes32(0), address(decoder), true);
+        vm.expectRevert(GuaranteeVerifier.InvalidGuaranteeDomain.selector);
+        guaranteeVerifier.configureGuaranteeVersion(2, publicKey, bytes32(0), address(decoder), true);
     }
 
     function test_verifyAndDecodeGuarantee_revertWhenVersionDisabled() public {
         bytes32 domainV2 = keccak256("DOMAIN_V2");
         BLS.G1Point memory publicKeyV2 = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
-        core4Mica.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
+        guaranteeVerifier.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
 
         // Disable without providing new decoder/domain (reuse stored ones)
-        core4Mica.configureGuaranteeVersion(2, publicKeyV2, bytes32(0), address(0), false);
+        guaranteeVerifier.configureGuaranteeVersion(2, publicKeyV2, bytes32(0), address(0), false);
 
         MockGuaranteeDecoder.GuaranteeV2 memory g2 =
             _guaranteeV2(domainV2, 7, 3, USER1, USER2, 100 ether, address(usdt), uint64(block.timestamp), 2);
         bytes memory payload = abi.encode(uint64(2), abi.encode(g2));
         BLS.G2Point memory signature = _signGuaranteeV2(g2, TEST_PRIVATE_KEY_V2);
 
-        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedGuaranteeVersion.selector, uint64(2)));
-        core4Mica.verifyAndDecodeGuarantee(payload, signature);
+        vm.expectRevert(abi.encodeWithSelector(GuaranteeVerifier.UnsupportedGuaranteeVersion.selector, uint64(2)));
+        guaranteeVerifier.verifyAndDecodeGuarantee(payload, signature);
     }
 
     function test_verifyAndDecodeGuarantee_revertOnDomainMismatch() public {
         bytes32 domainV2 = keccak256("DOMAIN_V2_MATCH");
         bytes32 wrongDomain = keccak256("DOMAIN_V2_WRONG");
         BLS.G1Point memory publicKeyV2 = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
-        core4Mica.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
+        guaranteeVerifier.configureGuaranteeVersion(2, publicKeyV2, domainV2, address(decoder), true);
 
         MockGuaranteeDecoder.GuaranteeV2 memory g2 =
             _guaranteeV2(wrongDomain, 12, 9, USER1, USER2, 200 ether, address(usdc), uint64(block.timestamp), 2);
         bytes memory payload = abi.encode(uint64(2), abi.encode(g2));
         BLS.G2Point memory signature = _signGuaranteeV2(g2, TEST_PRIVATE_KEY_V2);
 
-        vm.expectRevert(Core4Mica.InvalidGuaranteeDomain.selector);
-        core4Mica.verifyAndDecodeGuarantee(payload, signature);
+        vm.expectRevert(GuaranteeVerifier.InvalidGuaranteeDomain.selector);
+        guaranteeVerifier.verifyAndDecodeGuarantee(payload, signature);
     }
 
     function test_setGuaranteeVerificationKey_updatesVersionOneConfig() public {
         BLS.G1Point memory newKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
 
-        core4Mica.setGuaranteeVerificationKey(newKey);
+        guaranteeVerifier.setGuaranteeVerificationKey(newKey);
 
         (BLS.G1Point memory storedKey, bytes32 storedDomain, address storedDecoder, bool enabled) =
-            core4Mica.getGuaranteeVersionConfig(core4Mica.INITIAL_GUARANTEE_VERSION());
+            guaranteeVerifier.getGuaranteeVersionConfig(guaranteeVerifier.INITIAL_GUARANTEE_VERSION());
 
         assertTrue(enabled);
         assertEq(storedDecoder, address(0));
-        assertEq(storedDomain, core4Mica.guaranteeDomainSeparator());
+        assertEq(storedDomain, guaranteeVerifier.guaranteeDomainSeparator());
         assertEq(storedKey.x_a, newKey.x_a);
         assertEq(storedKey.x_b, newKey.x_b);
         assertEq(storedKey.y_a, newKey.y_a);
@@ -178,17 +180,19 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
         bytes32 newDomain = keccak256(abi.encode("4MICA_DOMAIN_V1", block.chainid, address(core4Mica)));
         BLS.G1Point memory newKey = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V2);
 
-        core4Mica.configureGuaranteeVersion(core4Mica.INITIAL_GUARANTEE_VERSION(), newKey, newDomain, address(0), true);
+        guaranteeVerifier.configureGuaranteeVersion(
+            guaranteeVerifier.INITIAL_GUARANTEE_VERSION(), newKey, newDomain, address(0), true
+        );
 
-        assertEq(core4Mica.guaranteeDomainSeparator(), newDomain);
+        assertEq(guaranteeVerifier.guaranteeDomainSeparator(), newDomain);
 
         Guarantee memory g = _guarantee(1, block.timestamp, USER1, USER2, 1, 50, address(usdc));
         g.domain = newDomain;
-        g.version = core4Mica.INITIAL_GUARANTEE_VERSION();
+        g.version = guaranteeVerifier.INITIAL_GUARANTEE_VERSION();
 
         BLS.G2Point memory sig = _signGuarantee(g, TEST_PRIVATE_KEY_V2);
 
-        Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(_encodeGuaranteeWithVersion(g), sig);
+        Guarantee memory decoded = guaranteeVerifier.verifyAndDecodeGuarantee(_encodeGuaranteeWithVersion(g), sig);
         assertEq(decoded.domain, newDomain);
     }
 

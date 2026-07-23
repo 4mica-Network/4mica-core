@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import {Guarantee, IGuaranteeDecoder} from "./Core4Mica.sol";
+import {Guarantee, IGuaranteeDecoder} from "./GuaranteeTypes.sol";
 import {IValidationRegistry} from "./interfaces/IValidationRegistry.sol";
 import {ValidationBindingConstants} from "./ValidationBindingConstants.sol";
 

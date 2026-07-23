@@ -2,7 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
-import {Guarantee} from "../src/Core4Mica.sol";
+import {Guarantee} from "../src/GuaranteeTypes.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {IValidationRegistry} from "../src/interfaces/IValidationRegistry.sol";
@@ -68,9 +68,9 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
         BLS.G2Point memory signature = _g2(".v1.signature");
 
         // Point version 1 at the Rust signer's key + the vector's domain.
-        core4Mica.configureGuaranteeVersion(1, vkey, domain, address(0), true);
+        guaranteeVerifier.configureGuaranteeVersion(1, vkey, domain, address(0), true);
 
-        Guarantee memory g = core4Mica.verifyAndDecodeGuarantee(guarantee, signature);
+        Guarantee memory g = guaranteeVerifier.verifyAndDecodeGuarantee(guarantee, signature);
 
         assertEq(g.version, 1, "version");
         assertEq(g.domain, domain, "domain");
@@ -107,9 +107,9 @@ contract GuaranteeCrossBoundaryTest is Core4MicaTestBase {
         trusted[0] = registryAddr;
         ValidationRegistryGuaranteeDecoder decoder = new ValidationRegistryGuaranteeDecoder(trusted);
 
-        core4Mica.configureGuaranteeVersion(2, vkey, domain, address(decoder), true);
+        guaranteeVerifier.configureGuaranteeVersion(2, vkey, domain, address(decoder), true);
 
-        Guarantee memory g = core4Mica.verifyAndDecodeGuarantee(guarantee, signature);
+        Guarantee memory g = guaranteeVerifier.verifyAndDecodeGuarantee(guarantee, signature);
 
         assertEq(g.version, 2, "version");
         assertEq(g.domain, domain, "domain");

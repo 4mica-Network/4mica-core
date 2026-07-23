@@ -6,14 +6,15 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 import {Core4Mica} from "../src/Core4Mica.sol";
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
 import {MockERC20} from "../test/Core4MicaTestBase.sol";
 
-/// @notice Deploys full guarantee stack:
-/// AccessManager + Core4Mica + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder + ClearingHouse.
+/// @notice Deploys full guarantee stack: AccessManager + GuaranteeVerifier + Core4Mica
+/// + GuaranteeDecoderRouter + ValidationRegistryGuaranteeDecoder + ClearingHouse.
 ///
 /// Required env:
 /// - DEPLOYER_PRIVATE_KEY
@@ -39,6 +40,7 @@ contract Core4MicaFullStackScript is Script {
     error InvalidStablecoinConfiguration();
     error PartialAaveConfiguration();
     error StablecoinReadbackMismatch();
+    error GuaranteeVerifierReadbackMismatch(address expected, address actual);
     error AaveReadbackMismatch(string field);
     error YieldFeeReadbackMismatch(uint256 expected, uint256 actual);
     error InsecureGovernanceAdmin(address admin);
@@ -85,6 +87,7 @@ contract Core4MicaFullStackScript is Script {
 
     struct FullStackDeployment {
         AccessManager manager;
+        GuaranteeVerifier guaranteeVerifier;
         Core4Mica core4Mica;
         GuaranteeDecoderRouter router;
         ValidationRegistryGuaranteeDecoder validationDecoder;
@@ -134,6 +137,7 @@ contract Core4MicaFullStackScript is Script {
         vm.stopBroadcast();
 
         console.log("AccessManager:", address(deployment.manager));
+        console.log("GuaranteeVerifier:", address(deployment.guaranteeVerifier));
         console.log("Core4Mica:", address(deployment.core4Mica));
         console.log("GuaranteeDecoderRouter:", address(deployment.router));
         console.log("ValidationRegistryGuaranteeDecoder:", address(deployment.validationDecoder));
@@ -308,15 +312,19 @@ contract Core4MicaFullStackScript is Script {
 
     function _configureDeployedStack(FullStackDeployment memory deployment, DeploymentConfig memory config) internal {
         _assertStablecoinReadback(deployment.core4Mica, config.stablecoins);
+        _assertGuaranteeVerifierReadback(deployment.core4Mica, address(deployment.guaranteeVerifier));
         _configureOptionalAave(deployment.core4Mica, config.stablecoins);
 
+        // Guarantee domains bind the verifying contract, so v2's separator is derived from the
+        // GuaranteeVerifier address (matching how the verifier derives v1's from address(this)).
         bytes32 v2Domain =
-            keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(deployment.core4Mica)));
-        deployment.core4Mica
+            keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(deployment.guaranteeVerifier)));
+        deployment.guaranteeVerifier
             .configureGuaranteeVersion(
                 GUARANTEE_V2, config.guaranteeVerificationKey, v2Domain, address(deployment.validationDecoder), true
             );
         _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
+        _configureGuaranteeVerifierRoles(deployment.manager, deployment.guaranteeVerifier);
         _configureRouterRoles(deployment.manager, deployment.router);
         _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse, deployment.core4Mica);
     }
@@ -333,11 +341,17 @@ contract Core4MicaFullStackScript is Script {
             _deriveSalt(baseSalt, "ACCESS_MANAGER"),
             abi.encodePacked(type(AccessManager).creationCode, abi.encode(initialAdmin))
         );
+        // Deployed before Core4Mica: the vault records the verifier as an immutable so off-chain
+        // consumers can resolve it from the vault address without a second config entry.
+        address guaranteeVerifierAddress = DeterministicCreate2.deploy(
+            _deriveSalt(baseSalt, "GUARANTEE_VERIFIER"),
+            abi.encodePacked(type(GuaranteeVerifier).creationCode, abi.encode(managerAddress, guaranteeVerificationKey))
+        );
         address core4MicaAddress = DeterministicCreate2.deploy(
             _deriveSalt(baseSalt, "CORE4MICA"),
             abi.encodePacked(
                 type(Core4Mica).creationCode,
-                abi.encode(managerAddress, guaranteeVerificationKey, stablecoins, minWithdrawalGracePeriod)
+                abi.encode(managerAddress, guaranteeVerifierAddress, stablecoins, minWithdrawalGracePeriod)
             )
         );
         address routerAddress = DeterministicCreate2.deploy(
@@ -354,20 +368,32 @@ contract Core4MicaFullStackScript is Script {
         );
 
         deployment.manager = AccessManager(managerAddress);
+        deployment.guaranteeVerifier = GuaranteeVerifier(guaranteeVerifierAddress);
         deployment.core4Mica = Core4Mica(payable(core4MicaAddress));
         deployment.router = GuaranteeDecoderRouter(routerAddress);
         deployment.validationDecoder = ValidationRegistryGuaranteeDecoder(validationDecoderAddress);
         deployment.clearingHouse = ClearingHouse(payable(clearingHouseAddress));
     }
 
+    /// @dev Guarantee trust-root governance lives on the verifier now, but under the same
+    /// GOVERNANCE_ROLE and delay it had while inside Core4Mica.
+    function _configureGuaranteeVerifierRoles(AccessManager manager, GuaranteeVerifier verifier) internal {
+        manager.setTargetFunctionRole(
+            address(verifier),
+            _asSingletonArray(GuaranteeVerifier.setGuaranteeVerificationKey.selector),
+            GOVERNANCE_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(verifier), _asSingletonArray(GuaranteeVerifier.configureGuaranteeVersion.selector), GOVERNANCE_ROLE
+        );
+    }
+
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
-        bytes4[] memory governanceSelectors = new bytes4[](6);
+        bytes4[] memory governanceSelectors = new bytes4[](4);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
-        governanceSelectors[1] = Core4Mica.setGuaranteeVerificationKey.selector;
-        governanceSelectors[2] = Core4Mica.configureGuaranteeVersion.selector;
-        governanceSelectors[3] = Core4Mica.configureAave.selector;
-        governanceSelectors[4] = Core4Mica.addStablecoinAsset.selector;
-        governanceSelectors[5] = Core4Mica.setYieldFeeBps.selector;
+        governanceSelectors[1] = Core4Mica.configureAave.selector;
+        governanceSelectors[2] = Core4Mica.addStablecoinAsset.selector;
+        governanceSelectors[3] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(
@@ -499,6 +525,12 @@ contract Core4MicaFullStackScript is Script {
                     revert InvalidStablecoinConfiguration();
                 }
             }
+        }
+    }
+
+    function _assertGuaranteeVerifierReadback(Core4Mica core4Mica, address expectedVerifier) internal view {
+        if (core4Mica.guaranteeVerifier() != expectedVerifier) {
+            revert GuaranteeVerifierReadbackMismatch(expectedVerifier, core4Mica.guaranteeVerifier());
         }
     }
 

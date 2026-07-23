@@ -2,17 +2,17 @@
 pragma solidity ^0.8.29;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Core4Mica} from "../src/Core4Mica.sol";
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 interface IValidationRegistryDecoderView {
     function isTrustedValidationRegistry(address registry) external view returns (bool);
 }
 
-/// @notice Configures a guarantee version in Core4Mica and validates readback.
+/// @notice Configures a guarantee version in the GuaranteeVerifier and validates readback.
 /// @dev Required env vars:
 /// - DEPLOYER_PRIVATE_KEY
-/// - CORE4MICA_ADDRESS
+/// - GUARANTEE_VERIFIER_ADDRESS
 /// - GUARANTEE_VERSION
 /// - GUARANTEE_ENABLED
 /// Optional env vars:
@@ -27,7 +27,7 @@ interface IValidationRegistryDecoderView {
 contract ConfigureGuaranteeVersionScript is Script {
     uint64 internal constant GUARANTEE_V2 = 2;
 
-    error InvalidCoreAddress(address core);
+    error InvalidVerifierAddress(address verifier);
     error InvalidVersion(uint64 version);
     error InvalidVerificationKey();
     error MissingTrustedValidationRegistriesForV2();
@@ -37,10 +37,10 @@ contract ConfigureGuaranteeVersionScript is Script {
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        address coreAddress = vm.envAddress("CORE4MICA_ADDRESS");
-        if (coreAddress == address(0)) revert InvalidCoreAddress(coreAddress);
+        address verifierAddress = vm.envAddress("GUARANTEE_VERIFIER_ADDRESS");
+        if (verifierAddress == address(0)) revert InvalidVerifierAddress(verifierAddress);
 
-        Core4Mica core = Core4Mica(payable(coreAddress));
+        GuaranteeVerifier verifier = GuaranteeVerifier(verifierAddress);
         uint64 version = uint64(vm.envUint("GUARANTEE_VERSION"));
         if (version == 0) revert InvalidVersion(version);
 
@@ -49,12 +49,12 @@ contract ConfigureGuaranteeVersionScript is Script {
         uint64 keySourceVersion = uint64(vm.envOr("GUARANTEE_KEY_SOURCE_VERSION", uint256(1)));
         bytes32 domainSeparator = vm.envOr("GUARANTEE_DOMAIN_SEPARATOR", bytes32(0));
         address decoder = vm.envOr("GUARANTEE_DECODER", address(0));
-        uint64 initialVersion = core.INITIAL_GUARANTEE_VERSION();
-        (, bytes32 currentDomain, address currentDecoder,) = core.getGuaranteeVersionConfig(version);
+        uint64 initialVersion = verifier.INITIAL_GUARANTEE_VERSION();
+        (, bytes32 currentDomain, address currentDecoder,) = verifier.getGuaranteeVersionConfig(version);
 
         BLS.G1Point memory verificationKey;
         if (reuseExistingKey) {
-            (verificationKey,,,) = core.getGuaranteeVersionConfig(keySourceVersion);
+            (verificationKey,,,) = verifier.getGuaranteeVersionConfig(keySourceVersion);
         } else {
             verificationKey = BLS.G1Point({
                 x_a: vm.envBytes32("VK_X0"),
@@ -66,11 +66,11 @@ contract ConfigureGuaranteeVersionScript is Script {
         if (_isZeroG1(verificationKey)) revert InvalidVerificationKey();
 
         vm.startBroadcast(deployerPrivateKey);
-        core.configureGuaranteeVersion(version, verificationKey, domainSeparator, decoder, enabled);
+        verifier.configureGuaranteeVersion(version, verificationKey, domainSeparator, decoder, enabled);
         vm.stopBroadcast();
 
         (BLS.G1Point memory storedKey, bytes32 storedDomain, address storedDecoder, bool storedEnabled) =
-            core.getGuaranteeVersionConfig(version);
+            verifier.getGuaranteeVersionConfig(version);
         bytes32 expectedDomain = domainSeparator;
         if (!enabled && expectedDomain == bytes32(0)) {
             expectedDomain = currentDomain;
@@ -102,7 +102,7 @@ contract ConfigureGuaranteeVersionScript is Script {
         }
 
         console.log("Configured guarantee version:", version);
-        console.log("Core4Mica:", coreAddress);
+        console.log("GuaranteeVerifier:", verifierAddress);
         console.log("Enabled:", enabled);
         if (reuseExistingKey) {
             console.log("Reused key source version:", keySourceVersion);

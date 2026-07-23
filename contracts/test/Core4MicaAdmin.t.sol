@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
 import {Core4MicaTestBase, MockERC20} from "./Core4MicaTestBase.sol";
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -41,11 +42,11 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
             bytes32(0x0001000000000000000000000000000000000000000000000000000000001000)
         );
         vm.expectEmit(false, false, false, true);
-        emit Core4Mica.VerificationKeyUpdated(newKey);
+        emit GuaranteeVerifier.VerificationKeyUpdated(newKey);
 
-        core4Mica.setGuaranteeVerificationKey(newKey);
+        guaranteeVerifier.setGuaranteeVerificationKey(newKey);
 
-        (bytes32 xA, bytes32 xB, bytes32 yA, bytes32 yB) = core4Mica.GUARANTEE_VERIFICATION_KEY();
+        (bytes32 xA, bytes32 xB, bytes32 yA, bytes32 yB) = guaranteeVerifier.GUARANTEE_VERIFICATION_KEY();
         assertEq(xA, newKey.x_a);
         assertEq(xB, newKey.x_b);
         assertEq(yA, newKey.y_a);
@@ -61,7 +62,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         );
         vm.prank(USER1);
         vm.expectRevert(accessUnauthorizedError(USER1));
-        core4Mica.setGuaranteeVerificationKey(newKey);
+        guaranteeVerifier.setGuaranteeVerificationKey(newKey);
     }
 
     function test_SetVerificationKey_Revert_Operator_Unauthorized() public {
@@ -73,7 +74,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
         );
         vm.prank(OPERATOR);
         vm.expectRevert(accessUnauthorizedError(OPERATOR));
-        core4Mica.setGuaranteeVerificationKey(newKey);
+        guaranteeVerifier.setGuaranteeVerificationKey(newKey);
     }
 
     function test_AddStablecoinAsset() public {
@@ -124,7 +125,7 @@ contract Core4MicaAdminTest is Core4MicaTestBase {
 
         address[] memory stablecoins = new address[](1);
         stablecoins[0] = address(usdc);
-        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
+        Core4Mica bareCore = new Core4Mica(address(manager), address(guaranteeVerifier), stablecoins, 0);
         manager.setTargetFunctionRole(
             address(bareCore), _asSingletonArray(Core4Mica.addStablecoinAsset.selector), USER_ADMIN_ROLE
         );

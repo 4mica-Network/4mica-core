@@ -2,7 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {AccessManaged} from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
-import {Guarantee, IGuaranteeDecoder} from "./Core4Mica.sol";
+import {Guarantee, IGuaranteeDecoder} from "./GuaranteeTypes.sol";
 import {IGuaranteeVersionModule} from "./interfaces/IGuaranteeVersionModule.sol";
 
 /// @notice Routes versioned guarantee payloads to per-version decoder modules.

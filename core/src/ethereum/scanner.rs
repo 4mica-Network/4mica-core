@@ -23,7 +23,7 @@ use metrics_4mica::measure;
 use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 pub struct EthereumEventScanner {
     config: EthereumConfig,
@@ -34,16 +34,21 @@ pub struct EthereumEventScanner {
     /// two runs would process the same range concurrently and, because a not-yet-`Processed` event
     /// is re-run, apply a handler twice (recovery must stay at-most-once under overlap).
     scan_lock: Arc<Mutex<()>>,
+    /// GuaranteeVerifier address, resolved once from the vault's immutable pointer. Key-rotation
+    /// and version events are emitted by the verifier, so it must be in the log address filter or
+    /// they are silently never observed.
+    guarantee_verifier_address: Arc<OnceCell<Address>>,
 }
 
 struct ScanArgs<P>
 where
-    P: alloy::providers::Provider + 'static,
+    P: alloy::providers::Provider + Clone + 'static,
 {
     provider: P,
     config: EthereumConfig,
     persist_ctx: PersistCtx,
     handler: Arc<dyn EthereumEventHandler>,
+    guarantee_verifier_address: Arc<OnceCell<Address>>,
 }
 
 #[async_trait]
@@ -65,6 +70,7 @@ impl Task for EthereumEventScanner {
             config: self.config.clone(),
             persist_ctx: self.persist_ctx.clone(),
             handler: self.handler.clone(),
+            guarantee_verifier_address: self.guarantee_verifier_address.clone(),
         })
         .await
         .map_err(|e| anyhow::anyhow!("Event scan failed: {e}"))
@@ -84,18 +90,20 @@ impl EthereumEventScanner {
             provider,
             handler,
             scan_lock: Arc::new(Mutex::new(())),
+            guarantee_verifier_address: Arc::new(OnceCell::new()),
         }
     }
 
     async fn scan_events<P>(args: ScanArgs<P>) -> Result<(), BlockchainListenerError>
     where
-        P: alloy::providers::Provider + 'static,
+        P: alloy::providers::Provider + Clone + 'static,
     {
         let ScanArgs {
             provider,
             config,
             persist_ctx,
             handler,
+            guarantee_verifier_address,
         } = args;
         let max_log_block_range = config.max_log_block_range;
 
@@ -107,11 +115,24 @@ impl EthereumEventScanner {
             .clearing_house_address
             .parse()
             .map_err(|e: FromHexError| BlockchainListenerError::Other(anyhow::anyhow!(e)))?;
-        let addresses = if clearing_house_address == Address::ZERO {
-            vec![core_address]
-        } else {
-            vec![core_address, clearing_house_address]
-        };
+        // Guarantee key-rotation and version events moved to the GuaranteeVerifier when it was
+        // split out of Core4Mica, so the filter must cover it too. Resolved from the vault's
+        // immutable pointer and cached, rather than carried as a second configured address.
+        let verifier_address = guarantee_verifier_address
+            .get_or_try_init(|| async {
+                contract_abi::Core4Mica::Core4MicaInstance::new(core_address, provider.clone())
+                    .guaranteeVerifier()
+                    .call()
+                    .await
+                    .map_err(|e| BlockchainListenerError::Other(anyhow::anyhow!(e)))
+            })
+            .await
+            .copied()?;
+
+        let mut addresses = vec![core_address, verifier_address];
+        if clearing_house_address != Address::ZERO {
+            addresses.push(clearing_house_address);
+        }
 
         let base_filter = Filter::new()
             .address(addresses.clone())

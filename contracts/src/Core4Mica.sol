@@ -7,28 +7,11 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {IAavePool} from "./interfaces/IAavePool.sol";
 import {IPoolAddressesProvider} from "./interfaces/IPoolAddressesProvider.sol";
 import {IAaveProtocolDataProvider} from "./interfaces/IAaveProtocolDataProvider.sol";
 import {IAToken} from "./interfaces/IAToken.sol";
 import {Core4MicaAccounting} from "./libraries/Core4MicaAccounting.sol";
-
-struct Guarantee {
-    bytes32 domain;
-    uint256 cycleId;
-    uint256 reqId;
-    address client;
-    address recipient;
-    uint256 amount;
-    address asset;
-    uint64 timestamp;
-    uint64 version;
-}
-
-interface IGuaranteeDecoder {
-    function decode(bytes calldata data) external view returns (Guarantee memory);
-}
 
 /// @notice Minimal EIP-3009 interface for pulling tokens via a signed `receiveWithAuthorization`.
 /// Implemented by USDC and other FiatToken-style stablecoins. The `to` field is bound inside the
@@ -119,13 +102,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error MinGracePeriodExceedsGrace(uint256 minimum, uint256 gracePeriod);
     error NoWithdrawalRequested();
     error DirectTransferNotAllowed();
-    error InvalidSignature();
     error InvalidRecipient();
     error UnsupportedAsset(address asset);
     error InvalidAsset(address asset);
-    error UnsupportedGuaranteeVersion(uint64 version);
-    error InvalidGuaranteeDomain();
-    error MissingGuaranteeDecoder(uint64 version);
     error AaveNotConfigured();
     error FeeTooHigh();
     error TreasuryClaimExceedsAvailable();
@@ -154,19 +133,11 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     /// what settlement needs. Defaults to 0 (no floor) until configured.
     uint256 public minWithdrawalGracePeriod;
 
-    // forge-lint: disable-next-line(mixed-case-variable)
-    BLS.G1Point public GUARANTEE_VERIFICATION_KEY;
-    bytes32 public guaranteeDomainSeparator;
-
-    struct VersionConfig {
-        BLS.G1Point verificationKey;
-        bytes32 domainSeparator;
-        address decoder;
-        bool enabled;
-    }
-
-    mapping(uint64 => VersionConfig) private guaranteeVersions;
-    uint64 public constant INITIAL_GUARANTEE_VERSION = 1;
+    /// @notice The [`GuaranteeVerifier`] paired with this vault at deployment.
+    /// @dev Informational only — no collateral flow in this contract consults it. Published as an
+    /// immutable so off-chain consumers can resolve the verifier from the vault address alone
+    /// instead of carrying a second address in configuration that could drift out of sync.
+    address public immutable guaranteeVerifier;
 
     address internal constant ETH_ASSET = address(0);
 
@@ -193,14 +164,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     mapping(address => uint256) internal escrowScaledStablecoinBalances;
     mapping(address => uint256) internal ethCollateralBalances;
 
-    /// @notice The negated generator point in G1 (-G1), derived from EIP-2537's standard G1 generator.
-    BLS.G1Point internal negatedG1Generator = BLS.G1Point(
-        bytes32(0x0000000000000000000000000000000017F1D3A73197D7942695638C4FA9AC0F),
-        bytes32(0xC3688C4F9774B905A14E3A3F171BAC586C55E83FF97A1AEFFB3AF00ADB22C6BB),
-        bytes32(0x00000000000000000000000000000000114D1D6855D545A8AA7D76C8CF2E21F2),
-        bytes32(0x67816AEF1DB507C96655B9D5CAAC42364E6F38BA0ECB751BAD54DCD6B939C2CA)
-    );
-
     struct WithdrawalRequest {
         uint256 timestamp;
         uint256 amount;
@@ -225,10 +188,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event WithdrawalCanceled(address indexed user, address indexed asset);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event MinWithdrawalGracePeriodUpdated(uint256 newMinGracePeriod);
-    event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
-    event GuaranteeVersionUpdated(
-        uint64 indexed version, BLS.G1Point verificationKey, bytes32 domainSeparator, address decoder, bool enabled
-    );
     event StablecoinAssetUpdated(address indexed asset, bool enabled);
     event AaveConfigured(address indexed provider, address indexed pool);
     event YieldFeeBpsUpdated(uint256 oldFeeBps, uint256 newFeeBps);
@@ -245,13 +204,12 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     event EscrowDeposited(address indexed asset, address indexed from, uint256 amount, uint256 scaledCredited);
 
     // ========= Constructor =========
-    constructor(
-        address manager,
-        BLS.G1Point memory verificationKey,
-        address[] memory stablecoins_,
-        uint256 minGracePeriod_
-    ) AccessManaged(manager) {
+    constructor(address manager, address guaranteeVerifier_, address[] memory stablecoins_, uint256 minGracePeriod_)
+        AccessManaged(manager)
+    {
         if (stablecoins_.length == 0) revert AmountZero();
+        if (guaranteeVerifier_ == address(0)) revert ZeroAddress();
+        guaranteeVerifier = guaranteeVerifier_;
         // Set the withdrawal-grace floor atomically at deploy so it can never be left at 0 by a
         // forgotten setter call. May be 0 only for explicit opt-out (e.g. tests); production
         // deploys pass a non-zero value (enforced by the deploy script). Must not exceed the
@@ -264,17 +222,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         for (uint256 i = 0; i < stablecoins_.length; i++) {
             _addStablecoinAsset(stablecoins_[i]);
         }
-        GUARANTEE_VERIFICATION_KEY = verificationKey;
-        guaranteeDomainSeparator = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V1", block.chainid, address(this)));
-        guaranteeVersions[INITIAL_GUARANTEE_VERSION] = VersionConfig({
-            verificationKey: verificationKey,
-            domainSeparator: guaranteeDomainSeparator,
-            decoder: address(0),
-            enabled: true
-        });
-        emit GuaranteeVersionUpdated(
-            INITIAL_GUARANTEE_VERSION, verificationKey, guaranteeDomainSeparator, address(0), true
-        );
     }
 
     // ========= Modifiers =========
@@ -339,54 +286,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
         minWithdrawalGracePeriod = _minGracePeriod;
         emit MinWithdrawalGracePeriodUpdated(_minGracePeriod);
-    }
-
-    function setGuaranteeVerificationKey(BLS.G1Point calldata verificationKey) external restricted {
-        GUARANTEE_VERIFICATION_KEY = verificationKey;
-        VersionConfig storage config = guaranteeVersions[INITIAL_GUARANTEE_VERSION];
-        config.verificationKey = verificationKey;
-        emit VerificationKeyUpdated(verificationKey);
-        emit GuaranteeVersionUpdated(
-            INITIAL_GUARANTEE_VERSION, verificationKey, config.domainSeparator, config.decoder, config.enabled
-        );
-    }
-
-    function configureGuaranteeVersion(
-        uint64 version,
-        BLS.G1Point calldata verificationKey,
-        bytes32 domainSeparator,
-        address decoder,
-        bool enabled
-    ) external restricted {
-        if (version == 0) revert UnsupportedGuaranteeVersion(version);
-        if (version == INITIAL_GUARANTEE_VERSION && decoder != address(0)) {
-            revert UnsupportedGuaranteeVersion(version);
-        }
-        VersionConfig storage config = guaranteeVersions[version];
-        address decoderToUse = decoder;
-        if (version != INITIAL_GUARANTEE_VERSION && decoderToUse == address(0)) {
-            if (enabled) revert MissingGuaranteeDecoder(version);
-            decoderToUse = config.decoder;
-        }
-        bytes32 domainSeparatorToUse = domainSeparator;
-        if (enabled && domainSeparatorToUse == bytes32(0)) {
-            revert InvalidGuaranteeDomain();
-        }
-        if (!enabled && domainSeparatorToUse == bytes32(0)) {
-            domainSeparatorToUse = config.domainSeparator;
-        }
-
-        config.verificationKey = verificationKey;
-        config.domainSeparator = domainSeparatorToUse;
-        config.decoder = decoderToUse;
-        config.enabled = enabled;
-
-        if (version == INITIAL_GUARANTEE_VERSION) {
-            GUARANTEE_VERIFICATION_KEY = verificationKey;
-            guaranteeDomainSeparator = domainSeparatorToUse;
-        }
-
-        emit GuaranteeVersionUpdated(version, verificationKey, domainSeparatorToUse, decoderToUse, enabled);
     }
 
     function configureAave(address poolAddressesProvider, address[] calldata aTokens) external restricted {
@@ -499,15 +398,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         surplusScaledStablecoinBalances[asset] -= actualScaledRemoved;
         _checkReconciliation(asset);
         emit SurplusATokensClaimed(asset, to, actualScaledRemoved, nominalAmount);
-    }
-
-    function getGuaranteeVersionConfig(uint64 version)
-        external
-        view
-        returns (BLS.G1Point memory verificationKey, bytes32 domainSeparator, address decoder, bool enabled)
-    {
-        VersionConfig storage config = guaranteeVersions[version];
-        return (config.verificationKey, config.domainSeparator, config.decoder, config.enabled);
     }
 
     // ========= User flows =========
@@ -970,41 +860,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     function stablecoinAToken(address asset) external view returns (address) {
         return stablecoinATokens[asset];
-    }
-
-    function verifyAndDecodeGuarantee(bytes memory guarantee, BLS.G2Point memory signature)
-        public
-        view
-        returns (Guarantee memory)
-    {
-        (uint64 version, bytes memory encodedGuarantee) = abi.decode(guarantee, (uint64, bytes));
-        VersionConfig storage config = guaranteeVersions[version];
-        if (!config.enabled) revert UnsupportedGuaranteeVersion(version);
-
-        BLS.G1Point[] memory g1Points = new BLS.G1Point[](2);
-        g1Points[0] = negatedG1Generator;
-        g1Points[1] = config.verificationKey;
-
-        BLS.G2Point[] memory g2Points = new BLS.G2Point[](2);
-        g2Points[0] = signature;
-        g2Points[1] = BLS.hashToG2(guarantee);
-
-        if (!BLS.pairing(g1Points, g2Points)) revert InvalidSignature();
-
-        Guarantee memory g;
-        if (version == INITIAL_GUARANTEE_VERSION && config.decoder == address(0)) {
-            g = abi.decode(encodedGuarantee, (Guarantee));
-        } else {
-            if (config.decoder == address(0)) {
-                revert MissingGuaranteeDecoder(version);
-            }
-            g = IGuaranteeDecoder(config.decoder).decode(encodedGuarantee);
-        }
-
-        if (g.domain != config.domainSeparator) {
-            revert InvalidGuaranteeDomain();
-        }
-        return g;
     }
 
     // ========= Fallbacks =========

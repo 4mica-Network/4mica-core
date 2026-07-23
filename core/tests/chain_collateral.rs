@@ -2,7 +2,7 @@
 //! stablecoin), withdrawals, finalized-head gating, cursor recovery, and
 //! contract-scoping of events.
 
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use alloy::providers::Provider;
 use alloy::providers::ext::AnvilApi;
 use alloy::rpc::types::Filter;
@@ -25,7 +25,7 @@ use common::chain::{
     deposit_stablecoin, dummy_verification_key, fn_selector, mine_confirmations,
     setup_e2e_environment,
 };
-use common::contract::Core4Mica;
+use common::contract::{Core4Mica, GuaranteeVerifier::GuaranteeVersionUpdated};
 use common::fixtures::{ensure_user, read_collateral};
 
 static NUMBER_OF_TRIALS: u32 = 120;
@@ -570,18 +570,33 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
     let env = setup_e2e_environment().await?;
     let provider = env.provider.clone();
     let contract = env.contract.clone();
+    let guarantee_verifier = env.guarantee_verifier.clone();
     let access_manager = env.access_manager.clone();
+    let persist_ctx = env.core_service.persist_ctx();
+    let chain_id = env.cfg.ethereum_config.chain_id;
     let me = env.signer_addr;
 
-    // Map Core4Mica config functions to USER_ADMIN_ROLE = 4
-    let selectors = vec![
-        fn_selector("setWithdrawalGracePeriod(uint256)"),
-        fn_selector(
-            "configureGuaranteeVersion(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
-        ),
-    ];
     access_manager
-        .setTargetFunctionRole(*contract.address(), selectors, 4u64)
+        .setTargetFunctionRole(
+            *contract.address(),
+            vec![fn_selector("setWithdrawalGracePeriod(uint256)")],
+            4u64,
+        )
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    // Guarantee version configuration lives on the GuaranteeVerifier, so the role must be granted
+    // against that target now — not Core4Mica.
+    access_manager
+        .setTargetFunctionRole(
+            *guarantee_verifier.address(),
+            vec![fn_selector(
+                "configureGuaranteeVersion(uint64,(bytes32,bytes32,bytes32,bytes32),bytes32,address,bool)",
+            )],
+            4u64,
+        )
         .send()
         .await?
         .watch()
@@ -602,7 +617,40 @@ async fn config_update_events_do_not_crash() -> anyhow::Result<()> {
         .await?
         .watch()
         .await?;
+
+    // Rotating a guarantee version emits from the verifier, not the vault. The scanner filters logs
+    // by address, so this only lands if the verifier is in the filter — the regression this guards.
+    let receipt = guarantee_verifier
+        .configureGuaranteeVersion(
+            1u64,
+            dummy_verification_key(),
+            guarantee_verifier.guaranteeDomainSeparator().call().await?,
+            Address::ZERO,
+            true,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let event_block = receipt
+        .block_number
+        .ok_or_else(|| anyhow::anyhow!("configureGuaranteeVersion receipt missing block number"))?;
     mine_confirmations(&provider, 1).await?;
+
+    let want = format!("{:x}", GuaranteeVersionUpdated::SIGNATURE_HASH);
+    let mut tries = 0;
+    loop {
+        let rows =
+            repo::get_blockchain_events_after(persist_ctx, chain_id, event_block - 1).await?;
+        if rows.iter().any(|r| r.signature == want) {
+            break;
+        }
+        if tries > NUMBER_OF_TRIALS {
+            panic!("GuaranteeVersionUpdated from the verifier was never ingested by the scanner");
+        }
+        tries += 1;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 
     Ok(())
 }
@@ -621,8 +669,9 @@ async fn ignores_events_from_other_contract() -> anyhow::Result<()> {
     let contract_b = Core4Mica::deploy(
         &provider,
         *access_manager.address(),
-        dummy_verification_key(),
+        *env.guarantee_verifier.address(),
         vec![*env.usdc.address(), *env.usdt.address()],
+        alloy::primitives::U256::ZERO,
     )
     .await?;
 

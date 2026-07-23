@@ -180,8 +180,11 @@ pub mod contract_abi {
             bytes32 y_b;
         }
 
+        /// Guarantee verification and version registry. Split out of Core4Mica so the vault's
+        /// deployed bytecode stays clear of the BLS pairing code; the vault publishes this
+        /// contract's address as an immutable (`Core4Mica.guaranteeVerifier`).
         #[sol(rpc)]
-        contract Core4Mica {
+        contract GuaranteeVerifier {
             function getGuaranteeVersionConfig(
                 uint64 version
             )
@@ -194,11 +197,27 @@ pub mod contract_abi {
                     bool enabled
                 );
 
-            /// View: delayed-withdrawal grace period (seconds).
-            function withdrawalGracePeriod() external view returns (uint256);
-
             /// View: current BLS verification key.
             function GUARANTEE_VERIFICATION_KEY() external view returns (bytes32,bytes32,bytes32,bytes32);
+
+            /// View: version-1 domain separator, bound to the verifier's own address.
+            function guaranteeDomainSeparator() external view returns (bytes32);
+
+            // ---- Custom errors (mirrored from contracts/src/GuaranteeVerifier.sol) ----
+            error InvalidSignature();
+            error UnsupportedGuaranteeVersion(uint64 version);
+            error InvalidGuaranteeDomain();
+            error MissingGuaranteeDecoder(uint64 version);
+        }
+
+        #[sol(rpc)]
+        contract Core4Mica {
+            /// View: the GuaranteeVerifier paired with this vault at deployment. Immutable, so
+            /// resolving it from the vault address can never go stale.
+            function guaranteeVerifier() external view returns (address);
+
+            /// View: delayed-withdrawal grace period (seconds).
+            function withdrawalGracePeriod() external view returns (uint256);
 
             /// View: list of ERC20 tokens supported by the contract.
             function getERC20Tokens() external view returns (address[] memory);
@@ -221,13 +240,9 @@ pub mod contract_abi {
             error GracePeriodNotElapsed();
             error NoWithdrawalRequested();
             error DirectTransferNotAllowed();
-            error InvalidSignature();
             error InvalidRecipient();
             error UnsupportedAsset(address asset);
             error InvalidAsset(address asset);
-            error UnsupportedGuaranteeVersion(uint64 version);
-            error InvalidGuaranteeDomain();
-            error MissingGuaranteeDecoder(uint64 version);
             error AaveNotConfigured();
             error FeeTooHigh();
             error TreasuryClaimExceedsAvailable();

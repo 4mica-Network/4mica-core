@@ -54,6 +54,10 @@ impl<T, E: Into<CoreContractApiError>> ObserveContractError<T> for Result<T, E> 
 pub struct CoreContractProxy {
     provider: DynProvider,
     contract_address: Address,
+    /// Resolved once from `Core4Mica.guaranteeVerifier()` at startup. The vault stores it as an
+    /// immutable, so reading it from chain keeps the two addresses from drifting the way a second
+    /// configuration entry would.
+    guarantee_verifier_address: Address,
     clearing_house_address: Address,
     tx_write_lock: Mutex<()>,
 }
@@ -292,12 +296,29 @@ impl CoreContractProxy {
                 )
             })?;
 
+        let guarantee_verifier_address =
+            Core4Mica::Core4MicaInstance::new(contract_address, provider.clone())
+                .guaranteeVerifier()
+                .call()
+                .await
+                .observe("guaranteeVerifier")?;
+
         Ok(Self {
             provider,
             contract_address,
+            guarantee_verifier_address,
             clearing_house_address,
             tx_write_lock: Mutex::new(()),
         })
+    }
+
+    fn build_guarantee_verifier(
+        &self,
+    ) -> GuaranteeVerifier::GuaranteeVerifierInstance<DynProvider> {
+        GuaranteeVerifier::GuaranteeVerifierInstance::new(
+            self.guarantee_verifier_address,
+            self.provider.clone(),
+        )
     }
 
     fn build_contract(&self) -> Core4Mica::Core4MicaInstance<DynProvider> {
@@ -323,7 +344,7 @@ impl CoreContractApi for CoreContractProxy {
         &self,
         version: u64,
     ) -> Result<GuaranteeVersionConfig, CoreContractApiError> {
-        let contract = self.build_contract();
+        let contract = self.build_guarantee_verifier();
         let version_config = contract
             .getGuaranteeVersionConfig(version)
             .call()

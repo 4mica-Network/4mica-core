@@ -2,7 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {Core4MicaTestBase} from "./Core4MicaTestBase.sol";
-import {Guarantee} from "../src/Core4Mica.sol";
+import {Guarantee} from "../src/GuaranteeTypes.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {IGuaranteeVersionModule} from "../src/interfaces/IGuaranteeVersionModule.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -167,13 +167,13 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
         bytes32 domainV3 = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V3", block.chainid, address(core4Mica)));
 
         router.setVersionModule(ROUTED_VERSION, address(moduleV3));
-        core4Mica.configureGuaranteeVersion(ROUTED_VERSION, publicKeyV3, domainV3, address(router), true);
+        guaranteeVerifier.configureGuaranteeVersion(ROUTED_VERSION, publicKeyV3, domainV3, address(router), true);
 
         MockGuaranteeModuleV3.GuaranteeV3 memory g3 = _g3(domainV3, ROUTED_VERSION);
         bytes memory outerGuarantee = abi.encode(ROUTED_VERSION, abi.encode(ROUTED_VERSION, abi.encode(g3)));
         BLS.G2Point memory signature = BlsHelper.blsSign(outerGuarantee, TEST_PRIVATE_KEY_V3);
 
-        Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(outerGuarantee, signature);
+        Guarantee memory decoded = guaranteeVerifier.verifyAndDecodeGuarantee(outerGuarantee, signature);
         assertEq(decoded.version, ROUTED_VERSION);
         assertEq(decoded.domain, domainV3);
         assertEq(decoded.cycleId, g3.cycleId);
@@ -184,14 +184,14 @@ contract GuaranteeDecoderRouterTest is Core4MicaTestBase {
         BLS.G1Point memory publicKeyV3 = BlsHelper.getPublicKey(TEST_PRIVATE_KEY_V3);
         bytes32 domainV3 = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V3", block.chainid, address(core4Mica)));
 
-        core4Mica.configureGuaranteeVersion(ROUTED_VERSION, publicKeyV3, domainV3, address(router), true);
+        guaranteeVerifier.configureGuaranteeVersion(ROUTED_VERSION, publicKeyV3, domainV3, address(router), true);
 
         MockGuaranteeModuleV3.GuaranteeV3 memory g3 = _g3(domainV3, ROUTED_VERSION);
         bytes memory outerGuarantee = abi.encode(ROUTED_VERSION, abi.encode(ROUTED_VERSION, abi.encode(g3)));
         BLS.G2Point memory signature = BlsHelper.blsSign(outerGuarantee, TEST_PRIVATE_KEY_V3);
 
         vm.expectRevert(abi.encodeWithSelector(GuaranteeDecoderRouter.UnknownVersion.selector, ROUTED_VERSION));
-        core4Mica.verifyAndDecodeGuarantee(outerGuarantee, signature);
+        guaranteeVerifier.verifyAndDecodeGuarantee(outerGuarantee, signature);
     }
 
     function _g3(bytes32 domain, uint64 version) internal view returns (MockGuaranteeModuleV3.GuaranteeV3 memory) {

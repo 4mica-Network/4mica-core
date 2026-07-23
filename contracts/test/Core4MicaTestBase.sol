@@ -2,7 +2,9 @@
 pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
-import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
+import {Guarantee} from "../src/GuaranteeTypes.sol";
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IAccessManaged} from "@openzeppelin/contracts/access/manager/IAccessManaged.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
@@ -72,6 +74,7 @@ contract MockERC20 {
 
 abstract contract Core4MicaTestBase is Test {
     Core4Mica internal core4Mica;
+    GuaranteeVerifier internal guaranteeVerifier;
     AccessManager internal manager;
     MockERC20 internal usdc;
     MockERC20 internal usdt;
@@ -114,7 +117,8 @@ abstract contract Core4MicaTestBase is Test {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = address(usdc);
         stablecoins[1] = address(usdt);
-        core4Mica = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
+        guaranteeVerifier = new GuaranteeVerifier(address(manager), testPublicKey);
+        core4Mica = new Core4Mica(address(manager), address(guaranteeVerifier), stablecoins, 0);
 
         vm.deal(USER1, 5 ether);
         usdc.mint(USER1, 1_000_000 ether);
@@ -124,18 +128,26 @@ abstract contract Core4MicaTestBase is Test {
         usdt.approve(address(core4Mica), type(uint256).max);
         vm.stopPrank();
 
-        bytes4[] memory adminSelectors = new bytes4[](9);
+        bytes4[] memory adminSelectors = new bytes4[](8);
         adminSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
-        adminSelectors[1] = Core4Mica.configureGuaranteeVersion.selector;
-        adminSelectors[2] = Core4Mica.pause.selector;
-        adminSelectors[3] = Core4Mica.unpause.selector;
-        adminSelectors[4] = Core4Mica.configureAave.selector;
-        adminSelectors[5] = Core4Mica.addStablecoinAsset.selector;
-        adminSelectors[6] = Core4Mica.setYieldFeeBps.selector;
-        adminSelectors[7] = Core4Mica.claimProtocolYield.selector;
-        adminSelectors[8] = Core4Mica.setMinWithdrawalGracePeriod.selector;
+        adminSelectors[1] = Core4Mica.pause.selector;
+        adminSelectors[2] = Core4Mica.unpause.selector;
+        adminSelectors[3] = Core4Mica.configureAave.selector;
+        adminSelectors[4] = Core4Mica.addStablecoinAsset.selector;
+        adminSelectors[5] = Core4Mica.setYieldFeeBps.selector;
+        adminSelectors[6] = Core4Mica.claimProtocolYield.selector;
+        adminSelectors[7] = Core4Mica.setMinWithdrawalGracePeriod.selector;
         for (uint256 i = 0; i < adminSelectors.length; i++) {
             manager.setTargetFunctionRole(address(core4Mica), _asSingletonArray(adminSelectors[i]), USER_ADMIN_ROLE);
+        }
+
+        bytes4[] memory verifierSelectors = new bytes4[](2);
+        verifierSelectors[0] = GuaranteeVerifier.configureGuaranteeVersion.selector;
+        verifierSelectors[1] = GuaranteeVerifier.setGuaranteeVerificationKey.selector;
+        for (uint256 i = 0; i < verifierSelectors.length; i++) {
+            manager.setTargetFunctionRole(
+                address(guaranteeVerifier), _asSingletonArray(verifierSelectors[i]), USER_ADMIN_ROLE
+            );
         }
 
         manager.grantRole(USER_ADMIN_ROLE, address(this), 0);
@@ -165,7 +177,7 @@ abstract contract Core4MicaTestBase is Test {
         address asset
     ) internal view returns (Guarantee memory) {
         return Guarantee({
-            domain: core4Mica.guaranteeDomainSeparator(),
+            domain: guaranteeVerifier.guaranteeDomainSeparator(),
             cycleId: cycleId,
             reqId: reqId,
             client: client,

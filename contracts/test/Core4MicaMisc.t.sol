@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
 import {Core4MicaTestBase, MockERC20} from "./Core4MicaTestBase.sol";
-import {Core4Mica, Guarantee} from "../src/Core4Mica.sol";
+import {Core4Mica} from "../src/Core4Mica.sol";
+import {Guarantee} from "../src/GuaranteeTypes.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {MockAToken} from "./helpers/MockAave.sol";
 
@@ -12,7 +14,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        Guarantee memory decoded = core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+        Guarantee memory decoded = guaranteeVerifier.verifyAndDecodeGuarantee(guaranteeData, signature);
         assertEq(keccak256(abi.encode(decoded)), keccak256(abi.encode(g)));
     }
 
@@ -23,8 +25,8 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         Guarantee memory g2 = _ethGuarantee(0x1234, block.timestamp, USER1, USER2, 17, 4 ether);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g2);
 
-        vm.expectRevert(Core4Mica.InvalidSignature.selector);
-        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+        vm.expectRevert(GuaranteeVerifier.InvalidSignature.selector);
+        guaranteeVerifier.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
     function test_VerifyAndDecodeGuarantee_InvalidSigningKey() public {
@@ -34,8 +36,8 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         BLS.G2Point memory signature = _signGuarantee(g, otherKey);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        vm.expectRevert(Core4Mica.InvalidSignature.selector);
-        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+        vm.expectRevert(GuaranteeVerifier.InvalidSignature.selector);
+        guaranteeVerifier.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
     function test_VerifyAndDecodeGuarantee_InvalidAssetField() public {
@@ -45,8 +47,8 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         Guarantee memory tampered = _ethGuarantee(g.cycleId, g.timestamp, g.client, g.recipient, g.reqId, g.amount);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(tampered);
 
-        vm.expectRevert(Core4Mica.InvalidSignature.selector);
-        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+        vm.expectRevert(GuaranteeVerifier.InvalidSignature.selector);
+        guaranteeVerifier.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
     function test_VerifyAndDecodeGuarantee_UnsupportedVersion() public {
@@ -57,8 +59,8 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         bytes memory guaranteeData = abi.encode(uint64(99), abi.encode(g));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
 
-        vm.expectRevert(abi.encodeWithSelector(Core4Mica.UnsupportedGuaranteeVersion.selector, uint64(99)));
-        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+        vm.expectRevert(abi.encodeWithSelector(GuaranteeVerifier.UnsupportedGuaranteeVersion.selector, uint64(99)));
+        guaranteeVerifier.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
     function test_VerifyAndDecodeGuarantee_InvalidDomain() public {
@@ -69,8 +71,8 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(g);
 
-        vm.expectRevert(Core4Mica.InvalidGuaranteeDomain.selector);
-        core4Mica.verifyAndDecodeGuarantee(guaranteeData, signature);
+        vm.expectRevert(GuaranteeVerifier.InvalidGuaranteeDomain.selector);
+        guaranteeVerifier.verifyAndDecodeGuarantee(guaranteeData, signature);
     }
 
     function test_Receive_Reverts_TransferFailed() public {
@@ -123,7 +125,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
     function test_Constructor_SupportsOneStablecoin() public {
         address[] memory stablecoins = new address[](1);
         stablecoins[0] = address(usdc);
-        Core4Mica singleAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
+        Core4Mica singleAssetCore = new Core4Mica(address(manager), address(guaranteeVerifier), stablecoins, 0);
 
         address[] memory tokens = singleAssetCore.getERC20Tokens();
         assertEq(tokens.length, 1);
@@ -150,7 +152,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         stablecoins[0] = address(usdc);
         stablecoins[1] = address(usdt);
         stablecoins[2] = address(eurc);
-        Core4Mica threeAssetCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
+        Core4Mica threeAssetCore = new Core4Mica(address(manager), address(guaranteeVerifier), stablecoins, 0);
 
         address[] memory tokens = threeAssetCore.getERC20Tokens();
         assertEq(tokens.length, 3);
@@ -177,7 +179,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = address(usdc);
         stablecoins[1] = address(usdt);
-        Core4Mica bareCore = new Core4Mica(address(manager), testPublicKey, stablecoins, 0);
+        Core4Mica bareCore = new Core4Mica(address(manager), address(guaranteeVerifier), stablecoins, 0);
 
         vm.prank(USER1);
         bareCore.deposit{value: 1 ether}();

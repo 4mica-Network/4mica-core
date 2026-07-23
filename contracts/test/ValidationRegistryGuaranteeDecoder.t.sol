@@ -2,7 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
-import {Guarantee} from "../src/Core4Mica.sol";
+import {Guarantee} from "../src/GuaranteeTypes.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ValidationBindingConstants} from "../src/ValidationBindingConstants.sol";
 import {MockValidationRegistry} from "./helpers/MockValidationRegistry.sol";

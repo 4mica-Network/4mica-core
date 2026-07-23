@@ -6,6 +6,7 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 import {Core4Mica} from "../src/Core4Mica.sol";
+import {GuaranteeVerifier} from "../src/GuaranteeVerifier.sol";
 import {GuaranteeDecoderRouter} from "../src/GuaranteeDecoderRouter.sol";
 import {ValidationRegistryGuaranteeDecoder} from "../src/ValidationRegistryGuaranteeDecoder.sol";
 import {ClearingHouse} from "../src/ClearingHouse.sol";
@@ -33,28 +34,34 @@ contract Core4MicaFullStackSmokeTest is Test {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = USDC;
         stablecoins[1] = USDT;
-        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins, 0);
+        GuaranteeVerifier guaranteeVerifier = new GuaranteeVerifier(address(manager), verificationKey);
+        Core4Mica core4Mica = new Core4Mica(address(manager), address(guaranteeVerifier), stablecoins, 0);
         GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
 
         address[] memory trustedRegistries = new address[](1);
         trustedRegistries[0] = address(0x8004AA63c570c570eBF15376c0dB199918BFe9Fb);
         ValidationRegistryGuaranteeDecoder validationDecoder = new ValidationRegistryGuaranteeDecoder(trustedRegistries);
 
-        bytes32 v2Domain = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(core4Mica)));
-        core4Mica.configureGuaranteeVersion(GUARANTEE_V2, verificationKey, v2Domain, address(validationDecoder), true);
+        bytes32 v2Domain = keccak256(abi.encode("4MICA_CORE_GUARANTEE_V2", block.chainid, address(guaranteeVerifier)));
+        guaranteeVerifier.configureGuaranteeVersion(
+            GUARANTEE_V2, verificationKey, v2Domain, address(validationDecoder), true
+        );
 
         _configureCoreRoles(manager, core4Mica, deployer);
+        _configureGuaranteeVerifierRoles(manager, guaranteeVerifier);
         _configureRouterRoles(manager, router);
 
+        assertEq(core4Mica.guaranteeVerifier(), address(guaranteeVerifier), "vault publishes its verifier");
+
         (BLS.G1Point memory v1Key, bytes32 v1Domain, address v1Decoder, bool v1Enabled) =
-            core4Mica.getGuaranteeVersionConfig(core4Mica.INITIAL_GUARANTEE_VERSION());
+            guaranteeVerifier.getGuaranteeVersionConfig(guaranteeVerifier.INITIAL_GUARANTEE_VERSION());
         assertTrue(v1Enabled);
-        assertEq(v1Domain, core4Mica.guaranteeDomainSeparator());
+        assertEq(v1Domain, guaranteeVerifier.guaranteeDomainSeparator());
         assertEq(v1Decoder, address(0));
         _assertSameKey(v1Key, verificationKey);
 
         (BLS.G1Point memory v2Key, bytes32 configuredV2Domain, address v2Decoder, bool v2Enabled) =
-            core4Mica.getGuaranteeVersionConfig(GUARANTEE_V2);
+            guaranteeVerifier.getGuaranteeVersionConfig(GUARANTEE_V2);
         assertTrue(v2Enabled);
         assertEq(configuredV2Domain, v2Domain);
         assertEq(v2Decoder, address(validationDecoder));
@@ -71,11 +78,27 @@ contract Core4MicaFullStackSmokeTest is Test {
         address[] memory stablecoins = new address[](2);
         stablecoins[0] = USDC;
         stablecoins[1] = USDT;
-        Core4Mica core4Mica = new Core4Mica(address(manager), verificationKey, stablecoins, 0);
+        GuaranteeVerifier guaranteeVerifier = new GuaranteeVerifier(address(manager), verificationKey);
+        Core4Mica core4Mica = new Core4Mica(address(manager), address(guaranteeVerifier), stablecoins, 0);
         GuaranteeDecoderRouter router = new GuaranteeDecoderRouter(address(manager));
 
         _configureCoreRoles(manager, core4Mica, deployer);
+        _configureGuaranteeVerifierRoles(manager, guaranteeVerifier);
         _configureRouterRoles(manager, router);
+
+        // Guarantee trust-root governance moved to the verifier, under the same role.
+        assertEq(
+            manager.getTargetFunctionRole(
+                address(guaranteeVerifier), GuaranteeVerifier.setGuaranteeVerificationKey.selector
+            ),
+            GOVERNANCE_ROLE
+        );
+        assertEq(
+            manager.getTargetFunctionRole(
+                address(guaranteeVerifier), GuaranteeVerifier.configureGuaranteeVersion.selector
+            ),
+            GOVERNANCE_ROLE
+        );
 
         assertEq(manager.getTargetFunctionRole(address(core4Mica), Core4Mica.configureAave.selector), GOVERNANCE_ROLE);
         assertEq(
@@ -120,13 +143,11 @@ contract Core4MicaFullStackSmokeTest is Test {
     }
 
     function _configureCoreRoles(AccessManager manager, Core4Mica core4Mica, address deployer) internal {
-        bytes4[] memory governanceSelectors = new bytes4[](6);
+        bytes4[] memory governanceSelectors = new bytes4[](4);
         governanceSelectors[0] = Core4Mica.setWithdrawalGracePeriod.selector;
-        governanceSelectors[1] = Core4Mica.setGuaranteeVerificationKey.selector;
-        governanceSelectors[2] = Core4Mica.configureGuaranteeVersion.selector;
-        governanceSelectors[3] = Core4Mica.configureAave.selector;
-        governanceSelectors[4] = Core4Mica.addStablecoinAsset.selector;
-        governanceSelectors[5] = Core4Mica.setYieldFeeBps.selector;
+        governanceSelectors[1] = Core4Mica.configureAave.selector;
+        governanceSelectors[2] = Core4Mica.addStablecoinAsset.selector;
+        governanceSelectors[3] = Core4Mica.setYieldFeeBps.selector;
 
         for (uint256 i = 0; i < governanceSelectors.length; i++) {
             manager.setTargetFunctionRole(
@@ -149,6 +170,17 @@ contract Core4MicaFullStackSmokeTest is Test {
         manager.grantRole(TREASURY_ROLE, deployer, TREASURY_DELAY);
         manager.grantRole(GUARDIAN_ROLE, deployer, 0);
         manager.grantRole(FOURMICA_OPERATOR_ROLE, deployer, 0);
+    }
+
+    function _configureGuaranteeVerifierRoles(AccessManager manager, GuaranteeVerifier verifier) internal {
+        manager.setTargetFunctionRole(
+            address(verifier),
+            _asSingletonArray(GuaranteeVerifier.setGuaranteeVerificationKey.selector),
+            GOVERNANCE_ROLE
+        );
+        manager.setTargetFunctionRole(
+            address(verifier), _asSingletonArray(GuaranteeVerifier.configureGuaranteeVersion.selector), GOVERNANCE_ROLE
+        );
     }
 
     function _configureRouterRoles(AccessManager manager, GuaranteeDecoderRouter router) internal {

@@ -1,6 +1,6 @@
 use alloy::primitives::FixedBytes;
 
-use crate::contract::Core4Mica::G2Point;
+use crate::contract::GuaranteeVerifier::G2Point;
 
 impl From<[[u8; 32]; 8]> for G2Point {
     fn from(value: [[u8; 32]; 8]) -> Self {

@@ -7,6 +7,7 @@ use crate::{
         ClearingHouse::{self, ClearingHouseInstance},
         Core4Mica::{self, Core4MicaInstance},
         ERC20::{self, ERC20Instance},
+        GuaranteeVerifier::{self, GuaranteeVerifierInstance},
     },
     error::{AuthError, ClientError},
     validators::{validate_address, validate_url},
@@ -75,8 +76,16 @@ impl<S> ClientCtx<S> {
         let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
         let contract = Core4Mica::new(contract_address, provider.clone());
+        // Guarantee configuration lives on the GuaranteeVerifier, whose address the vault
+        // publishes as an immutable so it cannot drift from a separately-configured value.
+        let guarantee_verifier_address = contract
+            .guaranteeVerifier()
+            .call()
+            .await
+            .map_err(|e| ClientError::Initialization(e.to_string()))?;
+        let verifier = GuaranteeVerifier::new(guarantee_verifier_address, provider.clone());
         let (max_accepted_guarantee_version, active_guarantee_domain, guarantee_domains) =
-            Self::fetch_guarantee_metadata(&public_params, &contract).await?;
+            Self::fetch_guarantee_metadata(&public_params, &verifier).await?;
 
         Ok(Self(Arc::new(Inner {
             cfg,
@@ -145,7 +154,7 @@ impl<S> ClientCtx<S> {
 
     async fn fetch_guarantee_metadata(
         public_params: &CorePublicParameters,
-        contract: &Core4MicaInstance<DynProvider>,
+        contract: &GuaranteeVerifierInstance<DynProvider>,
     ) -> Result<(u64, [u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
         let max_version = public_params.max_accepted_guarantee_version;
         let mut guarantee_domains = HashMap::new();

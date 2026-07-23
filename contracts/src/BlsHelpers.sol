@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import {Guarantee} from "../src/Core4Mica.sol";
+import {Guarantee} from "../src/GuaranteeTypes.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 
 library BlsHelper {
