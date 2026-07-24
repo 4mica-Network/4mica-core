@@ -21,7 +21,7 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
 
     struct GuaranteeV2 {
         bytes32 domain;
-        uint256 tabId;
+        uint256 cycleId;
         uint256 reqId;
         address client;
         address recipient;
@@ -139,7 +139,7 @@ contract ValidationRegistryGuaranteeDecoder is IGuaranteeDecoder, ValidationBind
 
         return Guarantee({
             domain: g.domain,
-            tabId: g.tabId,
+            cycleId: g.cycleId,
             reqId: g.reqId,
             client: g.client,
             recipient: g.recipient,

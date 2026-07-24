@@ -9,7 +9,7 @@ import {BlsHelper} from "../src/BlsHelpers.sol";
 contract MockGuaranteeDecoder is IGuaranteeDecoder {
     struct GuaranteeV2 {
         bytes32 domain;
-        uint256 tabId;
+        uint256 cycleId;
         uint256 reqId;
         address client;
         address recipient;
@@ -28,7 +28,7 @@ contract MockGuaranteeDecoder is IGuaranteeDecoder {
         GuaranteeV2 memory g = abi.decode(data, (GuaranteeV2));
         return Guarantee({
             domain: g.domain,
-            tabId: g.tabId,
+            cycleId: g.cycleId,
             reqId: g.reqId,
             client: g.client,
             recipient: g.recipient,
@@ -79,7 +79,7 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
 
         assertEq(decoded.version, 2);
         assertEq(decoded.domain, domainV2);
-        assertEq(decoded.tabId, g2.tabId);
+        assertEq(decoded.cycleId, g2.cycleId);
         assertEq(decoded.reqId, g2.reqId);
         assertEq(decoded.client, g2.client);
         assertEq(decoded.recipient, g2.recipient);
@@ -194,7 +194,7 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
 
     function _guaranteeV2(
         bytes32 domain,
-        uint256 tabId,
+        uint256 cycleId,
         uint256 reqId,
         address client,
         address recipient,
@@ -205,7 +205,7 @@ contract Core4MicaGuaranteeVersionsTest is Core4MicaTestBase {
     ) internal pure returns (MockGuaranteeDecoder.GuaranteeV2 memory) {
         return MockGuaranteeDecoder.GuaranteeV2({
             domain: domain,
-            tabId: tabId,
+            cycleId: cycleId,
             reqId: reqId,
             client: client,
             recipient: recipient,

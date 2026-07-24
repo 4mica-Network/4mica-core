@@ -84,7 +84,7 @@ fn build_v1_vector() -> Value {
         "signature": words_to_json(&signature),
         "guarantee": hex::encode_prefixed(&guarantee),
         "expected": {
-            "tabId": claims.cycle_id.to_string(),
+            "cycleId": claims.cycle_id.to_string(),
             "reqId": claims.req_id.to_string(),
             "client": CLIENT,
             "recipient": RECIPIENT,
@@ -158,7 +158,7 @@ fn build_v2_vector() -> Value {
             "requiredValidationTag": policy.required_validation_tag,
         },
         "expected": {
-            "tabId": claims.cycle_id.to_string(),
+            "cycleId": claims.cycle_id.to_string(),
             "reqId": claims.req_id.to_string(),
             "client": CLIENT,
             "recipient": RECIPIENT,
