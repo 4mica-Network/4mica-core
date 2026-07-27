@@ -161,6 +161,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (totalNetDebit != totalNetCredit) {
             revert CycleNotZeroSum(totalNetDebit, totalNetCredit);
         }
+        // forge-lint: disable-next-line(block-timestamp)
         if (paymentSubmissionDeadline <= block.timestamp || paymentFinalityDeadline < paymentSubmissionDeadline) {
             revert InvalidDeadline();
         }
@@ -194,6 +195,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable nonReentrant {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requirePaymentWindowOpen(cycleId, cycle);
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > cycle.paymentSubmissionDeadline) {
             revert PaymentWindowElapsed(cycle.paymentSubmissionDeadline);
         }
@@ -271,6 +273,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
             revert InvalidCycleStatus(cycleId, cycle.status);
         }
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp <= cycle.paymentFinalityDeadline) {
             revert PaymentFinalityPending(cycle.paymentFinalityDeadline);
         }
@@ -400,6 +403,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         if (cycle.status != CycleStatus.Defaulted) {
             revert InvalidCycleStatus(cycleId, cycle.status);
         }
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp <= cycle.paymentFinalityDeadline) {
             revert PaymentFinalityPending(cycle.paymentFinalityDeadline);
         }
@@ -418,6 +422,7 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     function finalizeCycle(bytes32 cycleId) external {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp <= cycle.paymentFinalityDeadline) {
             revert PaymentFinalityPending(cycle.paymentFinalityDeadline);
         }

@@ -42,7 +42,7 @@ contract Core4MicaMiscTest is Core4MicaTestBase {
         Guarantee memory g = _guarantee(0x1234, block.timestamp, USER1, USER2, 17, 3 ether, address(usdc));
         BLS.G2Point memory signature = _signGuarantee(g, TEST_PRIVATE_KEY);
 
-        Guarantee memory tampered = _ethGuarantee(g.tabId, g.timestamp, g.client, g.recipient, g.reqId, g.amount);
+        Guarantee memory tampered = _ethGuarantee(g.cycleId, g.timestamp, g.client, g.recipient, g.reqId, g.amount);
         bytes memory guaranteeData = _encodeGuaranteeWithVersion(tampered);
 
         vm.expectRevert(Core4Mica.InvalidSignature.selector);
