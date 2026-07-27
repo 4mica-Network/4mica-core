@@ -33,23 +33,13 @@ contract Core4MicaDustWithdrawTest is Core4MicaTestBase {
     /// relies on: this is unchanged by the withdrawal fix.
     function test_Withdrawable_StillReportsFullPrincipal() public {
         _depositDust();
-        assertEq(
-            core4Mica.principalBalance(USER1, address(usdc)),
-            DEPOSIT,
-            "principal is face value"
-        );
-        assertEq(
-            core4Mica.withdrawableBalance(USER1, address(usdc)),
-            DEPOSIT,
-            "withdrawable reports full principal"
-        );
+        assertEq(core4Mica.principalBalance(USER1, address(usdc)), DEPOSIT, "principal is face value");
+        assertEq(core4Mica.withdrawableBalance(USER1, address(usdc)), DEPOSIT, "withdrawable reports full principal");
     }
 
     /// Finalizing a withdrawal of the full reported balance no longer reverts: it drains the whole
     /// position, pays out what it truly redeems (principal - 1), and zeroes the ledger.
-    function test_WithdrawFullBalance_DustPosition_DrainsInsteadOfReverting()
-        public
-    {
+    function test_WithdrawFullBalance_DustPosition_DrainsInsteadOfReverting() public {
         _depositDust();
 
         uint256 stated = core4Mica.withdrawableBalance(USER1, address(usdc));
@@ -67,29 +57,14 @@ contract Core4MicaDustWithdrawTest is Core4MicaTestBase {
         core4Mica.finalizeWithdrawal(address(usdc));
 
         // Received the true backed value, and the position is fully drained on both ledgers.
-        assertEq(
-            usdc.balanceOf(USER1) - before,
-            DUST_BACKED,
-            "paid out what the position backs"
-        );
-        assertEq(
-            core4Mica.principalBalance(USER1, address(usdc)),
-            0,
-            "principal zeroed"
-        );
-        assertEq(
-            core4Mica.withdrawableBalance(USER1, address(usdc)),
-            0,
-            "position drained"
-        );
+        assertEq(usdc.balanceOf(USER1) - before, DUST_BACKED, "paid out what the position backs");
+        assertEq(core4Mica.principalBalance(USER1, address(usdc)), 0, "principal zeroed");
+        assertEq(core4Mica.withdrawableBalance(USER1, address(usdc)), 0, "position drained");
     }
 
     /// Property: finalizing the full reported withdrawable never reverts and always drains the debtor,
     /// for any deposit size and reserve index.
-    function testFuzz_FinalizeFullWithdrawal_NeverReverts(
-        uint256 depositAmt,
-        uint256 indexNum
-    ) public {
+    function testFuzz_FinalizeFullWithdrawal_NeverReverts(uint256 depositAmt, uint256 indexNum) public {
         depositAmt = bound(depositAmt, 1e6, 1_000_000e6);
         uint256 index = bound(indexNum, 1e27, 5e27);
 
@@ -112,11 +87,7 @@ contract Core4MicaDustWithdrawTest is Core4MicaTestBase {
         vm.prank(USER1);
         core4Mica.finalizeWithdrawal(address(usdc));
 
-        assertEq(
-            core4Mica.principalBalance(USER1, address(usdc)),
-            0,
-            "principal zeroed"
-        );
+        assertEq(core4Mica.principalBalance(USER1, address(usdc)), 0, "principal zeroed");
     }
 
     /// Positive accrued yield is unaffected: a full withdrawal still pays principal + net yield.
@@ -135,10 +106,6 @@ contract Core4MicaDustWithdrawTest is Core4MicaTestBase {
         uint256 before = usdc.balanceOf(USER1);
         vm.prank(USER1);
         core4Mica.finalizeWithdrawal(address(usdc));
-        assertEq(
-            usdc.balanceOf(USER1) - before,
-            2_000 ether,
-            "paid principal + yield in full"
-        );
+        assertEq(usdc.balanceOf(USER1) - before, 2_000 ether, "paid principal + yield in full");
     }
 }
