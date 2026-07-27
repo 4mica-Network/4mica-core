@@ -584,10 +584,10 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         ISignatureTransfer(PERMIT2)
             .permitTransferFrom(
                 ISignatureTransfer.PermitTransferFrom({
-                    permitted: ISignatureTransfer.TokenPermissions({token: asset, amount: amount}),
-                    nonce: p.nonce,
-                    deadline: p.deadline
-                }),
+                permitted: ISignatureTransfer.TokenPermissions({token: asset, amount: amount}),
+                nonce: p.nonce,
+                deadline: p.deadline
+            }),
                 ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: amount}),
                 p.from,
                 p.signature
