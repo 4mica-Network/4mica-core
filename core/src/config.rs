@@ -204,6 +204,9 @@ pub struct GuaranteeConfig {
     pub validators: String,
     #[envconfig(from = "VALIDATION_POLL_CRON", default = "0 */1 * * * *")]
     pub validation_poll_cron: String,
+    /// Shortest validation window, in seconds, core will issue against.
+    #[envconfig(from = "MIN_VALIDATION_WINDOW_SECS")]
+    pub min_validation_window_secs: Option<u64>,
 }
 
 impl GuaranteeConfig {
@@ -696,6 +699,7 @@ mod tests {
         GuaranteeConfig {
             validators: validators.to_string(),
             validation_poll_cron: "0 */1 * * * *".to_string(),
+            min_validation_window_secs: None,
         }
     }
 

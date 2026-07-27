@@ -51,8 +51,8 @@ impl CoreService {
         Ok(())
     }
 
-    /// Checks only what core owns: the validator is whitelisted and the deadline is still ahead.
-    /// Whether `params` make sense is the adapter's call.
+    /// Checks only what core owns: the validator is whitelisted and the deadline leaves it enough
+    /// time to answer. Whether `params` make sense is the adapter's call.
     fn verify_validation_requirement(
         &self,
         validation: &ValidationRequirement,
@@ -79,6 +79,12 @@ impl CoreService {
             return Err(ServiceError::InvalidParams(format!(
                 "validation deadline {deadline} is already in the past"
             )));
+        }
+
+        if let Some(min_validation_window_secs) =
+            self.inner.config.guarantee.min_validation_window_secs
+        {
+            check_validation_window(validation, now_secs, min_validation_window_secs)?;
         }
 
         Ok(())
@@ -274,8 +280,13 @@ impl CoreService {
             })
     }
 
-    pub async fn finalize_guarantee_payable(&self, guarantee_id: &str) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle(
+    pub(super) async fn finalize_guarantee_payable_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        guarantee_id: &str,
+    ) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle_on(
+            conn,
             guarantee_id,
             &[
                 GuaranteeSettlementStatus::Issued,
@@ -287,8 +298,13 @@ impl CoreService {
         .await
     }
 
-    pub async fn dispute_guarantee(&self, guarantee_id: &str) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle(
+    pub(super) async fn dispute_guarantee_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        guarantee_id: &str,
+    ) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle_on(
+            conn,
             guarantee_id,
             &[
                 GuaranteeSettlementStatus::Issued,
@@ -300,8 +316,13 @@ impl CoreService {
         .await
     }
 
-    pub async fn cancel_guarantee(&self, guarantee_id: &str) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle(
+    pub(super) async fn cancel_guarantee_on<C: ConnectionTrait>(
+        &self,
+        conn: &C,
+        guarantee_id: &str,
+    ) -> ServiceResult<bool> {
+        self.transition_guarantee_lifecycle_on(
+            conn,
             guarantee_id,
             &[
                 GuaranteeSettlementStatus::Issued,
@@ -313,17 +334,17 @@ impl CoreService {
         .await
     }
 
-    async fn transition_guarantee_lifecycle(
+    async fn transition_guarantee_lifecycle_on<C: ConnectionTrait>(
         &self,
+        conn: &C,
         guarantee_id: &str,
         allowed_from: &[GuaranteeSettlementStatus],
         target: GuaranteeSettlementStatus,
         release_locked_collateral: bool,
     ) -> ServiceResult<bool> {
-        let guarantee =
-            repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), guarantee_id)
-                .await?
-                .ok_or_else(|| ServiceError::NotFound(format!("Guarantee {guarantee_id}")))?;
+        let guarantee = repo::get_guarantee_by_id_on(conn, guarantee_id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("Guarantee {guarantee_id}")))?;
 
         if guarantee.settlement_status == target {
             return Ok(false);
@@ -335,54 +356,56 @@ impl CoreService {
             )));
         }
 
-        self.inner
-            .persist_ctx
-            .db
-            .transaction::<_, _, ServiceError>(|txn| {
-                let allowed_from = allowed_from.to_vec();
-                let guarantee = guarantee.clone();
-                let guarantee_id = guarantee_id.to_string();
-                let target = target.clone();
-                Box::pin(async move {
-                    let changed = repo::transition_guarantee_settlement_status_on(
-                        txn,
-                        &guarantee_id,
-                        &allowed_from,
-                        target,
-                        Utc::now().naive_utc(),
-                    )
-                    .await?;
-                    if changed && release_locked_collateral {
-                        repo::release_locked_collateral_for_guarantee_on(txn, &guarantee).await?;
-                    }
-                    Ok(changed)
-                })
-            })
-            .await
-            .map_err(|e| match e {
-                sea_orm::TransactionError::Transaction(inner) => inner,
-                sea_orm::TransactionError::Connection(err) => {
-                    PersistDbError::DatabaseFailure(err).into()
-                }
-            })
+        let changed = repo::transition_guarantee_settlement_status_on(
+            conn,
+            guarantee_id,
+            allowed_from,
+            target,
+            Utc::now().naive_utc(),
+        )
+        .await?;
+        if changed && release_locked_collateral {
+            repo::release_locked_collateral_for_guarantee_on(conn, &guarantee).await?;
+        }
+        Ok(changed)
     }
 }
 
-/// The deadline core enforces: `min(payer's cap, the cycle's resolution cutoff)`. Clamping to the
-/// cutoff is what keeps a pending validation from outliving the cycle that would settle it.
+/// Refuses a deadline that leaves a validator less time to answer than `min_window` demands.
+fn check_validation_window(
+    validation: &ValidationRequirement,
+    now_secs: u64,
+    min_window: u64,
+) -> ServiceResult<()> {
+    let Some(deadline) = validation.deadline else {
+        return Ok(());
+    };
+
+    if deadline < now_secs.saturating_add(min_window) {
+        return Err(ServiceError::InvalidParams(format!(
+            "validation deadline {deadline} leaves less than the required {min_window}s to validate"
+        )));
+    }
+    Ok(())
+}
+
+/// `min(payer's deadline, the cycle's resolution cutoff)`, so a pending validation never outlives
+/// the cycle that would settle it.
 fn enforced_validation_deadline(
     validation: &ValidationRequirement,
     resolution_cutoff: chrono::NaiveDateTime,
 ) -> ServiceResult<chrono::NaiveDateTime> {
-    let Some(cap) = validation.deadline else {
+    let Some(deadline) = validation.deadline else {
         return Ok(resolution_cutoff);
     };
 
-    let cap = chrono::DateTime::from_timestamp(cap as i64, 0)
-        .ok_or_else(|| ServiceError::InvalidParams(format!("invalid validation deadline {cap}")))?
+    let deadline = chrono::DateTime::from_timestamp(deadline as i64, 0)
+        .ok_or_else(|| {
+            ServiceError::InvalidParams(format!("invalid validation deadline {deadline}"))
+        })?
         .naive_utc();
 
-    Ok(cap.min(resolution_cutoff))
+    Ok(deadline.min(resolution_cutoff))
 }
 
 fn settlement_status_for_request(
@@ -445,23 +468,42 @@ mod tests {
         );
     }
 
+    const NOW: i64 = 1_700_000_000;
+
+    fn enforced(deadline: Option<u64>, cutoff: i64) -> chrono::NaiveDateTime {
+        enforced_validation_deadline(&validation(deadline), naive(cutoff)).expect("deadline")
+    }
+
     #[test]
     fn deadline_defaults_to_the_cycle_resolution_cutoff() {
-        let cutoff = naive(1_700_010_000);
-        let deadline = enforced_validation_deadline(&validation(None), cutoff).expect("deadline");
-        assert_eq!(deadline, cutoff);
+        assert_eq!(enforced(None, 1_700_010_000), naive(1_700_010_000));
     }
 
     #[test]
     fn payer_deadline_tightens_but_never_extends_the_cutoff() {
-        let cutoff = naive(1_700_010_000);
+        assert_eq!(
+            enforced(Some(1_700_005_000), 1_700_010_000),
+            naive(1_700_005_000)
+        );
+        assert_eq!(
+            enforced(Some(1_700_020_000), 1_700_010_000),
+            naive(1_700_010_000)
+        );
+    }
 
-        let earlier = enforced_validation_deadline(&validation(Some(1_700_005_000)), cutoff)
-            .expect("deadline");
-        assert_eq!(earlier, naive(1_700_005_000));
+    fn window_check(deadline: Option<u64>, min_window: u64) -> ServiceResult<()> {
+        check_validation_window(&validation(deadline), NOW as u64, min_window)
+    }
 
-        let later = enforced_validation_deadline(&validation(Some(1_700_020_000)), cutoff)
-            .expect("deadline");
-        assert_eq!(later, cutoff);
+    #[test]
+    fn deadline_inside_the_minimum_window_is_rejected() {
+        let now = NOW as u64;
+        let window = 600;
+
+        assert!(window_check(Some(now + 599), window).is_err());
+        assert!(window_check(Some(now - 1), window).is_err());
+        assert!(window_check(Some(now + 600), window).is_ok());
+        // A payer who names no deadline gets the cycle's, which is core's own to police.
+        assert!(window_check(None, window).is_ok());
     }
 }

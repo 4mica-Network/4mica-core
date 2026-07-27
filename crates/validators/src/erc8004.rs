@@ -7,7 +7,7 @@
 //! - **Params**: `abi.encode(address validator, uint256 agentId, uint8 minScore, string tag)`.
 //!   An empty `tag` accepts any tag.
 
-use alloy::providers::DynProvider;
+use alloy::providers::{DynProvider, Provider};
 use alloy::sol;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_sol_types::{SolType, SolValue};
@@ -59,28 +59,29 @@ pub struct Erc8004Config {}
 
 pub struct Erc8004Adapter {
     registry: Address,
-    chain_id: u64,
     provider: DynProvider,
 }
 
 impl Erc8004Adapter {
-    pub fn new(
+    pub async fn new(
         uri: &str,
         config: &serde_json::Value,
         provider: DynProvider,
     ) -> anyhow::Result<Self> {
         let _config: Erc8004Config = parse_config(KIND, config)?;
         let (chain_id, registry) = parse_caip10(uri)?;
-        Ok(Self {
-            registry,
-            chain_id,
-            provider,
-        })
-    }
 
-    /// The chain this registry lives on.
-    pub fn chain_id(&self) -> u64 {
-        self.chain_id
+        let provider_chain_id = provider
+            .get_chain_id()
+            .await
+            .context("read chain id from the validator provider")?;
+        if chain_id != provider_chain_id {
+            bail!(
+                "validator '{uri}' lives on chain {chain_id}, but the provider is on chain {provider_chain_id}"
+            );
+        }
+
+        Ok(Self { registry, provider })
     }
 }
 

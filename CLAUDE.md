@@ -1,5 +1,9 @@
 # Project guidelines
 
+## Tests and local infra
+
+@CONTRIBUTING.md
+
 ## Comments
 
 Write comments only where code cannot speak for itself.
