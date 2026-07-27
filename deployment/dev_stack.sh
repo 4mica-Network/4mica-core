@@ -59,11 +59,9 @@ CREATE2_SALT="${CREATE2_SALT:-4mica-core-v1}"
 DEV_BLS_PRIVATE_KEY="${DEV_BLS_PRIVATE_KEY:-0x0000000000000000000000000000000000000000000000000000000000000001}"
 AUTH_JWT_SECRET="${AUTH_JWT_SECRET:-asecureauthjwtsecretkey}"
 
-# Stablecoin + validation-registry inputs for the constructor. The local stack
-# deploys real ERC20 mocks (DEPLOY_MOCK_STABLECOINS) so the core service can read
-# their symbol()/decimals();
+# Stablecoin inputs for the constructor. The local stack deploys real ERC20 mocks
+# (DEPLOY_MOCK_STABLECOINS) so the core service can read their symbol()/decimals();
 STABLECOINS_COUNT="${STABLECOINS_COUNT:-1}"
-TRUSTED_VALIDATION_REGISTRY="${TRUSTED_VALIDATION_REGISTRY:-0x000000000000000000000000000000000000dEaD}"
 
 RPC_HTTP="http://127.0.0.1:${ANVIL_PORT}"
 RPC_WS="ws://127.0.0.1:${ANVIL_PORT}"
@@ -129,7 +127,6 @@ deploy_contracts() {
     DEPLOY_ENVIRONMENT=development \
     CREATE2_SALT="$CREATE2_SALT" \
     STABLECOINS_COUNT="$STABLECOINS_COUNT" DEPLOY_MOCK_STABLECOINS=true \
-    TRUSTED_VALIDATION_REGISTRY="$TRUSTED_VALIDATION_REGISTRY" \
     VK_X0="$VK_X0" VK_X1="$VK_X1" VK_Y0="$VK_Y0" VK_Y1="$VK_Y1" \
       forge script script/Core4MicaFullStack.s.sol:Core4MicaFullStackScript \
         --rpc-url "$RPC_HTTP" --broadcast --via-ir -vvvv
@@ -192,10 +189,9 @@ SERVER_ENVIRONMENT=development
 SERVER_HOST=$CORE_HOST
 SERVER_PORT=$CORE_PORT
 
-# Guarantee handling (V2 enabled on-chain by the full-stack deploy)
-GUARANTEE_REQUEST_VERSION=2
-TRUSTED_VALIDATION_REGISTRIES="$TRUSTED_VALIDATION_REGISTRY"
-VALIDATION_HASH_CANONICALIZATION_VERSION=4MICA_VALIDATION_REQUEST_V2
+# Guarantee validation: no validators whitelisted locally, so guarantees are payable
+# at issuance. Add entries here to exercise the validation lifecycle.
+GUARANTEE_VALIDATORS=[]
 
 # EIP-712
 EIP712_NAME="4Mica"

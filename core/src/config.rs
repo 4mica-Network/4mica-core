@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::{str::FromStr, sync::Arc};
 
 use alloy::primitives::Address;
@@ -7,17 +8,12 @@ use crypto::bls::KeyMaterial;
 use envconfig::Envconfig;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::warn;
-use rpc::{
-    GUARANTEE_CLAIMS_VERSION, SUPPORTED_GUARANTEE_VERSIONS, is_supported_guarantee_version,
-    version_requires_validation_registry,
-};
 use secrecy::zeroize::Zeroize;
+use validators::ValidatorEntry;
 
 pub const DEFAULT_TTL_SECS: u64 = 3600 * 24;
 
 pub const DEFAULT_ASSET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
-pub const VALIDATION_HASH_CANONICALIZATION_VERSION_V2: &str =
-    rpc::VALIDATION_REQUEST_BINDING_DOMAIN_V2;
 const DEFAULT_AUTH_JWT_SECRET: &str = "dev-insecure-change-me";
 const PLACEHOLDER_AUTH_JWT_SECRET: &str = "replace-with-32+bytes-random";
 
@@ -202,157 +198,45 @@ pub struct Eip712Config {
 
 #[derive(Debug, Clone, Envconfig)]
 pub struct GuaranteeConfig {
-    /// Ceiling for the default accepted-version range. The output guarantee version is always
-    /// determined by the incoming claim payload — this value only controls which versions core
-    /// will accept and which on-chain domain separators are loaded at startup.
-    #[envconfig(from = "GUARANTEE_REQUEST_VERSION", default = "1")]
-    pub max_accepted_version: u64,
-    #[envconfig(from = "GUARANTEE_ACCEPTED_REQUEST_VERSIONS", default = "")]
-    pub accepted_request_versions: String,
-    #[envconfig(from = "TRUSTED_VALIDATION_REGISTRIES", default = "")]
-    pub trusted_validation_registries: String,
-    #[envconfig(
-        from = "VALIDATION_HASH_CANONICALIZATION_VERSION",
-        default = "4MICA_VALIDATION_REQUEST_V2"
-    )]
-    pub validation_hash_canonicalization_version: String,
-    #[envconfig(from = "ENABLE_V2_VALIDATION_LIFECYCLE", default = "false")]
-    pub enable_v2_validation_lifecycle: bool,
-    #[envconfig(from = "VALIDATION_TIMEOUT_SECS", default = "3600")]
-    pub validation_timeout_secs: u64,
+    /// JSON array of whitelisted validators — see [`ValidatorEntry`]. Empty disables
+    /// validation-gated guarantees entirely.
+    #[envconfig(from = "GUARANTEE_VALIDATORS", default = "[]")]
+    pub validators: String,
     #[envconfig(from = "VALIDATION_POLL_CRON", default = "0 */1 * * * *")]
     pub validation_poll_cron: String,
+    /// Shortest validation window, in seconds, core will issue against.
+    #[envconfig(from = "MIN_VALIDATION_WINDOW_SECS")]
+    pub min_validation_window_secs: Option<u64>,
 }
 
 impl GuaranteeConfig {
-    pub fn accepted_request_versions(&self) -> anyhow::Result<Vec<u64>> {
-        let mut versions = if self.accepted_request_versions.trim().is_empty() {
-            // Default: accept every version from 1 up to max_accepted_version so that
-            // upgrading to V3 (or higher) automatically accepts all prior versions too.
-            (GUARANTEE_CLAIMS_VERSION..=self.max_accepted_version).collect()
-        } else {
-            self.accepted_request_versions
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| {
-                    value.parse::<u64>().map_err(|_| {
-                        anyhow::anyhow!(
-                            "invalid guarantee request version in GUARANTEE_ACCEPTED_REQUEST_VERSIONS: {value}"
-                        )
-                    })
-                })
-                .collect::<anyhow::Result<Vec<u64>>>()?
-        };
-
-        versions.sort_unstable();
-        versions.dedup();
-        Ok(versions)
+    pub fn validators(&self) -> anyhow::Result<Vec<ValidatorEntry>> {
+        let raw = self.validators.trim();
+        if raw.is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_str(raw).context("GUARANTEE_VALIDATORS must be a JSON array of validators")
     }
 
-    pub fn trusted_validation_registry_allowlist(&self) -> anyhow::Result<Vec<String>> {
-        self.trusted_validation_registries
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                Address::from_str(value)
-                    .map(|addr| addr.to_string())
-                    .map_err(|_| anyhow::anyhow!("invalid validation registry address: {value}"))
-            })
-            .collect()
-    }
-
-    pub fn validate(&self, environment: Environment) -> anyhow::Result<()> {
-        validate_guarantee_version(self.max_accepted_version, "GUARANTEE_REQUEST_VERSION")?;
-        let accepted_versions = self.accepted_request_versions()?;
-        accepted_versions.iter().try_for_each(|v| {
-            validate_guarantee_version(*v, "GUARANTEE_ACCEPTED_REQUEST_VERSIONS")
-        })?;
-
-        // V2+ guarantees are validation-gated and not enabled for production. Refuse
-        // to start if any advertised or accepted version is beyond V1 in production;
-        // development/test may exercise V2. `accepted_request_versions()` is the
-        // source of truth for both request acceptance and the advertised max version,
-        // so gating here disables V2 everywhere it is surfaced.
-        if environment.is_production() {
-            let advertises_v2 = version_requires_validation_registry(self.max_accepted_version)
-                || accepted_versions
-                    .iter()
-                    .any(|&v| version_requires_validation_registry(v));
-            if advertises_v2 {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let validators = self.validators()?;
+        let mut seen = HashSet::new();
+        for entry in &validators {
+            if entry.uri.trim().is_empty() {
+                bail!("GUARANTEE_VALIDATORS contains an entry with an empty uri");
+            }
+            if !seen.insert(entry.uri.clone()) {
                 bail!(
-                    "V2+ guarantees are disabled in production (SERVER_ENVIRONMENT=production); \
-                     set GUARANTEE_REQUEST_VERSION=1 and remove any version >1 from \
-                     GUARANTEE_ACCEPTED_REQUEST_VERSIONS. Use SERVER_ENVIRONMENT=development to test V2."
+                    "GUARANTEE_VALIDATORS contains duplicate validator '{}'",
+                    entry.uri
                 );
             }
         }
 
-        let canonicalization_version = self.validation_hash_canonicalization_version.trim();
-        if canonicalization_version.is_empty() {
-            bail!("VALIDATION_HASH_CANONICALIZATION_VERSION must not be empty");
-        }
-        if canonicalization_version != VALIDATION_HASH_CANONICALIZATION_VERSION_V2 {
-            bail!(
-                "unsupported VALIDATION_HASH_CANONICALIZATION_VERSION '{}'; supported: {}",
-                canonicalization_version,
-                VALIDATION_HASH_CANONICALIZATION_VERSION_V2
-            );
-        }
-
-        // Ensures all configured addresses are valid and normalized.
-        let allowlist = self.trusted_validation_registry_allowlist()?;
-        // Any validation-gated version (V2+) requires on-chain validation; ensure the allowlist is set.
-        if accepted_versions
-            .iter()
-            .any(|&v| version_requires_validation_registry(v))
-            && allowlist.is_empty()
-        {
-            bail!(
-                "TRUSTED_VALIDATION_REGISTRIES must include at least one registry when validation-gated guarantee versions are accepted"
-            );
-        }
-
-        // A zero timeout makes the very first validation sweep cancel every still-pending V2
-        // guarantee (releasing its collateral) before its on-chain validation can resolve.
-        if self.validation_timeout_secs == 0 {
-            bail!(
-                "VALIDATION_TIMEOUT_SECS must be > 0; a zero timeout cancels every pending \
-                 validation-gated (V2) guarantee on the first sweep before its validation resolves"
-            );
-        }
         // The scheduler rejects a malformed pattern when the task is registered, but an empty
         // value is a common misconfiguration worth catching here with a clear message.
         if self.validation_poll_cron.trim().is_empty() {
             bail!("VALIDATION_POLL_CRON must not be empty");
-        }
-        Ok(())
-    }
-
-    /// Cross-config timing invariant between the validation lifecycle and settlement cycles.
-    ///
-    /// A validation-gated (V2) guarantee must resolve (finalize or cancel) *before* its settlement
-    /// cycle is netted, otherwise a late finalize would move it into a cycle that can no longer
-    /// include it, stranding the payer's collateral (the driver guards this at runtime, but
-    /// keeping the timeout inside the resolution window makes the happy path safe by
-    /// construction). A guarantee issued at the very end of a cycle's open window has at most
-    /// `resolution_cutoff_secs` before that cycle resolves, so the validation timeout must be
-    /// strictly less than it. Only enforced when the lifecycle is enabled.
-    pub fn validate_against_settlement_cycle(
-        &self,
-        cycle: &SettlementCycleConfig,
-    ) -> anyhow::Result<()> {
-        if self.enable_v2_validation_lifecycle
-            && self.validation_timeout_secs >= cycle.resolution_cutoff_secs
-        {
-            bail!(
-                "VALIDATION_TIMEOUT_SECS ({}) must be < SETTLEMENT_RESOLUTION_CUTOFF_SECS ({}) so a \
-                 validation-gated (V2) guarantee always resolves before its settlement cycle is \
-                 netted; otherwise a late finalize would strand the payer's collateral",
-                self.validation_timeout_secs,
-                cycle.resolution_cutoff_secs
-            );
         }
         Ok(())
     }
@@ -481,18 +365,6 @@ impl SettlementCycleConfig {
         }
         Ok(())
     }
-}
-
-fn validate_guarantee_version(version: u64, field: &str) -> anyhow::Result<()> {
-    if !is_supported_guarantee_version(version) {
-        let supported = SUPPORTED_GUARANTEE_VERSIONS
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!("unsupported {field} '{version}'; supported: {supported}");
-    }
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -668,17 +540,12 @@ impl AppConfig {
         let eip712 = Eip712Config::init_from_env().context("Failed to load EIP712 config")?;
         let guarantee =
             GuaranteeConfig::init_from_env().context("Failed to load guarantee config")?;
-        guarantee
-            .validate(server_config.environment)
-            .context("Invalid guarantee config")?;
+        guarantee.validate().context("Invalid guarantee config")?;
         let settlement_cycle = SettlementCycleConfig::init_from_env()
             .context("Failed to load settlement cycle config")?;
         settlement_cycle
             .validate()
             .context("Invalid settlement cycle config")?;
-        guarantee
-            .validate_against_settlement_cycle(&settlement_cycle)
-            .context("Invalid validation-lifecycle / settlement-cycle timing")?;
         let auth = AuthConfig::init_from_env().context("Failed to load auth config")?;
         auth.validate(server_config.environment)
             .context("Invalid auth config")?;
@@ -828,305 +695,75 @@ mod tests {
             .expect("explicit https SIWE config must be valid in production");
     }
 
-    #[test]
-    fn guarantee_config_accepts_valid_v1_and_v2() {
-        let v1 = GuaranteeConfig {
-            max_accepted_version: 1,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: String::new(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        v1.validate(Environment::Production)
-            .expect("v1 config must be valid");
-
-        let v2 = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries:
-                "0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222"
-                    .to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        v2.validate(Environment::Development)
-            .expect("v2 config must be valid in development");
-        let allowlist = v2
-            .trusted_validation_registry_allowlist()
-            .expect("allowlist should parse");
-        assert_eq!(allowlist.len(), 2);
-    }
-
-    /// A validation-gated V2 config in development with the lifecycle enabled and a 1h timeout.
-    fn v2_lifecycle_guarantee_config() -> GuaranteeConfig {
+    fn guarantee_config(validators: &str) -> GuaranteeConfig {
         GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: true,
-            validation_timeout_secs: 3600,
+            validators: validators.to_string(),
             validation_poll_cron: "0 */1 * * * *".to_string(),
-        }
-    }
-
-    fn base_settlement_cycle_config() -> SettlementCycleConfig {
-        SettlementCycleConfig {
-            cycle_secs: 86400,
-            resolution_cutoff_secs: 21600,
-            clearing_commit_delay_secs: 900,
-            payment_submission_window_secs: 7200,
-            payment_finality_window_secs: 14400,
-            seizure_margin_secs: 21600,
-            default_batch_size: 50,
-            shortfall_grace_secs: 21600,
-            settlement_retry_delay_secs: 1800,
-            hanging_retry_windows: 3,
+            min_validation_window_secs: None,
         }
     }
 
     #[test]
-    fn guarantee_config_rejects_zero_validation_timeout() {
-        let mut cfg = v2_lifecycle_guarantee_config();
-        cfg.validation_timeout_secs = 0;
-        let err = cfg
-            .validate(Environment::Development)
-            .expect_err("a zero validation timeout must be rejected");
-        assert!(
-            err.to_string().contains("VALIDATION_TIMEOUT_SECS"),
-            "unexpected error: {err}"
+    fn guarantee_config_accepts_an_empty_validator_whitelist() {
+        let cfg = guarantee_config("[]");
+        cfg.validate().expect("no validators is a valid config");
+        assert!(cfg.validators().expect("parse").is_empty());
+    }
+
+    #[test]
+    fn guarantee_config_parses_validators() {
+        let cfg = guarantee_config(
+            r#"[
+                {"uri": "eip155:8453:0x1111111111111111111111111111111111111111",
+                 "kind": "erc8004"},
+                {"uri": "https://validator.acme.io/checks",
+                 "kind": "http-json-v1",
+                 "config": {"timeout_ms": 1000}}
+            ]"#,
         );
+        cfg.validate().expect("valid validators");
+
+        let validators = cfg.validators().expect("parse");
+        assert_eq!(validators.len(), 2);
+        assert_eq!(validators[0].kind, "erc8004");
+        assert_eq!(validators[1].kind, "http-json-v1");
     }
 
     #[test]
-    fn guarantee_config_rejects_empty_validation_poll_cron() {
-        let mut cfg = v2_lifecycle_guarantee_config();
+    fn guarantee_config_rejects_malformed_validators() {
+        let err = guarantee_config("not json")
+            .validate()
+            .expect_err("malformed GUARANTEE_VALIDATORS must fail");
+        assert!(err.to_string().contains("GUARANTEE_VALIDATORS"));
+    }
+
+    #[test]
+    fn guarantee_config_rejects_duplicate_validators() {
+        let err = guarantee_config(
+            r#"[
+                {"uri": "https://validator.acme.io/checks", "kind": "http-json-v1"},
+                {"uri": "https://validator.acme.io/checks", "kind": "http-json-v1"}
+            ]"#,
+        )
+        .validate()
+        .expect_err("duplicate validator uris must fail");
+        assert!(err.to_string().contains("duplicate validator"));
+    }
+
+    #[test]
+    fn guarantee_config_rejects_empty_validator_uri() {
+        let err = guarantee_config(r#"[{"uri": "  ", "kind": "http-json-v1"}]"#)
+            .validate()
+            .expect_err("empty uri must fail");
+        assert!(err.to_string().contains("empty uri"));
+    }
+
+    #[test]
+    fn guarantee_config_rejects_empty_poll_cron() {
+        let mut cfg = guarantee_config("[]");
         cfg.validation_poll_cron = "   ".to_string();
-        let err = cfg
-            .validate(Environment::Development)
-            .expect_err("an empty validation poll cron must be rejected");
-        assert!(
-            err.to_string().contains("VALIDATION_POLL_CRON"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn guarantee_timeout_must_be_within_settlement_resolution_window() {
-        let cycle = base_settlement_cycle_config();
-
-        // Timeout comfortably inside the resolution window: accepted.
-        let ok = v2_lifecycle_guarantee_config();
-        ok.validate_against_settlement_cycle(&cycle)
-            .expect("timeout < resolution cutoff must be accepted");
-
-        // Timeout at or beyond the resolution window strands late-issued V2 guarantees: rejected.
-        let mut too_long = v2_lifecycle_guarantee_config();
-        too_long.validation_timeout_secs = cycle.resolution_cutoff_secs;
-        let err = too_long
-            .validate_against_settlement_cycle(&cycle)
-            .expect_err("timeout >= resolution cutoff must be rejected");
-        assert!(
-            err.to_string().contains("VALIDATION_TIMEOUT_SECS"),
-            "unexpected error: {err}"
-        );
-
-        // The coupling only bites when the lifecycle is enabled.
-        let mut disabled = too_long.clone();
-        disabled.enable_v2_validation_lifecycle = false;
-        disabled
-            .validate_against_settlement_cycle(&cycle)
-            .expect("timing coupling must not apply when the lifecycle is disabled");
-    }
-
-    #[test]
-    fn guarantee_config_rejects_v2_in_production() {
-        // Default accepted set for max=2 is [1, 2], so this exercises the accepted-set gate.
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        let err = cfg
-            .validate(Environment::Production)
-            .expect_err("V2 guarantees must be rejected in production");
-        assert!(
-            err.to_string()
-                .contains("V2+ guarantees are disabled in production")
-        );
-    }
-
-    #[test]
-    fn guarantee_config_rejects_explicit_v2_only_in_production() {
-        // Even when V1 is excluded, an explicit V2-only accepted set must be rejected in prod.
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: "2".to_string(),
-            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        cfg.validate(Environment::Production)
-            .expect_err("explicit V2 accepted set must be rejected in production");
-    }
-
-    #[test]
-    fn guarantee_config_accepts_v1_only_in_production() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 1,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: String::new(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        cfg.validate(Environment::Production)
-            .expect("V1-only config must be valid in production");
-    }
-
-    #[test]
-    fn guarantee_config_rejects_invalid_registry_allowlist() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries:
-                "0x1111111111111111111111111111111111111111,not-an-address".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        let err = cfg
-            .validate(Environment::Development)
-            .expect_err("invalid allowlist should be rejected");
-        assert!(
-            err.to_string()
-                .contains("invalid validation registry address")
-        );
-    }
-
-    #[test]
-    fn guarantee_config_rejects_invalid_hash_canonicalization_version() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "   ".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        let err = cfg
-            .validate(Environment::Development)
-            .expect_err("empty canonicalization version should fail");
-        assert!(
-            err.to_string()
-                .contains("VALIDATION_HASH_CANONICALIZATION_VERSION")
-        );
-    }
-
-    #[test]
-    fn guarantee_config_rejects_unsupported_hash_canonicalization_version() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V1".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        let err = cfg
-            .validate(Environment::Development)
-            .expect_err("unsupported canonicalization version should fail");
-        assert!(
-            err.to_string()
-                .contains("unsupported VALIDATION_HASH_CANONICALIZATION_VERSION")
-        );
-    }
-
-    #[test]
-    fn guarantee_config_rejects_v2_without_trusted_validation_registries() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: String::new(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        let err = cfg
-            .validate(Environment::Development)
-            .expect_err("v2 config without allowlist should fail");
-        assert!(err.to_string().contains("TRUSTED_VALIDATION_REGISTRIES"));
-    }
-
-    #[test]
-    fn guarantee_config_rejects_unsupported_request_version() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 3,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: String::new(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-        let err = cfg
-            .validate(Environment::Development)
-            .expect_err("unsupported guarantee request version should fail");
-        assert!(
-            err.to_string()
-                .contains("unsupported GUARANTEE_REQUEST_VERSION")
-        );
-    }
-
-    #[test]
-    fn guarantee_config_defaults_to_accepting_v1_and_v2_when_active_is_v2() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: String::new(),
-            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-
-        let versions = cfg
-            .accepted_request_versions()
-            .expect("accepted versions should resolve");
-        assert_eq!(versions, vec![1, 2]);
-    }
-
-    #[test]
-    fn guarantee_config_accepts_explicit_accepted_versions() {
-        let cfg = GuaranteeConfig {
-            max_accepted_version: 2,
-            accepted_request_versions: "2".to_string(),
-            trusted_validation_registries: "0x1111111111111111111111111111111111111111".to_string(),
-            validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
-            enable_v2_validation_lifecycle: false,
-            validation_timeout_secs: 3600,
-            validation_poll_cron: "0 */1 * * * *".to_string(),
-        };
-
-        let versions = cfg
-            .accepted_request_versions()
-            .expect("accepted versions should resolve");
-        assert_eq!(versions, vec![2]);
+        let err = cfg.validate().expect_err("empty cron must fail");
+        assert!(err.to_string().contains("VALIDATION_POLL_CRON"));
     }
 
     fn default_settlement_cycle_config() -> SettlementCycleConfig {

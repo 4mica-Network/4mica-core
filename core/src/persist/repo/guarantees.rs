@@ -9,10 +9,7 @@ use crypto::bls::BLSCert;
 use entities::guarantee;
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use metrics_4mica::measure;
-use rpc::{
-    PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestEssentials,
-};
+use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
@@ -363,20 +360,6 @@ pub async fn list_finalized_payable_guarantees_for_cycle_on<C: ConnectionTrait>(
         .order_by_asc(guarantee::Column::ToAddress)
         .order_by_asc(guarantee::Column::AssetAddress)
         .order_by_asc(guarantee::Column::ReqId)
-        .all(conn)
-        .await?;
-    Ok(rows)
-}
-#[measure(record_db_time)]
-pub async fn list_pending_validation_guarantees_on<C: ConnectionTrait>(
-    conn: &C,
-) -> Result<Vec<guarantee::Model>, PersistDbError> {
-    let rows = guarantee::Entity::find()
-        .filter(
-            guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::PendingValidation),
-        )
-        .order_by_asc(guarantee::Column::CreatedAt)
-        .order_by_asc(guarantee::Column::GuaranteeId)
         .all(conn)
         .await?;
     Ok(rows)

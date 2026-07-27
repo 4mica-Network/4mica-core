@@ -1,71 +1,30 @@
-use alloy_primitives::{Address, B256, U256};
-use serde_json::{Value, json};
+use alloy_primitives::{B256, U256};
+use serde_json::json;
 
-use super::{
-    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV2,
-    PaymentGuaranteeValidationPolicyV2, compute_validation_request_hash,
-    compute_validation_subject_hash,
-};
+use super::{GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeRequestClaims, ValidationRequirement};
 
-fn sample_v2_claims() -> PaymentGuaranteeRequestClaimsV2 {
-    let user = "0x1234567890123456789012345678901234567890";
-    let recipient = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
-    let asset = "0x0000000000000000000000000000000000000000";
-    let validation_registry = "0x1111111111111111111111111111111111111111";
-    let validator = "0x2222222222222222222222222222222222222222";
-    let req_id = U256::from(7u64);
-    let amount = U256::from(1_000u64);
-    let timestamp = 1_736_000_000u64;
-    let validation_subject_hash =
-        compute_validation_subject_hash(user, recipient, req_id, amount, asset, timestamp)
-            .expect("build subject hash");
-
-    let policy_without_hash = PaymentGuaranteeValidationPolicyV2 {
-        validation_registry_address: validation_registry
-            .parse::<Address>()
-            .expect("valid address"),
-        validation_request_hash: B256::ZERO,
-        validation_chain_id: 84532,
-        validator_address: validator.parse::<Address>().expect("valid address"),
-        validator_agent_id: U256::from(99u64),
-        min_validation_score: 80,
-        validation_subject_hash: B256::from(validation_subject_hash),
-        job_hash: B256::repeat_byte(0x11),
-        required_validation_tag: "hard-finality".to_string(),
-    };
-    let validation_request_hash =
-        compute_validation_request_hash(&policy_without_hash).expect("build request hash");
-
-    let policy = PaymentGuaranteeValidationPolicyV2 {
-        validation_registry_address: validation_registry
-            .parse::<Address>()
-            .expect("valid registry address"),
-        validation_request_hash: B256::from(validation_request_hash),
-        validation_chain_id: 84532,
-        validator_address: validator
-            .parse::<Address>()
-            .expect("valid validator address"),
-        validator_agent_id: U256::from(99u64),
-        min_validation_score: 80,
-        validation_subject_hash: B256::from(validation_subject_hash),
-        job_hash: B256::repeat_byte(0x11),
-        required_validation_tag: "hard-finality".to_string(),
-    };
-    PaymentGuaranteeRequestClaimsV2::builder(
-        user.to_string(),
-        recipient.to_string(),
-        req_id,
-        amount,
-        timestamp,
+fn sample_claims() -> PaymentGuaranteeRequestClaims {
+    PaymentGuaranteeRequestClaims::new(
+        "0x1234567890123456789012345678901234567890".to_string(),
+        "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd".to_string(),
+        U256::from(7u64),
+        U256::from(1_000u64),
+        1_736_000_000,
+        None,
     )
-    .asset_address(asset.to_string())
-    .validation_policy(policy)
-    .build()
-    .expect("valid v2 claims")
+}
+
+fn sample_validation() -> ValidationRequirement {
+    ValidationRequirement {
+        validator: "eip155:84532:0x1111111111111111111111111111111111111111".to_string(),
+        subject: B256::repeat_byte(0x11),
+        deadline: Some(1_736_003_600),
+        params: vec![1, 2, 3].into(),
+    }
 }
 
 #[test]
-fn v1_payload_deserializes_for_compatibility() {
+fn plain_payload_deserializes_without_validation() {
     let payload = json!({
         "version": "v1",
         "user_address": "0x1234567890123456789012345678901234567890",
@@ -77,103 +36,98 @@ fn v1_payload_deserializes_for_compatibility() {
     });
 
     let decoded: PaymentGuaranteeRequestClaims =
-        serde_json::from_value(payload).expect("v1 payload must deserialize");
-    match decoded {
-        PaymentGuaranteeRequestClaims::V1(_) => {}
-        PaymentGuaranteeRequestClaims::V2(_) => panic!("must decode to v1"),
-    }
+        serde_json::from_value(payload).expect("payload must deserialize");
+    assert_eq!(decoded.version(), GUARANTEE_CLAIMS_VERSION);
+    assert!(decoded.validation().is_none());
 }
 
+/// The version tag is what lets core pick a layout, so a request without one is not merely
+/// defaulted — it is unroutable and must be rejected.
 #[test]
-fn v2_payload_roundtrip_succeeds() {
-    let claims = sample_v2_claims();
-    let wrapped = PaymentGuaranteeRequestClaims::V2(Box::new(claims));
-    let encoded = serde_json::to_string(&wrapped).expect("serialize v2");
-    let decoded: PaymentGuaranteeRequestClaims =
-        serde_json::from_str(&encoded).expect("deserialize v2");
+fn missing_version_tag_is_rejected() {
+    let payload = json!({
+        "user_address": "0x1234567890123456789012345678901234567890",
+        "recipient_address": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        "req_id": "2",
+        "amount": "3",
+        "asset_address": "0x0000000000000000000000000000000000000000",
+        "timestamp": 100
+    });
 
-    match decoded {
-        PaymentGuaranteeRequestClaims::V2(v2) => {
-            assert_eq!(v2.validation_policy.min_validation_score, 80);
-        }
-        PaymentGuaranteeRequestClaims::V1(_) => panic!("must decode to v2"),
-    }
+    let err = serde_json::from_value::<PaymentGuaranteeRequestClaims>(payload)
+        .expect_err("a request without a version tag must fail");
+    assert!(err.to_string().contains("version"));
 }
 
+/// An unsupported version is refused at the wire boundary, before any service logic runs.
 #[test]
-fn v2_serialization_flattens_validation_fields() {
-    let claims = sample_v2_claims();
-    let payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
-        .expect("serialize payload");
-    let object = payload.as_object().expect("payload should be object");
-    assert!(object.contains_key("validator_address"));
-    assert!(!object.contains_key("validation_policy"));
-}
-
-#[test]
-fn unknown_version_fails() {
+fn unknown_version_is_rejected() {
     let payload = json!({
         "version": "v9",
-        "user_address": "0x1234567890123456789012345678901234567890"
+        "user_address": "0x1234567890123456789012345678901234567890",
+        "recipient_address": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        "req_id": "2",
+        "amount": "3",
+        "asset_address": "0x0000000000000000000000000000000000000000",
+        "timestamp": 100
     });
+
     let err = serde_json::from_value::<PaymentGuaranteeRequestClaims>(payload)
-        .expect_err("unknown version must fail");
+        .expect_err("an unknown version must fail");
     assert!(err.to_string().contains("unknown variant"));
 }
 
+/// Pins the v1 wire tag: changing it would invalidate every already-signed v1 request.
 #[test]
-fn missing_required_v2_field_fails() {
-    let claims = sample_v2_claims();
-    let mut payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
-        .expect("serialize");
-    let object = payload
-        .as_object_mut()
-        .expect("payload must be a json object");
-    object.remove("validator_address");
-
-    let err = serde_json::from_value::<PaymentGuaranteeRequestClaims>(payload)
-        .expect_err("missing field must fail");
-    assert!(err.to_string().contains("missing field"));
-    assert!(err.to_string().contains("validator_address"));
+fn v1_serializes_with_its_version_tag() {
+    let payload = serde_json::to_value(sample_claims()).expect("serialize");
+    assert_eq!(payload["version"], "v1");
 }
 
 #[test]
-fn min_validation_score_out_of_range_fails() {
-    let claims = sample_v2_claims();
-    let mut payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
-        .expect("serialize");
-    let object = payload
-        .as_object_mut()
-        .expect("payload must be a json object");
-    object.insert("min_validation_score".to_string(), Value::from(0u64));
-    let err_zero = serde_json::from_value::<PaymentGuaranteeRequestClaims>(payload.clone())
-        .expect_err("score 0 must fail");
-    assert!(err_zero.to_string().contains("min_validation_score"));
+fn validation_roundtrips() {
+    let claims = sample_claims().with_validation(sample_validation());
+    let encoded = serde_json::to_string(&claims).expect("serialize");
+    let decoded: PaymentGuaranteeRequestClaims =
+        serde_json::from_str(&encoded).expect("deserialize");
 
-    let object = payload
-        .as_object_mut()
-        .expect("payload must be a json object");
-    object.insert("min_validation_score".to_string(), Value::from(101u64));
-    let err_high = serde_json::from_value::<PaymentGuaranteeRequestClaims>(payload)
-        .expect_err("score 101 must fail");
-    assert!(err_high.to_string().contains("min_validation_score"));
-}
-
-#[test]
-fn non_canonical_validation_request_hash_fails() {
-    let claims = sample_v2_claims();
-    let mut payload = serde_json::to_value(PaymentGuaranteeRequestClaims::V2(Box::new(claims)))
-        .expect("serialize");
-    let object = payload
-        .as_object_mut()
-        .expect("payload must be a json object");
-    object.insert(
-        "validation_request_hash".to_string(),
-        Value::from("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    assert_eq!(decoded, claims);
+    assert_eq!(
+        decoded.validation().expect("validation").subject,
+        B256::repeat_byte(0x11)
     );
+}
 
-    let err = serde_json::from_value::<PaymentGuaranteeRequestClaims>(payload)
-        .expect_err("non-canonical hash must fail");
-    assert!(err.to_string().contains("validation_request_hash"));
-    assert!(err.to_string().contains("canonical"));
+#[test]
+fn validation_is_omitted_from_the_wire_when_absent() {
+    let payload = serde_json::to_value(sample_claims()).expect("serialize");
+    let object = payload.as_object().expect("payload should be object");
+    assert!(!object.contains_key("validation"));
+}
+
+#[test]
+fn validation_is_nested_not_flattened() {
+    let claims = sample_claims().with_validation(sample_validation());
+    let payload = serde_json::to_value(claims).expect("serialize");
+    let object = payload.as_object().expect("payload should be object");
+    assert!(object.contains_key("validation"));
+    assert!(!object.contains_key("validator"));
+}
+
+#[test]
+fn deadline_is_optional() {
+    let mut validation = sample_validation();
+    validation.deadline = None;
+    let claims = sample_claims().with_validation(validation);
+
+    let encoded = serde_json::to_value(&claims).expect("serialize");
+    let validation_object = encoded
+        .get("validation")
+        .and_then(|v| v.as_object())
+        .expect("validation object");
+    assert!(!validation_object.contains_key("deadline"));
+
+    let decoded: PaymentGuaranteeRequestClaims =
+        serde_json::from_value(encoded).expect("deserialize");
+    assert!(decoded.validation().expect("validation").deadline.is_none());
 }

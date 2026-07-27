@@ -1,4 +1,5 @@
 use core_service::service::CoreService;
+use rpc::GUARANTEE_CLAIMS_VERSION;
 use test_log::test;
 
 mod common;
@@ -6,21 +7,38 @@ use common::chain::setup_e2e_environment;
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 #[serial_test::file_serial(db)]
-async fn rejects_startup_when_max_accepted_guarantee_version_is_disabled_on_chain()
+async fn rejects_startup_when_a_supported_guarantee_version_is_disabled_on_chain()
 -> anyhow::Result<()> {
-    let mut env = setup_e2e_environment().await?;
-    env.cfg.guarantee.max_accepted_version = 2;
-    env.cfg.guarantee.accepted_request_versions = "2".to_string();
-    env.cfg.guarantee.trusted_validation_registries =
-        "0x1111111111111111111111111111111111111111".to_string();
+    let env = setup_e2e_environment().await?;
+
+    let (key, domain, decoder, _) = {
+        let config = env
+            .contract
+            .getGuaranteeVersionConfig(GUARANTEE_CLAIMS_VERSION)
+            .call()
+            .await?;
+        (
+            config.verificationKey,
+            config.domainSeparator,
+            config.decoder,
+            config.enabled,
+        )
+    };
+    env.contract
+        .configureGuaranteeVersion(GUARANTEE_CLAIMS_VERSION, key, domain, decoder, false)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     let err = match CoreService::new(env.cfg.clone()).await {
-        Ok(_) => panic!("startup should fail when configured active version is disabled on-chain"),
+        Ok(_) => panic!("startup should fail when a supported version is disabled on-chain"),
         Err(err) => err,
     };
     assert!(
-        err.to_string()
-            .contains("accepted guarantee version 2 is disabled on-chain"),
+        err.to_string().contains(&format!(
+            "supported guarantee version {GUARANTEE_CLAIMS_VERSION} is disabled on-chain"
+        )),
         "unexpected startup error: {err}"
     );
 

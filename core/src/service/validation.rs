@@ -1,34 +1,28 @@
-//! V2 validation lifecycle driver
+//! Validation lifecycle driver.
 //!
-//! A validation-gated (V2) guarantee is stored `PendingValidation` at issuance. This module is
-//! the missing driver that moves it out of that state by observing the on-chain ERC-8004
-//! validation result named in the guarantee's policy:
+//! A validation-gated guarantee is stored `PendingValidation` at issuance. This driver moves it
+//! out of that state by asking the guarantee's validator adapter for a verdict:
 //!
-//! - resolved and accepted     -> `finalize_guarantee_payable` (nets and settles normally)
-//! - resolved and rejected     -> `dispute_guarantee`          (releases the payer's collateral)
-//! - unresolved past timeout    -> `cancel_guarantee`           (releases the payer's collateral)
-//! - unresolved within timeout  -> left `PendingValidation`     (re-checked next sweep)
+//! - approved before the deadline  -> `finalize_guarantee_payable_on` (nets and settles normally)
+//! - rejected                      -> `dispute_guarantee_on`          (releases the payer's collateral)
+//! - still pending at the deadline -> `cancel_guarantee_on`           (releases the payer's collateral)
+//! - still pending before it       -> left `PendingValidation`        (re-checked next sweep)
+//! - validator de-whitelisted      -> `finalize_guarantee_payable_on` (nothing gates it any more)
 //!
-//! The resolved-branch acceptance predicate mirrors `ValidationRegistryGuaranteeDecoder`
-//! (`response >= min_validation_score`, validator match, agent match, tag match) so the
-//! off-chain decision agrees with the on-chain verifier. Without this driver a V2 guarantee is
-//!
-//! A resolved-and-accepted validation is only honored while its settlement cycle can still be
-//! netted (`Open`/`Frozen`). If the cycle already resolved before the validation landed — e.g.
-//! the driver was down across the cycle's resolution, or the validation timeout was configured
-//! longer than the cycle's resolution window — finalizing would move the guarantee into a dead
-//! cycle that never settles, stranding the payer's collateral (the same L01/L02 failure, one hop
-//! downstream). In that case the driver cancels and releases instead of finalizing.
+//! Whether a validator's answer means approved or rejected is the adapter's decision, not this
+//! module's. The transition and the validation record are written in a single transaction.
 
-use chrono::Utc;
-use entities::guarantee;
-use entities::sea_orm_active_enums::SettlementCycleStatus;
+use std::matches;
+
+use chrono::{NaiveDateTime, Utc};
+use entities::guarantee_validation;
+use entities::sea_orm_active_enums::{GuaranteeValidationStatus, SettlementCycleStatus};
 use log::{info, warn};
-use rpc::{
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestEssentials, PaymentGuaranteeValidationPolicyV2,
-};
+use rpc::ValidationRequirement;
+use sea_orm::{ConnectionTrait, TransactionTrait};
+use validators::{Verdict, VerdictStatus};
 
-use crate::ethereum::ValidationStatus;
+use crate::error::ServiceError;
 use crate::persist::repo;
 use crate::scheduler::{Task, async_trait};
 use crate::service::CoreService;
@@ -36,68 +30,49 @@ use crate::service::CoreService;
 /// What the driver should do with a single `PendingValidation` guarantee this sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValidationAction {
-    /// Validation resolved and satisfies the policy: make the guarantee payable.
     Finalize,
-    /// Validation resolved but violates the policy: dispute and release the payer's collateral.
     Dispute(&'static str),
-    /// Validation cannot be honored (never resolved within the timeout, or resolved-and-accepted
-    /// but its cycle already resolved): cancel and release the payer's collateral.
     Cancel(&'static str),
-    /// Validation is still pending within the timeout window: re-check next sweep.
+    Skip,
     Wait,
 }
 
-/// A `PendingValidation` guarantee can only be finalized into a cycle whose participant set is not
-/// yet fixed — i.e. one still `Open` (will freeze and net later) or `Frozen` (about to net). Once
-/// a cycle reaches `NettingComputed` or any later/terminal state, a late finalize would never be
-/// included in a settlement and would strand the payer's collateral, so the driver cancels
-/// instead.
+impl ValidationAction {
+    fn from_verdict(
+        verdict: &Verdict,
+        expected_subject: &str,
+        deadline: NaiveDateTime,
+        now: NaiveDateTime,
+    ) -> Self {
+        // An answer about a different subject says nothing about this guarantee, so it can never
+        // dispute it — it stays unresolved and expires at its deadline like any other.
+        if verdict.subject.to_string() != expected_subject {
+            return if now >= deadline {
+                Self::Cancel("validator answered about a different subject")
+            } else {
+                Self::Wait
+            };
+        }
+
+        match verdict.status {
+            VerdictStatus::Approved if now < deadline => Self::Finalize,
+            VerdictStatus::Approved => Self::Cancel("validation approved after deadline"),
+            VerdictStatus::Rejected => Self::Dispute("validator rejected the guarantee"),
+            VerdictStatus::Pending if now >= deadline => {
+                Self::Cancel("validation did not resolve before deadline")
+            }
+            VerdictStatus::Pending => Self::Wait,
+        }
+    }
+}
+
+/// A guarantee can only be finalized into a cycle that has not yet netted. Finalizing into a
+/// later state would leave it in a cycle that never settles, stranding the payer's collateral.
 fn cycle_still_nettable(status: &SettlementCycleStatus) -> bool {
     matches!(
         status,
         SettlementCycleStatus::Open | SettlementCycleStatus::Frozen
     )
-}
-
-/// Decide the lifecycle action for one guarantee. Pure and deterministic so it can be unit
-/// tested exhaustively without a chain.
-///
-/// `status` is `None` when the registry read failed or returned nothing — treated identically
-/// to an unresolved validation (wait, then cancel on timeout). The resolved branch mirrors the
-/// acceptance checks in `ValidationRegistryGuaranteeDecoder`.
-fn decide_validation_action(
-    policy: &PaymentGuaranteeValidationPolicyV2,
-    status: Option<&ValidationStatus>,
-    issued_at_unix: u64,
-    now_unix: u64,
-    timeout_secs: u64,
-) -> ValidationAction {
-    match status {
-        Some(s) if s.is_resolved() => {
-            if s.response < policy.min_validation_score {
-                ValidationAction::Dispute("validation score below minimum")
-            } else if s.validator_address != policy.validator_address {
-                ValidationAction::Dispute("validator address mismatch")
-            } else if s.agent_id != policy.validator_agent_id {
-                ValidationAction::Dispute("validator agent id mismatch")
-            } else if !policy.required_validation_tag.is_empty()
-                && s.tag != policy.required_validation_tag
-            {
-                ValidationAction::Dispute("validation tag mismatch")
-            } else {
-                ValidationAction::Finalize
-            }
-        }
-        // Unresolved or unreadable: wait until the timeout, then cancel so the payer's collateral
-        // is never stranded on a validation that resolves late or never.
-        _ => {
-            if now_unix.saturating_sub(issued_at_unix) >= timeout_secs {
-                ValidationAction::Cancel("validation did not resolve before timeout")
-            } else {
-                ValidationAction::Wait
-            }
-        }
-    }
 }
 
 /// Tally of one validation sweep, for logging and tests.
@@ -106,45 +81,33 @@ pub struct ValidationSweepSummary {
     pub finalized: usize,
     pub disputed: usize,
     pub cancelled: usize,
+    pub skipped: usize,
     pub waiting: usize,
     pub errored: usize,
 }
 
-/// Clamp a Unix timestamp to a non-negative `u64` (timestamps before the epoch collapse to 0).
-fn unix_secs(ts: i64) -> u64 {
-    ts.max(0) as u64
-}
-
 impl CoreService {
-    /// One pass of the V2 validation lifecycle driver: resolve every `PendingValidation`
-    /// guarantee against its on-chain validation result and transition it accordingly. A
-    /// per-guarantee failure is logged and skipped so one bad guarantee cannot stall the sweep.
-    /// No-op unless `ENABLE_V2_VALIDATION_LIFECYCLE` is set.
+    /// One pass of the validation lifecycle: resolve every pending validation against its
+    /// validator and transition the guarantee accordingly. A per-guarantee failure is logged and
+    /// skipped so one bad validator cannot stall the sweep.
     pub async fn drive_pending_validations(&self) -> anyhow::Result<ValidationSweepSummary> {
-        if !self.inner.enable_v2_validation_lifecycle {
-            return Ok(ValidationSweepSummary::default());
-        }
-
-        let timeout_secs = self.inner.config.guarantee.validation_timeout_secs;
-        let now_unix = unix_secs(Utc::now().timestamp());
+        let now = Utc::now().naive_utc();
         let pending =
-            repo::list_pending_validation_guarantees_on(self.inner.persist_ctx.db.as_ref()).await?;
+            repo::list_pending_guarantee_validations_on(self.inner.persist_ctx.db.as_ref()).await?;
 
         let mut summary = ValidationSweepSummary::default();
-        for guarantee in pending {
-            match self
-                .drive_one_pending_validation(&guarantee, now_unix, timeout_secs)
-                .await
-            {
+        for validation in pending {
+            match self.drive_one_pending_validation(&validation, now).await {
                 Ok(ValidationAction::Finalize) => summary.finalized += 1,
                 Ok(ValidationAction::Dispute(_)) => summary.disputed += 1,
                 Ok(ValidationAction::Cancel(_)) => summary.cancelled += 1,
+                Ok(ValidationAction::Skip) => summary.skipped += 1,
                 Ok(ValidationAction::Wait) => summary.waiting += 1,
                 Err(err) => {
                     summary.errored += 1;
                     warn!(
                         "validation lifecycle: guarantee {} skipped this sweep: {err:#}",
-                        guarantee.guarantee_id
+                        validation.guarantee_id
                     );
                 }
             }
@@ -152,67 +115,117 @@ impl CoreService {
         Ok(summary)
     }
 
-    /// Resolve and transition a single `PendingValidation` guarantee. Returns the action taken so
-    /// the caller can tally it.
     async fn drive_one_pending_validation(
         &self,
-        guarantee: &guarantee::Model,
-        now_unix: u64,
-        timeout_secs: u64,
+        validation: &guarantee_validation::Model,
+        now: NaiveDateTime,
     ) -> anyhow::Result<ValidationAction> {
-        let request_json = guarantee.request.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("guarantee {} has no stored request", guarantee.guarantee_id)
-        })?;
-        let request: PaymentGuaranteeRequest = serde_json::from_str(request_json)?;
-        let policy = request
-            .claims
-            .validation_policy()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "PendingValidation guarantee {} carries no validation policy",
-                    guarantee.guarantee_id
-                )
-            })?
-            .clone();
+        let (action, verdict) = self.run_adapter_and_decide_action(validation, now).await?;
+        let evidence = verdict.map(|v| v.evidence.to_vec());
+        let guarantee_id = validation.guarantee_id.clone();
 
-        // A registry read failure (transport, revert, or a no-code registry) is treated like an
-        // unresolved validation: wait, and cancel once the timeout elapses.
-        let status = match self
-            .inner
-            .contract_api
-            .get_validation_status(
-                policy.validation_registry_address,
-                policy.validation_request_hash,
-            )
+        self.inner
+            .persist_ctx
+            .db
+            .transaction::<_, (), ServiceError>(|txn| {
+                let service = self.clone();
+                let guarantee_id = guarantee_id.clone();
+                let evidence = evidence.clone();
+                Box::pin(async move {
+                    let decision = match action {
+                        ValidationAction::Finalize => {
+                            service
+                                .finalize_guarantee_payable_on(txn, &guarantee_id)
+                                .await?;
+                            GuaranteeValidationStatus::Approved
+                        }
+                        ValidationAction::Dispute(_) => {
+                            service.dispute_guarantee_on(txn, &guarantee_id).await?;
+                            GuaranteeValidationStatus::Rejected
+                        }
+                        ValidationAction::Cancel(_) => {
+                            service.cancel_guarantee_on(txn, &guarantee_id).await?;
+                            GuaranteeValidationStatus::Expired
+                        }
+                        ValidationAction::Skip => {
+                            // No validator gates it any more, so make it payable for its cycle.
+                            service
+                                .finalize_guarantee_payable_on(txn, &guarantee_id)
+                                .await?;
+                            GuaranteeValidationStatus::Skipped
+                        }
+                        ValidationAction::Wait => {
+                            repo::record_guarantee_validation_poll_on(txn, &guarantee_id, evidence)
+                                .await?;
+                            return Ok(());
+                        }
+                    };
+                    repo::decide_guarantee_validation_on(txn, &guarantee_id, decision, evidence)
+                        .await?;
+
+                    Ok(())
+                })
+            })
             .await
-        {
-            Ok(status) => Some(status),
-            Err(err) => {
-                warn!(
-                    "validation lifecycle: status read failed for guarantee {}: {err}",
-                    guarantee.guarantee_id
-                );
-                None
-            }
+            .map_err(|e| match e {
+                sea_orm::TransactionError::Transaction(inner) => anyhow::Error::from(inner),
+                sea_orm::TransactionError::Connection(err) => anyhow::Error::from(err),
+            })?;
+
+        match action {
+            ValidationAction::Finalize => info!(
+                "validation lifecycle: finalized guarantee {}",
+                validation.guarantee_id
+            ),
+            ValidationAction::Dispute(reason) => info!(
+                "validation lifecycle: disputed guarantee {} ({reason})",
+                validation.guarantee_id
+            ),
+            ValidationAction::Cancel(reason) => info!(
+                "validation lifecycle: cancelled guarantee {} ({reason})",
+                validation.guarantee_id
+            ),
+            ValidationAction::Skip => info!(
+                "validation lifecycle: skipped guarantee {}",
+                validation.guarantee_id
+            ),
+            ValidationAction::Wait => {}
+        }
+        Ok(action)
+    }
+
+    async fn run_adapter_and_decide_action(
+        &self,
+        validation: &guarantee_validation::Model,
+        now: NaiveDateTime,
+    ) -> anyhow::Result<(ValidationAction, Option<Verdict>)> {
+        let Some(adapter) = self.inner.validators.get(&validation.validator) else {
+            warn!(
+                "validator {} is no longer whitelisted; skipping validation for guarantee {}",
+                validation.validator, validation.guarantee_id
+            );
+            return Ok((ValidationAction::Skip, None));
         };
 
-        let issued_at_unix = unix_secs(guarantee.created_at.and_utc().timestamp());
-        let action = decide_validation_action(
-            &policy,
-            status.as_ref(),
-            issued_at_unix,
-            now_unix,
-            timeout_secs,
-        );
+        let requirement = ValidationRequirement {
+            validator: validation.validator.clone(),
+            subject: validation.subject.parse()?,
+            deadline: Some(validation.deadline.and_utc().timestamp().max(0) as u64),
+            params: validation.params.clone().into(),
+        };
+        let verdict = adapter.resolve(&requirement).await?;
+        let action =
+            ValidationAction::from_verdict(&verdict, &validation.subject, validation.deadline, now);
 
-        // A resolved-and-accepted validation can only be finalized while its cycle is still
-        // nettable. If the cycle already resolved, finalizing would strand the payer's collateral
-        // in a dead cycle, so downgrade to a cancel that releases it instead.
+        // Finalizing into a cycle that already resolved would strand the payer's collateral there,
+        // so a cancel that releases it is the only thing left to do.
         let action = match action {
             ValidationAction::Finalize
-                if !self
-                    .guarantee_cycle_still_nettable(&guarantee.cycle_id)
-                    .await? =>
+                if !guarantee_cycle_still_nettable(
+                    self.persist_ctx().db.as_ref(),
+                    &validation.guarantee_id,
+                )
+                .await? =>
             {
                 ValidationAction::Cancel(
                     "settlement cycle already resolved before validation landed",
@@ -221,46 +234,27 @@ impl CoreService {
             other => other,
         };
 
-        match action {
-            ValidationAction::Finalize => {
-                self.finalize_guarantee_payable(&guarantee.guarantee_id)
-                    .await?;
-                info!(
-                    "validation lifecycle: finalized guarantee {}",
-                    guarantee.guarantee_id
-                );
-            }
-            ValidationAction::Dispute(reason) => {
-                self.dispute_guarantee(&guarantee.guarantee_id).await?;
-                info!(
-                    "validation lifecycle: disputed guarantee {} ({reason})",
-                    guarantee.guarantee_id
-                );
-            }
-            ValidationAction::Cancel(reason) => {
-                self.cancel_guarantee(&guarantee.guarantee_id).await?;
-                info!(
-                    "validation lifecycle: cancelled guarantee {} ({reason})",
-                    guarantee.guarantee_id
-                );
-            }
-            ValidationAction::Wait => {}
-        }
-        Ok(action)
-    }
-
-    /// True if the guarantee's settlement cycle can still include it in a netting round. A missing
-    /// cycle (deleted, or an orphaned reference) is treated as not nettable so the guarantee is
-    /// cancelled and its collateral released rather than left stranded.
-    async fn guarantee_cycle_still_nettable(&self, cycle_id: &str) -> anyhow::Result<bool> {
-        let cycle = repo::get_cycle_by_id_on(self.inner.persist_ctx.db.as_ref(), cycle_id).await?;
-        Ok(cycle
-            .map(|c| cycle_still_nettable(&c.status))
-            .unwrap_or(false))
+        Ok((action, Some(verdict)))
     }
 }
 
-/// Scheduled task that periodically runs the V2 validation lifecycle sweep.
+/// True if the guarantee's settlement cycle can still include it in a netting round. A missing
+/// guarantee or cycle is treated as not nettable so the guarantee is cancelled and its collateral
+/// released rather than left stranded.
+async fn guarantee_cycle_still_nettable<C: ConnectionTrait>(
+    conn: &C,
+    guarantee_id: &str,
+) -> Result<bool, ServiceError> {
+    let Some(guarantee) = repo::get_guarantee_by_id_on(conn, guarantee_id).await? else {
+        return Ok(false);
+    };
+    let cycle = repo::get_cycle_by_id_on(conn, &guarantee.cycle_id).await?;
+    Ok(cycle
+        .map(|c| cycle_still_nettable(&c.status))
+        .unwrap_or(false))
+}
+
+/// Scheduled task that periodically runs the validation lifecycle sweep.
 pub struct ValidationLifecycleTask(CoreService);
 
 impl ValidationLifecycleTask {
@@ -279,10 +273,11 @@ impl Task for ValidationLifecycleTask {
         let summary = self.0.drive_pending_validations().await?;
         if summary != ValidationSweepSummary::default() {
             info!(
-                "validation lifecycle sweep: finalized={}, disputed={}, cancelled={}, waiting={}, errored={}",
+                "validation lifecycle sweep: finalized={}, disputed={}, cancelled={}, skipped={}, waiting={}, errored={}",
                 summary.finalized,
                 summary.disputed,
                 summary.cancelled,
+                summary.skipped,
                 summary.waiting,
                 summary.errored
             );
@@ -294,134 +289,92 @@ impl Task for ValidationLifecycleTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, B256, U256};
+    use alloy::primitives::B256;
+    use chrono::DateTime;
 
-    fn policy() -> PaymentGuaranteeValidationPolicyV2 {
-        PaymentGuaranteeValidationPolicyV2 {
-            validation_registry_address: Address::repeat_byte(0x33),
-            validation_request_hash: B256::repeat_byte(0x44),
-            validation_chain_id: 84532,
-            validator_address: Address::repeat_byte(0x55),
-            validator_agent_id: U256::from(7u64),
-            min_validation_score: 80,
-            validation_subject_hash: B256::repeat_byte(0x66),
-            job_hash: B256::repeat_byte(0x77),
-            required_validation_tag: "hard-finality".to_string(),
+    fn naive(unix: i64) -> NaiveDateTime {
+        DateTime::from_timestamp(unix, 0)
+            .expect("valid timestamp")
+            .naive_utc()
+    }
+
+    fn verdict(status: VerdictStatus, subject: B256) -> Verdict {
+        Verdict {
+            status,
+            subject,
+            evidence: Default::default(),
+            observed_at: 1_700_000_000,
         }
     }
 
-    /// A resolved status that satisfies `policy()` exactly.
-    fn passing_status() -> ValidationStatus {
-        ValidationStatus {
-            validator_address: Address::repeat_byte(0x55),
-            agent_id: U256::from(7u64),
-            response: 80,
-            tag: "hard-finality".to_string(),
-            last_update: U256::from(1_700_000_000u64),
-        }
+    fn subject() -> B256 {
+        B256::repeat_byte(0x11)
     }
 
-    fn decide(
-        status: Option<&ValidationStatus>,
-        issued: u64,
-        now: u64,
-        timeout: u64,
-    ) -> ValidationAction {
-        decide_validation_action(&policy(), status, issued, now, timeout)
+    fn action_at(status: VerdictStatus, now: i64) -> ValidationAction {
+        ValidationAction::from_verdict(
+            &verdict(status, subject()),
+            &subject().to_string(),
+            naive(1_000),
+            naive(now),
+        )
     }
 
     #[test]
-    fn resolved_and_satisfying_policy_finalizes() {
+    fn approved_before_deadline_finalizes() {
         assert_eq!(
-            decide(Some(&passing_status()), 0, 100, 3600),
+            action_at(VerdictStatus::Approved, 500),
             ValidationAction::Finalize
         );
     }
 
     #[test]
-    fn score_below_minimum_disputes() {
-        let mut s = passing_status();
-        s.response = 79;
+    fn approved_after_deadline_cancels() {
         assert!(matches!(
-            decide(Some(&s), 0, 100, 3600),
-            ValidationAction::Dispute(_)
+            action_at(VerdictStatus::Approved, 1_500),
+            ValidationAction::Cancel(_)
         ));
     }
 
     #[test]
-    fn validator_mismatch_disputes() {
-        let mut s = passing_status();
-        s.validator_address = Address::repeat_byte(0xAB);
-        assert!(matches!(
-            decide(Some(&s), 0, 100, 3600),
-            ValidationAction::Dispute(_)
-        ));
+    fn rejected_disputes_regardless_of_deadline() {
+        for now in [500, 1_500] {
+            assert!(matches!(
+                action_at(VerdictStatus::Rejected, now),
+                ValidationAction::Dispute(_)
+            ));
+        }
     }
 
     #[test]
-    fn agent_mismatch_disputes() {
-        let mut s = passing_status();
-        s.agent_id = U256::from(9u64);
-        assert!(matches!(
-            decide(Some(&s), 0, 100, 3600),
-            ValidationAction::Dispute(_)
-        ));
-    }
-
-    #[test]
-    fn tag_mismatch_disputes() {
-        let mut s = passing_status();
-        s.tag = "soft".to_string();
-        assert!(matches!(
-            decide(Some(&s), 0, 100, 3600),
-            ValidationAction::Dispute(_)
-        ));
-    }
-
-    #[test]
-    fn empty_required_tag_skips_tag_check() {
-        let mut p = policy();
-        p.required_validation_tag = String::new();
-        let mut s = passing_status();
-        s.tag = "anything".to_string();
+    fn pending_waits_then_cancels_at_the_deadline() {
         assert_eq!(
-            decide_validation_action(&p, Some(&s), 0, 100, 3600),
-            ValidationAction::Finalize
+            action_at(VerdictStatus::Pending, 999),
+            ValidationAction::Wait
         );
-    }
-
-    #[test]
-    fn unresolved_within_timeout_waits() {
-        // lastUpdate == 0 means still pending.
-        let mut s = passing_status();
-        s.last_update = U256::ZERO;
-        assert_eq!(decide(Some(&s), 0, 100, 3600), ValidationAction::Wait);
-    }
-
-    #[test]
-    fn unresolved_past_timeout_cancels() {
-        let mut s = passing_status();
-        s.last_update = U256::ZERO;
         assert!(matches!(
-            decide(Some(&s), 0, 3600, 3600),
+            action_at(VerdictStatus::Pending, 1_000),
             ValidationAction::Cancel(_)
         ));
     }
 
     #[test]
-    fn unreadable_status_waits_then_cancels_on_timeout() {
-        assert_eq!(decide(None, 0, 100, 3600), ValidationAction::Wait);
-        assert!(matches!(
-            decide(None, 0, 3600, 3600),
-            ValidationAction::Cancel(_)
-        ));
+    fn subject_mismatch_never_disputes() {
+        let action = ValidationAction::from_verdict(
+            &verdict(VerdictStatus::Rejected, B256::repeat_byte(0xAB)),
+            &subject().to_string(),
+            naive(1_000),
+            naive(500),
+        );
+        assert_eq!(action, ValidationAction::Wait);
     }
 
     #[test]
-    fn only_open_and_frozen_cycles_are_nettable() {
+    fn only_pre_netting_cycles_are_nettable() {
         assert!(cycle_still_nettable(&SettlementCycleStatus::Open));
         assert!(cycle_still_nettable(&SettlementCycleStatus::Frozen));
-        for resolved in [
+
+        for status in [
             SettlementCycleStatus::NettingComputed,
             SettlementCycleStatus::ClearingCommitted,
             SettlementCycleStatus::PaymentWindowOpen,
@@ -430,10 +383,7 @@ mod tests {
             SettlementCycleStatus::Cancelled,
             SettlementCycleStatus::Shortfall,
         ] {
-            assert!(
-                !cycle_still_nettable(&resolved),
-                "{resolved:?} must not be nettable"
-            );
+            assert!(!cycle_still_nettable(&status), "{status:?} is not nettable");
         }
     }
 }

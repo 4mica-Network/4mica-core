@@ -4,12 +4,12 @@
 //! EIP-191), and derives the deterministic on-chain identifiers a guarantee is
 //! bound to within a settlement cycle.
 
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, keccak256};
 use alloy_sol_types::{SolStruct, SolValue, eip712_domain};
 use rpc::{
-    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestEssentials, SigningScheme, SolGuaranteeRequestClaimsV1,
-    SolGuaranteeRequestClaimsV2,
+    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, SigningScheme,
+    SolGuaranteeRequestClaimsV1, SolValidatedGuaranteeRequestClaimsV1, SolValidation,
+    ValidationRequirement,
 };
 
 use crate::error::{ServiceError, ServiceResult};
@@ -39,10 +39,8 @@ pub fn verify_guarantee_request_signature(
     params: &CorePublicParameters,
     req: &PaymentGuaranteeRequest,
 ) -> ServiceResult<()> {
-    let (user_addr, recipient_addr) = claims_participants(&req.claims)?;
-
-    let user_addr = parse_address("user", user_addr)?;
-    let recipient_addr = parse_address("recipient", recipient_addr)?;
+    let user_addr = parse_address("user", req.claims.user_address())?;
+    let recipient_addr = parse_address("recipient", req.claims.recipient_address())?;
 
     let sig_bytes = crate::util::normalize_and_decode_hex(&req.signature)
         .map_err(|_| ServiceError::InvalidParams("invalid hex signature".into()))?;
@@ -62,19 +60,6 @@ pub fn verify_guarantee_request_signature(
     Ok(())
 }
 
-fn claims_participants(claims: &PaymentGuaranteeRequestClaims) -> ServiceResult<(&str, &str)> {
-    match claims {
-        PaymentGuaranteeRequestClaims::V1(claims) => Ok((
-            claims.user_address.as_str(),
-            claims.recipient_address.as_str(),
-        )),
-        PaymentGuaranteeRequestClaims::V2(claims) => Ok((
-            claims.user_address.as_str(),
-            claims.recipient_address.as_str(),
-        )),
-    }
-}
-
 fn digest_for_guarantee_request(
     params: &CorePublicParameters,
     scheme: &SigningScheme,
@@ -88,7 +73,16 @@ fn digest_for_guarantee_request(
     }
 }
 
-/// Compute an EIP-712 signing hash for any supported guarantee request version.
+fn sol_validation(validation: &ValidationRequirement) -> SolValidation {
+    SolValidation {
+        validator: validation.validator.clone(),
+        subject: validation.subject,
+        deadline: validation.deadline.unwrap_or(0),
+        params: validation.params.clone(),
+    }
+}
+
+/// EIP-712 has no optional members, so the presence of a validation requirement picks the struct.
 fn eip712_digest(
     params: &CorePublicParameters,
     claims: &PaymentGuaranteeRequestClaims,
@@ -101,73 +95,58 @@ fn eip712_digest(
         verifying_contract: verifying_contract,
     );
 
-    match claims {
-        PaymentGuaranteeRequestClaims::V1(c) => {
-            let message = SolGuaranteeRequestClaimsV1 {
-                user: parse_address("user", &c.user_address)?,
-                recipient: parse_address("recipient", &c.recipient_address)?,
-                reqId: c.req_id,
-                amount: c.amount,
-                asset: parse_address("asset", &c.asset_address)?,
-                timestamp: c.timestamp,
-            };
-            Ok(message.eip712_signing_hash(&domain))
+    let user = parse_address("user", claims.user_address())?;
+    let recipient = parse_address("recipient", claims.recipient_address())?;
+    let asset = parse_address("asset", claims.asset_address())?;
+
+    match claims.validation() {
+        None => Ok(SolGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
         }
-        PaymentGuaranteeRequestClaims::V2(c) => {
-            let message = SolGuaranteeRequestClaimsV2 {
-                user: parse_address("user", &c.user_address)?,
-                recipient: parse_address("recipient", &c.recipient_address)?,
-                reqId: c.req_id,
-                amount: c.amount,
-                asset: parse_address("asset", &c.asset_address)?,
-                timestamp: c.timestamp,
-                validationRegistryAddress: c.validation_policy.validation_registry_address,
-                validationRequestHash: c.validation_policy.validation_request_hash,
-                validationChainId: U256::from(c.validation_policy.validation_chain_id),
-                validatorAddress: c.validation_policy.validator_address,
-                validatorAgentId: c.validation_policy.validator_agent_id,
-                minValidationScore: c.validation_policy.min_validation_score,
-                validationSubjectHash: c.validation_policy.validation_subject_hash,
-                jobHash: c.validation_policy.job_hash,
-                requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
-            };
-            Ok(message.eip712_signing_hash(&domain))
+        .eip712_signing_hash(&domain)),
+        Some(validation) => Ok(SolValidatedGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+            validation: sol_validation(validation),
         }
+        .eip712_signing_hash(&domain)),
     }
 }
 
-/// Compute an EIP-191 signing hash for any supported guarantee request version.
 fn eip191_digest(
     claims: &PaymentGuaranteeRequestClaims,
     user: Address,
     recipient: Address,
 ) -> ServiceResult<B256> {
-    let data = match claims {
-        PaymentGuaranteeRequestClaims::V1(c) => SolGuaranteeRequestClaimsV1 {
+    let asset = parse_address("asset", claims.asset_address())?;
+
+    let data = match claims.validation() {
+        None => SolGuaranteeRequestClaimsV1 {
             user,
             recipient,
-            reqId: c.req_id,
-            amount: c.amount,
-            asset: parse_address("asset", &c.asset_address)?,
-            timestamp: c.timestamp,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
         }
         .abi_encode(),
-        PaymentGuaranteeRequestClaims::V2(c) => SolGuaranteeRequestClaimsV2 {
+        Some(validation) => SolValidatedGuaranteeRequestClaimsV1 {
             user,
             recipient,
-            reqId: c.req_id,
-            amount: c.amount,
-            asset: parse_address("asset", &c.asset_address)?,
-            timestamp: c.timestamp,
-            validationRegistryAddress: c.validation_policy.validation_registry_address,
-            validationRequestHash: c.validation_policy.validation_request_hash,
-            validationChainId: U256::from(c.validation_policy.validation_chain_id),
-            validatorAddress: c.validation_policy.validator_address,
-            validatorAgentId: c.validation_policy.validator_agent_id,
-            minValidationScore: c.validation_policy.min_validation_score,
-            validationSubjectHash: c.validation_policy.validation_subject_hash,
-            jobHash: c.validation_policy.job_hash,
-            requiredValidationTag: c.validation_policy.required_validation_tag.clone(),
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+            validation: sol_validation(validation),
         }
         .abi_encode(),
     };
@@ -180,25 +159,25 @@ fn eip191_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rpc::PaymentGuaranteeRequestClaimsV1;
+    use alloy_primitives::U256;
 
-    fn v1_claims(req_id: u64) -> PaymentGuaranteeRequestClaims {
-        PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            user_address: Address::repeat_byte(0x11).to_string(),
-            recipient_address: Address::repeat_byte(0x22).to_string(),
-            req_id: U256::from(req_id),
-            amount: U256::from(7u64),
-            asset_address: Address::ZERO.to_string(),
-            timestamp: 1_700_000_000,
-        })
+    fn claims(req_id: u64) -> PaymentGuaranteeRequestClaims {
+        PaymentGuaranteeRequestClaims::new(
+            Address::repeat_byte(0x11).to_string(),
+            Address::repeat_byte(0x22).to_string(),
+            U256::from(req_id),
+            U256::from(7u64),
+            1_700_000_000,
+            Some(Address::ZERO.to_string()),
+        )
     }
 
     #[test]
     fn guarantee_id_is_stable_and_microtransaction_scoped() {
         let cycle_id = "0x0000000000000000000000000000000000000000:1777248000";
-        let first = guarantee_id_for_cycle(cycle_id, &v1_claims(1));
-        let second = guarantee_id_for_cycle(cycle_id, &v1_claims(1));
-        let other = guarantee_id_for_cycle(cycle_id, &v1_claims(2));
+        let first = guarantee_id_for_cycle(cycle_id, &claims(1));
+        let second = guarantee_id_for_cycle(cycle_id, &claims(1));
+        let other = guarantee_id_for_cycle(cycle_id, &claims(2));
 
         assert_eq!(first, second);
         assert_ne!(first, other);

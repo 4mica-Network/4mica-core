@@ -1,25 +1,27 @@
 [package]
-name = "rpc-4mica"
+name = "validators-4mica"
 version = "2.0.0-alpha.1"
 edition.workspace = true
 authors = ["4Mica Network <engineering@4mica.io>"]
-description = "Shared RPC client and data types for the 4Mica payment network."
+description = "Validator adapters for validation-gated 4Mica guarantees."
 license = "CC-BY-NC-4.0"
 repository = "https://github.com/4mica-Network/4mica-core"
 homepage = "https://4mica.io"
-keywords = ["4mica", "rpc", "sdk", "ethereum"]
-categories = ["api-bindings", "cryptography::cryptocurrencies"]
 
 [lib]
-name = "rpc"
+name = "validators"
 
 [dependencies]
-crypto = { workspace = true }
+rpc = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+alloy = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-thiserror = { workspace = true }
-url = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

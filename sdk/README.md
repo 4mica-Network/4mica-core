@@ -11,7 +11,7 @@ The official Rust SDK for interacting with the 4Mica payment network.
 - **User Client**: Deposit collateral, sign payments, pay net debits, and manage withdrawals in ETH or ERC20 tokens
 - **Recipient Client**: Issue and verify payment guarantees, and claim net credits at cycle settlement
 - **X402 Flow Helper**: Generate X-PAYMENT headers for 402-protected HTTP resources via an X402-compatible service
-- **Guarantee V2 Support**: Build and verify validation-gated guarantees bound to ERC-8004 validation policy fields
+- **Validated Guarantees**: Build and verify guarantees gated on an external validator's approval
 
 ## Installation
 
@@ -50,22 +50,18 @@ Both are single netted amounts covering every payment in the window, not one cal
 
 ## Guarantee Versions
 
-The SDK supports both V1 and V2 guarantee flows.
+The SDK signs at its own `GUARANTEE_CLAIMS_VERSION`. Core accepts every version it can decode,
+listed in `/core/public-params` as `supported_guarantee_versions`, so an older client keeps
+working; a client newer than the core it talks to fails at construction with a clear message.
 
-- V1 is the original signed payment-intent flow.
-- V2 adds ERC-8004 validation policy fields gating guarantee verification on on-chain validation.
-- Core advertises the accepted guarantee versions and trusted validation registries through
-  `/core/public-params`.
-- `GUARANTEE_REQUEST_VERSION` on the core service controls which versions core accepts by default.
-  It does not force the output certificate version. The issued version is derived from the request
-  payload.
+## Validated Guarantees
 
-For callers there are three common paths:
+A guarantee that carries a `validation` requirement is payable only once the named validator
+approves it, and is cancelled if that has not happened by the deadline. Core resolves only
+validators it whitelists, listed in `/core/public-params` as `validators`.
 
-- `user.sign_payment(...)` signs explicit V1 claims.
-- `user.sign_payment_v2(...)` signs explicit V2 claims.
-- `user.sign_payment_auto(...)` chooses V1 or V2 from core metadata plus optional
-  `PaymentGuaranteeValidationInput`.
+Attach one by building the claims with `PaymentGuaranteeRequestClaims::new(...).with_validation(...)`
+and signing them with `user.sign_payment(...)`.
 
 ## Initialization and Configuration
 
@@ -170,7 +166,7 @@ The SDK provides client interfaces for both sides of the payment flow plus a hel
 The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Required` response into an X-PAYMENT header (and optional `/settle` call) that the facilitator will accept. The examples in `https://github.com/4mica-Network/x402-4mica/examples` model the expected flow: the client speaks to the resource server, and the resource server talks to the facilitator for `/verify` and `/settle`.
 
 Signing is entirely local. `X402Flow` generates a random `req_id` nonce itself and makes no
-network call before signing, so no endpoint needs to be advertised for it.
+network call before signing.
 
 #### What the SDK expects from `paymentRequirements`
 
@@ -179,9 +175,10 @@ network call before signing, so no endpoint needs to be advertised for it.
 - `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
 - `asset`, `amount` (v2) or `maxAmountRequired` (v1), and `payTo`
 
-V1 requires no `extra` at all. V2 requires `extra` carrying the validation policy fields
-(`validationRegistryAddress`, `validationChainId`, `validatorAddress`, `validatorAgentId`,
-`minValidationScore`, `jobHash`, and optionally `requiredValidationTag`).
+Either version may carry an optional validation requirement in `extra.validation`: `validator`
+(a whitelisted validator identity), `subject` (0x bytes32), `deadline` (optional unix seconds),
+and `params` (0x-encoded, validator-specific policy). Omitting `extra.validation` leaves the
+payment un-gated.
 
 #### End-to-end client flow
 
@@ -347,7 +344,7 @@ async fn settle(
 
 Notes:
 
-- `sign_payment` and `sign_payment_v2` always use EIP-712 signing and will error if the scheme is not 4mica.
+- `sign_payment` and `sign_payment_v2` sign the x402 v1 and v2 flows respectively; both use EIP-712 and error if the scheme is not 4mica.
 - `settle_payment` only hits `/settle`; resource servers should still call the facilitator `/verify` first when enforcing access (see the Python example for the end-to-end pattern).
 
 ### API Methods Summary
@@ -363,24 +360,20 @@ Notes:
 - `get_stablecoin_position(asset: String) -> Result<StablecoinPosition, GetUserError>`: Get the user's yield-bearing stablecoin position
 - `get_clearing_pay_net_debit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Fetch the prepared `payNetDebit` call (amount, proof, contract) for a cycle
 - `pay_net_debit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Pay the caller's committed net debit for a cycle
-- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V1 payment (`PaymentGuaranteeRequestClaims` is the SDK alias for V1 claims)
-- `sign_payment_v2(claims: PaymentGuaranteeRequestClaimsV2, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V2 payment with validation policy fields
-- `sign_payment_auto(intent: PaymentGuaranteeIntent, validation: Option<PaymentGuaranteeValidationInput>, scheme: SigningScheme) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>`: Build and sign either V1 or V2 claims using core metadata
+- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment; the claims carry an optional `validation` requirement
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
 - `finalize_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, FinalizeWithdrawalError>`: Finalize withdrawal after waiting period
 
 #### RecipientClient Methods
 
-- `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
 - `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
-- `issue_payment_guarantee_v2(claims: PaymentGuaranteeRequestClaimsV2, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a V2 payment guarantee
-- `issue_prepared_payment_guarantee(request: PreparedPaymentGuaranteeRequest) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a guarantee from the output of `sign_payment_auto`
-- `get_clearing_claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Fetch the prepared `claimNetCredit` call (amount, proof, contract) for a cycle
-- `claim_net_credit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Claim the caller's committed net credit for a cycle
+- `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
+- `guarantee_domain() -> &[u8; 32]`: On-chain domain separator guarantees are signed under
 - `list_recipient_payments() -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>`: List all payments for the recipient
-- `get_user_asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get the authenticated signer's asset balance
-- `active_guarantee_version() -> u64` / `active_guarantee_domain() -> &[u8; 32]`: Guarantee metadata cached from `/core/public-params`
+- `get_user_asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get the recipient's balance for one asset
+- `get_clearing_claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Prepare the on-chain call that claims a settled cycle's net credit
+- `claim_net_credit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Claim the recipient's net credit for a cycle
 
 > **Note:** `BLSCert` now exposes typed claims and signatures. Use `cert.claims().to_hex()` or `cert.signature().to_hex()` when you need hex strings.
 
@@ -862,7 +855,7 @@ use sdk_4mica::error::{
 - `InvalidScheme(String)`: `paymentRequirements.scheme` must include `4mica`
 - `InvalidVersion(String)`: Unexpected x402 version
 - `InvalidFacilitatorUrl(String)`: Invalid facilitator `/settle` base URL
-- `InvalidExtra(String)`: Issues parsing `paymentRequirements.extra` (v2 validation policy fields)
+- `InvalidExtra(String)`: Issues parsing `paymentRequirements.extra` (the validation requirement fields)
 - `InvalidNumber { field, source }`: Invalid numeric field in requirements
 - `EncodeEnvelope(String)`: Failed to encode the X-PAYMENT envelope
 - `SettlementFailed { status, body }`: Facilitator `/settle` returned a non-success status
@@ -900,7 +893,7 @@ cargo build --release
 - **Handle errors properly**: Always handle errors explicitly. The SDK provides specific error types for each failure scenario to help you build robust applications
 - **Check signer addresses**: For `RecipientClient` operations, ensure your signer address matches the recipient address. The SDK will return `InvalidParams` errors for mismatches
 - **Validate amounts**: The SDK prevents zero-amount transactions at the contract level, but you should validate amounts in your application for better UX
-- **ERC20 Approvals**: Always approve the 4Mica contract before depositing or paying with ERC20 tokens. Approve only the amount you need to minimize risk. Paying an ERC20 net debit needs a *separate* approval for the ClearingHouse via `approve_clearing_house_erc20` — it is a different contract from the one `approve_erc20` targets
+- **ERC20 Approvals**: Always approve the 4Mica contract before depositing or paying with ERC20 tokens. Approve only the amount you need to minimize risk. Paying an ERC20 net debit needs a _separate_ approval for the ClearingHouse via `approve_clearing_house_erc20` — it is a different contract from the one `approve_erc20` targets
 - **Asset Matching**: Cycles are scoped to a single asset. Ensure the asset in your payment claims matches the asset you intend to settle in; the contract will reject mismatched assets
 - **Use random `req_id`s**: Never reuse or sequence `req_id`. A duplicate within a cycle is rejected, and `X402Flow` generates one for you
 - **Multi-Asset Management**: Each asset (ETH and each ERC20 token) has its own collateral balance and withdrawal request. Use `get_user()` to view all your asset balances

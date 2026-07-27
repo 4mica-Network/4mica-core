@@ -1,4 +1,3 @@
-use alloy::primitives::Address;
 use rpc::PaymentGuaranteeRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -53,20 +52,24 @@ impl X402PaymentRequirements for PaymentRequirements {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaymentRequirementsExtra {
-    #[serde(default, alias = "validationRegistryAddress")]
-    pub validation_registry_address: Option<Address>,
-    #[serde(default, alias = "validationChainId")]
-    pub validation_chain_id: Option<u64>,
-    #[serde(default, alias = "validatorAddress")]
-    pub validator_address: Option<Address>,
-    #[serde(default, alias = "validatorAgentId")]
-    pub validator_agent_id: Option<String>,
-    #[serde(default, alias = "minValidationScore")]
-    pub min_validation_score: Option<u8>,
-    #[serde(default, alias = "jobHash")]
-    pub job_hash: Option<String>,
-    #[serde(default, alias = "requiredValidationTag")]
-    pub required_validation_tag: Option<String>,
+    /// Present when the payment is validation-gated.
+    #[serde(default)]
+    pub validation: Option<ValidationExtra>,
+}
+
+/// The `extra.validation` object a resource server sends to gate a payment on a validator.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ValidationExtra {
+    /// Validator identity, as whitelisted by core.
+    pub validator: String,
+    /// 0x-prefixed bytes32 the validator must approve.
+    pub subject: String,
+    /// Unix seconds; core tightens this to the settlement cycle's resolution cutoff.
+    #[serde(default)]
+    pub deadline: Option<u64>,
+    /// 0x-prefixed validator-specific policy bytes.
+    #[serde(default)]
+    pub params: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

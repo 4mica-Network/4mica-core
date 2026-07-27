@@ -2,17 +2,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{Client, PaymentSignature, SigningScheme, error::X402Error};
 use alloy::{
-    primitives::{B256, U256},
+    primitives::{B256, Bytes, U256},
     signers::Signer,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::{Client as HttpClient, Url};
-use rpc::{
-    PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
-    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2,
-    compute_validation_request_hash, compute_validation_subject_hash,
-};
+use rpc::{PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, ValidationRequirement};
 
 pub mod model;
 
@@ -20,7 +16,6 @@ pub use model::*;
 
 #[async_trait]
 pub trait FlowSigner: Send + Sync {
-    /// Signs any version of guarantee request claims. The single method to implement for V3+.
     async fn sign_payment(
         &self,
         claims: PaymentGuaranteeRequestClaims,
@@ -38,18 +33,10 @@ where
         claims: PaymentGuaranteeRequestClaims,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, X402Error> {
-        match claims {
-            PaymentGuaranteeRequestClaims::V1(c) => self
-                .user
-                .sign_payment(c, scheme)
-                .await
-                .map_err(X402Error::Signing),
-            PaymentGuaranteeRequestClaims::V2(c) => self
-                .user
-                .sign_payment_v2(*c, scheme)
-                .await
-                .map_err(X402Error::Signing),
-        }
+        self.user
+            .sign_payment(claims, scheme)
+            .await
+            .map_err(X402Error::Signing)
     }
 }
 
@@ -84,17 +71,14 @@ where
             return Err(X402Error::InvalidScheme(payment_requirements.scheme));
         }
 
-        let claims = Self::build_claims_request_v1(&payment_requirements, &user_address)?;
+        let claims = Self::build_claims_request(&payment_requirements, &user_address)?;
         let signature = self
             .signer
-            .sign_payment(
-                PaymentGuaranteeRequestClaims::V1(claims.clone()),
-                SigningScheme::Eip712,
-            )
+            .sign_payment(claims.clone(), SigningScheme::Eip712)
             .await?;
 
         let payload = PaymentGuaranteeRequest::new(
-            PaymentGuaranteeRequestClaims::V1(claims.clone()),
+            claims,
             signature.signature.clone(),
             signature.scheme.clone(),
         );
@@ -123,17 +107,14 @@ where
             return Err(X402Error::InvalidVersion("expected x402 version 2".into()));
         }
 
-        let claims = Self::build_claims_request_v2(&accepted, &user_address)?;
+        let claims = Self::build_claims_request(&accepted, &user_address)?;
         let signature = self
             .signer
-            .sign_payment(
-                PaymentGuaranteeRequestClaims::V2(Box::new(claims.clone())),
-                SigningScheme::Eip712,
-            )
+            .sign_payment(claims.clone(), SigningScheme::Eip712)
             .await?;
 
         let payload = PaymentGuaranteeRequest::new(
-            PaymentGuaranteeRequestClaims::V2(Box::new(claims.clone())),
+            claims,
             signature.signature.clone(),
             signature.scheme.clone(),
         );
@@ -219,83 +200,38 @@ where
         })
     }
 
-    fn build_claims_request_v1(
+    /// Build the signed claims for a payment.
+    fn build_claims_request(
         requirements: &impl X402PaymentRequirements,
         user_address: &str,
-    ) -> Result<PaymentGuaranteeRequestClaimsV1, X402Error> {
+    ) -> Result<PaymentGuaranteeRequestClaims, X402Error> {
         let payment_context = Self::build_payment_context(requirements)?;
 
-        Ok(PaymentGuaranteeRequestClaimsV1::new(
+        let claims = PaymentGuaranteeRequestClaims::new(
             user_address.to_string(),
             requirements.pay_to().to_string(),
             payment_context.req_id,
             payment_context.amount,
             payment_context.timestamp,
             Some(requirements.asset().to_string()),
-        ))
-    }
-
-    fn build_claims_request_v2(
-        requirements: &PaymentRequirementsV2,
-        user_address: &str,
-    ) -> Result<PaymentGuaranteeRequestClaimsV2, X402Error> {
-        let payment_context = Self::build_payment_context(requirements)?;
-        let extra = parse_payment_requirements_extra(requirements)?;
-
-        let validation_subject_hash = compute_validation_subject_hash(
-            user_address,
-            requirements.pay_to(),
-            payment_context.req_id,
-            payment_context.amount,
-            requirements.asset(),
-            payment_context.timestamp,
-        )
-        .map_err(|e| X402Error::InvalidExtra(e.to_string()))?;
-
-        let mut validation_policy = PaymentGuaranteeValidationPolicyV2 {
-            validation_registry_address: extra.validation_registry_address.ok_or_else(|| {
-                X402Error::InvalidExtra("missing validationRegistryAddress".into())
-            })?,
-            validation_request_hash: B256::ZERO,
-            validation_chain_id: extra
-                .validation_chain_id
-                .ok_or_else(|| X402Error::InvalidExtra("missing validationChainId".into()))?,
-            validator_address: extra
-                .validator_address
-                .ok_or_else(|| X402Error::InvalidExtra("missing validatorAddress".into()))?,
-            validator_agent_id: extra
-                .validator_agent_id
-                .as_deref()
-                .ok_or_else(|| X402Error::InvalidExtra("missing validatorAgentId".into()))
-                .and_then(|raw| parse_u256_field("validatorAgentId", raw))?,
-            min_validation_score: extra
-                .min_validation_score
-                .ok_or_else(|| X402Error::InvalidExtra("missing minValidationScore".into()))?,
-            validation_subject_hash: B256::from(validation_subject_hash),
-            job_hash: extra
-                .job_hash
-                .as_deref()
-                .ok_or_else(|| X402Error::InvalidExtra("missing jobHash".into()))
-                .and_then(|raw| parse_b256_field("jobHash", raw))?,
-            required_validation_tag: extra.required_validation_tag.unwrap_or_default(),
-        };
-        validation_policy.validation_request_hash = B256::from(
-            compute_validation_request_hash(&validation_policy).map_err(|e| {
-                X402Error::InvalidExtra(format!("invalid validation request policy: {e}"))
-            })?,
         );
 
-        PaymentGuaranteeRequestClaimsV2::builder(
-            user_address.to_string(),
-            requirements.pay_to.to_string(),
-            payment_context.req_id,
-            payment_context.amount,
-            payment_context.timestamp,
-        )
-        .asset_address(requirements.asset.to_string())
-        .validation_policy(validation_policy)
-        .build()
-        .map_err(|e| X402Error::InvalidExtra(e.to_string()))
+        let Some(validation) = parse_validation_extra(requirements)? else {
+            return Ok(claims);
+        };
+
+        let subject = parse_b256_field("subject", &validation.subject)?;
+        let params = match validation.params.as_deref() {
+            Some(raw) => parse_bytes_field("params", raw)?,
+            None => Bytes::new(),
+        };
+
+        Ok(claims.with_validation(ValidationRequirement {
+            validator: validation.validator,
+            subject,
+            deadline: validation.deadline,
+            params,
+        }))
     }
 
     fn build_payment_context(
@@ -325,14 +261,15 @@ struct PaymentContext {
     timestamp: u64,
 }
 
-fn parse_payment_requirements_extra(
+fn parse_validation_extra(
     requirements: &impl X402PaymentRequirements,
-) -> Result<PaymentRequirementsExtra, X402Error> {
-    match requirements.extra() {
-        Some(extra) => serde_json::from_value(extra.clone())
-            .map_err(|e| X402Error::InvalidExtra(e.to_string())),
-        None => Err(X402Error::InvalidExtra("extra is required".into())),
-    }
+) -> Result<Option<ValidationExtra>, X402Error> {
+    let Some(extra) = requirements.extra() else {
+        return Ok(None);
+    };
+    let parsed: PaymentRequirementsExtra = serde_json::from_value(extra.clone())
+        .map_err(|e| X402Error::InvalidExtra(e.to_string()))?;
+    Ok(parsed.validation)
 }
 
 fn parse_u256_field(field: &str, raw: &str) -> Result<U256, X402Error> {
@@ -351,6 +288,14 @@ fn parse_u256_field(field: &str, raw: &str) -> Result<U256, X402Error> {
 fn parse_b256_field(field: &str, raw: &str) -> Result<B256, X402Error> {
     let trimmed = raw.trim();
     <B256 as std::str::FromStr>::from_str(trimmed).map_err(|e| X402Error::InvalidNumber {
+        field: field.to_string(),
+        source: e.into(),
+    })
+}
+
+fn parse_bytes_field(field: &str, raw: &str) -> Result<Bytes, X402Error> {
+    let trimmed = raw.trim();
+    <Bytes as std::str::FromStr>::from_str(trimmed).map_err(|e| X402Error::InvalidNumber {
         field: field.to_string(),
         source: e.into(),
     })

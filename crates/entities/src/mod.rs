@@ -13,6 +13,7 @@ pub mod collateral_event;
 pub mod cycle_exposure_edge;
 pub mod cycle_participant_position;
 pub mod guarantee;
+pub mod guarantee_validation;
 pub mod sea_orm_active_enums;
 pub mod settlement_cycle;
 pub mod user;

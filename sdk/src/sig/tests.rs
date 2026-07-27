@@ -4,9 +4,7 @@ use alloy::signers::local::PrivateKeySigner;
 use chrono::Utc;
 use rpc::{
     CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
-    PaymentGuaranteeValidationPolicyV2, SigningScheme, compute_validation_request_hash,
-    compute_validation_subject_hash,
+    PaymentGuaranteeRequestClaimsV1, SigningScheme, ValidationRequirement,
 };
 use std::str::FromStr;
 
@@ -21,69 +19,43 @@ fn create_test_params() -> CorePublicParameters {
         eip712_name: "4mica".to_string(),
         eip712_version: "1".to_string(),
         chain_id: 1,
-        max_accepted_guarantee_version: 1,
-        accepted_guarantee_versions: vec![1],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        trusted_validation_registries: Vec::new(),
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".to_string(),
+        validators: vec![VALIDATOR_URI.to_string()],
     }
 }
 
-fn create_test_claims(user_addr: &str, recipient_addr: &str) -> PaymentGuaranteeRequestClaimsV1 {
-    PaymentGuaranteeRequestClaimsV1 {
-        user_address: user_addr.to_string(),
-        recipient_address: recipient_addr.to_string(),
-        req_id: U256::ZERO,
-        amount: U256::from(100u64),
-        timestamp: Utc::now().timestamp() as u64,
-        asset_address: "0x0000000000000000000000000000000000000000".into(),
+fn create_test_claims(user_addr: &str, recipient_addr: &str) -> PaymentGuaranteeRequestClaims {
+    PaymentGuaranteeRequestClaims::new(
+        user_addr.to_string(),
+        recipient_addr.to_string(),
+        U256::ZERO,
+        U256::from(100u64),
+        Utc::now().timestamp() as u64,
+        None,
+    )
+}
+
+const VALIDATOR_URI: &str = "eip155:1:0x1111111111111111111111111111111111111111";
+
+/// Reach into signed claims to corrupt them. Only tamper tests do this — production never
+/// mutates claims a wallet has already signed.
+fn v1_mut(claims: &mut PaymentGuaranteeRequestClaims) -> &mut PaymentGuaranteeRequestClaimsV1 {
+    match claims {
+        PaymentGuaranteeRequestClaims::V1(claims) => claims,
     }
 }
 
-fn create_test_claims_v2(
+fn create_validated_test_claims(
     user_addr: &str,
     recipient_addr: &str,
-) -> anyhow::Result<PaymentGuaranteeRequestClaimsV2> {
-    let req_id = U256::ZERO;
-    let amount = U256::from(100u64);
-    let timestamp = Utc::now().timestamp() as u64;
-    let asset_address = "0x0000000000000000000000000000000000000000".to_string();
-
-    let validation_subject_hash = compute_validation_subject_hash(
-        user_addr,
-        recipient_addr,
-        req_id,
-        amount,
-        &asset_address,
-        timestamp,
-    )?;
-
-    let mut validation_policy = PaymentGuaranteeValidationPolicyV2 {
-        validation_registry_address: Address::from_str(
-            "0x1111111111111111111111111111111111111111",
-        )?,
-        validation_request_hash: B256::ZERO,
-        validation_chain_id: 1,
-        validator_address: Address::from_str("0x2222222222222222222222222222222222222222")?,
-        validator_agent_id: U256::from(42u64),
-        min_validation_score: 80,
-        validation_subject_hash: B256::from(validation_subject_hash),
-        job_hash: B256::repeat_byte(0x11),
-        required_validation_tag: "hard-finality".to_string(),
-    };
-
-    validation_policy.validation_request_hash =
-        B256::from(compute_validation_request_hash(&validation_policy)?);
-
-    Ok(PaymentGuaranteeRequestClaimsV2 {
-        user_address: user_addr.to_string(),
-        recipient_address: recipient_addr.to_string(),
-        req_id,
-        amount,
-        asset_address,
-        timestamp,
-        validation_policy,
+) -> PaymentGuaranteeRequestClaims {
+    create_test_claims(user_addr, recipient_addr).with_validation(ValidationRequirement {
+        validator: VALIDATOR_URI.to_string(),
+        subject: B256::repeat_byte(0x33),
+        deadline: Some(1_800_000_000),
+        params: vec![0x0a, 0x0b].into(),
     })
 }
 
@@ -96,7 +68,6 @@ fn verify_promise_signature(
     let sig = Signature::try_from(sig_bytes.as_slice())
         .map_err(|_| "invalid signature length".to_string())?;
 
-    use rpc::PaymentGuaranteeRequestEssentials;
     let user_addr = Address::from_str(req.claims.user_address())
         .map_err(|_| "invalid user address".to_string())?;
     let recipient_addr = Address::from_str(req.claims.recipient_address())
@@ -131,18 +102,14 @@ async fn test_eip712_sign_and_verify_success() {
     let claims = create_test_claims(&user_addr, &recipient_addr);
 
     let result = wallet
-        .sign_request(&params, claims.clone(), SigningScheme::Eip712)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip712)
         .await;
 
     assert!(result.is_ok(), "Signing should succeed");
     let payment_sig = result.unwrap();
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip712));
 
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(claims),
-        payment_sig.signature,
-        payment_sig.scheme,
-    );
+    let request = PaymentGuaranteeRequest::new(claims, payment_sig.signature, payment_sig.scheme);
 
     let verify_result = verify_promise_signature(&params, &request);
     assert!(
@@ -161,18 +128,14 @@ async fn test_eip191_sign_and_verify_success() {
     let claims = create_test_claims(&user_addr, &recipient_addr);
 
     let result = wallet
-        .sign_request(&params, claims.clone(), SigningScheme::Eip191)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip191)
         .await;
 
     assert!(result.is_ok(), "Signing should succeed");
     let payment_sig = result.unwrap();
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip191));
 
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(claims),
-        payment_sig.signature,
-        payment_sig.scheme,
-    );
+    let request = PaymentGuaranteeRequest::new(claims, payment_sig.signature, payment_sig.scheme);
 
     let verify_result = verify_promise_signature(&params, &request);
     assert!(
@@ -182,91 +145,83 @@ async fn test_eip191_sign_and_verify_success() {
 }
 
 #[tokio::test]
-async fn test_eip712_sign_and_verify_success_v2() {
+async fn test_eip712_sign_and_verify_success_with_validation() {
     let params = create_test_params();
     let wallet = PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = "0x1234567890123456789012345678901234567890".to_string();
 
-    let claims = create_test_claims_v2(&user_addr, &recipient_addr).expect("build valid v2");
+    let claims = create_validated_test_claims(&user_addr, &recipient_addr);
 
     let result = wallet
-        .sign_request_v2(&params, claims.clone(), SigningScheme::Eip712)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip712)
         .await;
 
-    assert!(result.is_ok(), "Signing v2 should succeed");
-    let payment_sig = result.expect("v2 signature");
+    assert!(result.is_ok(), "Signing a validated request should succeed");
+    let payment_sig = result.expect("signature");
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip712));
 
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
-        payment_sig.signature,
-        payment_sig.scheme,
-    );
+    let request = PaymentGuaranteeRequest::new(claims, payment_sig.signature, payment_sig.scheme);
 
     let verify_result = verify_promise_signature(&params, &request);
     assert!(
         verify_result.is_ok(),
-        "V2 EIP-712 signature verification should succeed"
+        "EIP-712 signature verification should succeed with validation"
     );
 }
 
 #[tokio::test]
-async fn test_eip191_sign_and_verify_success_v2() {
+async fn test_eip191_sign_and_verify_success_with_validation() {
     let params = create_test_params();
     let wallet = PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = "0x1234567890123456789012345678901234567890".to_string();
 
-    let claims = create_test_claims_v2(&user_addr, &recipient_addr).expect("build valid v2");
+    let claims = create_validated_test_claims(&user_addr, &recipient_addr);
 
     let result = wallet
-        .sign_request_v2(&params, claims.clone(), SigningScheme::Eip191)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip191)
         .await;
 
-    assert!(result.is_ok(), "Signing v2 should succeed");
-    let payment_sig = result.expect("v2 signature");
+    assert!(result.is_ok(), "Signing a validated request should succeed");
+    let payment_sig = result.expect("signature");
     assert!(matches!(payment_sig.scheme, SigningScheme::Eip191));
 
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
-        payment_sig.signature,
-        payment_sig.scheme,
-    );
+    let request = PaymentGuaranteeRequest::new(claims, payment_sig.signature, payment_sig.scheme);
 
     let verify_result = verify_promise_signature(&params, &request);
     assert!(
         verify_result.is_ok(),
-        "V2 EIP-191 signature verification should succeed"
+        "EIP-191 signature verification should succeed with validation"
     );
 }
 
 #[tokio::test]
-async fn test_eip712_signature_fails_with_tampered_v2_validation_field() {
+async fn test_eip712_signature_fails_with_tampered_validation_field() {
     let params = create_test_params();
     let wallet = PrivateKeySigner::random();
     let user_addr = wallet.address().to_string();
     let recipient_addr = "0x1234567890123456789012345678901234567890".to_string();
 
-    let claims = create_test_claims_v2(&user_addr, &recipient_addr).expect("build valid v2");
+    let claims = create_validated_test_claims(&user_addr, &recipient_addr);
     let result = wallet
-        .sign_request_v2(&params, claims.clone(), SigningScheme::Eip712)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip712)
         .await
-        .expect("v2 signing should succeed");
+        .expect("signing should succeed");
 
     let mut tampered_claims = claims;
-    tampered_claims.validation_policy.validation_request_hash = B256::repeat_byte(0x11);
+    v1_mut(&mut tampered_claims)
+        .validation
+        .as_mut()
+        .expect("validation")
+        .subject = B256::repeat_byte(0x11);
 
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(Box::new(tampered_claims)),
-        result.signature,
-        result.scheme,
-    );
+    let request = PaymentGuaranteeRequest::new(tampered_claims, result.signature, result.scheme);
 
     let verify_result = verify_promise_signature(&params, &request);
     assert!(
         verify_result.is_err(),
-        "V2 EIP-712 signature verification should fail with tampered validation_request_hash"
+        "EIP-712 signature verification should fail with a tampered validation subject"
     );
 }
 
@@ -281,19 +236,15 @@ async fn test_eip712_signature_fails_with_tampered_claims() {
 
     // Sign the original claims
     let result = wallet
-        .sign_request(&params, claims.clone(), SigningScheme::Eip712)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip712)
         .await
         .unwrap();
 
     // Tamper with the amount after signing
     let mut tampered_claims = claims;
-    tampered_claims.amount = U256::from(999u64);
+    v1_mut(&mut tampered_claims).amount = U256::from(999u64);
 
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(tampered_claims),
-        result.signature,
-        result.scheme,
-    );
+    let request = PaymentGuaranteeRequest::new(tampered_claims, result.signature, result.scheme);
 
     // Verification should fail
     let verify_result = verify_promise_signature(&params, &request);
@@ -321,19 +272,16 @@ async fn test_eip191_signature_fails_with_tampered_claims() {
 
     // Sign the original claims
     let result = wallet
-        .sign_request(&params, claims.clone(), SigningScheme::Eip191)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip191)
         .await
         .unwrap();
 
     // Tamper with the recipient address after signing
     let mut tampered_claims = claims;
-    tampered_claims.recipient_address = "0x9999999999999999999999999999999999999999".to_string();
+    v1_mut(&mut tampered_claims).recipient_address =
+        "0x9999999999999999999999999999999999999999".to_string();
 
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(tampered_claims),
-        result.signature,
-        result.scheme,
-    );
+    let request = PaymentGuaranteeRequest::new(tampered_claims, result.signature, result.scheme);
 
     // Verification should fail
     let verify_result = verify_promise_signature(&params, &request);
@@ -360,14 +308,14 @@ async fn test_sign_request_fails_with_address_mismatch() {
     // Create claims with different user address than the signer
     let claims = create_test_claims(&different_addr, &recipient_addr);
 
-    // Sign should fail because signer address != claims.user_address
+    // Sign should fail because signer address != claims.user_address()
     let result = wallet
-        .sign_request(&params, claims, SigningScheme::Eip712)
+        .sign_claims(&params, claims, SigningScheme::Eip712)
         .await;
 
     assert!(
         result.is_err(),
-        "Signing should fail when signer address doesn't match claims.user_address"
+        "Signing should fail when signer address doesn't match claims.user_address()"
     );
 
     let err = result.unwrap_err();
@@ -391,13 +339,13 @@ async fn test_eip712_and_eip191_produce_different_signatures() {
 
     // Sign with EIP-712
     let sig_eip712 = wallet
-        .sign_request(&params, claims.clone(), SigningScheme::Eip712)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip712)
         .await
         .unwrap();
 
     // Sign with EIP-191
     let sig_eip191 = wallet
-        .sign_request(&params, claims.clone(), SigningScheme::Eip191)
+        .sign_claims(&params, claims.clone(), SigningScheme::Eip191)
         .await
         .unwrap();
 
@@ -408,11 +356,8 @@ async fn test_eip712_and_eip191_produce_different_signatures() {
     );
 
     // EIP-712 signature should not validate with EIP-191 scheme
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(claims.clone()),
-        sig_eip712.signature,
-        SigningScheme::Eip191,
-    );
+    let request =
+        PaymentGuaranteeRequest::new(claims.clone(), sig_eip712.signature, SigningScheme::Eip191);
 
     let result = verify_promise_signature(&params, &request);
     assert!(
@@ -421,11 +366,7 @@ async fn test_eip712_and_eip191_produce_different_signatures() {
     );
 
     // EIP-191 signature should not validate with EIP-712 scheme
-    let request = PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(claims),
-        sig_eip191.signature,
-        SigningScheme::Eip712,
-    );
+    let request = PaymentGuaranteeRequest::new(claims, sig_eip191.signature, SigningScheme::Eip712);
     let result = verify_promise_signature(&params, &request);
     assert!(
         result.is_err(),

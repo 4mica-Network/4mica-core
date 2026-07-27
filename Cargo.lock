@@ -1956,6 +1956,7 @@ dependencies = [
  "tower",
  "tower-http",
  "uuid",
+ "validators-4mica",
 ]
 
 [[package]]
@@ -7192,6 +7193,23 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "validators-4mica"
+version = "2.0.0-alpha.1"
+dependencies = [
+ "alloy",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "anyhow",
+ "async-trait",
+ "log",
+ "reqwest 0.13.3",
+ "rpc-4mica",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

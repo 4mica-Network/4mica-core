@@ -150,11 +150,9 @@ fn init_config() -> AppConfig {
 }
 
 fn force_local_e2e_guarantee_defaults(cfg: &mut AppConfig) {
-    // These tests deploy a fresh Core4Mica with only the initial guarantee version enabled.
-    // Pin the local harness to V1 so it does not inherit V2-only settings from the developer's env.
-    cfg.guarantee.max_accepted_version = 1;
-    cfg.guarantee.accepted_request_versions.clear();
-    cfg.guarantee.trusted_validation_registries.clear();
+    // These tests deploy a fresh Core4Mica with no validators, so a developer's env must not
+    // leak a whitelist the local chain cannot serve.
+    cfg.guarantee.validators = "[]".to_string();
     // No shortfall grace window in tests: drive an under-funded cycle terminal immediately so
     // the Shortfall path is exercised deterministically without advancing wall-clock time.
     cfg.settlement_cycle.shortfall_grace_secs = 0;

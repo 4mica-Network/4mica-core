@@ -6,8 +6,7 @@ use alloy::{
 use crypto::bls::{BLSCert, BlsError};
 use rpc::{
     ClearingSettlementActionResponse, PaymentGuaranteeClaims, PaymentGuaranteeRequest,
-    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
-    PaymentGuaranteeRequestClaimsV2, SigningScheme,
+    PaymentGuaranteeRequestClaims, SigningScheme,
 };
 
 use crate::{
@@ -17,7 +16,6 @@ use crate::{
         ClearingSettlementError, IssuePaymentGuaranteeError, RecipientQueryError,
         VerifyGuaranteeError,
     },
-    guarantee::{PreparedPaymentGuaranteeClaims, PreparedPaymentGuaranteeRequest},
 };
 use std::collections::HashMap;
 
@@ -31,12 +29,8 @@ impl<S> RecipientClient<S> {
         Self { ctx }
     }
 
-    pub fn active_guarantee_version(&self) -> u64 {
-        self.ctx.active_guarantee_version()
-    }
-
-    pub fn active_guarantee_domain(&self) -> &[u8; 32] {
-        self.ctx.active_guarantee_domain()
+    pub fn guarantee_domain(&self) -> &[u8; 32] {
+        self.ctx.guarantee_domain()
     }
 
     pub async fn get_clearing_claim_net_credit_action(
@@ -99,7 +93,7 @@ impl<S> RecipientClient<S> {
         Ok(())
     }
 
-    async fn issue_inner(
+    pub async fn issue_payment_guarantee(
         &self,
         claims: PaymentGuaranteeRequestClaims,
         signature: String,
@@ -115,51 +109,6 @@ impl<S> RecipientClient<S> {
             .issue_guarantee(PaymentGuaranteeRequest::new(claims, signature, scheme))
             .await?;
         Ok(cert)
-    }
-
-    pub async fn issue_payment_guarantee(
-        &self,
-        claims: PaymentGuaranteeRequestClaimsV1,
-        signature: String,
-        scheme: SigningScheme,
-    ) -> Result<BLSCert, IssuePaymentGuaranteeError>
-    where
-        S: Signer + Sync,
-    {
-        self.issue_inner(PaymentGuaranteeRequestClaims::V1(claims), signature, scheme)
-            .await
-    }
-
-    pub async fn issue_payment_guarantee_v2(
-        &self,
-        claims: PaymentGuaranteeRequestClaimsV2,
-        signature: String,
-        scheme: SigningScheme,
-    ) -> Result<BLSCert, IssuePaymentGuaranteeError>
-    where
-        S: Signer + Sync,
-    {
-        self.issue_inner(
-            PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
-            signature,
-            scheme,
-        )
-        .await
-    }
-
-    pub async fn issue_prepared_payment_guarantee(
-        &self,
-        request: PreparedPaymentGuaranteeRequest,
-    ) -> Result<BLSCert, IssuePaymentGuaranteeError>
-    where
-        S: Signer + Sync,
-    {
-        let claims = match request.claims {
-            PreparedPaymentGuaranteeClaims::V1(c) => PaymentGuaranteeRequestClaims::V1(c),
-            PreparedPaymentGuaranteeClaims::V2(c) => PaymentGuaranteeRequestClaims::V2(c),
-        };
-        self.issue_inner(claims, request.signature, request.scheme)
-            .await
     }
 
     pub fn verify_payment_guarantee(
@@ -232,10 +181,8 @@ impl<S> RecipientClient<S> {
 #[cfg(test)]
 mod tests {
     use super::RecipientClient;
-    use alloy::primitives::{Address, B256, U256};
-    use rpc::{
-        GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims, PaymentGuaranteeValidationPolicyV2,
-    };
+    use alloy::primitives::{Address, U256};
+    use rpc::{GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims};
     use std::collections::HashMap;
 
     use crate::error::VerifyGuaranteeError;
@@ -251,22 +198,11 @@ mod tests {
             asset_address: Address::ZERO.to_string(),
             timestamp: 1_700_000_000,
             version,
-            validation_policy: (version == 2).then(|| PaymentGuaranteeValidationPolicyV2 {
-                validation_registry_address: Address::repeat_byte(0x33),
-                validation_request_hash: Default::default(),
-                validation_chain_id: 1,
-                validator_address: Address::repeat_byte(0x44),
-                validator_agent_id: U256::from(7u64),
-                min_validation_score: 80,
-                validation_subject_hash: Default::default(),
-                job_hash: B256::repeat_byte(0x11),
-                required_validation_tag: String::new(),
-            }),
         }
     }
 
     #[test]
-    fn verify_guarantee_metadata_accepts_v1_when_active_version_is_v1() {
+    fn verify_guarantee_metadata_accepts_a_supported_version() {
         let claims = test_claims(GUARANTEE_CLAIMS_VERSION, [0x11; 32]);
         let result = RecipientClient::<()>::verify_guarantee_metadata(
             &claims,
@@ -276,34 +212,24 @@ mod tests {
     }
 
     #[test]
-    fn verify_guarantee_metadata_accepts_v2_when_active_version_is_v2() {
-        let claims = test_claims(2, [0x22; 32]);
-        let result = RecipientClient::<()>::verify_guarantee_metadata(
-            &claims,
-            &HashMap::from([(2, [0x22; 32])]),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn verify_guarantee_metadata_rejects_unsupported_version() {
-        let claims = test_claims(2, [0x22; 32]);
+        let claims = test_claims(99, [0x22; 32]);
         let result = RecipientClient::<()>::verify_guarantee_metadata(
             &claims,
             &HashMap::from([(GUARANTEE_CLAIMS_VERSION, [0x22; 32])]),
         );
         assert!(matches!(
             result,
-            Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(2))
+            Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(99))
         ));
     }
 
     #[test]
     fn verify_guarantee_metadata_rejects_domain_mismatch() {
-        let claims = test_claims(2, [0x22; 32]);
+        let claims = test_claims(GUARANTEE_CLAIMS_VERSION, [0x22; 32]);
         let result = RecipientClient::<()>::verify_guarantee_metadata(
             &claims,
-            &HashMap::from([(2, [0x33; 32])]),
+            &HashMap::from([(GUARANTEE_CLAIMS_VERSION, [0x33; 32])]),
         );
         assert!(matches!(
             result,

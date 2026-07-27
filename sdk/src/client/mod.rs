@@ -17,7 +17,10 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::{Signature, Signer},
 };
-use rpc::{ApiClientError, CorePublicParameters, RpcProxy, SupportedTokensResponse};
+use rpc::{
+    ApiClientError, CorePublicParameters, GUARANTEE_CLAIMS_VERSION, RpcProxy,
+    SupportedTokensResponse,
+};
 use tokio::sync::OnceCell;
 use url::Url;
 
@@ -37,8 +40,7 @@ struct Inner<S> {
     wallet_provider: OnceCell<DynProvider>,
     contract_address: Address,
     operator_public_key: BlsPublicKey,
-    max_accepted_guarantee_version: u64,
-    active_guarantee_domain: [u8; 32],
+    guarantee_domain: [u8; 32],
     guarantee_domains: HashMap<u64, [u8; 32]>,
     auth_session: Option<AuthSession<S>>,
 }
@@ -75,7 +77,7 @@ impl<S> ClientCtx<S> {
         let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
         let contract = Core4Mica::new(contract_address, provider.clone());
-        let (max_accepted_guarantee_version, active_guarantee_domain, guarantee_domains) =
+        let (guarantee_domain, guarantee_domains) =
             Self::fetch_guarantee_metadata(&public_params, &contract).await?;
 
         Ok(Self(Arc::new(Inner {
@@ -86,8 +88,7 @@ impl<S> ClientCtx<S> {
             wallet_provider: OnceCell::new(),
             contract_address,
             operator_public_key,
-            max_accepted_guarantee_version,
-            active_guarantee_domain,
+            guarantee_domain,
             guarantee_domains,
             auth_session,
         })))
@@ -143,64 +144,73 @@ impl<S> ClientCtx<S> {
         }
     }
 
+    /// Loads the on-chain domain separator for every guarantee version this core supports, so
+    /// certs can be verified whichever version issued them. Requests are always signed at
+    /// [`GUARANTEE_CLAIMS_VERSION`], so that one must be supported and enabled.
     async fn fetch_guarantee_metadata(
         public_params: &CorePublicParameters,
         contract: &Core4MicaInstance<DynProvider>,
-    ) -> Result<(u64, [u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
-        let max_version = public_params.max_accepted_guarantee_version;
+    ) -> Result<([u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
+        if !public_params
+            .supported_guarantee_versions
+            .contains(&GUARANTEE_CLAIMS_VERSION)
+        {
+            return Err(ClientError::Initialization(format!(
+                "this client signs guarantee v{GUARANTEE_CLAIMS_VERSION}, which core does not \
+                 support (core supports {:?}); upgrade core or downgrade the SDK",
+                public_params.supported_guarantee_versions
+            )));
+        }
+
         let mut guarantee_domains = HashMap::new();
-        // Iterate over whichever versions the core reports as accepted, rather than a hardcoded
-        // list. Adding V3 in the rpc crate is the only change required.
-        for version in public_params.accepted_guarantee_versions_or_default() {
+        for &version in &public_params.supported_guarantee_versions {
             let version_config = contract
                 .getGuaranteeVersionConfig(version)
                 .call()
                 .await
                 .map_err(|e| ClientError::Initialization(e.to_string()))?;
-            if version_config.enabled {
-                guarantee_domains.insert(version, version_config.domainSeparator.into());
-            }
 
-            if version == max_version {
-                if !version_config.enabled {
+            if !version_config.enabled {
+                if version == GUARANTEE_CLAIMS_VERSION {
                     return Err(ClientError::Initialization(format!(
-                        "max accepted guarantee version {} is disabled on-chain",
-                        max_version
+                        "guarantee v{GUARANTEE_CLAIMS_VERSION} is disabled on-chain"
                     )));
                 }
+                continue;
+            }
+            guarantee_domains.insert(version, version_config.domainSeparator.into());
 
-                if !public_params.active_guarantee_domain_separator.is_empty() {
-                    let expected_domain = public_params
-                        .active_guarantee_domain_separator
-                        .parse::<B256>()
-                        .map_err(|e| {
-                            ClientError::Initialization(format!(
-                                "invalid active guarantee domain separator from core: {e}"
-                            ))
-                        })?;
+            if version == GUARANTEE_CLAIMS_VERSION
+                && !public_params.guarantee_domain_separator.is_empty()
+            {
+                let expected_domain = public_params
+                    .guarantee_domain_separator
+                    .parse::<B256>()
+                    .map_err(|e| {
+                        ClientError::Initialization(format!(
+                            "invalid guarantee domain separator from core: {e}"
+                        ))
+                    })?;
 
-                    if expected_domain != version_config.domainSeparator {
-                        return Err(ClientError::Initialization(format!(
-                            "guarantee domain mismatch between core metadata and contract for version {}",
-                            max_version
-                        )));
-                    }
+                if expected_domain != version_config.domainSeparator {
+                    return Err(ClientError::Initialization(format!(
+                        "guarantee domain mismatch between core metadata and contract for \
+                         version {version}"
+                    )));
                 }
             }
         }
 
-        let active_guarantee_domain =
-            guarantee_domains
-                .get(&max_version)
-                .copied()
-                .ok_or_else(|| {
-                    ClientError::Initialization(format!(
-                        "missing guarantee domain metadata for max accepted version {}",
-                        max_version
-                    ))
-                })?;
+        let guarantee_domain = guarantee_domains
+            .get(&GUARANTEE_CLAIMS_VERSION)
+            .copied()
+            .ok_or_else(|| {
+                ClientError::Initialization(format!(
+                    "missing guarantee domain metadata for v{GUARANTEE_CLAIMS_VERSION}"
+                ))
+            })?;
 
-        Ok((max_version, active_guarantee_domain, guarantee_domains))
+        Ok((guarantee_domain, guarantee_domains))
     }
 
     fn contract_address(&self) -> Address {
@@ -215,12 +225,8 @@ impl<S> ClientCtx<S> {
         &self.0.operator_public_key
     }
 
-    fn active_guarantee_version(&self) -> u64 {
-        self.0.max_accepted_guarantee_version
-    }
-
-    fn active_guarantee_domain(&self) -> &[u8; 32] {
-        &self.0.active_guarantee_domain
+    fn guarantee_domain(&self) -> &[u8; 32] {
+        &self.0.guarantee_domain
     }
 
     fn guarantee_domain_for_version(&self, version: u64) -> Option<&[u8; 32]> {

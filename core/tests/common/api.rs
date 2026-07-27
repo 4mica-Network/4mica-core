@@ -19,10 +19,8 @@ use entities::guarantee as guarantee_entity;
 use metrics_exporter_prometheus::PrometheusHandle;
 use rand::random;
 use rpc::{
-    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV1, PaymentGuaranteeRequestClaimsV2,
-    PaymentGuaranteeValidationPolicyV2, RpcProxy, SigningScheme, compute_validation_request_hash,
-    compute_validation_subject_hash,
+    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, RpcProxy,
+    SigningScheme, ValidationRequirement,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::Deserialize;
@@ -268,6 +266,8 @@ pub async fn list_cycle_guarantees_for_recipient(
     Ok(rows)
 }
 
+// Declared here rather than imported from `rpc` on purpose: these pin the EIP-712 schema
+// independently, so a change to the crate's structs shows up as a signature failure.
 sol! {
     struct SolGuaranteeRequestClaimsV1 {
         address user;
@@ -277,30 +277,118 @@ sol! {
         address asset;
         uint64  timestamp;
     }
-}
 
-sol! {
-    struct SolGuaranteeRequestClaimsV2 {
+    struct SolValidation {
+        string validator;
+        bytes32 subject;
+        uint64 deadline;
+        bytes params;
+    }
+
+    struct SolValidatedGuaranteeRequestClaimsV1 {
         address user;
         address recipient;
         uint256 reqId;
         uint256 amount;
         address asset;
-        uint64 timestamp;
-        address validationRegistryAddress;
-        bytes32 validationRequestHash;
-        uint256 validationChainId;
-        address validatorAddress;
-        uint256 validatorAgentId;
-        uint8 minValidationScore;
-        bytes32 validationSubjectHash;
-        bytes32 jobHash;
-        string requiredValidationTag;
+        uint64  timestamp;
+        SolValidation validation;
     }
 }
 
-/// Build an EIP-712-signed guarantee request. Picks V2 when the server only
-/// accepts validation-gated versions, otherwise V1.
+/// Validator named by the validated-request helpers; whitelist it via `GUARANTEE_VALIDATORS`.
+pub const TEST_VALIDATOR_URI: &str = "eip155:31337:0x1111111111111111111111111111111111111111";
+
+fn eip712_digest(params: &CorePublicParameters, claims: &PaymentGuaranteeRequestClaims) -> B256 {
+    let domain = eip712_domain!(
+        name:     params.eip712_name.clone(),
+        version:  params.eip712_version.clone(),
+        chain_id: params.chain_id,
+        verifying_contract: Address::from_str(&params.contract_address).unwrap(),
+    );
+
+    let user = Address::from_str(claims.user_address()).expect("valid user");
+    let recipient = Address::from_str(claims.recipient_address()).expect("valid recipient");
+    let asset = Address::from_str(claims.asset_address()).expect("valid asset");
+
+    match &claims.validation() {
+        None => SolGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+        }
+        .eip712_signing_hash(&domain),
+        Some(validation) => SolValidatedGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+            validation: sol_validation(validation),
+        }
+        .eip712_signing_hash(&domain),
+    }
+}
+
+fn eip191_digest(claims: &PaymentGuaranteeRequestClaims) -> B256 {
+    let user = Address::from_str(claims.user_address()).expect("valid user");
+    let recipient = Address::from_str(claims.recipient_address()).expect("valid recipient");
+    let asset = Address::from_str(claims.asset_address()).expect("valid asset");
+
+    let data = match &claims.validation() {
+        None => SolGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+        }
+        .abi_encode(),
+        Some(validation) => SolValidatedGuaranteeRequestClaimsV1 {
+            user,
+            recipient,
+            reqId: claims.req_id(),
+            amount: claims.amount(),
+            asset,
+            timestamp: claims.timestamp(),
+            validation: sol_validation(validation),
+        }
+        .abi_encode(),
+    };
+
+    let mut prefixed = format!("\x19Ethereum Signed Message:\n{}", data.len()).into_bytes();
+    prefixed.extend_from_slice(&data);
+    alloy::primitives::keccak256(prefixed)
+}
+
+fn sol_validation(validation: &ValidationRequirement) -> SolValidation {
+    SolValidation {
+        validator: validation.validator.clone(),
+        subject: validation.subject,
+        deadline: validation.deadline.unwrap_or(0),
+        params: validation.params.clone(),
+    }
+}
+
+pub async fn sign_claims(
+    params: &CorePublicParameters,
+    wallet: &PrivateKeySigner,
+    claims: PaymentGuaranteeRequestClaims,
+    scheme: SigningScheme,
+) -> PaymentGuaranteeRequest {
+    let digest = match scheme {
+        SigningScheme::Eip712 => eip712_digest(params, &claims),
+        SigningScheme::Eip191 => eip191_digest(&claims),
+    };
+    let sig: Signature = wallet.sign_hash(&digest).await.expect("sign claims");
+    PaymentGuaranteeRequest::new(claims, crypto::hex::encode_hex(&sig.as_bytes()), scheme)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn build_signed_req(
     public_params: &CorePublicParameters,
@@ -312,275 +400,66 @@ pub async fn build_signed_req(
     timestamp: Option<u64>,
     asset_address: &str,
 ) -> PaymentGuaranteeRequest {
-    let ts = timestamp.unwrap_or_else(|| Utc::now().timestamp() as u64);
-    let accepted_versions = public_params.accepted_guarantee_versions_or_default();
-    let prefers_v1 = accepted_versions.contains(&1);
-    let requires_v2 = accepted_versions.iter().all(|&version| version >= 2);
-
-    if !prefers_v1 && requires_v2 {
-        let validation_subject_hash = compute_validation_subject_hash(
-            user_addr,
-            recipient_addr,
-            req_id,
-            amount,
-            asset_address,
-            ts,
-        )
-        .expect("compute validation subject hash");
-
-        let validation_registry_address = public_params
-            .trusted_validation_registries
-            .first()
-            .and_then(|value| Address::from_str(value).ok())
-            .unwrap_or_else(|| {
-                Address::from_str("0x1111111111111111111111111111111111111111")
-                    .expect("fallback validation registry")
-            });
-
-        let mut policy = PaymentGuaranteeValidationPolicyV2 {
-            validation_registry_address,
-            validation_request_hash: B256::ZERO,
-            validation_chain_id: public_params.chain_id,
-            validator_address: Address::from_str(recipient_addr).expect("valid recipient"),
-            validator_agent_id: U256::from(1u64),
-            min_validation_score: 80,
-            validation_subject_hash: B256::from(validation_subject_hash),
-            job_hash: B256::repeat_byte(0x11),
-            required_validation_tag: "hard-finality".to_string(),
-        };
-        policy.validation_request_hash =
-            B256::from(compute_validation_request_hash(&policy).expect("compute request hash"));
-
-        let claims = PaymentGuaranteeRequestClaimsV2 {
-            user_address: user_addr.to_string(),
-            recipient_address: recipient_addr.to_string(),
-            req_id,
-            amount,
-            timestamp: ts,
-            asset_address: asset_address.to_string(),
-            validation_policy: policy,
-        };
-
-        let domain = eip712_domain!(
-            name: public_params.eip712_name.clone(),
-            version: public_params.eip712_version.clone(),
-            chain_id: public_params.chain_id,
-            verifying_contract: Address::from_str(&public_params.contract_address).unwrap(),
-        );
-        let msg = SolGuaranteeRequestClaimsV2 {
-            user: Address::from_str(user_addr).unwrap(),
-            recipient: Address::from_str(recipient_addr).unwrap(),
-            reqId: req_id,
-            amount,
-            asset: Address::from_str(asset_address).unwrap(),
-            timestamp: ts,
-            validationRegistryAddress: claims.validation_policy.validation_registry_address,
-            validationRequestHash: claims.validation_policy.validation_request_hash,
-            validationChainId: U256::from(claims.validation_policy.validation_chain_id),
-            validatorAddress: claims.validation_policy.validator_address,
-            validatorAgentId: claims.validation_policy.validator_agent_id,
-            minValidationScore: claims.validation_policy.min_validation_score,
-            validationSubjectHash: claims.validation_policy.validation_subject_hash,
-            jobHash: claims.validation_policy.job_hash,
-            requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
-        };
-        let digest = msg.eip712_signing_hash(&domain);
-        let sig: Signature = wallet.sign_hash(&digest).await.unwrap();
-        return PaymentGuaranteeRequest::new(
-            PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
-            crypto::hex::encode_hex(&sig.as_bytes()),
-            SigningScheme::Eip712,
-        );
-    }
-
-    let domain = eip712_domain!(
-        name: public_params.eip712_name.clone(),
-        version: public_params.eip712_version.clone(),
-        chain_id: public_params.chain_id,
-        verifying_contract: Address::from_str(&public_params.contract_address).unwrap(),
-    );
-    let msg = SolGuaranteeRequestClaimsV1 {
-        user: Address::from_str(user_addr).unwrap(),
-        recipient: Address::from_str(recipient_addr).unwrap(),
-        reqId: req_id,
+    let claims = PaymentGuaranteeRequestClaims::new(
+        user_addr.to_string(),
+        recipient_addr.to_string(),
+        req_id,
         amount,
-        asset: Address::from_str(asset_address).unwrap(),
-        timestamp: ts,
-    };
-    let digest = msg.eip712_signing_hash(&domain);
-    let sig: Signature = wallet.sign_hash(&digest).await.unwrap();
-    PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            user_address: user_addr.to_string(),
-            recipient_address: recipient_addr.to_string(),
-            req_id,
-            amount,
-            timestamp: ts,
-            asset_address: asset_address.to_string(),
-        }),
-        crypto::hex::encode_hex(&sig.as_bytes()),
-        SigningScheme::Eip712,
+        timestamp.unwrap_or_else(|| Utc::now().timestamp() as u64),
+        Some(asset_address.to_string()),
+    );
+    sign_claims(public_params, wallet, claims, SigningScheme::Eip712).await
+}
+
+pub fn sample_claims(wallet: &PrivateKeySigner) -> PaymentGuaranteeRequestClaims {
+    PaymentGuaranteeRequestClaims::new(
+        wallet.address().to_string(),
+        Address::from(random::<[u8; 20]>()).to_string(),
+        U256::from(0u64),
+        U256::from(42u64),
+        Utc::now().timestamp() as u64,
+        Some(DEFAULT_ASSET_ADDRESS.to_string()),
     )
+}
+
+pub fn sample_validated_claims(wallet: &PrivateKeySigner) -> PaymentGuaranteeRequestClaims {
+    sample_claims(wallet).with_validation(ValidationRequirement {
+        validator: TEST_VALIDATOR_URI.to_string(),
+        subject: B256::from(random::<[u8; 32]>()),
+        deadline: None,
+        params: Default::default(),
+    })
 }
 
 pub async fn build_eip712_signed_request(
     params: &CorePublicParameters,
     wallet: &PrivateKeySigner,
 ) -> PaymentGuaranteeRequest {
-    let timestamp = Utc::now().timestamp() as u64;
-
-    let domain = eip712_domain!(
-        name:     params.eip712_name.clone(),
-        version:  params.eip712_version.clone(),
-        chain_id: params.chain_id,
-        verifying_contract: Address::from_str(&params.contract_address).unwrap(),
-    );
-
-    let recipient = Address::from(random::<[u8; 20]>());
-    let msg = SolGuaranteeRequestClaimsV1 {
-        user: wallet.address(),
-        recipient,
-        reqId: U256::from(0u64),
-        amount: U256::from(42u64),
-        asset: Address::from_str(DEFAULT_ASSET_ADDRESS).unwrap(),
-        timestamp,
-    };
-    let digest = msg.eip712_signing_hash(&domain);
-
-    let sig: Signature = wallet.sign_hash(&digest).await.unwrap();
-
-    PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V1(PaymentGuaranteeRequestClaimsV1 {
-            user_address: wallet.address().to_string(),
-            recipient_address: recipient.to_string(),
-            req_id: U256::from(0u64),
-            amount: U256::from(42u64),
-            timestamp,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
-        }),
-        crypto::hex::encode_hex(&sig.as_bytes()),
-        SigningScheme::Eip712,
-    )
+    sign_claims(params, wallet, sample_claims(wallet), SigningScheme::Eip712).await
 }
 
-pub fn sample_v2_claims(
-    params: &CorePublicParameters,
-    wallet: &PrivateKeySigner,
-) -> PaymentGuaranteeRequestClaimsV2 {
-    let user_address = wallet.address().to_string();
-    let recipient_address = Address::from(random::<[u8; 20]>()).to_string();
-    let asset_address = DEFAULT_ASSET_ADDRESS.to_string();
-    let req_id = U256::from(0u64);
-    let amount = U256::from(42u64);
-    let timestamp = Utc::now().timestamp() as u64;
-
-    let validation_subject_hash = compute_validation_subject_hash(
-        &user_address,
-        &recipient_address,
-        req_id,
-        amount,
-        &asset_address,
-        timestamp,
-    )
-    .expect("compute subject hash");
-
-    let mut policy = PaymentGuaranteeValidationPolicyV2 {
-        validation_registry_address: Address::from_str(
-            "0x1111111111111111111111111111111111111111",
-        )
-        .expect("valid validation registry"),
-        validation_request_hash: B256::ZERO,
-        validation_chain_id: params.chain_id,
-        validator_address: Address::from_str("0x2222222222222222222222222222222222222222")
-            .expect("valid validator"),
-        validator_agent_id: U256::from(77u64),
-        min_validation_score: 80,
-        validation_subject_hash: B256::from(validation_subject_hash),
-        job_hash: B256::repeat_byte(0x11),
-        required_validation_tag: "hard-finality".to_string(),
-    };
-
-    policy.validation_request_hash =
-        B256::from(compute_validation_request_hash(&policy).expect("compute request hash"));
-
-    PaymentGuaranteeRequestClaimsV2 {
-        user_address,
-        recipient_address,
-        req_id,
-        amount,
-        asset_address,
-        timestamp,
-        validation_policy: policy,
-    }
-}
-
-pub async fn build_eip712_signed_request_v2(
+pub async fn build_eip712_signed_validated_request(
     params: &CorePublicParameters,
     wallet: &PrivateKeySigner,
 ) -> PaymentGuaranteeRequest {
-    let claims = sample_v2_claims(params, wallet);
-    let digest = SolGuaranteeRequestClaimsV2 {
-        user: Address::from_str(&claims.user_address).expect("valid user"),
-        recipient: Address::from_str(&claims.recipient_address).expect("valid recipient"),
-        reqId: claims.req_id,
-        amount: claims.amount,
-        asset: Address::from_str(&claims.asset_address).expect("valid asset"),
-        timestamp: claims.timestamp,
-        validationRegistryAddress: claims.validation_policy.validation_registry_address,
-        validationRequestHash: claims.validation_policy.validation_request_hash,
-        validationChainId: U256::from(claims.validation_policy.validation_chain_id),
-        validatorAddress: claims.validation_policy.validator_address,
-        validatorAgentId: claims.validation_policy.validator_agent_id,
-        minValidationScore: claims.validation_policy.min_validation_score,
-        validationSubjectHash: claims.validation_policy.validation_subject_hash,
-        jobHash: claims.validation_policy.job_hash,
-        requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
-    }
-    .eip712_signing_hash(&eip712_domain!(
-        name: params.eip712_name.clone(),
-        version: params.eip712_version.clone(),
-        chain_id: params.chain_id,
-        verifying_contract: Address::from_str(&params.contract_address).unwrap(),
-    ));
-
-    let sig: Signature = wallet.sign_hash(&digest).await.expect("sign v2 eip712");
-    PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
-        crypto::hex::encode_hex(&sig.as_bytes()),
+    sign_claims(
+        params,
+        wallet,
+        sample_validated_claims(wallet),
         SigningScheme::Eip712,
     )
+    .await
 }
 
-pub async fn build_eip191_signed_request_v2(
+pub async fn build_eip191_signed_validated_request(
     params: &CorePublicParameters,
     wallet: &PrivateKeySigner,
 ) -> PaymentGuaranteeRequest {
-    let claims = sample_v2_claims(params, wallet);
-    let data = SolGuaranteeRequestClaimsV2 {
-        user: Address::from_str(&claims.user_address).expect("valid user"),
-        recipient: Address::from_str(&claims.recipient_address).expect("valid recipient"),
-        reqId: claims.req_id,
-        amount: claims.amount,
-        asset: Address::from_str(&claims.asset_address).expect("valid asset"),
-        timestamp: claims.timestamp,
-        validationRegistryAddress: claims.validation_policy.validation_registry_address,
-        validationRequestHash: claims.validation_policy.validation_request_hash,
-        validationChainId: U256::from(claims.validation_policy.validation_chain_id),
-        validatorAddress: claims.validation_policy.validator_address,
-        validatorAgentId: claims.validation_policy.validator_agent_id,
-        minValidationScore: claims.validation_policy.min_validation_score,
-        validationSubjectHash: claims.validation_policy.validation_subject_hash,
-        jobHash: claims.validation_policy.job_hash,
-        requiredValidationTag: claims.validation_policy.required_validation_tag.clone(),
-    }
-    .abi_encode();
-    let mut prefixed = format!("\x19Ethereum Signed Message:\n{}", data.len()).into_bytes();
-    prefixed.extend_from_slice(&data);
-    let digest = alloy::primitives::keccak256(prefixed);
-    let sig: Signature = wallet.sign_hash(&digest).await.expect("sign v2 eip191");
-    PaymentGuaranteeRequest::new(
-        PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
-        crypto::hex::encode_hex(&sig.as_bytes()),
+    sign_claims(
+        params,
+        wallet,
+        sample_validated_claims(wallet),
         SigningScheme::Eip191,
     )
+    .await
 }

@@ -22,7 +22,6 @@ use http::{
 use log::{debug, info, warn};
 use metrics_4mica::http::HttpMetricsMiddleware;
 use metrics_exporter_prometheus::PrometheusHandle;
-use rpc::PaymentGuaranteeRequestEssentials;
 use rpc::{
     AssetBalanceInfo, AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse,
     AuthRefreshRequest, AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse,

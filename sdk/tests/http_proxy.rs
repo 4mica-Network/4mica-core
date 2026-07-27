@@ -1,10 +1,9 @@
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{B256, U256};
 use axum::{Json, Router, routing::get};
 use crypto::bls::{BLSCert, BlsClaims, KeyMaterial};
 use rpc::{
-    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
-    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeValidationPolicyV2, RpcProxy, SigningScheme,
-    compute_validation_request_hash, compute_validation_subject_hash,
+    CorePublicParameters, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims, RpcProxy,
+    SigningScheme, ValidationRequirement,
 };
 use serde_json::json;
 use std::str::FromStr;
@@ -33,12 +32,10 @@ async fn rpc_proxy_get_public_params_round_trip() {
         eip712_name: "4mica".into(),
         eip712_version: "1".into(),
         chain_id: 1337,
-        max_accepted_guarantee_version: 1,
-        accepted_guarantee_versions: vec![1],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".into(),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".into(),
+        validators: vec![],
     };
 
     let router = Router::new().route(
@@ -125,7 +122,7 @@ async fn rpc_proxy_returns_decode_error_on_invalid_json() {
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
+async fn rpc_proxy_get_public_params_round_trip_validation_metadata() {
     let params = CorePublicParameters {
         public_key: vec![7, 8, 9],
         contract_address: "0x1234567890abcdef1234567890abcdef12345678".into(),
@@ -133,15 +130,13 @@ async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
         eip712_name: "4mica".into(),
         eip712_version: "1".into(),
         chain_id: 84532,
-        max_accepted_guarantee_version: 2,
-        accepted_guarantee_versions: vec![1, 2],
-        active_guarantee_domain_separator:
+        supported_guarantee_versions: vec![1],
+        guarantee_domain_separator:
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-        trusted_validation_registries: vec![
-            "0x1111111111111111111111111111111111111111".into(),
-            "0x2222222222222222222222222222222222222222".into(),
+        validators: vec![
+            "eip155:84532:0x1111111111111111111111111111111111111111".into(),
+            "https://validator.acme.io/checks".into(),
         ],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".into(),
     };
 
     let router = Router::new().route(
@@ -161,19 +156,12 @@ async fn rpc_proxy_get_public_params_round_trip_v2_metadata() {
 
     let proxy = RpcProxy::new(&base).expect("create proxy");
     let got = proxy.get_public_params().await.expect("get params");
-    assert_eq!(got.max_accepted_guarantee_version, 2);
+    assert_eq!(got.supported_guarantee_versions, vec![1]);
     assert_eq!(
-        got.active_guarantee_domain_separator,
-        params.active_guarantee_domain_separator
+        got.guarantee_domain_separator,
+        params.guarantee_domain_separator
     );
-    assert_eq!(
-        got.validation_hash_canonicalization_version,
-        "4MICA_VALIDATION_REQUEST_V2"
-    );
-    assert_eq!(
-        got.trusted_validation_registries,
-        params.trusted_validation_registries
-    );
+    assert_eq!(got.validators, params.validators);
 
     handle.abort();
 }
@@ -185,52 +173,29 @@ fn build_test_bls_cert() -> BLSCert {
     BLSCert::sign(&key, BlsClaims::from_bytes(vec![0x01, 0x02, 0x03])).expect("valid cert")
 }
 
-fn build_v2_request() -> PaymentGuaranteeRequest {
-    let user = "0x1234567890123456789012345678901234567890";
-    let recipient = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
-    let asset = "0x0000000000000000000000000000000000000000";
-    let req_id = U256::from(3u64);
-    let amount = U256::from(100u64);
-    let timestamp = 1_736_000_000u64;
-
-    let validation_subject_hash =
-        compute_validation_subject_hash(user, recipient, req_id, amount, asset, timestamp)
-            .expect("subject hash");
-    let mut policy = PaymentGuaranteeValidationPolicyV2 {
-        validation_registry_address: Address::from_str(
-            "0x1111111111111111111111111111111111111111",
-        )
-        .expect("registry"),
-        validation_request_hash: B256::ZERO,
-        validation_chain_id: 84532,
-        validator_address: Address::from_str("0x2222222222222222222222222222222222222222")
-            .expect("validator"),
-        validator_agent_id: U256::from(99u64),
-        min_validation_score: 80,
-        validation_subject_hash: B256::from(validation_subject_hash),
-        job_hash: B256::repeat_byte(0x11),
-        required_validation_tag: "hard-finality".to_string(),
-    };
-    policy.validation_request_hash =
-        B256::from(compute_validation_request_hash(&policy).expect("request hash"));
-
-    let claims = PaymentGuaranteeRequestClaims::V2(Box::new(PaymentGuaranteeRequestClaimsV2 {
-        user_address: user.to_string(),
-        recipient_address: recipient.to_string(),
-        req_id,
-        amount,
-        asset_address: asset.to_string(),
-        timestamp,
-        validation_policy: policy,
-    }));
+fn build_validated_request() -> PaymentGuaranteeRequest {
+    let claims = PaymentGuaranteeRequestClaims::new(
+        "0x1234567890123456789012345678901234567890".to_string(),
+        "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd".to_string(),
+        U256::from(3u64),
+        U256::from(100u64),
+        1_736_000_000,
+        None,
+    )
+    .with_validation(ValidationRequirement {
+        validator: "eip155:84532:0x1111111111111111111111111111111111111111".to_string(),
+        subject: B256::repeat_byte(0x11),
+        deadline: Some(1_736_003_600),
+        params: vec![0x0a, 0x0b].into(),
+    });
 
     PaymentGuaranteeRequest::new(claims, "0x1234".to_string(), SigningScheme::Eip712)
 }
 
 #[tokio::test]
 #[serial_test::file_serial]
-async fn rpc_proxy_issue_guarantee_round_trip_v2_request() {
-    let expected = build_v2_request();
+async fn rpc_proxy_issue_guarantee_round_trip_validated_request() {
+    let expected = build_validated_request();
     let cert = build_test_bls_cert();
 
     let router = Router::new().route(
@@ -242,22 +207,7 @@ async fn rpc_proxy_issue_guarantee_round_trip_v2_request() {
                 let cert = cert.clone();
                 let expected = expected.clone();
                 async move {
-                    match body.claims {
-                        PaymentGuaranteeRequestClaims::V2(claims) => {
-                            let PaymentGuaranteeRequestClaims::V2(expected_claims) =
-                                expected.claims.clone()
-                            else {
-                                panic!("expected v2 claims");
-                            };
-                            assert_eq!(claims.req_id, expected_claims.req_id);
-                            assert_eq!(claims.amount, expected_claims.amount);
-                            assert_eq!(
-                                claims.validation_policy.validation_request_hash,
-                                expected_claims.validation_policy.validation_request_hash
-                            );
-                        }
-                        PaymentGuaranteeRequestClaims::V1(_) => panic!("expected v2 claims"),
-                    }
+                    assert_eq!(body.claims, expected.claims);
                     Json(cert)
                 }
             }

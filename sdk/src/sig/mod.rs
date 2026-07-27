@@ -5,10 +5,7 @@ use alloy::primitives::{Address, B256};
 use alloy::signers::Signer;
 
 use async_trait::async_trait;
-use rpc::{
-    CorePublicParameters, PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestClaimsV1,
-    PaymentGuaranteeRequestClaimsV2, PaymentGuaranteeRequestEssentials, SigningScheme,
-};
+use rpc::{CorePublicParameters, PaymentGuaranteeRequestClaims, SigningScheme};
 use serde::Deserialize;
 
 #[cfg(test)]
@@ -20,13 +17,7 @@ pub struct PaymentSignature {
     pub scheme: SigningScheme,
 }
 
-/// Signs a guarantee request claim (any version) with the chosen EIP scheme.
-///
-/// The single required method is [`PaymentSigner::sign_claims`], which accepts the version enum.
-/// Adding V3 only requires extending the dispatch inside the blanket impl — no trait changes needed.
-///
-/// [`sign_request`] and [`sign_request_v2`] are convenience wrappers that wrap their typed
-/// argument into the enum and delegate, so existing call sites continue to compile unchanged.
+/// Signs a guarantee request with the chosen EIP scheme.
 #[async_trait]
 pub trait PaymentSigner: Send + Sync {
     /// Signs the claims and returns the resulting signature.
@@ -38,32 +29,6 @@ pub trait PaymentSigner: Send + Sync {
         claims: PaymentGuaranteeRequestClaims,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, SignPaymentError>;
-
-    /// Convenience wrapper for V1 claims. Delegates to [`sign_claims`].
-    async fn sign_request(
-        &self,
-        params: &CorePublicParameters,
-        claims: PaymentGuaranteeRequestClaimsV1,
-        scheme: SigningScheme,
-    ) -> Result<PaymentSignature, SignPaymentError> {
-        self.sign_claims(params, PaymentGuaranteeRequestClaims::V1(claims), scheme)
-            .await
-    }
-
-    /// Convenience wrapper for V2 claims. Delegates to [`sign_claims`].
-    async fn sign_request_v2(
-        &self,
-        params: &CorePublicParameters,
-        claims: PaymentGuaranteeRequestClaimsV2,
-        scheme: SigningScheme,
-    ) -> Result<PaymentSignature, SignPaymentError> {
-        self.sign_claims(
-            params,
-            PaymentGuaranteeRequestClaims::V2(Box::new(claims)),
-            scheme,
-        )
-        .await
-    }
 }
 
 #[async_trait]
@@ -84,7 +49,7 @@ where
         if signer_addr != expected {
             return Err(SignPaymentError::AddressMismatch {
                 signer: signer_addr,
-                claims: claims.user_address().to_owned(),
+                claims: claims.user_address().to_string(),
             });
         }
 

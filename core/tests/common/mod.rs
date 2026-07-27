@@ -3,6 +3,8 @@ pub mod api;
 #[allow(dead_code)]
 pub mod chain;
 #[allow(dead_code)]
+pub mod chain_stub;
+#[allow(dead_code)]
 pub mod contract;
 #[allow(dead_code)]
 pub mod cycle_fixtures;

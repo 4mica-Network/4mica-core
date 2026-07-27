@@ -31,7 +31,7 @@ Visit the official website: [https://4mica.xyz](https://4mica.xyz)
 
 - Developer docs: [https://4mica.xyz/resources/technical-docs](https://4mica.xyz/resources/technical-docs)
 - Rust SDK API: [crates.io/sdk-4mica](https://crates.io/crates/sdk-4mica) · [docs.rs](https://docs.rs/sdk-4mica)
-- Contract deployment and activation: [contracts/README.md](contracts/README.md) · [contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md)
+- Contract deployment: [contracts/README.md](contracts/README.md)
 
 ---
 
@@ -71,17 +71,12 @@ async fn main() -> anyhow::Result<()> {
 
 See `sdk/README.md` for full examples, configuration options, and X402 flows.
 
-## Guarantee V2
+## Validated guarantees
 
-This repository includes the ERC-8004 validation-gated remuneration flow (V2).
-
-- Core accepts guarantee request versions according to `GUARANTEE_REQUEST_VERSION` and
-  `GUARANTEE_ACCEPTED_REQUEST_VERSIONS`.
-- The output certificate version is derived from the incoming request payload. The env var does
-  not force the issued version.
-- When V2 is accepted, `TRUSTED_VALIDATION_REGISTRIES` must be configured.
-- Activate V2 on-chain with the runbook in
-  [contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md).
+A guarantee may optionally carry a **validation requirement**: it only becomes payable once an
+external validator approves it before a deadline. Validators are whitelisted per operator via
+`GUARANTEE_VALIDATORS` and driven by pluggable adapters, so core stays agnostic to what any
+particular validator checks.
 
 ---
 
@@ -137,9 +132,7 @@ Other useful targets: `make status`, `make logs`, `make deploy` (redeploy contra
 `make help` for the full list. See [deployment/dev_stack.sh](deployment/dev_stack.sh) for
 the underlying steps and tunables.
 
-For contract deployment and V2 activation details, refer to
-[contracts/README.md](contracts/README.md) and
-[contracts/GUARANTEE_V2_ACTIVATION.md](contracts/GUARANTEE_V2_ACTIVATION.md).
+For contract deployment details, refer to [contracts/README.md](contracts/README.md).
 
 ---
 
