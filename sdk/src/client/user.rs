@@ -284,7 +284,7 @@ impl<S> UserClient<S> {
         let deadline = U256::from(now_secs().saturating_add(DEPOSIT_AUTHORIZATION_TTL_SECS));
         let nonce = U256::from_be_bytes(rand::random::<[u8; 32]>());
 
-        let domain_separator = self.ctx.permit2_domain_separator().await?;
+        let domain_separator = self.ctx.permit2_domain_separator();
         let digest = eip712_digest_for_permit2_transfer(
             domain_separator,
             token,

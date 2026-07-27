@@ -30,6 +30,12 @@ sol! {
         error InvalidAToken(address asset, address aToken);
         error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
         error SurplusClaimExceedsAvailable();
+        /// The deposited asset delivered less than `expected` (fee-on-transfer tokens), or a
+        /// native-value deposit did not match `msg.value`.
+        error ValueMismatch(uint256 expected, uint256 actual);
+        /// `amount` was too small to mint any scaled collateral.
+        error ZeroCollateralCredit(address asset, uint256 amount);
+        error EscrowScaledUnderflow(address asset, uint256 requested, uint256 available);
 
         // ========= Storage =========
         function withdrawalGracePeriod() external view returns (uint256);
@@ -112,6 +118,10 @@ sol! {
         /// A client's EIP-3009 authorization to move the deposit amount from `from` into the
         /// Core4Mica contract. Any caller may submit it; collateral is credited to `from`, the
         /// signer, never `msg.sender`.
+        ///
+        /// Serde-encoded with alloy's `0x`-hex representation so a facilitator can accept one
+        /// straight off an HTTP request body.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
         struct ReceiveAuthorization {
             address from;
             uint256 validAfter;
@@ -126,6 +136,7 @@ sol! {
         /// `from` into the Core4Mica contract via the canonical Permit2 contract. Any caller may
         /// submit it; collateral is credited to `from`, the signer, never `msg.sender`. Requires a
         /// one-time ERC-20 approval from `from` to Permit2 for the deposited asset.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
         struct Permit2Authorization {
             address from;
             uint256 nonce;

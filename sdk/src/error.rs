@@ -164,6 +164,18 @@ pub enum DepositError {
     UnsupportedAsset(Address),
     #[error("Aave is not configured")]
     AaveNotConfigured,
+    /// The token delivered less than `amount` — typically a fee-on-transfer token. The
+    /// authorization is unusable as signed; re-sign for the amount that will actually arrive.
+    #[error("asset transfer delivered {actual} but {expected} was expected")]
+    ValueMismatch { expected: String, actual: String },
+    /// `amount` was too small to mint any scaled collateral. Permanently unusable — a submitter
+    /// should drop the authorization rather than retry it.
+    #[error("deposit of {amount} in {asset} credits zero collateral")]
+    ZeroCollateralCredit { asset: Address, amount: String },
+    /// The authorization's `validBefore`/`deadline` has already elapsed. Detected client-side,
+    /// before any gas is spent.
+    #[error("authorization expired at {expires_at} (now {now})")]
+    AuthorizationExpired { expires_at: u64, now: u64 },
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -385,6 +397,14 @@ impl_from_alloy_error!(DepositError, {
     Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
     Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
     Core4Mica::Core4MicaErrors::AaveNotConfigured(_) => Self::AaveNotConfigured,
+    Core4Mica::Core4MicaErrors::ValueMismatch(err) => Self::ValueMismatch {
+        expected: err.expected.to_string(),
+        actual: err.actual.to_string(),
+    },
+    Core4Mica::Core4MicaErrors::ZeroCollateralCredit(err) => Self::ZeroCollateralCredit {
+        asset: err.asset,
+        amount: err.amount.to_string(),
+    },
 });
 
 impl_from_alloy_error!(ClearingSettlementError);

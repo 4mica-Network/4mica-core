@@ -7,7 +7,6 @@ use crate::{
         ClearingHouse::{self, ClearingHouseInstance},
         Core4Mica::{self, Core4MicaInstance},
         ERC20::{self, ERC20Instance},
-        PERMIT2_ADDRESS, Permit2,
     },
     error::{AuthError, ClientError},
     validators::{validate_address, validate_url},
@@ -18,11 +17,8 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::{Signature, Signer},
 };
-use rpc::{
-    ApiClientError, CorePublicParameters, GUARANTEE_CLAIMS_VERSION, RpcProxy,
-    SupportedTokensResponse,
-};
-use tokio::sync::OnceCell;
+use rpc::{ApiClientError, CorePublicParameters, RpcProxy, SupportedTokensResponse};
+use tokio::sync::{OnceCell, RwLock};
 use url::Url;
 
 use self::{recipient::RecipientClient, user::UserClient};
@@ -44,6 +40,10 @@ struct Inner<S> {
     guarantee_domain: [u8; 32],
     guarantee_domains: HashMap<u64, [u8; 32]>,
     auth_session: Option<AuthSession<S>>,
+    chain_id: u64,
+    /// Token EIP-712 domain separators as served by core, memoised. Immutable per token per chain,
+    /// so a hit never goes stale; a miss refetches in case core has registered a new asset.
+    token_domain_separators: RwLock<HashMap<Address, B256>>,
 }
 
 #[derive(Clone)]
@@ -92,6 +92,8 @@ impl<S> ClientCtx<S> {
             guarantee_domain,
             guarantee_domains,
             auth_session,
+            chain_id: public_params.chain_id,
+            token_domain_separators: RwLock::new(HashMap::new()),
         })))
     }
 
@@ -222,23 +224,55 @@ impl<S> ClientCtx<S> {
         Core4Mica::new(self.0.contract_address, self.0.provider.clone())
     }
 
-    /// Reads a token's EIP-712 `DOMAIN_SEPARATOR()` via the read-only provider. Used to build the
-    /// EIP-3009 gasless-deposit signing hash against exactly what the token verifies.
+    /// A token's EIP-712 domain separator, as read from the token by core and relayed over HTTP.
+    ///
+    /// Deliberately not an `eth_call`: signing a gasless deposit must not require the client to
+    /// hold an Ethereum RPC endpoint. Core reads the real value from the token, so this keeps the
+    /// correctness of an on-chain read without the dependency.
     async fn token_domain_separator(&self, token: Address) -> Result<B256, ClientError> {
-        ERC20::new(token, self.0.provider.clone())
-            .DOMAIN_SEPARATOR()
-            .call()
+        if let Some(cached) = self.0.token_domain_separators.read().await.get(&token) {
+            return Ok(*cached);
+        }
+
+        let tokens = self
+            .0
+            .rpc_proxy
+            .get_supported_tokens()
             .await
-            .map_err(|e| ClientError::Provider(e.to_string()))
+            .map_err(|e| ClientError::Rpc(e.to_string()))?;
+
+        let mut cache = self.0.token_domain_separators.write().await;
+        let mut found = None;
+        for info in &tokens.tokens {
+            let Ok(address) = validate_address(&info.address) else {
+                continue;
+            };
+            let Some(raw) = &info.domain_separator else {
+                continue;
+            };
+            let Ok(separator) = raw.parse::<B256>() else {
+                continue;
+            };
+            cache.insert(address, separator);
+            if address == token {
+                found = Some(separator);
+            }
+        }
+
+        found.ok_or_else(|| {
+            ClientError::Initialization(format!(
+                "core did not advertise an EIP-712 domain separator for {token}; the token is \
+                 either unsupported or does not implement EIP-3009"
+            ))
+        })
     }
 
-    /// Reads the canonical Permit2 contract's EIP-712 `DOMAIN_SEPARATOR()`.
-    async fn permit2_domain_separator(&self) -> Result<B256, ClientError> {
-        Permit2::new(PERMIT2_ADDRESS, self.0.provider.clone())
-            .DOMAIN_SEPARATOR()
-            .call()
-            .await
-            .map_err(|e| ClientError::Provider(e.to_string()))
+    /// Permit2's domain separator, derived locally from the chain id.
+    ///
+    /// Permit2 is deployed at one canonical address on every chain and its domain has a fixed name
+    /// and no version, so this needs neither a chain read nor anything from core.
+    fn permit2_domain_separator(&self) -> B256 {
+        crate::digest::permit2_domain_separator(self.0.chain_id)
     }
 
     fn operator_public_key(&self) -> &BlsPublicKey {

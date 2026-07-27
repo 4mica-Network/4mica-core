@@ -246,6 +246,9 @@ pub mod contract_abi {
         contract ERC20Metadata {
             function symbol() external view returns (string memory);
             function decimals() external view returns (uint8);
+            /// EIP-712 domain separator, exposed by EIP-2612/EIP-3009 tokens. Absent on plain
+            /// ERC-20s, so callers must tolerate a revert here.
+            function DOMAIN_SEPARATOR() external view returns (bytes32);
         }
 
 

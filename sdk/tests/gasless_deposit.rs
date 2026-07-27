@@ -34,8 +34,12 @@ const PERMIT2: Address = address!("000000000022D473030F116dDEE9F6B43aC78BA3");
 /// Distinct domain separators per verifier, so a test fails loudly if the SDK reads the wrong one.
 const TOKEN_DOMAIN: B256 =
     b256!("1111111111111111111111111111111111111111111111111111111111111111");
+/// Permit2's real domain separator for `CHAIN_ID`, computed independently with `cast`:
+/// keccak(abi.encode(keccak("EIP712Domain(string name,uint256 chainId,address verifyingContract)"),
+///                   keccak("Permit2"), 1337, PERMIT2)).
+/// Hardcoded rather than derived in-test so a bug in the SDK's derivation cannot cancel out.
 const PERMIT2_DOMAIN: B256 =
-    b256!("2222222222222222222222222222222222222222222222222222222222222222");
+    b256!("1f520b5ee38ad937955892c3dfc7055e8eeb515d905781b6951e4c687917c530");
 const GUARANTEE_DOMAIN: B256 =
     b256!("3333333333333333333333333333333333333333333333333333333333333333");
 
@@ -202,14 +206,8 @@ async fn handle_rpc(
                 .unwrap_or([0; 4]);
             log.lock().unwrap().eth_calls.push((to, sel));
 
-            if sel == selector("DOMAIN_SEPARATOR()") {
-                let domain = if to == PERMIT2 {
-                    PERMIT2_DOMAIN
-                } else {
-                    TOKEN_DOMAIN
-                };
-                return json_rpc_result(&id, json!(format!("0x{}", alloy::hex::encode(domain))));
-            }
+            // Intentionally unhandled: the SDK must not ask the chain for a domain separator.
+            // If it regresses to an eth_call, this returns a JSON-RPC error and the test fails.
             if sel == selector("getGuaranteeVersionConfig(uint64)") {
                 return json_rpc_result(&id, json!(encode_guarantee_version_config()));
             }
@@ -266,13 +264,30 @@ async fn test_client() -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc
     .await?;
 
     let params = public_params(&eth_url);
-    let core_url = spawn(Router::new().route(
-        "/core/public-params",
-        get(move || {
-            let params = params.clone();
-            async move { Json(params) }
-        }),
-    ))
+    let core_url = spawn(
+        Router::new()
+            .route(
+                "/core/public-params",
+                get(move || {
+                    let params = params.clone();
+                    async move { Json(params) }
+                }),
+            )
+            .route(
+                "/core/tokens",
+                get(|| async {
+                    Json(json!({
+                        "chain_id": CHAIN_ID,
+                        "tokens": [{
+                            "symbol": "USDC",
+                            "address": TOKEN.to_string(),
+                            "decimals": 6,
+                            "domain_separator": format!("0x{}", alloy::hex::encode(TOKEN_DOMAIN)),
+                        }],
+                    }))
+                }),
+            ),
+    )
     .await?;
 
     let signer = PrivateKeySigner::random();
@@ -393,7 +408,8 @@ async fn sign_deposit_authorization_binds_amount() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn sign_deposit_authorization_reads_the_token_domain_separator() -> anyhow::Result<()> {
+async fn sign_deposit_authorization_takes_the_token_domain_from_core_not_the_chain()
+-> anyhow::Result<()> {
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
@@ -402,10 +418,10 @@ async fn sign_deposit_authorization_reads_the_token_domain_separator() -> anyhow
         .sign_deposit_authorization(TOKEN.to_string(), amount)
         .await?;
 
-    assert_eq!(
-        log.lock().unwrap().domain_separator_targets(),
-        vec![TOKEN],
-        "EIP-3009 signing must read DOMAIN_SEPARATOR() from the deposited token"
+    assert!(
+        log.lock().unwrap().domain_separator_targets().is_empty(),
+        "signing must not eth_call DOMAIN_SEPARATOR() — the separator comes from core over HTTP, \
+         so a client needs no Ethereum RPC to deposit gaslessly"
     );
 
     // Signing against any other domain (e.g. Permit2's) would not verify inside the token.
@@ -623,7 +639,7 @@ async fn sign_deposit_permit2_binds_token_and_amount() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn sign_deposit_permit2_reads_the_canonical_permit2_domain_separator() -> anyhow::Result<()> {
+async fn sign_deposit_permit2_derives_the_canonical_permit2_domain_offline() -> anyhow::Result<()> {
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
@@ -632,11 +648,10 @@ async fn sign_deposit_permit2_reads_the_canonical_permit2_domain_separator() -> 
         .sign_deposit_permit2(TOKEN.to_string(), amount)
         .await?;
 
-    assert_eq!(
-        log.lock().unwrap().domain_separator_targets(),
-        vec![PERMIT2],
-        "Permit2 signing must read DOMAIN_SEPARATOR() from the canonical Permit2 singleton, \
-         not from the token"
+    assert!(
+        log.lock().unwrap().domain_separator_targets().is_empty(),
+        "Permit2's domain has a fixed name, no version, and a canonical address, so it must be \
+         derived from the chain id rather than read on-chain"
     );
 
     let signature = Signature::from_raw(&auth.signature)?;
@@ -741,5 +756,41 @@ async fn gasless_signing_never_broadcasts_a_transaction() -> anyhow::Result<()> 
             "gasless signing must not broadcast or price a transaction, but called {method}"
         );
     }
+    Ok(())
+}
+
+// ── the wire format a submitter depends on ──────────────────────────────────
+
+#[tokio::test]
+async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
+    let (client, signer_address, _log) = test_client().await?;
+    let amount = U256::from(1_000_000u64);
+
+    // Signing and submission happen in different processes: a gas-sponsoring submitter receives
+    // these as an HTTP request body, so the serde derives on both types are load-bearing.
+    let auth = client
+        .user
+        .sign_deposit_authorization(TOKEN.to_string(), amount)
+        .await?;
+    let decoded: sdk_4mica::ReceiveAuthorization =
+        serde_json::from_str(&serde_json::to_string(&auth)?)?;
+    assert_eq!(decoded.from, signer_address);
+    assert_eq!(decoded.validAfter, auth.validAfter);
+    assert_eq!(decoded.validBefore, auth.validBefore);
+    assert_eq!(decoded.nonce, auth.nonce);
+    assert_eq!(decoded.v, auth.v);
+    assert_eq!(decoded.r, auth.r);
+    assert_eq!(decoded.s, auth.s);
+
+    let permit = client
+        .user
+        .sign_deposit_permit2(TOKEN.to_string(), amount)
+        .await?;
+    let decoded: sdk_4mica::Permit2Authorization =
+        serde_json::from_str(&serde_json::to_string(&permit)?)?;
+    assert_eq!(decoded.from, signer_address);
+    assert_eq!(decoded.nonce, permit.nonce);
+    assert_eq!(decoded.deadline, permit.deadline);
+    assert_eq!(decoded.signature, permit.signature);
     Ok(())
 }

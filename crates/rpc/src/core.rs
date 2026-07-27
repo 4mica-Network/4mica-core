@@ -6,6 +6,15 @@ pub struct SupportedTokenInfo {
     pub symbol: String,
     pub address: String,
     pub decimals: u8,
+    /// The token's own EIP-712 `DOMAIN_SEPARATOR()`, read on-chain by core.
+    ///
+    /// Relayed so clients can build a gasless-deposit signature without an Ethereum RPC of their
+    /// own. `None` for tokens that do not expose it — those cannot be deposited gaslessly.
+    ///
+    /// Note this is the separator itself, not the `name`/`version` pair x402 servers advertise for
+    /// clients to reconstruct one from; see `sdk::digest::eip712_domain_separator` for that path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_separator: Option<String>,
 }
 
 /// Response from `GET /core/tokens`.
