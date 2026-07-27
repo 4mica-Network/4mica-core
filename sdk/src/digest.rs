@@ -153,10 +153,14 @@ mod deposit_tests {
             b256!("dead00000000000000000000000000000000000000000000000000000000beef"),
         );
         let sig = signer.sign_hash_sync(&digest).expect("sign");
+<<<<<<< HEAD
         assert_eq!(
             sig.recover_address_from_prehash(&digest).unwrap(),
             signer.address()
         );
+=======
+        assert_eq!(sig.recover_address_from_prehash(&digest).unwrap(), signer.address());
+>>>>>>> b80ed21 (feat(sdk): add gasless deposit signing for EIP-3009 and Permit2 authorizations)
     }
 
     #[test]
@@ -172,9 +176,13 @@ mod deposit_tests {
             U256::from(2_000_000_000u64),
         );
         let sig = signer.sign_hash_sync(&digest).expect("sign");
+<<<<<<< HEAD
         assert_eq!(
             sig.recover_address_from_prehash(&digest).unwrap(),
             signer.address()
         );
+=======
+        assert_eq!(sig.recover_address_from_prehash(&digest).unwrap(), signer.address());
+>>>>>>> b80ed21 (feat(sdk): add gasless deposit signing for EIP-3009 and Permit2 authorizations)
     }
 }
