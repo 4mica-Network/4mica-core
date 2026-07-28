@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use alloy::primitives::{Address, keccak256};
+use alloy::primitives::{Address, U256, keccak256};
 use alloy::sol_types::{SolStruct, SolValue};
 use alloy::{primitives::B256, sol, sol_types::eip712_domain};
 use anyhow::anyhow;
@@ -11,6 +11,36 @@ use rpc::{
 
 fn parse_addr(field: &'static str, value: &str) -> anyhow::Result<Address> {
     Address::from_str(value).map_err(|_| anyhow!("invalid {field}"))
+}
+
+// ── gasless deposit authorizations ──────────────────────────────────────────
+
+sol! {
+    /// EIP-3009 authorization struct, as signed by the token holder. The token binds `to` and
+    /// `value` inside the signature, so a facilitator submitting the deposit cannot redirect funds.
+    struct ReceiveWithAuthorization {
+        address from;
+        address to;
+        uint256 value;
+        uint256 validAfter;
+        uint256 validBefore;
+        bytes32 nonce;
+    }
+
+    /// Permit2 `SignatureTransfer` token permission.
+    struct TokenPermissions {
+        address token;
+        uint256 amount;
+    }
+
+    /// Permit2 `PermitTransferFrom` struct. `spender` is bound to the contract that will call
+    /// `permitTransferFrom` (Core4Mica), so only that contract can consume the signature.
+    struct PermitTransferFrom {
+        TokenPermissions permitted;
+        address spender;
+        uint256 nonce;
+        uint256 deadline;
+    }
 }
 
 fn sol_validation(validation: &ValidationRequirement) -> SolValidation {

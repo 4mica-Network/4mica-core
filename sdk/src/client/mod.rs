@@ -17,7 +17,10 @@ use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::{Signature, Signer},
 };
-use rpc::{ApiClientError, CorePublicParameters, RpcProxy, SupportedTokensResponse};
+use rpc::{
+    ApiClientError, CorePublicParameters, GUARANTEE_CLAIMS_VERSION, RpcProxy,
+    SupportedTokensResponse,
+};
 use tokio::sync::{OnceCell, RwLock};
 use url::Url;
 

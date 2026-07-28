@@ -1,12 +1,5 @@
 use alloy::primitives::{B256, U256};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-<<<<<<< HEAD
-=======
-use rpc::{
-    PaymentGuaranteeRequestClaims, PaymentGuaranteeRequestEssentials,
-    compute_validation_request_hash, compute_validation_subject_hash,
-};
->>>>>>> e608407 (Feat/sdk cycles migration (#148))
 use sdk_4mica::x402::{X402Flow, X402PaymentEnvelope, X402PaymentEnvelopeV2, X402Requirements};
 
 mod common;
@@ -161,14 +154,7 @@ async fn sign_payment_v2_generates_unique_req_id() {
         "identical requirements must still yield distinct req_ids, or core rejects \
          the second payment as a DuplicateGuarantee"
     );
-<<<<<<< HEAD
     assert!(first.payload.claims.validation().is_some());
-=======
-    assert!(matches!(
-        first.payload.claims,
-        PaymentGuaranteeRequestClaims::V2(_)
-    ));
->>>>>>> e608407 (Feat/sdk cycles migration (#148))
 
     handle.abort();
 }

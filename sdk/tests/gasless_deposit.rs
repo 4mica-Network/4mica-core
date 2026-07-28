@@ -12,7 +12,7 @@ use alloy::primitives::{Address, B256, Signature, U256, address, b256, keccak256
 use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
-use rpc::CorePublicParameters;
+use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION};
 use sdk_4mica::{Client, ConfigBuilder};
 use serde_json::{Value, json};
 use std::str::FromStr;
@@ -245,11 +245,9 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
         eip712_name: "4mica".into(),
         eip712_version: "1".into(),
         chain_id: CHAIN_ID,
-        max_accepted_guarantee_version: 1,
-        accepted_guarantee_versions: vec![1],
-        active_guarantee_domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
-        trusted_validation_registries: vec![],
-        validation_hash_canonicalization_version: "4MICA_VALIDATION_REQUEST_V2".into(),
+        supported_guarantee_versions: vec![GUARANTEE_CLAIMS_VERSION],
+        guarantee_domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        validators: vec![],
     }
 }
 
