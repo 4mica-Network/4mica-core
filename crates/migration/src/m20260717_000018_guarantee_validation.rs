@@ -144,9 +144,10 @@ async fn create_enum_if_missing<T>(
 where
     T: ActiveEnum,
 {
-    if let Err(err) = manager
-        .create_type(schema.create_enum_from_active_enum::<T>())
-        .await
+    let Some(create) = schema.create_enum_from_active_enum::<T>() else {
+        return Ok(());
+    };
+    if let Err(err) = manager.create_type(create).await
         && !is_duplicate_type_error(&err)
     {
         return Err(err);

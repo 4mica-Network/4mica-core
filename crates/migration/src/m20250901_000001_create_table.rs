@@ -39,38 +39,11 @@ impl MigrationTrait for Migration {
         let schema = Schema::new(db_backend);
 
         // ----- Enums (must be created before tables use them) -----
-        if let Err(err) = manager
-            .create_type(
-                schema.create_enum_from_active_enum::<sea_orm_active_enums::CollateralEventType>(),
-            )
-            .await
-            && !is_duplicate_type_error(&err)
-        {
-            return Err(err);
-        }
-        if let Err(err) = manager
-            .create_type(schema.create_enum_from_active_enum::<SettlementStatus>())
-            .await
-            && !is_duplicate_type_error(&err)
-        {
-            return Err(err);
-        }
-        if let Err(err) = manager
-            .create_type(schema.create_enum_from_active_enum::<TabStatus>())
-            .await
-            && !is_duplicate_type_error(&err)
-        {
-            return Err(err);
-        }
-        if let Err(err) = manager
-            .create_type(
-                schema.create_enum_from_active_enum::<sea_orm_active_enums::WithdrawalStatus>(),
-            )
-            .await
-            && !is_duplicate_type_error(&err)
-        {
-            return Err(err);
-        }
+        create_enum_if_missing::<sea_orm_active_enums::CollateralEventType>(manager, &schema)
+            .await?;
+        create_enum_if_missing::<SettlementStatus>(manager, &schema).await?;
+        create_enum_if_missing::<TabStatus>(manager, &schema).await?;
+        create_enum_if_missing::<sea_orm_active_enums::WithdrawalStatus>(manager, &schema).await?;
 
         // ----- User -----
         manager
@@ -410,6 +383,24 @@ impl MigrationTrait for Migration {
             .await?;
         Ok(())
     }
+}
+
+async fn create_enum_if_missing<T>(
+    manager: &SchemaManager<'_>,
+    schema: &Schema,
+) -> Result<(), DbErr>
+where
+    T: ActiveEnum,
+{
+    let Some(create) = schema.create_enum_from_active_enum::<T>() else {
+        return Ok(());
+    };
+    if let Err(err) = manager.create_type(create).await
+        && !is_duplicate_type_error(&err)
+    {
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn is_duplicate_type_error(err: &DbErr) -> bool {

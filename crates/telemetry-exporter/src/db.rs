@@ -101,7 +101,7 @@ pub async fn query_one_with_timeout(
 ) -> Result<Option<QueryResult>, QueryExecutionError> {
     let stmt = Statement::from_string(db.get_database_backend(), sql.to_owned());
     with_timeout(timeout_ms, async move {
-        db.query_one(stmt).await.map_err(anyhow::Error::from)
+        db.query_one_raw(stmt).await.map_err(anyhow::Error::from)
     })
     .await
 }
@@ -113,7 +113,7 @@ pub async fn query_all_with_timeout(
 ) -> Result<Vec<QueryResult>, QueryExecutionError> {
     let stmt = Statement::from_string(db.get_database_backend(), sql.to_owned());
     with_timeout(timeout_ms, async move {
-        db.query_all(stmt).await.map_err(anyhow::Error::from)
+        db.query_all_raw(stmt).await.map_err(anyhow::Error::from)
     })
     .await
 }

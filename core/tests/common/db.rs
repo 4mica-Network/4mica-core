@@ -38,7 +38,7 @@ pub async fn clear_tables(ctx: &PersistCtx, tables: &[&str]) -> Result<()> {
     for table in tables {
         ctx.db
             .as_ref()
-            .execute(Statement::from_string(
+            .execute_raw(Statement::from_string(
                 ctx.db.get_database_backend(),
                 format!(r#"DELETE FROM "{table}";"#),
             ))
@@ -51,7 +51,7 @@ pub async fn clear_all_tables(ctx: &PersistCtx) -> Result<()> {
     // Use a single TRUNCATE so FK relationships are handled atomically.
     ctx.db
         .as_ref()
-        .execute(Statement::from_string(
+        .execute_raw(Statement::from_string(
             ctx.db.get_database_backend(),
             r#"
 TRUNCATE TABLE
