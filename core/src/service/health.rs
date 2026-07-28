@@ -68,7 +68,7 @@ impl CoreService {
     async fn check_db(&self) -> CheckStatus {
         let db = self.persist_ctx().db.as_ref();
         let stmt = sea_orm::Statement::from_string(db.get_database_backend(), "SELECT NOW()");
-        match db.query_one(stmt).await {
+        match db.query_one_raw(stmt).await {
             Ok(_) => CheckStatus::Ok,
             Err(e) => {
                 error!("DB health check failed: {e}");

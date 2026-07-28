@@ -6,7 +6,7 @@ use entities::user_transaction;
 use metrics_4mica::measure;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, IntoActiveModel, QueryFilter,
+    ActiveModelTrait, ColumnTrait, Condition, EntityTrait, ExprTrait, IntoActiveModel, QueryFilter,
     QueryOrder, Set, TransactionTrait,
 };
 use std::str::FromStr;

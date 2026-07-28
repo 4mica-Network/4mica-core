@@ -11,12 +11,9 @@ impl MigrationTrait for Migration {
         let db_backend = manager.get_database_backend();
         let schema = Schema::new(db_backend);
 
-        if let Err(err) = manager
-            .create_type(
-                schema
-                    .create_enum_from_active_enum::<sea_orm_active_enums::UserTransactionStatus>(),
-            )
-            .await
+        if let Some(create) =
+            schema.create_enum_from_active_enum::<sea_orm_active_enums::UserTransactionStatus>()
+            && let Err(err) = manager.create_type(create).await
             && !is_duplicate_type_error(&err)
         {
             return Err(err);

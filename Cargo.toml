@@ -19,14 +19,14 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-rpc = { version = "2.0.0-alpha.1", path = "crates/rpc", package = "rpc-4mica" }
-validators = { version = "2.0.0-alpha.1", path = "crates/validators", package = "validators-4mica" }
-crypto = { version = "2.0.0-alpha.1", path = "crates/crypto", package = "crypto-4mica" }
-blockchain = { version = "2.0.0-alpha.1", path = "crates/blockchain", package = "blockchain-4mica" }
-migration = { version = "2.0.0-alpha.1", path = "crates/migration" }
-entities = { version = "2.0.0-alpha.1", path = "crates/entities" }
-metrics-4mica = { version = "2.0.0-alpha.1", path = "crates/metrics" }
-derive-4mica = { version = "2.0.0-alpha.1", path = "crates/derive" }
+rpc = { version = "2.0.0-alpha.2", path = "crates/rpc", package = "rpc-4mica" }
+validators = { version = "2.0.0-alpha.2", path = "crates/validators", package = "validators-4mica" }
+crypto = { version = "2.0.0-alpha.2", path = "crates/crypto", package = "crypto-4mica" }
+blockchain = { version = "2.0.0-alpha.2", path = "crates/blockchain", package = "blockchain-4mica" }
+migration = { version = "2.0.0-alpha.2", path = "crates/migration" }
+entities = { version = "2.0.0-alpha.2", path = "crates/entities" }
+metrics-4mica = { version = "2.0.0-alpha.2", path = "crates/metrics" }
+derive-4mica = { version = "2.0.0-alpha.2", path = "crates/derive" }
 
 chrono = "0.4.44"
 anyhow = "1.0.102"
@@ -50,7 +50,7 @@ hex = "0.4.3"
 uuid = { version = "1.23", features = ["v4"] }
 hyper = "1.9.0"
 tower = "0.5"
-tower-http = { version = "0.6.8", features = ["cors"] }
+tower-http = { version = "0.7.0", features = ["cors"] }
 axum = { version = "0.8.8", features = ["macros", "json"] }
 http = "1.4.0"
 reqwest = { version = "0.13.2", default-features = false, features = [
@@ -58,7 +58,7 @@ reqwest = { version = "0.13.2", default-features = false, features = [
     "http2",
     "system-proxy",
 ] }
-sea-orm = { version = "1.1.20", features = [
+sea-orm = { version = "2.0.0", features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",
 ] }
@@ -66,7 +66,7 @@ alloy = "2.0.4"
 alloy-primitives = { version = "1.5.2" }
 alloy-sol-types = "1.5.2"
 alloy-provider = { version = "2.0.4" }
-serial_test = { version = "3.3.1", features = ["file_locks"] }
+serial_test = { version = "4.0.1", features = ["file_locks"] }
 sha2 = "0.11.0"
 blst = "0.3.16"
 url = { version = "2.5.8", features = ["serde"] }

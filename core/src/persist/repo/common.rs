@@ -36,34 +36,34 @@ pub fn new_uuid() -> String {
     Uuid::new_v4().to_string()
 }
 
-pub fn constraint_name(err: &DbErr) -> Option<String> {
-    match err {
-        DbErr::Exec(RuntimeErr::SqlxError(sqlx::Error::Database(db_err)))
-        | DbErr::Query(RuntimeErr::SqlxError(sqlx::Error::Database(db_err))) => {
-            db_err.constraint().map(|c| c.to_string())
-        }
+fn database_error(err: &DbErr) -> Option<&dyn sqlx::error::DatabaseError> {
+    let runtime_err = match err {
+        DbErr::Exec(e) | DbErr::Query(e) => e,
+        _ => return None,
+    };
+    let RuntimeErr::SqlxError(sqlx_err) = runtime_err else {
+        return None;
+    };
+    match sqlx_err.as_ref() {
+        sqlx::Error::Database(db_err) => Some(db_err.as_ref()),
         _ => None,
     }
 }
 
+pub fn constraint_name(err: &DbErr) -> Option<String> {
+    database_error(err)?.constraint().map(|c| c.to_string())
+}
+
 pub fn is_foreign_key_violation(err: &DbErr) -> bool {
-    match err {
-        DbErr::Exec(RuntimeErr::SqlxError(sqlx::Error::Database(db_err)))
-        | DbErr::Query(RuntimeErr::SqlxError(sqlx::Error::Database(db_err))) => {
-            db_err.code().map(|c| c == "23503").unwrap_or(false)
-        }
-        _ => false,
-    }
+    database_error(err)
+        .and_then(|e| e.code())
+        .is_some_and(|c| c == "23503")
 }
 
 pub fn is_unique_violation(err: &DbErr) -> bool {
-    match err {
-        DbErr::Exec(RuntimeErr::SqlxError(sqlx::Error::Database(db_err)))
-        | DbErr::Query(RuntimeErr::SqlxError(sqlx::Error::Database(db_err))) => {
-            db_err.code().map(|c| c == "23505").unwrap_or(false)
-        }
-        _ => false,
-    }
+    database_error(err)
+        .and_then(|e| e.code())
+        .is_some_and(|c| c == "23505")
 }
 
 pub fn map_pending_withdrawal_err(

@@ -5,7 +5,9 @@ use entities::user_asset_balance;
 use log::warn;
 use metrics_4mica::measure;
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, EntityTrait, ExprTrait, QueryFilter, TransactionTrait,
+};
 
 use super::common::{now, parse_address};
 use crate::metrics::misc::record_db_time;
