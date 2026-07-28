@@ -5,7 +5,6 @@ pub mod utils;
 sol! {
     #[sol(rpc)]
     contract Core4Mica {
-        // ========= Errors =========
         error AmountZero();
         error InsufficientAvailable();
         error TransferFailed();
@@ -37,7 +36,6 @@ sol! {
         error ZeroCollateralCredit(address asset, uint256 amount);
         error EscrowScaledUnderflow(address asset, uint256 requested, uint256 available);
 
-        // ========= Storage =========
         function withdrawalGracePeriod() external view returns (uint256);
         function aaveAddressesProvider() external view returns (address);
         function yieldFeeBps() external view returns (uint256);
@@ -47,7 +45,6 @@ sol! {
             bytes32 x1, bytes32 x2, bytes32 y1, bytes32 y2
         );
 
-        // ========= Events =========
         event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
         event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
         event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
@@ -72,7 +69,6 @@ sol! {
             uint256 nominalAmount
         );
 
-        // ========= Structs =========
         struct WithdrawalRequest {
             uint256 timestamp;
             uint256 amount;
@@ -144,7 +140,6 @@ sol! {
             bytes signature;
         }
 
-        // ========= Constructor =========
         /// @param manager Address of AccessManager
         /// @param verificationKey Initial BLS verification key
         constructor(
@@ -153,7 +148,6 @@ sol! {
             address[] memory stablecoins_
         );
 
-        // ========= User flows =========
         function deposit() external payable;
         function depositStablecoin(address asset, uint256 amount) external;
         /// Gasless deposit: a third party (e.g. a facilitator sponsoring gas) submits an
@@ -169,7 +163,6 @@ sol! {
         function finalizeWithdrawal() external;
         function finalizeWithdrawal(address asset) external;
 
-        // ========= Admin / Manager =========
         function setWithdrawalGracePeriod(uint256 _gracePeriod) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;
         function configureGuaranteeVersion(uint64 version, (bytes32,bytes32,bytes32,bytes32) verificationKey, bytes32 domainSeparator, address decoder, bool enabled) external;
@@ -187,7 +180,6 @@ sol! {
                 address decoder,
                 bool enabled
             );
-        // ========= Views =========
         function getUserAllAssets(address userAddr)
             external
             view

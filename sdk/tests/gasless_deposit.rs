@@ -20,8 +20,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 
-// ── fixtures ────────────────────────────────────────────────────────────────
-
 const CHAIN_ID: u64 = 1337;
 const CONTRACT: Address = address!("00000000000000000000000000000000c04e4a1c");
 const TOKEN: Address = address!("000000000000000000000000000000000000d0c5");
@@ -47,8 +45,6 @@ const GUARANTEE_DOMAIN: B256 =
 const EXPECTED_TTL_SECS: u64 = 3600;
 
 const BLS_SECRET: &str = "0x4573DBD225C8E065FC30FF774C9EF81BD29D34E559D80E2276EE7824812399D3";
-
-// ── independent EIP-712 digest computation ──────────────────────────────────
 
 fn word_address(value: Address) -> [u8; 32] {
     let mut word = [0u8; 32];
@@ -130,8 +126,6 @@ fn selector(signature: &str) -> [u8; 4] {
     let hash = keccak256(signature.as_bytes());
     [hash[0], hash[1], hash[2], hash[3]]
 }
-
-// ── mock chain + core ───────────────────────────────────────────────────────
 
 /// Every JSON-RPC call the SDK made, so tests can assert *which* contract was asked for a domain
 /// separator and that no transaction was ever broadcast.
@@ -309,8 +303,6 @@ fn now_secs() -> u64 {
         .expect("system clock after epoch")
         .as_secs()
 }
-
-// ── EIP-3009 authorization ──────────────────────────────────────────────────
 
 #[tokio::test]
 async fn sign_deposit_authorization_recovers_to_signer_over_erc3009_digest() -> anyhow::Result<()> {
@@ -530,8 +522,6 @@ async fn sign_deposit_authorization_rejects_an_invalid_token_address() -> anyhow
     Ok(())
 }
 
-// ── Permit2 authorization ───────────────────────────────────────────────────
-
 #[tokio::test]
 async fn sign_deposit_permit2_recovers_to_signer_over_permit2_digest() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
@@ -732,8 +722,6 @@ async fn sign_deposit_permit2_rejects_an_invalid_token_address() -> anyhow::Resu
     Ok(())
 }
 
-// ── the "gasless" property itself ───────────────────────────────────────────
-
 #[tokio::test]
 async fn gasless_signing_never_broadcasts_a_transaction() -> anyhow::Result<()> {
     let (client, _signer_address, log) = test_client().await?;
@@ -756,8 +744,6 @@ async fn gasless_signing_never_broadcasts_a_transaction() -> anyhow::Result<()> 
     }
     Ok(())
 }
-
-// ── the wire format a submitter depends on ──────────────────────────────────
 
 #[tokio::test]
 async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {

@@ -13,8 +13,6 @@ fn parse_addr(field: &'static str, value: &str) -> anyhow::Result<Address> {
     Address::from_str(value).map_err(|_| anyhow!("invalid {field}"))
 }
 
-// ── gasless deposit authorizations ──────────────────────────────────────────
-
 sol! {
     /// EIP-3009 authorization struct, as signed by the token holder. The token binds `to` and
     /// `value` inside the signature, so a facilitator submitting the deposit cannot redirect funds.
@@ -156,8 +154,6 @@ pub fn eip712_digest_for_permit2_transfer(
     };
     eip712_digest(domain_separator, message.eip712_hash_struct())
 }
-
-// ── unified dispatch helpers ────────────────────────────────────────────────
 
 /// EIP-712 signing hash for any supported guarantee request version.
 /// Add a new `PaymentGuaranteeRequestClaims` variant here when introducing V3.
