@@ -14,6 +14,12 @@ import {
     MockPoolAddressesProvider
 } from "./helpers/MockAave.sol";
 
+/// Mock stablecoin used by the Foundry suites and, via `Core4MicaFullStack.s.sol`, deployed as the
+/// local dev stack's stablecoins.
+///
+/// Implements EIP-3009 `receiveWithAuthorization` because real USDC does: without it the gasless
+/// deposit path cannot be exercised end-to-end against a local anvil, since the SDK reads the
+/// token's own `DOMAIN_SEPARATOR()` to build the signing hash.
 contract MockERC20 {
     string public name;
     string public symbol;
@@ -21,17 +27,71 @@ contract MockERC20 {
     // forge-lint: disable-next-line(screaming-snake-case-immutable)
     uint8 public immutable decimals;
     uint256 public totalSupply;
+    /// Matches USDC's FiatToken EIP-712 domain version.
+    string public constant EIP712_VERSION = "2";
 
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
+    /// authorizer => nonce => used, the EIP-3009 replay guard.
+    mapping(address => mapping(bytes32 => bool)) public authorizationState;
+
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 public constant RECEIVE_WITH_AUTHORIZATION_TYPEHASH = keccak256(
+        "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
+    );
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
+    event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce);
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) {
         name = name_;
         symbol = symbol_;
         decimals = decimals_;
+    }
+
+    // forge-lint: disable-next-line(mixed-case-function)
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes(name)),
+                keccak256(bytes(EIP712_VERSION)),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    /// Pulls `value` from `from` into the caller, authorized by `from`'s EIP-712 signature rather
+    /// than by an allowance. The caller must be the payee, so a third party can submit the
+    /// transaction and pay the gas without being able to redirect the funds.
+    function receiveWithAuthorization(
+        address from,
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        require(to == msg.sender, "EIP3009: caller must be the payee");
+        uint256 currentTime = block.timestamp;
+        require(currentTime > validAfter, "EIP3009: authorization is not yet valid");
+        require(currentTime < validBefore, "EIP3009: authorization is expired");
+        require(!authorizationState[from][nonce], "EIP3009: authorization is used");
+
+        bytes32 structHash =
+            keccak256(abi.encode(RECEIVE_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+        require(ecrecover(digest, v, r, s) == from, "EIP3009: invalid signature");
+
+        authorizationState[from][nonce] = true;
+        emit AuthorizationUsed(from, nonce);
+        _transfer(from, to, value);
     }
 
     function mint(address to, uint256 amount) external {

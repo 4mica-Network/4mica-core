@@ -47,9 +47,10 @@ reqwest-012 = { package = "reqwest", version = "0.12.4", optional = true, defaul
 cdp = ["dep:cdp-sdk", "dep:reqwest-middleware", "dep:reqwest-012"]
 
 # The live-stack, DB-coupled e2e tests (and the `core-service`/`entities` deps
-# they need) live in the separate `sdk-e2e` crate so this crate stays portable
-# and free of in-repo path dependencies. What remains here are offline tests
-# that only exercise the SDK's own surface against mock HTTP servers.
+# they need) live in the workspace's `integration-tests` crate so this crate
+# stays portable and free of in-repo path dependencies. Run them with
+# `make test-sdk`; they self-skip unless SDK_LOCAL_E2E=1. What remains here are
+# offline tests that only exercise the SDK's own surface against mock servers.
 [dev-dependencies]
 tokio = { workspace = true }
 chrono = { workspace = true }

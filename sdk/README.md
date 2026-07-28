@@ -60,8 +60,10 @@ A guarantee that carries a `validation` requirement is payable only once the nam
 approves it, and is cancelled if that has not happened by the deadline. Core resolves only
 validators it whitelists, listed in `/core/public-params` as `validators`.
 
-Attach one by building the claims with `PaymentGuaranteeRequestClaims::new(...).with_validation(...)`
-and signing them with `user.sign_payment(...)`.
+- `user.sign_payment(...)` signs explicit V1 claims.
+- `user.sign_payment_v2(...)` signs explicit V2 claims.
+- `user.sign_payment_auto(...)` chooses V1 or V2 from core metadata plus optional
+  `PaymentGuaranteeValidationInput`.
 
 ## Initialization and Configuration
 
@@ -166,7 +168,7 @@ The SDK provides client interfaces for both sides of the payment flow plus a hel
 The X402 helper turns the `paymentRequirements` emitted by a `402 Payment Required` response into an X-PAYMENT header (and optional `/settle` call) that the facilitator will accept. The examples in `https://github.com/4mica-Network/x402-4mica/examples` model the expected flow: the client speaks to the resource server, and the resource server talks to the facilitator for `/verify` and `/settle`.
 
 Signing is entirely local. `X402Flow` generates a random `req_id` nonce itself and makes no
-network call before signing.
+network call before signing, so no endpoint needs to be advertised for it.
 
 #### What the SDK expects from `paymentRequirements`
 
@@ -175,10 +177,9 @@ network call before signing.
 - `scheme` and `network`: `scheme` must contain `4mica` (e.g. `4mica-credit`)
 - `asset`, `amount` (v2) or `maxAmountRequired` (v1), and `payTo`
 
-Either version may carry an optional validation requirement in `extra.validation`: `validator`
-(a whitelisted validator identity), `subject` (0x bytes32), `deadline` (optional unix seconds),
-and `params` (0x-encoded, validator-specific policy). Omitting `extra.validation` leaves the
-payment un-gated.
+V1 requires no `extra` at all. V2 requires `extra` carrying the validation policy fields
+(`validationRegistryAddress`, `validationChainId`, `validatorAddress`, `validatorAgentId`,
+`minValidationScore`, `jobHash`, and optionally `requiredValidationTag`).
 
 #### End-to-end client flow
 
@@ -360,20 +361,24 @@ Notes:
 - `get_stablecoin_position(asset: String) -> Result<StablecoinPosition, GetUserError>`: Get the user's yield-bearing stablecoin position
 - `get_clearing_pay_net_debit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Fetch the prepared `payNetDebit` call (amount, proof, contract) for a cycle
 - `pay_net_debit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Pay the caller's committed net debit for a cycle
-- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment; the claims carry an optional `validation` requirement
+- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V1 payment (`PaymentGuaranteeRequestClaims` is the SDK alias for V1 claims)
+- `sign_payment_v2(claims: PaymentGuaranteeRequestClaimsV2, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V2 payment with validation policy fields
+- `sign_payment_auto(intent: PaymentGuaranteeIntent, validation: Option<PaymentGuaranteeValidationInput>, scheme: SigningScheme) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>`: Build and sign either V1 or V2 claims using core metadata
 - `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
 - `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
 - `finalize_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, FinalizeWithdrawalError>`: Finalize withdrawal after waiting period
 
 #### RecipientClient Methods
 
-- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
 - `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
-- `guarantee_domain() -> &[u8; 32]`: On-chain domain separator guarantees are signed under
+- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
+- `issue_payment_guarantee_v2(claims: PaymentGuaranteeRequestClaimsV2, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a V2 payment guarantee
+- `issue_prepared_payment_guarantee(request: PreparedPaymentGuaranteeRequest) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a guarantee from the output of `sign_payment_auto`
+- `get_clearing_claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Fetch the prepared `claimNetCredit` call (amount, proof, contract) for a cycle
+- `claim_net_credit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Claim the caller's committed net credit for a cycle
 - `list_recipient_payments() -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>`: List all payments for the recipient
-- `get_user_asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get the recipient's balance for one asset
-- `get_clearing_claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Prepare the on-chain call that claims a settled cycle's net credit
-- `claim_net_credit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Claim the recipient's net credit for a cycle
+- `get_user_asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get the authenticated signer's asset balance
+- `active_guarantee_version() -> u64` / `active_guarantee_domain() -> &[u8; 32]`: Guarantee metadata cached from `/core/public-params`
 
 > **Note:** `BLSCert` now exposes typed claims and signatures. Use `cert.claims().to_hex()` or `cert.signature().to_hex()` when you need hex strings.
 
@@ -855,7 +860,7 @@ use sdk_4mica::error::{
 - `InvalidScheme(String)`: `paymentRequirements.scheme` must include `4mica`
 - `InvalidVersion(String)`: Unexpected x402 version
 - `InvalidFacilitatorUrl(String)`: Invalid facilitator `/settle` base URL
-- `InvalidExtra(String)`: Issues parsing `paymentRequirements.extra` (the validation requirement fields)
+- `InvalidExtra(String)`: Issues parsing `paymentRequirements.extra` (v2 validation policy fields)
 - `InvalidNumber { field, source }`: Invalid numeric field in requirements
 - `EncodeEnvelope(String)`: Failed to encode the X-PAYMENT envelope
 - `SettlementFailed { status, body }`: Facilitator `/settle` returned a non-success status
@@ -893,7 +898,7 @@ cargo build --release
 - **Handle errors properly**: Always handle errors explicitly. The SDK provides specific error types for each failure scenario to help you build robust applications
 - **Check signer addresses**: For `RecipientClient` operations, ensure your signer address matches the recipient address. The SDK will return `InvalidParams` errors for mismatches
 - **Validate amounts**: The SDK prevents zero-amount transactions at the contract level, but you should validate amounts in your application for better UX
-- **ERC20 Approvals**: Always approve the 4Mica contract before depositing or paying with ERC20 tokens. Approve only the amount you need to minimize risk. Paying an ERC20 net debit needs a _separate_ approval for the ClearingHouse via `approve_clearing_house_erc20` — it is a different contract from the one `approve_erc20` targets
+- **ERC20 Approvals**: Always approve the 4Mica contract before depositing or paying with ERC20 tokens. Approve only the amount you need to minimize risk. Paying an ERC20 net debit needs a *separate* approval for the ClearingHouse via `approve_clearing_house_erc20` — it is a different contract from the one `approve_erc20` targets
 - **Asset Matching**: Cycles are scoped to a single asset. Ensure the asset in your payment claims matches the asset you intend to settle in; the contract will reject mismatched assets
 - **Use random `req_id`s**: Never reuse or sequence `req_id`. A duplicate within a cycle is rejected, and `X402Flow` generates one for you
 - **Multi-Asset Management**: Each asset (ETH and each ERC20 token) has its own collateral balance and withdrawal request. Use `get_user()` to view all your asset balances

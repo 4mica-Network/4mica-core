@@ -1,6 +1,6 @@
 use alloy::{
     network::TxSigner,
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     rpc::types::TransactionReceipt,
     signers::{Signature, Signer},
 };
@@ -12,6 +12,8 @@ use crate::{
         ClientCtx,
         model::{StablecoinPosition, UserInfo},
     },
+    contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
+    digest::{eip712_digest_for_permit2_transfer, eip712_digest_for_receive_authorization},
     error::{
         ApproveErc20Error, CancelWithdrawalError, ClearingSettlementError, DepositError,
         FinalizeWithdrawalError, GetUserError, RequestWithdrawalError, SignPaymentError,
@@ -20,6 +22,10 @@ use crate::{
     validators::validate_address,
 };
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Validity window applied to a gasless deposit authorization, from signing time.
+const DEPOSIT_AUTHORIZATION_TTL_SECS: u64 = 3600;
 
 #[derive(Clone)]
 pub struct UserClient<S> {
@@ -201,6 +207,105 @@ impl<S> UserClient<S> {
             .map_err(DepositError::from)?;
 
         Ok(receipt)
+    }
+
+    /// Signs an EIP-3009 `receiveWithAuthorization` for a **gasless** stablecoin deposit.
+    ///
+    /// The client only signs — it never sends a transaction or pays gas. A facilitator submits the
+    /// returned [`ReceiveAuthorization`] via `depositStablecoinWithAuthorization`, and collateral is
+    /// credited to the signer, not the submitter. Use this for tokens that natively support EIP-3009
+    /// (e.g. USDC); use [`sign_deposit_permit2`](Self::sign_deposit_permit2) for any other ERC-20.
+    ///
+    /// ### Arguments
+    /// * `token` - The ERC20 token to deposit.
+    /// * `amount` - The deposit amount, in the token's own decimals.
+    pub async fn sign_deposit_authorization(
+        &self,
+        token: String,
+        amount: U256,
+    ) -> Result<ReceiveAuthorization, DepositError>
+    where
+        S: Signer + Send + Sync,
+    {
+        let token = validate_address(&token).map_err(|_| {
+            DepositError::InvalidParams(format!("invalid ERC20 token address: {token}"))
+        })?;
+        let from = self.ctx.signer_address();
+        let to = self.ctx.contract_address();
+        let valid_before = U256::from(now_secs().saturating_add(DEPOSIT_AUTHORIZATION_TTL_SECS));
+        let nonce = B256::from(rand::random::<[u8; 32]>());
+
+        let domain_separator = self.ctx.token_domain_separator(token).await?;
+        let digest = eip712_digest_for_receive_authorization(
+            domain_separator,
+            from,
+            to,
+            amount,
+            U256::ZERO,
+            valid_before,
+            nonce,
+        );
+
+        let (v, r, s) = sign_vrs(self.ctx.signer(), &digest).await?;
+        Ok(ReceiveAuthorization {
+            from,
+            validAfter: U256::ZERO,
+            validBefore: valid_before,
+            nonce,
+            v,
+            r,
+            s,
+        })
+    }
+
+    /// Signs a Permit2 `PermitTransferFrom` for a **gasless** stablecoin deposit.
+    ///
+    /// Like [`sign_deposit_authorization`](Self::sign_deposit_authorization) but routed through the
+    /// canonical Permit2 contract, so it works for any ERC-20 — at the cost of a one-time on-chain
+    /// `approve(PERMIT2, ...)` the signer must have granted for `token`. A facilitator submits the
+    /// returned [`Permit2Authorization`] via `depositStablecoinWithPermit2`.
+    ///
+    /// ### Arguments
+    /// * `token` - The ERC20 token to deposit.
+    /// * `amount` - The deposit amount, in the token's own decimals.
+    pub async fn sign_deposit_permit2(
+        &self,
+        token: String,
+        amount: U256,
+    ) -> Result<Permit2Authorization, DepositError>
+    where
+        S: Signer + Send + Sync,
+    {
+        let token = validate_address(&token).map_err(|_| {
+            DepositError::InvalidParams(format!("invalid ERC20 token address: {token}"))
+        })?;
+        let from = self.ctx.signer_address();
+        let spender = self.ctx.contract_address();
+        let deadline = U256::from(now_secs().saturating_add(DEPOSIT_AUTHORIZATION_TTL_SECS));
+        let nonce = U256::from_be_bytes(rand::random::<[u8; 32]>());
+
+        let domain_separator = self.ctx.permit2_domain_separator();
+        let digest = eip712_digest_for_permit2_transfer(
+            domain_separator,
+            token,
+            amount,
+            spender,
+            nonce,
+            deadline,
+        );
+
+        let signature = self
+            .ctx
+            .signer()
+            .sign_hash(&digest)
+            .await
+            .map_err(|e| DepositError::Transport(e.to_string()))?;
+        Ok(Permit2Authorization {
+            from,
+            nonce,
+            deadline,
+            signature: Bytes::from(signature.as_bytes().to_vec()),
+        })
     }
 
     /// Returns information about user's assets and withdrawal requests
@@ -504,4 +609,25 @@ pub(super) fn parse_clearing_action_call(
         payable_value,
         proof,
     })
+}
+
+/// Current UNIX time in seconds, saturating to 0 if the clock is before the epoch.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// Signs `digest` and splits the result into EIP-3009's `(v, r, s)` form, with `v` in Electrum
+/// notation (27/28) as the token's `ecrecover` expects.
+async fn sign_vrs<S: Signer>(signer: &S, digest: &B256) -> Result<(u8, B256, B256), DepositError> {
+    let sig = signer
+        .sign_hash(digest)
+        .await
+        .map_err(|e| DepositError::Transport(e.to_string()))?;
+    let bytes = sig.as_bytes();
+    let r = B256::from_slice(&bytes[0..32]);
+    let s = B256::from_slice(&bytes[32..64]);
+    Ok((bytes[64], r, s))
 }

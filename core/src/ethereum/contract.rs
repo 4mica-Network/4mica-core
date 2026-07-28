@@ -10,10 +10,6 @@
 use alloy::sol_types::SolEvent;
 use alloy_primitives::B256;
 
-// -----------------------------------------------------------------------------
-// Event bindings
-// -----------------------------------------------------------------------------
-
 pub mod abi {
     use alloy::sol;
     sol! {
@@ -160,10 +156,6 @@ pub fn is_known_event_topic(topic0: &B256) -> bool {
     EVENT_SIGNATURE_HASHES.iter().any(|t| t == topic0)
 }
 
-// -----------------------------------------------------------------------------
-// Contract function bindings
-// -----------------------------------------------------------------------------
-//
 // This is an intentionally curated subset of the Core4Mica callable ABI used by
 // core-service. It is not a full mirror of every public/external Solidity
 // function in `contracts/src/Core4Mica.sol`.
@@ -213,8 +205,8 @@ pub mod contract_abi {
             /// (ETH balance for the zero asset, withdrawable stablecoin otherwise).
             function collateral(address user, address asset) external view returns (uint256);
 
-            // ---- Custom errors (mirrored from contracts/src/Core4Mica.sol) ----
-            // Declared here only so revert data can be decoded into named errors.
+            // Mirrored from contracts/src/Core4Mica.sol, declared here only so revert data can
+            // be decoded into named errors.
             error AmountZero();
             error InsufficientAvailable();
             error TransferFailed();
@@ -246,8 +238,10 @@ pub mod contract_abi {
         contract ERC20Metadata {
             function symbol() external view returns (string memory);
             function decimals() external view returns (uint8);
+            /// EIP-712 domain separator, exposed by EIP-2612/EIP-3009 tokens. Absent on plain
+            /// ERC-20s, so callers must tolerate a revert here.
+            function DOMAIN_SEPARATOR() external view returns (bytes32);
         }
-
 
         struct DebtorEntry {
             address debtor;
@@ -303,9 +297,9 @@ pub mod contract_abi {
             /// View: full on-chain cycle accounting/state.
             function getCycle(bytes32 cycleId) external view returns (OnchainCycle memory);
 
-            // ---- Custom errors (mirrored from contracts/src/ClearingHouse.sol) ----
-            // `CycleStatus` is a Solidity enum; it ABI-encodes (and contributes to the
-            // selector) as `uint8`, so it is declared as `uint8` here.
+            // Mirrored from contracts/src/ClearingHouse.sol so revert data can be decoded into
+            // named errors. `CycleStatus` is a Solidity enum; it ABI-encodes (and contributes to
+            // the selector) as `uint8`, so it is declared as `uint8` here.
             error AmountZero();
             error CycleNotZeroSum(uint256 totalNetDebit, uint256 totalNetCredit);
             error CycleAlreadyCommitted(bytes32 cycleId);
@@ -331,9 +325,6 @@ pub mod contract_abi {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;

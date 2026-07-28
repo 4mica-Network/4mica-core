@@ -333,10 +333,19 @@ impl CoreContractApi for CoreContractProxy {
             let erc20 = ERC20Metadata::new(addr, self.provider.clone());
             let symbol = erc20.symbol().call().await.observe("erc20.symbol")?;
             let decimals = erc20.decimals().call().await.observe("erc20.decimals")?;
+            // Plain ERC-20s have no domain separator; that is not an error, it just means this
+            // token cannot be used for gasless deposits.
+            let domain_separator = erc20
+                .DOMAIN_SEPARATOR()
+                .call()
+                .await
+                .ok()
+                .map(|value| value.to_string());
             tokens.push(SupportedTokenInfo {
                 symbol,
                 address: addr.to_string(),
                 decimals,
+                domain_separator,
             });
         }
         Ok(tokens)
