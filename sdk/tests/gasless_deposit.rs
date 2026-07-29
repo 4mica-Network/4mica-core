@@ -13,6 +13,7 @@ use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
 use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION};
+use sdk_4mica::error::DepositError;
 use sdk_4mica::{Client, ConfigBuilder};
 use serde_json::{Value, json};
 use std::str::FromStr;
@@ -245,6 +246,64 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
     }
 }
 
+/// Every request a mock facilitator received, so tests can assert on what the SDK actually sent
+/// rather than only on what it returned.
+#[derive(Default)]
+struct FacilitatorLog {
+    deposits: Vec<Value>,
+    verifies: Vec<Value>,
+}
+
+/// A stand-in facilitator that records requests and replies with `response`.
+///
+/// Deliberately dumb: the point is not to re-implement the facilitator, it is to observe what the
+/// SDK puts on the wire and how it maps the reply back.
+async fn spawn_facilitator(
+    response: Value,
+    log: Arc<Mutex<FacilitatorLog>>,
+) -> anyhow::Result<String> {
+    let deposit_log = log.clone();
+    let deposit_response = response.clone();
+    let verify_log = log.clone();
+
+    spawn(
+        Router::new()
+            .route(
+                "/deposit",
+                post(move |Json(body): Json<Value>| {
+                    let log = deposit_log.clone();
+                    let response = deposit_response.clone();
+                    async move {
+                        log.lock().unwrap().deposits.push(body);
+                        Json(response)
+                    }
+                }),
+            )
+            .route(
+                "/deposit/verify",
+                post(move |Json(body): Json<Value>| {
+                    let log = verify_log.clone();
+                    async move {
+                        log.lock().unwrap().verifies.push(body);
+                        Json(json!({ "isValid": true }))
+                    }
+                }),
+            ),
+    )
+    .await
+}
+
+fn success_response() -> Value {
+    json!({
+        "success": true,
+        "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "network": "eip155:1337",
+        "from": "0x00000000000000000000000000000000000000a1",
+        "asset": TOKEN.to_string(),
+        "amount": "1000000",
+    })
+}
+
 /// Boots a mock chain + core and returns a `Client` wired to them, plus the signer and call log.
 async fn test_client() -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc<Mutex<CallLog>>)> {
     let log = Arc::new(Mutex::new(CallLog::default()));
@@ -295,6 +354,69 @@ async fn test_client() -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc
     // Drop setup traffic so per-test assertions only see the signing calls.
     log.lock().unwrap().eth_calls.clear();
     Ok((client, signer_address, log))
+}
+
+/// As [`test_client`], but with a facilitator configured and its request log returned too.
+async fn test_client_with_facilitator(
+    response: Value,
+) -> anyhow::Result<(
+    Client<PrivateKeySigner>,
+    Address,
+    Arc<Mutex<CallLog>>,
+    Arc<Mutex<FacilitatorLog>>,
+)> {
+    let chain_log = Arc::new(Mutex::new(CallLog::default()));
+    let eth_url = spawn(
+        Router::new()
+            .route("/", post(handle_rpc))
+            .with_state(chain_log.clone()),
+    )
+    .await?;
+
+    let params = public_params(&eth_url);
+    let core_url = spawn(
+        Router::new()
+            .route(
+                "/core/public-params",
+                get(move || {
+                    let params = params.clone();
+                    async move { Json(params) }
+                }),
+            )
+            .route(
+                "/core/tokens",
+                get(|| async {
+                    Json(json!({
+                        "chain_id": CHAIN_ID,
+                        "tokens": [{
+                            "symbol": "USDC",
+                            "address": TOKEN.to_string(),
+                            "decimals": 6,
+                            "domain_separator": format!("0x{}", alloy::hex::encode(TOKEN_DOMAIN)),
+                        }],
+                    }))
+                }),
+            ),
+    )
+    .await?;
+
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let facilitator_url = spawn_facilitator(response, facilitator_log.clone()).await?;
+
+    let signer = PrivateKeySigner::random();
+    let signer_address = signer.address();
+    let cfg = ConfigBuilder::default()
+        .rpc_url(core_url)
+        .signer(signer)
+        .ethereum_http_rpc_url(eth_url)
+        .contract_address(CONTRACT.to_string())
+        .facilitator_url(facilitator_url)
+        .build()?;
+
+    let client = Client::new(cfg).await?;
+    chain_log.lock().unwrap().eth_calls.clear();
+    chain_log.lock().unwrap().methods.clear();
+    Ok((client, signer_address, chain_log, facilitator_log))
 }
 
 fn now_secs() -> u64 {
@@ -776,5 +898,224 @@ async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
     assert_eq!(decoded.nonce, permit.nonce);
     assert_eq!(decoded.deadline, permit.deadline);
     assert_eq!(decoded.signature, permit.signature);
+    Ok(())
+}
+
+// ── facilitator client ──────────────────────────────────────────────────────
+//
+// The facilitator path is the reason the signing above is chain-free: a payer with tokens but no
+// native gas signs here and something else submits. These tests pin the two properties that make
+// that worth having — the SDK never touches an Ethereum RPC, and what it puts on the wire is what
+// the facilitator expects to read.
+
+#[tokio::test]
+async fn facilitator_deposit_never_touches_an_ethereum_rpc() -> anyhow::Result<()> {
+    let (client, signer_address, chain_log, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let receipt = client
+        .facilitator
+        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await?;
+
+    assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
+
+    // The whole point of routing through a facilitator: signing and submitting cost the payer no
+    // chain access at all. A regression here would silently reintroduce the RPC dependency this
+    // path exists to remove.
+    let chain = chain_log.lock().unwrap();
+    assert!(
+        chain.eth_calls.is_empty(),
+        "a facilitator deposit must make no eth_call, saw {:?}",
+        chain.eth_calls
+    );
+    assert!(
+        !chain.methods.iter().any(|m| m.contains("send")),
+        "a facilitator deposit must never broadcast, saw {:?}",
+        chain.methods
+    );
+
+    // …and the request must name the signer, never anyone else.
+    let facilitator = facilitator_log.lock().unwrap();
+    assert_eq!(facilitator.deposits.len(), 1);
+    let body = &facilitator.deposits[0];
+    assert_eq!(
+        body["authorization"]["from"]
+            .as_str()
+            .map(str::to_lowercase),
+        Some(format!("{signer_address:#x}").to_lowercase())
+    );
+    Ok(())
+}
+
+/// The facilitator deserialises these fields directly, so their names and shapes are a contract
+/// between the two crates. Catches drift that would otherwise only surface at runtime.
+#[tokio::test]
+async fn facilitator_deposit_sends_the_expected_wire_shape() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    client
+        .facilitator
+        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.deposits[0];
+
+    assert_eq!(body["assetTransferMethod"], "eip3009");
+    assert_eq!(body["amount"], "1000000");
+    assert_eq!(
+        body["asset"].as_str().map(str::to_lowercase),
+        Some(TOKEN.to_string().to_lowercase())
+    );
+    for field in ["from", "validAfter", "validBefore", "nonce", "v", "r", "s"] {
+        assert!(
+            body["authorization"].get(field).is_some(),
+            "authorization is missing {field}: {body}"
+        );
+    }
+    // Sending the unused shape as null would trip the facilitator's exactly-one check.
+    assert!(
+        body.get("permit2Authorization").is_none(),
+        "the unused authorization must be omitted entirely: {body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn facilitator_permit2_deposit_sends_the_permit2_shape() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    client
+        .facilitator
+        .deposit_with_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.deposits[0];
+    assert_eq!(body["assetTransferMethod"], "permit2");
+    for field in ["from", "nonce", "deadline", "signature"] {
+        assert!(
+            body["permit2Authorization"].get(field).is_some(),
+            "permit2Authorization is missing {field}: {body}"
+        );
+    }
+    assert!(body.get("authorization").is_none());
+    Ok(())
+}
+
+/// A known code becomes a typed variant so callers can branch without matching on prose.
+#[tokio::test]
+async fn facilitator_maps_a_known_error_code_to_a_typed_variant() -> anyhow::Result<()> {
+    let (client, _signer, _chain, _log) = test_client_with_facilitator(json!({
+        "success": false,
+        "error": "0xabc has approved 0 but 1000 is required",
+        "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
+        "retryable": false,
+    }))
+    .await?;
+
+    let err = client
+        .facilitator
+        .deposit_with_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await
+        .expect_err("expected the facilitator's rejection to surface");
+
+    assert!(
+        matches!(err, DepositError::Permit2AllowanceRequired(_)),
+        "expected a typed allowance error, got {err:?}"
+    );
+    Ok(())
+}
+
+/// An unrecognised code must survive intact rather than being flattened, so an SDK built today
+/// still lets callers branch on a code the facilitator adds tomorrow.
+#[tokio::test]
+async fn facilitator_passes_through_an_unknown_error_code() -> anyhow::Result<()> {
+    let (client, _signer, _chain, _log) = test_client_with_facilitator(json!({
+        "success": false,
+        "error": "the relayer is on fire",
+        "errorCode": "SOMETHING_ADDED_LATER",
+        "retryable": true,
+    }))
+    .await?;
+
+    let err = client
+        .facilitator
+        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await
+        .expect_err("expected the facilitator's rejection to surface");
+
+    match err {
+        DepositError::Facilitator {
+            code,
+            message,
+            retryable,
+        } => {
+            assert_eq!(code, "SOMETHING_ADDED_LATER");
+            assert!(message.contains("on fire"));
+            assert!(retryable, "retryability must survive an unrecognised code");
+        }
+        other => panic!("expected a passthrough Facilitator error, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// Reporting success without a transaction hash is a broken facilitator, not a successful deposit.
+#[tokio::test]
+async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<()> {
+    let (client, _signer, _chain, _log) =
+        test_client_with_facilitator(json!({ "success": true })).await?;
+
+    let err = client
+        .facilitator
+        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await
+        .expect_err("expected a missing txHash to be rejected");
+    assert!(matches!(err, DepositError::Transport(_)), "got {err:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn facilitator_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .user
+        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await?;
+    client
+        .facilitator
+        .verify_deposit_authorization(TOKEN.to_string(), U256::from(1_000_000u64), authorization)
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    assert_eq!(facilitator.verifies.len(), 1);
+    assert!(
+        facilitator.deposits.is_empty(),
+        "verifying must not submit anything"
+    );
+    Ok(())
+}
+
+/// Without a facilitator the call must say so plainly, so a caller can fall back to a self-funded
+/// `user.deposit` rather than discovering it through a transport error.
+#[tokio::test]
+async fn facilitator_calls_fail_clearly_when_none_is_configured() -> anyhow::Result<()> {
+    let (client, _signer, _log) = test_client().await?;
+
+    assert!(!client.facilitator.is_configured());
+    let err = client
+        .facilitator
+        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await
+        .expect_err("expected an unconfigured facilitator to be reported");
+    assert!(
+        matches!(err, DepositError::FacilitatorNotConfigured),
+        "got {err:?}"
+    );
     Ok(())
 }

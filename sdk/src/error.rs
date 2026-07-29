@@ -183,7 +183,9 @@ pub enum DepositError {
     Permit2AllowanceRequired(String),
     /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit directly
     /// with [`UserClient::deposit`](crate::client::user::UserClient::deposit) instead.
-    #[error("no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url")]
+    #[error(
+        "no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url"
+    )]
     FacilitatorNotConfigured,
     /// A rejection the facilitator reported that has no dedicated variant here — including codes
     /// added after this SDK was built, which is why `code` is carried verbatim.

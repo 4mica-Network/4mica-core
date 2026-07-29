@@ -111,7 +111,10 @@ where
         token: String,
         amount: U256,
     ) -> Result<DepositReceipt, DepositError> {
-        let authorization = self.user.sign_deposit_permit2(token.clone(), amount).await?;
+        let authorization = self
+            .user
+            .sign_deposit_permit2(token.clone(), amount)
+            .await?;
         self.submit_permit2(token, amount, authorization).await
     }
 
@@ -222,13 +225,10 @@ where
         Req: Serialize + ?Sized,
         Resp: serde::de::DeserializeOwned,
     {
-        let response = self
-            .http
-            .post(url)
-            .json(body)
-            .send()
-            .await
-            .map_err(|err| DepositError::Transport(format!("facilitator request failed: {err}")))?;
+        let response =
+            self.http.post(url).json(body).send().await.map_err(|err| {
+                DepositError::Transport(format!("facilitator request failed: {err}"))
+            })?;
 
         let status = response.status();
         let bytes = response.bytes().await.map_err(|err| {
