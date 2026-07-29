@@ -293,6 +293,48 @@ async fn spawn_facilitator(
     .await
 }
 
+/// Rejects the first `/deposit` with `PERMIT2_ALLOWANCE_REQUIRED`, then accepts the retry. Mirrors
+/// a real facilitator seeing the allowance appear once the sponsored permit lands.
+async fn spawn_allowance_then_success_facilitator(
+    eip2612_nonce: Option<&str>,
+    log: Arc<Mutex<FacilitatorLog>>,
+) -> anyhow::Result<String> {
+    let nonce = eip2612_nonce.map(str::to_string);
+    spawn(Router::new().route(
+        "/deposit",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            let nonce = nonce.clone();
+            async move {
+                let mut guard = log.lock().unwrap();
+                guard.deposits.push(body);
+                let first = guard.deposits.len() == 1;
+                drop(guard);
+
+                if first {
+                    let mut allowance = json!({
+                        "spender": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+                        "allowance": "0",
+                        "required": "1000000",
+                    });
+                    if let Some(nonce) = nonce {
+                        allowance["eip2612Nonce"] = json!(nonce);
+                    }
+                    return Json(json!({
+                        "success": false,
+                        "error": "approve permit2 first",
+                        "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
+                        "retryable": false,
+                        "permit2Allowance": allowance,
+                    }));
+                }
+                Json(success_response())
+            }
+        }),
+    ))
+    .await
+}
+
 fn success_response() -> Value {
     json!({
         "success": true,
@@ -365,6 +407,18 @@ async fn test_client_with_facilitator(
     Arc<Mutex<CallLog>>,
     Arc<Mutex<FacilitatorLog>>,
 )> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, signer, chain_log) =
+        client_against(spawn_facilitator(response, facilitator_log.clone())).await?;
+    Ok((client, signer, chain_log, facilitator_log))
+}
+
+/// Builds a `Client` pointed at a mock chain, a mock core, and whatever facilitator `facilitator`
+/// resolves to. Taking the facilitator as a future lets each test supply its own behaviour without
+/// duplicating the surrounding setup.
+async fn client_against(
+    facilitator: impl std::future::Future<Output = anyhow::Result<String>>,
+) -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc<Mutex<CallLog>>)> {
     let chain_log = Arc::new(Mutex::new(CallLog::default()));
     let eth_url = spawn(
         Router::new()
@@ -400,8 +454,7 @@ async fn test_client_with_facilitator(
     )
     .await?;
 
-    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
-    let facilitator_url = spawn_facilitator(response, facilitator_log.clone()).await?;
+    let facilitator_url = facilitator.await?;
 
     let signer = PrivateKeySigner::random();
     let signer_address = signer.address();
@@ -414,9 +467,10 @@ async fn test_client_with_facilitator(
         .build()?;
 
     let client = Client::new(cfg).await?;
+    // Drop setup traffic so per-test assertions only see what the deposit did.
     chain_log.lock().unwrap().eth_calls.clear();
     chain_log.lock().unwrap().methods.clear();
-    Ok((client, signer_address, chain_log, facilitator_log))
+    Ok((client, signer_address, chain_log))
 }
 
 fn now_secs() -> u64 {
@@ -1024,7 +1078,7 @@ async fn facilitator_maps_a_known_error_code_to_a_typed_variant() -> anyhow::Res
         .expect_err("expected the facilitator's rejection to surface");
 
     assert!(
-        matches!(err, DepositError::Permit2AllowanceRequired(_)),
+        matches!(err, DepositError::Permit2AllowanceRequired { .. }),
         "expected a typed allowance error, got {err:?}"
     );
     Ok(())
@@ -1116,6 +1170,90 @@ async fn facilitator_calls_fail_clearly_when_none_is_configured() -> anyhow::Res
     assert!(
         matches!(err, DepositError::FacilitatorNotConfigured),
         "got {err:?}"
+    );
+    Ok(())
+}
+
+/// The sponsored path's whole purpose: recover from a missing allowance by *signing* it, without
+/// ever reading the chain for the nonce.
+#[tokio::test]
+async fn sponsored_permit2_signs_the_approval_and_retries() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, signer_address, chain_log) = client_against(
+        spawn_allowance_then_success_facilitator(Some("7"), facilitator_log.clone()),
+    )
+    .await?;
+
+    let receipt = client
+        .facilitator
+        .deposit_with_sponsored_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await?;
+    assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
+
+    let facilitator = facilitator_log.lock().unwrap();
+    assert_eq!(facilitator.deposits.len(), 2, "expected one retry");
+
+    // The first attempt carries no permit — sponsoring an approval the payer may already have made
+    // would waste the facilitator's gas.
+    assert!(facilitator.deposits[0].get("eip2612Permit").is_none());
+
+    // The retry carries one, signed from the nonce the rejection supplied.
+    let permit = &facilitator.deposits[1]["eip2612Permit"];
+    assert!(permit.is_object(), "retry must carry a permit: {permit}");
+    for field in ["value", "deadline", "v", "r", "s"] {
+        assert!(
+            permit.get(field).is_some(),
+            "permit missing {field}: {permit}"
+        );
+    }
+    assert_eq!(
+        facilitator.deposits[1]["permit2Authorization"]["from"]
+            .as_str()
+            .map(str::to_lowercase),
+        Some(format!("{signer_address:#x}").to_lowercase())
+    );
+
+    // Still chain-free: the nonce came over HTTP, not from an eth_call.
+    let chain = chain_log.lock().unwrap();
+    assert!(
+        chain.eth_calls.is_empty(),
+        "the sponsored path must read no chain state, saw {:?}",
+        chain.eth_calls
+    );
+    Ok(())
+}
+
+/// Without an `eip2612Nonce` the token has no EIP-2612 surface, so the approval cannot be signed.
+/// Retrying anyway would burn the facilitator's gas on a permit the token would reject.
+#[tokio::test]
+async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, _signer, _chain) = client_against(spawn_allowance_then_success_facilitator(
+        None,
+        facilitator_log.clone(),
+    ))
+    .await?;
+
+    let err = client
+        .facilitator
+        .deposit_with_sponsored_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await
+        .expect_err("expected the allowance error to surface");
+
+    assert!(
+        matches!(
+            err,
+            DepositError::Permit2AllowanceRequired {
+                eip2612_nonce: None,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        facilitator_log.lock().unwrap().deposits.len(),
+        1,
+        "must not retry when the approval cannot be sponsored"
     );
     Ok(())
 }

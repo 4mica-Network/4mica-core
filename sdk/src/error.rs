@@ -1,6 +1,6 @@
 use crate::contract::Core4Mica;
 use alloy::contract as alloy_contract;
-use alloy::primitives::{Address, Bytes};
+use alloy::primitives::{Address, Bytes, U256};
 use anyhow::Error;
 use reqwest::StatusCode;
 use rpc::ApiClientError;
@@ -178,9 +178,19 @@ pub enum DepositError {
     AuthorizationExpired { expires_at: u64, now: u64 },
 
     /// Permit2 needs a one-time on-chain `approve(PERMIT2, ...)` that the payer has not made.
-    /// Unlike the other variants this is *actionable*: submit the approval and retry.
-    #[error("permit2 requires a prior approve(PERMIT2, ...): {0}")]
-    Permit2AllowanceRequired(String),
+    ///
+    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so the
+    /// approval can be *signed* rather than transacted — see
+    /// [`FacilitatorClient::deposit_with_sponsored_permit2`](crate::client::facilitator::FacilitatorClient::deposit_with_sponsored_permit2),
+    /// which does exactly that. When it is absent the payer must send `approve(PERMIT2, ...)`
+    /// themselves and pay for it.
+    #[error("permit2 requires a prior approve(PERMIT2, ...): {message}")]
+    Permit2AllowanceRequired {
+        message: String,
+        /// The owner's current EIP-2612 nonce, as reported by the facilitator. The one input a
+        /// client without an Ethereum RPC cannot derive for itself.
+        eip2612_nonce: Option<U256>,
+    },
     /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit directly
     /// with [`UserClient::deposit`](crate::client::user::UserClient::deposit) instead.
     #[error(
@@ -215,12 +225,16 @@ impl DepositError {
         code: Option<String>,
         message: Option<String>,
         retryable: bool,
+        eip2612_nonce: Option<U256>,
     ) -> Self {
         let code = code.unwrap_or_else(|| "UNKNOWN".into());
         let message = message.unwrap_or_else(|| "facilitator gave no reason".into());
 
         match code.as_str() {
-            "PERMIT2_ALLOWANCE_REQUIRED" => Self::Permit2AllowanceRequired(message),
+            "PERMIT2_ALLOWANCE_REQUIRED" => Self::Permit2AllowanceRequired {
+                message,
+                eip2612_nonce,
+            },
             "NO_RELAYER_CONFIGURED" | "NO_RELAYER" => Self::FacilitatorNotConfigured,
             "UNSUPPORTED_ASSET" => Self::InvalidParams(message),
             _ => Self::Facilitator {

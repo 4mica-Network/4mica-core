@@ -27,9 +27,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Validity window applied to a gasless deposit authorization, from signing time.
 const DEPOSIT_AUTHORIZATION_TTL_SECS: u64 = 3600;
 
-#[derive(Clone)]
 pub struct UserClient<S> {
     ctx: ClientCtx<S>,
+}
+
+impl<S> Clone for UserClient<S> {
+    fn clone(&self) -> Self {
+        Self {
+            ctx: self.ctx.clone(),
+        }
+    }
 }
 
 impl<S> UserClient<S> {

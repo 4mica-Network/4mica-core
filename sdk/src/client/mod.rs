@@ -50,8 +50,15 @@ struct Inner<S> {
     token_domain_separators: RwLock<HashMap<Address, B256>>,
 }
 
-#[derive(Clone)]
 struct ClientCtx<S>(Arc<Inner<S>>);
+
+/// Hand-written rather than derived: `#[derive(Clone)]` would add an `S: Clone` bound, which the
+/// `Arc` makes unnecessary — the signer is shared, never copied.
+impl<S> Clone for ClientCtx<S> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
 
 impl<S> ClientCtx<S> {
     async fn new(cfg: Config<S>) -> Result<Self, ClientError>

@@ -25,20 +25,40 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::client::{ClientCtx, user::UserClient};
-use crate::contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization};
+use crate::contract::{
+    Core4Mica::{Permit2Authorization, ReceiveAuthorization},
+    PERMIT2_ADDRESS,
+};
+use crate::digest::eip712_digest_for_permit;
 use crate::error::DepositError;
 
 /// `assetTransferMethod` values, matching x402's `scheme_exact_evm`.
 const METHOD_EIP3009: &str = "eip3009";
 const METHOD_PERMIT2: &str = "permit2";
 
-#[derive(Clone)]
+/// Validity window for a sponsored EIP-2612 permit, from signing time.
+const PERMIT_TTL_SECS: u64 = 3600;
+
 pub struct FacilitatorClient<S> {
+    ctx: ClientCtx<S>,
     user: UserClient<S>,
     http: reqwest::Client,
     /// `None` when no facilitator was configured; every call then fails with
     /// [`DepositError::FacilitatorNotConfigured`] rather than silently doing nothing.
     base_url: Option<Url>,
+}
+
+/// Hand-written for the same reason as [`ClientCtx`]'s: everything held is shared, so an `S: Clone`
+/// bound would be gratuitous.
+impl<S> Clone for FacilitatorClient<S> {
+    fn clone(&self) -> Self {
+        Self {
+            ctx: self.ctx.clone(),
+            user: self.user.clone(),
+            http: self.http.clone(),
+            base_url: self.base_url.clone(),
+        }
+    }
 }
 
 /// Outcome of a sponsored deposit.
@@ -55,7 +75,8 @@ pub struct DepositReceipt {
 impl<S> FacilitatorClient<S> {
     pub(super) fn new(ctx: ClientCtx<S>, base_url: Option<Url>) -> Self {
         Self {
-            user: UserClient::new(ctx),
+            user: UserClient::new(ctx.clone()),
+            ctx,
             http: reqwest::Client::new(),
             base_url,
         }
@@ -133,8 +154,110 @@ where
             asset_transfer_method: Some(METHOD_EIP3009.into()),
             authorization: Some(authorization),
             permit2_authorization: None,
+            eip2612_permit: None,
         };
         self.post_deposit(&request).await
+    }
+
+    /// Deposits through Permit2, signing the missing approval instead of transacting for it.
+    ///
+    /// Permit2 normally needs a one-time on-chain `approve(PERMIT2, …)`, which costs the payer gas
+    /// and breaks the gasless promise. This attempts the deposit, and if the facilitator reports
+    /// the allowance missing *and* the token supports EIP-2612, signs a permit and retries — the
+    /// facilitator then submits both. This is x402's `eip2612GasSponsoring` extension.
+    ///
+    /// Still chain-free: the token's domain separator comes from core, and the owner's EIP-2612
+    /// nonce comes from the facilitator's rejection. Nothing here reads the chain.
+    ///
+    /// Falls through with [`DepositError::Permit2AllowanceRequired`] when the token has no
+    /// EIP-2612 surface — the approval cannot be sponsored, so the payer must send it themselves.
+    pub async fn deposit_with_sponsored_permit2(
+        &self,
+        token: String,
+        amount: U256,
+    ) -> Result<DepositReceipt, DepositError> {
+        // Try the plain path first: the payer may already have approved, in which case a permit is
+        // pointless and the facilitator would only pay to submit a no-op.
+        let authorization = self
+            .user
+            .sign_deposit_permit2(token.clone(), amount)
+            .await?;
+        let rejection = match self
+            .submit_permit2(token.clone(), amount, authorization.clone())
+            .await
+        {
+            Ok(receipt) => return Ok(receipt),
+            Err(err) => err,
+        };
+
+        let DepositError::Permit2AllowanceRequired {
+            eip2612_nonce: Some(nonce),
+            ..
+        } = &rejection
+        else {
+            // Either a different failure, or a token that cannot have its approval sponsored.
+            return Err(rejection);
+        };
+
+        let permit = self.sign_permit_for_permit2(&token, *nonce).await?;
+        let request = DepositRequest {
+            network: None,
+            asset: token,
+            amount: amount.to_string(),
+            asset_transfer_method: Some(METHOD_PERMIT2.into()),
+            authorization: None,
+            permit2_authorization: Some(authorization),
+            eip2612_permit: Some(permit),
+        };
+        self.post_deposit(&request).await
+    }
+
+    /// Signs an EIP-2612 permit granting Permit2 an unlimited allowance for `token`.
+    ///
+    /// Unlimited deliberately: the allowance only lets Permit2 act, and Permit2 still requires a
+    /// signed `PermitTransferFrom` per transfer. A tight allowance would just force another
+    /// sponsored permit on the next deposit, at the facilitator's expense.
+    async fn sign_permit_for_permit2(
+        &self,
+        token: &str,
+        nonce: U256,
+    ) -> Result<Eip2612PermitRequest, DepositError> {
+        let token_address = crate::validators::validate_address(token).map_err(|_| {
+            DepositError::InvalidParams(format!("invalid ERC20 token address: {token}"))
+        })?;
+        let owner = self.ctx.signer_address();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let deadline = U256::from(now.saturating_add(PERMIT_TTL_SECS));
+        let value = U256::MAX;
+
+        let domain_separator = self.ctx.token_domain_separator(token_address).await?;
+        let digest = eip712_digest_for_permit(
+            domain_separator,
+            owner,
+            PERMIT2_ADDRESS,
+            value,
+            nonce,
+            deadline,
+        );
+
+        let signature = self
+            .ctx
+            .signer()
+            .sign_hash(&digest)
+            .await
+            .map_err(|err| DepositError::Transport(err.to_string()))?;
+        let bytes = signature.as_bytes();
+
+        Ok(Eip2612PermitRequest {
+            value: value.to_string(),
+            deadline: deadline.to_string(),
+            // Electrum notation, as the token's `ecrecover` expects.
+            v: 27 + (bytes[64] % 2),
+            r: B256::from_slice(&bytes[0..32]),
+            s: B256::from_slice(&bytes[32..64]),
+        })
     }
 
     /// Submits a Permit2 authorization signed elsewhere.
@@ -151,6 +274,7 @@ where
             asset_transfer_method: Some(METHOD_PERMIT2.into()),
             authorization: None,
             permit2_authorization: Some(authorization),
+            eip2612_permit: None,
         };
         self.post_deposit(&request).await
     }
@@ -172,6 +296,7 @@ where
             asset_transfer_method: Some(METHOD_EIP3009.into()),
             authorization: Some(authorization),
             permit2_authorization: None,
+            eip2612_permit: None,
         };
 
         let url = self.endpoint("deposit/verify")?;
@@ -183,6 +308,7 @@ where
             response.error_code,
             response.invalid_reason,
             response.retryable.unwrap_or(false),
+            Permit2AllowanceResponse::nonce(&response.permit2_allowance),
         ))
     }
 
@@ -195,6 +321,7 @@ where
                 response.error_code,
                 response.error,
                 response.retryable.unwrap_or(false),
+                Permit2AllowanceResponse::nonce(&response.permit2_allowance),
             ));
         }
 
@@ -268,12 +395,47 @@ struct DepositRequest {
     authorization: Option<ReceiveAuthorization>,
     #[serde(skip_serializing_if = "Option::is_none")]
     permit2_authorization: Option<Permit2Authorization>,
+    /// Sponsored EIP-2612 approval, so the payer never transacts. Only meaningful alongside
+    /// `permit2Authorization`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eip2612_permit: Option<Eip2612PermitRequest>,
+}
+
+/// Wire form of an EIP-2612 permit. `owner` and `spender` are implied — the signer and the
+/// canonical Permit2 — so only the signed values travel.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Eip2612PermitRequest {
+    value: String,
+    deadline: String,
+    v: u8,
+    r: B256,
+    s: B256,
+}
+
+/// Detail the facilitator attaches to `PERMIT2_ALLOWANCE_REQUIRED`, carrying the one value a
+/// chain-free client cannot compute: the owner's current EIP-2612 nonce.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Permit2AllowanceResponse {
+    eip2612_nonce: Option<String>,
+}
+
+impl Permit2AllowanceResponse {
+    fn nonce(detail: &Option<Self>) -> Option<U256> {
+        detail
+            .as_ref()?
+            .eip2612_nonce
+            .as_deref()
+            .and_then(|raw| raw.parse().ok())
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DepositResponse {
     success: bool,
+    permit2_allowance: Option<Permit2AllowanceResponse>,
     tx_hash: Option<String>,
     network: Option<String>,
     from: Option<String>,
@@ -288,6 +450,7 @@ struct DepositResponse {
 #[serde(rename_all = "camelCase")]
 struct DepositVerifyResponse {
     is_valid: bool,
+    permit2_allowance: Option<Permit2AllowanceResponse>,
     invalid_reason: Option<String>,
     error_code: Option<String>,
     retryable: Option<bool>,
@@ -317,6 +480,7 @@ mod tests {
                 s: B256::repeat_byte(0x22),
             }),
             permit2_authorization: None,
+            eip2612_permit: None,
         };
 
         let value = serde_json::to_value(&request).expect("serialize");
@@ -343,6 +507,7 @@ mod tests {
                 deadline: U256::from(2_000_000_000u64),
                 signature: vec![0u8; 65].into(),
             }),
+            eip2612_permit: None,
         };
 
         let value = serde_json::to_value(&request).expect("serialize");
@@ -358,16 +523,23 @@ mod tests {
             Some("PERMIT2_ALLOWANCE_REQUIRED".into()),
             Some("approve first".into()),
             false,
+            Some(U256::from(7u64)),
         );
+        // The nonce must survive: it is what makes the sponsored retry possible without a chain
+        // read, so losing it here would silently disable that whole path.
         assert!(matches!(
             allowance,
-            DepositError::Permit2AllowanceRequired { .. }
+            DepositError::Permit2AllowanceRequired {
+                eip2612_nonce: Some(_),
+                ..
+            }
         ));
 
         let unknown = DepositError::from_facilitator(
             Some("SOMETHING_NEW".into()),
             Some("future code".into()),
             true,
+            None,
         );
         match unknown {
             DepositError::Facilitator {
