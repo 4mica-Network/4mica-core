@@ -24,10 +24,11 @@ use rpc::{
 use tokio::sync::{OnceCell, RwLock};
 use url::Url;
 
-use self::{recipient::RecipientClient, user::UserClient};
+use self::{facilitator::FacilitatorClient, recipient::RecipientClient, user::UserClient};
 use crypto::bls::BlsPublicKey;
 use std::collections::HashMap;
 
+pub mod facilitator;
 pub mod model;
 pub mod recipient;
 pub mod user;
@@ -383,6 +384,10 @@ pub struct Client<S> {
     ctx: ClientCtx<S>,
     pub recipient: RecipientClient<S>,
     pub user: UserClient<S>,
+    /// Gasless deposits. Present even when no facilitator is configured — every call then returns
+    /// [`DepositError::FacilitatorNotConfigured`](crate::error::DepositError::FacilitatorNotConfigured),
+    /// which is clearer than making the whole field optional at every call site.
+    pub facilitator: FacilitatorClient<S>,
 }
 
 impl<S: Clone> Clone for Client<S> {
@@ -391,6 +396,7 @@ impl<S: Clone> Clone for Client<S> {
             ctx: self.ctx.clone(),
             recipient: self.recipient.clone(),
             user: self.user.clone(),
+            facilitator: self.facilitator.clone(),
         }
     }
 }
@@ -400,12 +406,14 @@ impl<S> Client<S> {
     where
         S: Signer + Sync + Clone,
     {
+        let facilitator_url = cfg.facilitator_url.clone();
         let ctx = ClientCtx::new(cfg).await?;
 
         Ok(Self {
             ctx: ctx.clone(),
             recipient: RecipientClient::new(ctx.clone()),
-            user: UserClient::new(ctx),
+            user: UserClient::new(ctx.clone()),
+            facilitator: FacilitatorClient::new(ctx, facilitator_url),
         })
     }
 

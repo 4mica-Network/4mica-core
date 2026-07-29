@@ -177,6 +177,24 @@ pub enum DepositError {
     #[error("authorization expired at {expires_at} (now {now})")]
     AuthorizationExpired { expires_at: u64, now: u64 },
 
+    /// Permit2 needs a one-time on-chain `approve(PERMIT2, ...)` that the payer has not made.
+    /// Unlike the other variants this is *actionable*: submit the approval and retry.
+    #[error("permit2 requires a prior approve(PERMIT2, ...): {0}")]
+    Permit2AllowanceRequired(String),
+    /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit directly
+    /// with [`UserClient::deposit`](crate::client::user::UserClient::deposit) instead.
+    #[error("no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url")]
+    FacilitatorNotConfigured,
+    /// A rejection the facilitator reported that has no dedicated variant here — including codes
+    /// added after this SDK was built, which is why `code` is carried verbatim.
+    #[error("facilitator rejected the deposit ({code}): {message}")]
+    Facilitator {
+        code: String,
+        message: String,
+        /// Whether retrying the identical request may succeed.
+        retryable: bool,
+    },
+
     #[error(transparent)]
     Client(#[from] ClientError),
 
@@ -184,6 +202,32 @@ pub enum DepositError {
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
+}
+
+impl DepositError {
+    /// Maps a facilitator `errorCode` onto a typed variant where one exists.
+    ///
+    /// Unrecognised codes fall through to [`Self::Facilitator`] carrying the raw code rather than
+    /// being flattened into a string, so a client can still branch on a code this SDK predates.
+    pub(crate) fn from_facilitator(
+        code: Option<String>,
+        message: Option<String>,
+        retryable: bool,
+    ) -> Self {
+        let code = code.unwrap_or_else(|| "UNKNOWN".into());
+        let message = message.unwrap_or_else(|| "facilitator gave no reason".into());
+
+        match code.as_str() {
+            "PERMIT2_ALLOWANCE_REQUIRED" => Self::Permit2AllowanceRequired(message),
+            "NO_RELAYER_CONFIGURED" | "NO_RELAYER" => Self::FacilitatorNotConfigured,
+            "UNSUPPORTED_ASSET" => Self::InvalidParams(message),
+            _ => Self::Facilitator {
+                code,
+                message,
+                retryable,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Error)]

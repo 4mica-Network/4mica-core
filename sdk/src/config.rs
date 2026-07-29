@@ -64,6 +64,9 @@ pub struct Config<S> {
     pub contract_address: Option<Address>,
     pub bearer_token: Option<String>,
     pub auth: Option<AuthConfig>,
+    /// Facilitator that sponsors gas for deposits. Absent disables
+    /// [`Client::facilitator`](crate::Client::facilitator); deposits must then be self-funded.
+    pub facilitator_url: Option<Url>,
 }
 
 pub struct ConfigBuilder<S = PrivateKeySigner> {
@@ -76,6 +79,7 @@ pub struct ConfigBuilder<S = PrivateKeySigner> {
     auth_refresh_margin_secs: Option<u64>,
     auth_refresh_margin_parse_error: Option<String>,
     auth_enabled: bool,
+    facilitator_url: Option<String>,
 }
 
 impl ConfigBuilder<PrivateKeySigner> {
@@ -99,6 +103,9 @@ impl ConfigBuilder<PrivateKeySigner> {
         }
         if let Ok(v) = std::env::var("4MICA_CONTRACT_ADDRESS") {
             builder = builder.contract_address(v);
+        }
+        if let Ok(v) = std::env::var("4MICA_FACILITATOR_URL") {
+            builder = builder.facilitator_url(v);
         }
         if let Ok(v) = std::env::var("4MICA_BEARER_TOKEN") {
             builder = builder.bearer_token(v);
@@ -134,6 +141,7 @@ impl<S> ConfigBuilder<S> {
             auth_refresh_margin_secs: None,
             auth_refresh_margin_parse_error: None,
             auth_enabled: false,
+            facilitator_url: None,
         }
     }
 
@@ -161,6 +169,14 @@ impl<S> ConfigBuilder<S> {
     /// You normally don't need to provide this!
     pub fn ethereum_http_rpc_url(mut self, ethereum_http_rpc_url: String) -> Self {
         self.ethereum_http_rpc_url = Some(ethereum_http_rpc_url);
+        self
+    }
+
+    /// Facilitator that sponsors gas for deposits, enabling
+    /// [`Client::facilitator`](crate::Client::facilitator). Without one, deposits must be
+    /// self-funded via [`UserClient::deposit`](crate::client::user::UserClient::deposit).
+    pub fn facilitator_url(mut self, facilitator_url: String) -> Self {
+        self.facilitator_url = Some(facilitator_url);
         self
     }
 
@@ -245,6 +261,13 @@ impl<S> ConfigBuilder<S> {
             None
         };
 
+        let facilitator_url = self
+            .facilitator_url
+            .as_deref()
+            .map(validate_url)
+            .transpose()
+            .map_err(|e| ConfigError::InvalidValue(format!("facilitator_url: {e}")))?;
+
         Ok(Config {
             rpc_url,
             signer,
@@ -252,6 +275,7 @@ impl<S> ConfigBuilder<S> {
             contract_address,
             bearer_token,
             auth,
+            facilitator_url,
         })
     }
 
