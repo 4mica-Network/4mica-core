@@ -63,9 +63,8 @@ contract DeployMockAaveScript is Script {
         for (uint256 i = 0; i < count; i++) {
             // `UNDERLYING_ASSET_ADDRESS()` must equal the asset, and the data provider must agree,
             // or Core4Mica's `_validateAToken` rejects the pair.
-            MockAToken aToken = new MockAToken(
-                assets[i], address(pool), "Mock aToken", string.concat("maTKN", vm.toString(i))
-            );
+            MockAToken aToken =
+                new MockAToken(assets[i], address(pool), "Mock aToken", string.concat("maTKN", vm.toString(i)));
             // Index fixed at RAY: scaled balances equal face value, so no yield accrues.
             // Deliberate — `MockAavePool.setNormalizedIncome` mints the difference to simulate
             // interest, which is impossible against a token you do not control.
