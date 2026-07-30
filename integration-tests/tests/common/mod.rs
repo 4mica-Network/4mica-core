@@ -27,6 +27,8 @@ sol! {
         function mint(address to, uint256 amount) external;
         function owner() external view returns (address);
         function balanceOf(address account) external view returns (uint256);
+        function masterMinter() external view returns (address);
+        function configureMinter(address minter, uint256 minterAllowedAmount) external returns (bool);
     }
 }
 
@@ -218,11 +220,15 @@ pub async fn fund_user_with_erc20(
     amount: U256,
 ) -> anyhow::Result<()> {
     let provider = ProviderBuilder::new().connect(rpc_url).await?;
-    // An owner-mintable forked token mints from its owner; an unrestricted mock
-    // (no `owner()`) is minted straight from the recipient.
-    let minter = match OwnedERC20::new(token, &provider).owner().call().await {
-        Ok(owner) => owner,
-        Err(_) => user,
+    let probe = OwnedERC20::new(token, &provider);
+
+    // A FiatToken (forked USDC) exposes both `masterMinter()` and `owner()`, but only accounts the
+    // masterMinter has authorised may mint — so it must be checked first. An owner-mintable forked
+    // token mints from its owner; an unrestricted mock (neither role) is minted straight from the
+    // recipient.
+    let (minter, needs_minter_role) = match probe.masterMinter().call().await {
+        Ok(master_minter) => (master_minter, true),
+        Err(_) => (probe.owner().call().await.unwrap_or(user), false),
     };
 
     provider.anvil_impersonate_account(minter).await?;
@@ -235,12 +241,28 @@ pub async fn fund_user_with_erc20(
             .await?;
     }
 
-    let mint = OwnedERC20::mintCall { to: user, amount };
-    let tx = TransactionRequest::default()
-        .with_from(minter)
-        .with_to(token)
-        .with_input(mint.abi_encode());
-    provider.send_transaction(tx).await?.watch().await?;
+    let send_from_minter = async |input: Vec<u8>| -> anyhow::Result<()> {
+        let tx = TransactionRequest::default()
+            .with_from(minter)
+            .with_to(token)
+            .with_input(input);
+        provider.send_transaction(tx).await?.watch().await?;
+        Ok(())
+    };
+
+    // The masterMinter can authorise itself, and the allowance is consumed by the mint below.
+    if needs_minter_role {
+        send_from_minter(
+            OwnedERC20::configureMinterCall {
+                minter,
+                minterAllowedAmount: amount,
+            }
+            .abi_encode(),
+        )
+        .await?;
+    }
+
+    send_from_minter(OwnedERC20::mintCall { to: user, amount }.abi_encode()).await?;
 
     provider.anvil_stop_impersonating_account(minter).await?;
     Ok(())

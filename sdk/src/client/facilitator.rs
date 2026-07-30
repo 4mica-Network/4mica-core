@@ -147,16 +147,8 @@ where
         amount: U256,
         authorization: ReceiveAuthorization,
     ) -> Result<DepositReceipt, DepositError> {
-        let request = DepositRequest {
-            network: None,
-            asset: token,
-            amount: amount.to_string(),
-            asset_transfer_method: Some(METHOD_EIP3009.into()),
-            authorization: Some(authorization),
-            permit2_authorization: None,
-            eip2612_permit: None,
-        };
-        self.post_deposit(&request).await
+        self.post_deposit(&DepositRequest::eip3009(token, amount, authorization))
+            .await
     }
 
     /// Deposits through Permit2, signing the missing approval instead of transacting for it.
@@ -200,16 +192,13 @@ where
         };
 
         let permit = self.sign_permit_for_permit2(&token, *nonce).await?;
-        let request = DepositRequest {
-            network: None,
-            asset: token,
-            amount: amount.to_string(),
-            asset_transfer_method: Some(METHOD_PERMIT2.into()),
-            authorization: None,
-            permit2_authorization: Some(authorization),
-            eip2612_permit: Some(permit),
-        };
-        self.post_deposit(&request).await
+        self.post_deposit(&DepositRequest::permit2(
+            token,
+            amount,
+            authorization,
+            Some(permit),
+        ))
+        .await
     }
 
     /// Signs an EIP-2612 permit granting Permit2 an unlimited allowance for `token`.
@@ -253,8 +242,9 @@ where
         Ok(Eip2612PermitRequest {
             value: value.to_string(),
             deadline: deadline.to_string(),
-            // Electrum notation, as the token's `ecrecover` expects.
-            v: 27 + (bytes[64] % 2),
+            // Already Electrum notation, which is what the token's `ecrecover` expects — adding 27
+            // here would invert the parity rather than fix it.
+            v: bytes[64],
             r: B256::from_slice(&bytes[0..32]),
             s: B256::from_slice(&bytes[32..64]),
         })
@@ -267,16 +257,8 @@ where
         amount: U256,
         authorization: Permit2Authorization,
     ) -> Result<DepositReceipt, DepositError> {
-        let request = DepositRequest {
-            network: None,
-            asset: token,
-            amount: amount.to_string(),
-            asset_transfer_method: Some(METHOD_PERMIT2.into()),
-            authorization: None,
-            permit2_authorization: Some(authorization),
-            eip2612_permit: None,
-        };
-        self.post_deposit(&request).await
+        self.post_deposit(&DepositRequest::permit2(token, amount, authorization, None))
+            .await
     }
 
     /// Preflight: runs every check the facilitator would run, without spending anyone's gas.
@@ -289,27 +271,13 @@ where
         amount: U256,
         authorization: ReceiveAuthorization,
     ) -> Result<(), DepositError> {
-        let request = DepositRequest {
-            network: None,
-            asset: token,
-            amount: amount.to_string(),
-            asset_transfer_method: Some(METHOD_EIP3009.into()),
-            authorization: Some(authorization),
-            permit2_authorization: None,
-            eip2612_permit: None,
-        };
-
+        let request = DepositRequest::eip3009(token, amount, authorization);
         let url = self.endpoint("deposit/verify")?;
         let response: DepositVerifyResponse = self.post(url, &request).await?;
         if response.is_valid {
             return Ok(());
         }
-        Err(DepositError::from_facilitator(
-            response.error_code,
-            response.invalid_reason,
-            response.retryable.unwrap_or(false),
-            Permit2AllowanceResponse::nonce(&response.permit2_allowance),
-        ))
+        Err(response.failure.into_error(response.invalid_reason))
     }
 
     async fn post_deposit(&self, request: &DepositRequest) -> Result<DepositReceipt, DepositError> {
@@ -317,12 +285,7 @@ where
         let response: DepositResponse = self.post(url, request).await?;
 
         if !response.success {
-            return Err(DepositError::from_facilitator(
-                response.error_code,
-                response.error,
-                response.retryable.unwrap_or(false),
-                Permit2AllowanceResponse::nonce(&response.permit2_allowance),
-            ));
+            return Err(response.failure.into_error(response.error));
         }
 
         let tx_hash = response
@@ -336,8 +299,8 @@ where
         Ok(DepositReceipt {
             tx_hash,
             from: response.from.unwrap_or_default(),
-            asset: response.asset.unwrap_or_else(|| request.asset.clone()),
             // Echoed back by the facilitator; fall back to what we asked for.
+            asset: response.asset.unwrap_or_else(|| request.asset.clone()),
             amount: response
                 .amount
                 .as_deref()
@@ -401,9 +364,40 @@ struct DepositRequest {
     eip2612_permit: Option<Eip2612PermitRequest>,
 }
 
+impl DepositRequest {
+    fn eip3009(asset: String, amount: U256, authorization: ReceiveAuthorization) -> Self {
+        Self {
+            network: None,
+            asset,
+            amount: amount.to_string(),
+            asset_transfer_method: Some(METHOD_EIP3009.into()),
+            authorization: Some(authorization),
+            permit2_authorization: None,
+            eip2612_permit: None,
+        }
+    }
+
+    fn permit2(
+        asset: String,
+        amount: U256,
+        authorization: Permit2Authorization,
+        eip2612_permit: Option<Eip2612PermitRequest>,
+    ) -> Self {
+        Self {
+            network: None,
+            asset,
+            amount: amount.to_string(),
+            asset_transfer_method: Some(METHOD_PERMIT2.into()),
+            authorization: None,
+            permit2_authorization: Some(authorization),
+            eip2612_permit,
+        }
+    }
+}
+
 /// Wire form of an EIP-2612 permit. `owner` and `spender` are implied — the signer and the
 /// canonical Permit2 — so only the signed values travel.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Eip2612PermitRequest {
     value: String,
@@ -421,13 +415,28 @@ struct Permit2AllowanceResponse {
     eip2612_nonce: Option<String>,
 }
 
-impl Permit2AllowanceResponse {
-    fn nonce(detail: &Option<Self>) -> Option<U256> {
-        detail
-            .as_ref()?
-            .eip2612_nonce
-            .as_deref()
-            .and_then(|raw| raw.parse().ok())
+/// Failure detail common to both endpoints; they differ only in which field carries the message.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FacilitatorFailure {
+    permit2_allowance: Option<Permit2AllowanceResponse>,
+    error_code: Option<String>,
+    retryable: Option<bool>,
+}
+
+impl FacilitatorFailure {
+    fn into_error(self, message: Option<String>) -> DepositError {
+        let eip2612_nonce = self
+            .permit2_allowance
+            .and_then(|allowance| allowance.eip2612_nonce)
+            .and_then(|raw| raw.parse().ok());
+        DepositError::from_facilitator(
+            self.error_code,
+            message,
+            // Absent means "not retryable": a facilitator that omits it is not promising anything.
+            self.retryable.unwrap_or(false),
+            eip2612_nonce,
+        )
     }
 }
 
@@ -435,120 +444,21 @@ impl Permit2AllowanceResponse {
 #[serde(rename_all = "camelCase")]
 struct DepositResponse {
     success: bool,
-    permit2_allowance: Option<Permit2AllowanceResponse>,
     tx_hash: Option<String>,
     network: Option<String>,
     from: Option<String>,
     asset: Option<String>,
     amount: Option<String>,
     error: Option<String>,
-    error_code: Option<String>,
-    retryable: Option<bool>,
+    #[serde(flatten)]
+    failure: FacilitatorFailure,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DepositVerifyResponse {
     is_valid: bool,
-    permit2_allowance: Option<Permit2AllowanceResponse>,
     invalid_reason: Option<String>,
-    error_code: Option<String>,
-    retryable: Option<bool>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The facilitator deserialises `ReceiveAuthorization` straight from this body, so the field
-    /// names and hex encoding must match what `sdk-4mica` emits. Guards against drift between the
-    /// two crates.
-    #[test]
-    fn deposit_request_serialises_an_eip3009_authorization() {
-        let request = DepositRequest {
-            network: None,
-            asset: "0x2222222222222222222222222222222222222222".into(),
-            amount: "1000".into(),
-            asset_transfer_method: Some(METHOD_EIP3009.into()),
-            authorization: Some(ReceiveAuthorization {
-                from: alloy::primitives::Address::repeat_byte(0xbb),
-                validAfter: U256::ZERO,
-                validBefore: U256::from(2_000_000_000u64),
-                nonce: B256::repeat_byte(0x42),
-                v: 28,
-                r: B256::repeat_byte(0x11),
-                s: B256::repeat_byte(0x22),
-            }),
-            permit2_authorization: None,
-            eip2612_permit: None,
-        };
-
-        let value = serde_json::to_value(&request).expect("serialize");
-        assert_eq!(value["assetTransferMethod"], "eip3009");
-        assert_eq!(value["authorization"]["v"], 28);
-        assert!(
-            value.get("permit2Authorization").is_none(),
-            "the unused authorization must be omitted, not sent as null"
-        );
-        assert!(value.get("network").is_none());
-    }
-
-    #[test]
-    fn deposit_request_serialises_a_permit2_authorization() {
-        let request = DepositRequest {
-            network: None,
-            asset: "0x2222222222222222222222222222222222222222".into(),
-            amount: "1000".into(),
-            asset_transfer_method: Some(METHOD_PERMIT2.into()),
-            authorization: None,
-            permit2_authorization: Some(Permit2Authorization {
-                from: alloy::primitives::Address::repeat_byte(0xbb),
-                nonce: U256::from(7u64),
-                deadline: U256::from(2_000_000_000u64),
-                signature: vec![0u8; 65].into(),
-            }),
-            eip2612_permit: None,
-        };
-
-        let value = serde_json::to_value(&request).expect("serialize");
-        assert_eq!(value["assetTransferMethod"], "permit2");
-        assert!(value["permit2Authorization"]["signature"].is_string());
-        assert!(value.get("authorization").is_none());
-    }
-
-    /// Codes must map to typed variants; a client should never have to match on prose.
-    #[test]
-    fn facilitator_error_codes_map_to_typed_variants() {
-        let allowance = DepositError::from_facilitator(
-            Some("PERMIT2_ALLOWANCE_REQUIRED".into()),
-            Some("approve first".into()),
-            false,
-            Some(U256::from(7u64)),
-        );
-        // The nonce must survive: it is what makes the sponsored retry possible without a chain
-        // read, so losing it here would silently disable that whole path.
-        assert!(matches!(
-            allowance,
-            DepositError::Permit2AllowanceRequired {
-                eip2612_nonce: Some(_),
-                ..
-            }
-        ));
-
-        let unknown = DepositError::from_facilitator(
-            Some("SOMETHING_NEW".into()),
-            Some("future code".into()),
-            true,
-            None,
-        );
-        match unknown {
-            DepositError::Facilitator {
-                code, retryable, ..
-            } => {
-                assert_eq!(code, "SOMETHING_NEW");
-                assert!(retryable, "retryability must survive an unrecognised code");
-            }
-            other => panic!("expected a passthrough Facilitator error, got {other:?}"),
-        }
-    }
+    #[serde(flatten)]
+    failure: FacilitatorFailure,
 }

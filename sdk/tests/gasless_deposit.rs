@@ -67,6 +67,29 @@ fn eip712_digest(domain_separator: B256, struct_hash: B256) -> B256 {
     keccak256(buf)
 }
 
+/// EIP-2612 `Permit` digest, as the token computes it before `ecrecover`.
+fn expected_permit_digest(
+    domain_separator: B256,
+    owner: Address,
+    spender: Address,
+    value: U256,
+    nonce: U256,
+    deadline: U256,
+) -> B256 {
+    let type_hash = keccak256(
+        b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+            .as_slice(),
+    );
+    let mut encoded = Vec::with_capacity(32 * 6);
+    encoded.extend_from_slice(type_hash.as_slice());
+    encoded.extend_from_slice(&word_address(owner));
+    encoded.extend_from_slice(&word_address(spender));
+    encoded.extend_from_slice(&word_u256(value));
+    encoded.extend_from_slice(&word_u256(nonce));
+    encoded.extend_from_slice(&word_u256(deadline));
+    eip712_digest(domain_separator, keccak256(encoded))
+}
+
 /// EIP-3009 `ReceiveWithAuthorization` digest, as USDC's FiatToken computes it.
 #[allow(clippy::too_many_arguments)]
 fn expected_erc3009_digest(
@@ -1034,6 +1057,11 @@ async fn facilitator_deposit_sends_the_expected_wire_shape() -> anyhow::Result<(
         body.get("permit2Authorization").is_none(),
         "the unused authorization must be omitted entirely: {body}"
     );
+    // Omitted rather than null, so the facilitator falls back to its default network.
+    assert!(
+        body.get("network").is_none(),
+        "network must be omitted: {body}"
+    );
     Ok(())
 }
 
@@ -1219,6 +1247,55 @@ async fn sponsored_permit2_signs_the_approval_and_retries() -> anyhow::Result<()
         chain.eth_calls.is_empty(),
         "the sponsored path must read no chain state, saw {:?}",
         chain.eth_calls
+    );
+    Ok(())
+}
+
+/// The permit must recover to the signer over the token's `Permit` digest.
+///
+/// Field presence is not enough: a permit with a valid-looking `v` that inverts the parity
+/// serialises identically and is rejected only by the token's `ecrecover`, on-chain.
+#[tokio::test]
+async fn sponsored_permit2_permit_recovers_to_the_signer() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, signer_address, _chain_log) = client_against(
+        spawn_allowance_then_success_facilitator(Some("7"), facilitator_log.clone()),
+    )
+    .await?;
+
+    client
+        .facilitator
+        .deposit_with_sponsored_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let permit = &facilitator.deposits[1]["eip2612Permit"];
+    let value = U256::from_str(permit["value"].as_str().expect("value is a string"))?;
+    let deadline = U256::from_str(permit["deadline"].as_str().expect("deadline is a string"))?;
+    let v = permit["v"].as_u64().expect("v is a number") as u8;
+    let r = B256::from_str(permit["r"].as_str().expect("r is a string"))?;
+    let s = B256::from_str(permit["s"].as_str().expect("s is a string"))?;
+
+    assert!(
+        v == 27 || v == 28,
+        "v must be Electrum notation for the token's ecrecover, got {v}"
+    );
+
+    // Nonce 7 is what the facilitator's rejection advertised; signing any other nonce would
+    // produce a permit the token rejects as replayed.
+    let digest = expected_permit_digest(
+        TOKEN_DOMAIN,
+        signer_address,
+        PERMIT2,
+        value,
+        U256::from(7u64),
+        deadline,
+    );
+    let recovered =
+        Signature::from_scalars_and_parity(r, s, v == 28).recover_address_from_prehash(&digest)?;
+    assert_eq!(
+        recovered, signer_address,
+        "permit must recover to the signer over the token's Permit digest"
     );
     Ok(())
 }
