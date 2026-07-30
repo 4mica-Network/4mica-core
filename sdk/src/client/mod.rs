@@ -409,6 +409,16 @@ impl<S: Clone> Clone for Client<S> {
 }
 
 impl<S> Client<S> {
+    /// The address this client signs as, and therefore the account every deposit credits.
+    ///
+    /// Saves callers from keeping the signer alongside the client just to recover its address.
+    pub fn signer_address(&self) -> Address
+    where
+        S: Signer,
+    {
+        self.ctx.signer_address()
+    }
+
     pub async fn new(cfg: Config<S>) -> Result<Self, ClientError>
     where
         S: Signer + Sync + Clone,

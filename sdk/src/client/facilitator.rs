@@ -19,7 +19,7 @@
 //! funds or change the amount — the worst it can do is decline to submit, in which case fall back
 //! to [`UserClient::deposit`](crate::client::user::UserClient::deposit) and pay the gas yourself.
 
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::signers::Signer;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -65,9 +65,10 @@ impl<S> Clone for FacilitatorClient<S> {
 #[derive(Debug, Clone)]
 pub struct DepositReceipt {
     pub tx_hash: B256,
-    /// The account credited — always the signer, never the facilitator.
-    pub from: String,
-    pub asset: String,
+    /// The account credited — always the signer, never the facilitator. Zero when the facilitator
+    /// reported no `from`, which is worth treating as a failed check rather than a match.
+    pub from: Address,
+    pub asset: Address,
     pub amount: U256,
     pub network: Option<String>,
 }
@@ -298,9 +299,18 @@ where
 
         Ok(DepositReceipt {
             tx_hash,
-            from: response.from.unwrap_or_default(),
+            from: response
+                .from
+                .as_deref()
+                .and_then(|raw| raw.parse().ok())
+                .unwrap_or_default(),
             // Echoed back by the facilitator; fall back to what we asked for.
-            asset: response.asset.unwrap_or_else(|| request.asset.clone()),
+            asset: response
+                .asset
+                .as_deref()
+                .and_then(|raw| raw.parse().ok())
+                .or_else(|| request.asset.parse().ok())
+                .unwrap_or_default(),
             amount: response
                 .amount
                 .as_deref()

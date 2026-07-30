@@ -17,7 +17,7 @@ use std::future::Future;
 use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::client::facilitator::DepositReceipt;
 use sdk_4mica::error::DepositError;
-use sdk_4mica::{Client, ConfigBuilder, U256};
+use sdk_4mica::{Address, Client, ConfigBuilder, U256};
 use serde_json::{Value, json};
 
 mod common;
@@ -38,12 +38,15 @@ const PERMIT2_TOKEN: &str = "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f";
 /// 1 USDC, 6 decimals.
 const ONE_USDC: u64 = 1_000_000;
 
-async fn eth_balance(address: &str) -> anyhow::Result<U256> {
+/// Mirrors `DEPOSIT_AUTHORIZATION_TTL_SECS` in the SDK.
+const AUTHORIZATION_TTL_SECS: u64 = 3600;
+
+async fn eth_balance(address: Address) -> anyhow::Result<U256> {
     let body: Value = reqwest::Client::new()
         .post(ETH_RPC)
         .json(&json!({
             "jsonrpc": "2.0", "id": 1,
-            "method": "eth_getBalance", "params": [address, "latest"],
+            "method": "eth_getBalance", "params": [address.to_string(), "latest"],
         }))
         .send()
         .await?
@@ -53,17 +56,53 @@ async fn eth_balance(address: &str) -> anyhow::Result<U256> {
     Ok(U256::from_str_radix(hex.trim_start_matches("0x"), 16)?)
 }
 
+/// Whether the chain's clock has run so far ahead of the host that the SDK's 1-hour authorization
+/// is expired the moment it is signed.
+///
+/// A long-lived fork drifts, and the resulting failure is an opaque `SIMULATION_REVERTED` from
+/// inside the facilitator's simulation. Detect it here and say so instead.
+async fn chain_clock_is_ahead() -> anyhow::Result<bool> {
+    let body: Value = reqwest::Client::new()
+        .post(ETH_RPC)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "eth_getBlockByNumber", "params": ["latest", false],
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let hex = body["result"]["timestamp"]
+        .as_str()
+        .unwrap_or("0x0")
+        .trim_start_matches("0x");
+    let chain = u64::from_str_radix(hex, 16)?;
+    let host = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+
+    let drift = chain.saturating_sub(host);
+    if drift >= AUTHORIZATION_TTL_SECS {
+        eprintln!(
+            "skipping test: chain clock is {drift}s ahead of the host, so every \
+             {AUTHORIZATION_TTL_SECS}s authorization is born expired — re-fork the chain"
+        );
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Runs `deposit` between the balance reads and asserts it credited the signer for free.
 ///
 /// The future is built by the caller but not awaited until here, so the "before" reads still
 /// happen before anything is signed or submitted.
 async fn assert_gasless(
     client: &Client<PrivateKeySigner>,
-    payer: &str,
     token: &str,
     label: &str,
     deposit: impl Future<Output = Result<DepositReceipt, DepositError>>,
 ) -> anyhow::Result<()> {
+    let payer = client.signer_address();
     let amount = U256::from(ONE_USDC);
     let collateral_before = client.user.get_principal_balance(token.to_string()).await?;
     let gas_before = eth_balance(payer).await?;
@@ -71,8 +110,7 @@ async fn assert_gasless(
     let receipt = deposit.await?;
 
     assert_eq!(
-        receipt.from.to_lowercase(),
-        payer,
+        receipt.from, payer,
         "{label}: the facilitator must credit the signer, not itself"
     );
     assert_eq!(
@@ -95,16 +133,13 @@ async fn assert_gasless(
 
 #[tokio::test]
 async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<()> {
-    if common::skip_without_local_core_stack() {
+    if common::skip_without_local_core_stack() || chain_clock_is_ahead().await? {
         return Ok(());
     }
 
-    let signer: PrivateKeySigner = PAYER_KEY.parse()?;
-    let payer = format!("{:?}", signer.address());
-
     let client = Client::new(
         ConfigBuilder::default()
-            .signer(signer)
+            .signer(PAYER_KEY.parse::<PrivateKeySigner>()?)
             .rpc_url(CORE_URL.to_string())
             .facilitator_url(FACILITATOR_URL.to_string())
             .build()?,
@@ -114,7 +149,6 @@ async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<(
 
     assert_gasless(
         &client,
-        &payer,
         EIP3009_TOKEN,
         "eip3009",
         client
@@ -127,7 +161,6 @@ async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<(
     // Permit2 path and are gasless for the same reason.
     assert_gasless(
         &client,
-        &payer,
         PERMIT2_TOKEN,
         "permit2",
         client
