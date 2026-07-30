@@ -12,12 +12,8 @@
 //! cargo test -p integration-tests --test facilitator_gasless_deposit -- --nocapture
 //! ```
 
-use std::future::Future;
-
 use alloy::signers::local::PrivateKeySigner;
-use sdk_4mica::client::facilitator::DepositReceipt;
-use sdk_4mica::error::DepositError;
-use sdk_4mica::{Client, Config, ConfigBuilder, U256};
+use sdk_4mica::{Address, Asset, Client, Config, ConfigBuilder, DepositPath, U256};
 
 mod common;
 use crate::common::{eth_balance, skip_on_chain_clock_drift, skip_without_local_core_stack};
@@ -37,24 +33,27 @@ const PERMIT2_TOKEN: &str = "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f";
 /// 1 USDC, 6 decimals.
 const ONE_USDC: u64 = 1_000_000;
 
-/// Runs `deposit` between the balance reads and asserts it credited the signer for free.
-///
-/// The future is built by the caller but not awaited until here, so the "before" reads still
-/// happen before anything is signed or submitted.
+/// Deposits 1 USDC over `path` and asserts it credited the signer for free.
 async fn assert_gasless(
     client: &Client<PrivateKeySigner>,
     config: &Config<PrivateKeySigner>,
-    token: &str,
-    label: &str,
-    deposit: impl Future<Output = Result<DepositReceipt, DepositError>>,
+    token: Address,
+    path: DepositPath,
 ) -> anyhow::Result<()> {
+    let label = format!("{path:?}");
     let payer = client.signer_address();
     let amount = U256::from(ONE_USDC);
     let collateral_before = client.user.get_principal_balance(token.to_string()).await?;
     let gas_before = eth_balance(config, payer).await?;
 
-    let receipt = deposit.await?;
+    let receipt = client
+        .deposit_via(path, Asset::Erc20(token), amount)
+        .await?;
 
+    assert_eq!(
+        receipt.path, path,
+        "{label}: the receipt must report the route that ran"
+    );
     assert_eq!(
         receipt.from, payer,
         "{label}: the facilitator must credit the signer, not itself"
@@ -92,16 +91,12 @@ async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<(
         return Ok(());
     }
     let client = Client::new(config.clone()).await?;
-    let amount = U256::from(ONE_USDC);
 
     assert_gasless(
         &client,
         &config,
-        EIP3009_TOKEN,
-        "eip3009",
-        client
-            .facilitator
-            .deposit_with_authorization(EIP3009_TOKEN.to_string(), amount),
+        EIP3009_TOKEN.parse()?,
+        DepositPath::Eip3009,
     )
     .await?;
 
@@ -110,11 +105,8 @@ async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<(
     assert_gasless(
         &client,
         &config,
-        PERMIT2_TOKEN,
-        "permit2",
-        client
-            .facilitator
-            .deposit_with_sponsored_permit2(PERMIT2_TOKEN.to_string(), amount),
+        PERMIT2_TOKEN.parse()?,
+        DepositPath::SponsoredPermit2,
     )
     .await
 }

@@ -24,7 +24,7 @@ use alloy::signers::Signer;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::client::{ClientCtx, user::UserClient};
+use crate::client::{ClientCtx, DepositPath, user::UserClient};
 use crate::contract::{
     Core4Mica::{Permit2Authorization, ReceiveAuthorization},
     PERMIT2_ADDRESS,
@@ -65,6 +65,8 @@ impl<S> Clone for FacilitatorClient<S> {
 #[derive(Debug, Clone)]
 pub struct DepositReceipt {
     pub tx_hash: B256,
+    /// Which route delivered the deposit — in particular, whether the payer paid gas.
+    pub path: DepositPath,
     /// The account credited — always the signer, never the facilitator. Zero when the facilitator
     /// reported no `from`, which is worth treating as a failed check rather than a match.
     pub from: Address,
@@ -148,8 +150,11 @@ where
         amount: U256,
         authorization: ReceiveAuthorization,
     ) -> Result<DepositReceipt, DepositError> {
-        self.post_deposit(&DepositRequest::eip3009(token, amount, authorization))
-            .await
+        self.post_deposit(
+            &DepositRequest::eip3009(token, amount, authorization),
+            DepositPath::Eip3009,
+        )
+        .await
     }
 
     /// Deposits through Permit2, signing the missing approval instead of transacting for it.
@@ -193,12 +198,10 @@ where
         };
 
         let permit = self.sign_permit_for_permit2(&token, *nonce).await?;
-        self.post_deposit(&DepositRequest::permit2(
-            token,
-            amount,
-            authorization,
-            Some(permit),
-        ))
+        self.post_deposit(
+            &DepositRequest::permit2(token, amount, authorization, Some(permit)),
+            DepositPath::SponsoredPermit2,
+        )
         .await
     }
 
@@ -258,8 +261,11 @@ where
         amount: U256,
         authorization: Permit2Authorization,
     ) -> Result<DepositReceipt, DepositError> {
-        self.post_deposit(&DepositRequest::permit2(token, amount, authorization, None))
-            .await
+        self.post_deposit(
+            &DepositRequest::permit2(token, amount, authorization, None),
+            DepositPath::Permit2,
+        )
+        .await
     }
 
     /// Preflight: runs every check the facilitator would run, without spending anyone's gas.
@@ -281,7 +287,11 @@ where
         Err(response.failure.into_error(response.invalid_reason))
     }
 
-    async fn post_deposit(&self, request: &DepositRequest) -> Result<DepositReceipt, DepositError> {
+    async fn post_deposit(
+        &self,
+        request: &DepositRequest,
+        path: DepositPath,
+    ) -> Result<DepositReceipt, DepositError> {
         let url = self.endpoint("deposit")?;
         let response: DepositResponse = self.post(url, request).await?;
 
@@ -299,6 +309,7 @@ where
 
         Ok(DepositReceipt {
             tx_hash,
+            path,
             from: response
                 .from
                 .as_deref()

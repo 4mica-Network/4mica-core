@@ -21,7 +21,9 @@ pub use rpc::{
 pub use crate::error::RecipientQueryError;
 pub use auth::{AuthClient, AuthSession, AuthTokens};
 pub use client::Client;
+pub use client::facilitator::{DepositReceipt, FacilitatorClient};
 pub use client::model::{AssetBalanceInfo, RecipientPaymentInfo, StablecoinPosition, UserInfo};
+pub use client::{Asset, DepositPath};
 pub use config::AuthConfig;
 pub use config::{Config, ConfigBuilder};
 // The gasless-deposit authorizations cross a process boundary: a client signs one here, a

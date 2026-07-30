@@ -8,12 +8,12 @@ use crate::{
         Core4Mica::{self, Core4MicaInstance},
         ERC20::{self, ERC20Instance},
     },
-    error::{AuthError, ClientError},
+    error::{AuthError, ClientError, DepositError},
     validators::{validate_address, validate_url},
 };
 use alloy::{
     network::{EthereumWallet, TxSigner},
-    primitives::{Address, B256},
+    primitives::{Address, B256, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
     signers::{Signature, Signer},
 };
@@ -387,6 +387,52 @@ impl<S> ClientCtx<S> {
     }
 }
 
+/// What to deposit. Native ETH has no gasless path — no authorization scheme covers it — so it is
+/// always self-funded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asset {
+    Native,
+    Erc20(Address),
+}
+
+/// How a deposit reached the contract. Carried on [`DepositReceipt`] because "it worked" hides the
+/// one thing a caller cares about: whether they paid for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepositPath {
+    /// EIP-3009 `receiveWithAuthorization`, submitted by the facilitator. One transaction, none of
+    /// it the payer's.
+    Eip3009,
+    /// Permit2, submitted by the facilitator. Gasless only because the payer already approved
+    /// Permit2 in some earlier transaction.
+    Permit2,
+    /// Permit2 with the approval signed rather than transacted, both submitted by the facilitator.
+    SponsoredPermit2,
+    /// The payer's own transaction, paying their own gas.
+    SelfFunded,
+}
+
+impl DepositPath {
+    /// Whether the payer's own funds paid for the transaction.
+    pub fn costs_the_payer_gas(&self) -> bool {
+        matches!(self, Self::SelfFunded)
+    }
+}
+
+/// Whether a rejection means "this token cannot take an EIP-3009 authorization" rather than "this
+/// deposit is bad".
+///
+/// A token without `receiveWithAuthorization` reverts opaquely from inside Core4Mica, which the
+/// facilitator reports as a failed simulation — indistinguishable, from here, from any other
+/// revert. Retrying over Permit2 is therefore a guess, but a cheap one: the simulation spent no
+/// gas, and a genuinely bad deposit fails again on the second route with its own error.
+fn refuses_the_authorization(error: &DepositError) -> bool {
+    matches!(
+        error,
+        DepositError::Facilitator { code, .. }
+            if code == "SIMULATION_REVERTED" || code == "UNSUPPORTED_TRANSFER_METHOD"
+    )
+}
+
 pub struct Client<S> {
     ctx: ClientCtx<S>,
     pub recipient: RecipientClient<S>,
@@ -417,6 +463,130 @@ impl<S> Client<S> {
         S: Signer,
     {
         self.ctx.signer_address()
+    }
+
+    /// Deposits `amount` of `asset`, taking the cheapest route available.
+    ///
+    /// Prefers routes the facilitator pays for, in order: EIP-3009 (one sponsored transaction),
+    /// then Permit2 with the approval sponsored when the token allows it. Falls back to the payer's
+    /// own transaction when no gasless route applies — native ETH, no facilitator configured, or a
+    /// token whose Permit2 approval cannot be sponsored. Check
+    /// [`DepositReceipt::path`](facilitator::DepositReceipt::path) to see which ran; call
+    /// [`Self::deposit_via`] to force one, or the
+    /// [`FacilitatorClient`](facilitator::FacilitatorClient) methods directly to rule out ever
+    /// spending your own gas.
+    pub async fn deposit(
+        &self,
+        asset: Asset,
+        amount: U256,
+    ) -> Result<facilitator::DepositReceipt, DepositError>
+    where
+        S: TxSigner<Signature> + Signer + Send + Sync + Clone + 'static,
+    {
+        let Asset::Erc20(token) = asset else {
+            return self
+                .deposit_via(DepositPath::SelfFunded, asset, amount)
+                .await;
+        };
+        if !self.facilitator.is_configured() {
+            return self
+                .deposit_via(DepositPath::SelfFunded, asset, amount)
+                .await;
+        }
+
+        // EIP-3009 is the cheapest route, but nothing core advertises says whether a token
+        // implements it — a domain separator only proves EIP-712, which EIP-2612 has too. So ask,
+        // and read the answer off the facilitator's simulation, which costs no gas.
+        let rejection = match self.deposit_via(DepositPath::Eip3009, asset, amount).await {
+            Ok(receipt) => return Ok(receipt),
+            Err(err) => err,
+        };
+        if !refuses_the_authorization(&rejection) {
+            return Err(rejection);
+        }
+
+        match self
+            .deposit_via(DepositPath::SponsoredPermit2, asset, amount)
+            .await
+        {
+            // The approval cannot be sponsored, so gaslessness is off the table either way; paying
+            // for the deposit directly is one transaction rather than an approval plus a deposit.
+            Err(DepositError::Permit2AllowanceRequired { .. }) => {
+                self.deposit_via(DepositPath::SelfFunded, Asset::Erc20(token), amount)
+                    .await
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Deposits over one specific route, failing rather than choosing another.
+    ///
+    /// For callers with a policy — and for tests, which need to exercise a route rather than
+    /// whichever one happens to be cheapest.
+    pub async fn deposit_via(
+        &self,
+        path: DepositPath,
+        asset: Asset,
+        amount: U256,
+    ) -> Result<facilitator::DepositReceipt, DepositError>
+    where
+        S: TxSigner<Signature> + Signer + Send + Sync + Clone + 'static,
+    {
+        let token = match (path, asset) {
+            (DepositPath::SelfFunded, asset) => {
+                return self.deposit_self_funded(asset, amount).await;
+            }
+            (_, Asset::Erc20(token)) => token.to_string(),
+            (_, Asset::Native) => {
+                return Err(DepositError::InvalidParams(
+                    "native ETH has no gasless route; deposit it with DepositPath::SelfFunded"
+                        .into(),
+                ));
+            }
+        };
+
+        match path {
+            DepositPath::Eip3009 => {
+                self.facilitator
+                    .deposit_with_authorization(token, amount)
+                    .await
+            }
+            DepositPath::Permit2 => self.facilitator.deposit_with_permit2(token, amount).await,
+            DepositPath::SponsoredPermit2 => {
+                self.facilitator
+                    .deposit_with_sponsored_permit2(token, amount)
+                    .await
+            }
+            DepositPath::SelfFunded => unreachable!("handled above"),
+        }
+    }
+
+    /// The payer's own transaction, reported in the same shape as a sponsored one.
+    async fn deposit_self_funded(
+        &self,
+        asset: Asset,
+        amount: U256,
+    ) -> Result<facilitator::DepositReceipt, DepositError>
+    where
+        S: TxSigner<Signature> + Signer + Send + Sync + Clone + 'static,
+    {
+        let token = match asset {
+            Asset::Erc20(token) => Some(token.to_string()),
+            Asset::Native => None,
+        };
+        let receipt = self.user.deposit(amount, token).await?;
+
+        Ok(facilitator::DepositReceipt {
+            tx_hash: receipt.transaction_hash,
+            path: DepositPath::SelfFunded,
+            from: self.signer_address(),
+            asset: match asset {
+                Asset::Erc20(token) => token,
+                Asset::Native => Address::ZERO,
+            },
+            amount,
+            network: None,
+        })
     }
 
     pub async fn new(cfg: Config<S>) -> Result<Self, ClientError>
