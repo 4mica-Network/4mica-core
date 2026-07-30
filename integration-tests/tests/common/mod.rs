@@ -150,6 +150,36 @@ pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::R
 }
 
 /// Resolve the Ethereum RPC URL the core service is bound to, from its public params.
+/// Mirrors `DEPOSIT_AUTHORIZATION_TTL_SECS` in the SDK.
+pub const DEPOSIT_AUTHORIZATION_TTL_SECS: u64 = 3600;
+
+pub async fn eth_balance<S>(config: &Config<S>, who: Address) -> anyhow::Result<U256> {
+    let rpc_url = eth_rpc_url(config).await?;
+    let provider = ProviderBuilder::new().connect(&rpc_url).await?;
+    Ok(provider.get_balance(who).await?)
+}
+
+/// The SDK stamps deposit deadlines from the host clock, but the token checks them against
+/// `block.timestamp`. Other suites on this stack call `evm_increaseTime` (withdrawal grace
+/// periods), which can leave the chain hours or days ahead of wall clock — at which point every
+/// authorization signed here is already expired on arrival.
+///
+/// Rather than fail confusingly depending on which test ran first, detect the drift and skip.
+pub async fn skip_on_chain_clock_drift<S>(config: &Config<S>) -> anyhow::Result<bool> {
+    let chain_ts = get_chain_timestamp(config).await?;
+    let host_ts = get_now().as_secs();
+    if chain_ts >= host_ts.saturating_add(DEPOSIT_AUTHORIZATION_TTL_SECS) {
+        eprintln!(
+            "skipping test: chain clock is {}s ahead of the host, so a \
+             {DEPOSIT_AUTHORIZATION_TTL_SECS}s authorization is already expired on-chain. Restart \
+             the stack (`make dev-down dev-up`) to run this test.",
+            chain_ts.saturating_sub(host_ts)
+        );
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub async fn eth_rpc_url<S>(config: &Config<S>) -> anyhow::Result<String> {
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
     if let Some(token) = &config.bearer_token {
