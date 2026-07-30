@@ -14,13 +14,13 @@ import {
     MockPoolAddressesProvider
 } from "./helpers/MockAave.sol";
 
-/// Mock stablecoin used by the Foundry suites and, via `Core4MicaFullStack.s.sol`, deployed as the
-/// local dev stack's stablecoins.
+/// Mock stablecoin with EIP-2612 `permit` but no EIP-3009, mirroring the tokens that are listed on
+/// Aave but lack `receiveWithAuthorization`.
 ///
-/// Implements EIP-3009 `receiveWithAuthorization` because real USDC does: without it the gasless
-/// deposit path cannot be exercised end-to-end against a local anvil, since the SDK reads the
-/// token's own `DOMAIN_SEPARATOR()` to build the signing hash.
-contract MockERC20 {
+/// That combination is not an oddity to tolerate but the case worth deploying locally: it is the
+/// only one where a Permit2 deposit stays gasless, since the missing `approve(PERMIT2, …)` can be
+/// signed as a permit instead of transacted.
+contract MockERC20Permit {
     string public name;
     string public symbol;
     // `decimals` must stay lowercase to conform to the ERC20 `decimals()` interface.
@@ -32,18 +32,16 @@ contract MockERC20 {
 
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
-    /// authorizer => nonce => used, the EIP-3009 replay guard.
-    mapping(address => mapping(bytes32 => bool)) public authorizationState;
+    /// owner => next permit nonce, the EIP-2612 replay guard. Sequential, unlike EIP-3009's.
+    mapping(address => uint256) public nonces;
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-    bytes32 public constant RECEIVE_WITH_AUTHORIZATION_TYPEHASH = keccak256(
-        "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
-    );
+    bytes32 public constant PERMIT_TYPEHASH =
+        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
-    event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce);
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) {
         name = name_;
@@ -64,34 +62,20 @@ contract MockERC20 {
         );
     }
 
-    /// Pulls `value` from `from` into the caller, authorized by `from`'s EIP-712 signature rather
-    /// than by an allowance. The caller must be the payee, so a third party can submit the
-    /// transaction and pay the gas without being able to redirect the funds.
-    function receiveWithAuthorization(
-        address from,
-        address to,
-        uint256 value,
-        uint256 validAfter,
-        uint256 validBefore,
-        bytes32 nonce,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external {
-        require(to == msg.sender, "EIP3009: caller must be the payee");
+    /// Sets an allowance from `owner`'s signature instead of a transaction, so a third party can
+    /// pay the gas. The nonce is sequential and consumed here, making a replayed permit invalid.
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        external
+    {
         uint256 currentTime = block.timestamp;
-        require(currentTime > validAfter, "EIP3009: authorization is not yet valid");
-        require(currentTime < validBefore, "EIP3009: authorization is expired");
-        require(!authorizationState[from][nonce], "EIP3009: authorization is used");
+        require(currentTime <= deadline, "EIP2612: permit is expired");
 
-        bytes32 structHash =
-            keccak256(abi.encode(RECEIVE_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
+        bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
-        require(ecrecover(digest, v, r, s) == from, "EIP3009: invalid signature");
+        require(ecrecover(digest, v, r, s) == owner, "EIP2612: invalid signature");
 
-        authorizationState[from][nonce] = true;
-        emit AuthorizationUsed(from, nonce);
-        _transfer(from, to, value);
+        allowance[owner][spender] = value;
+        emit Approval(owner, spender, value);
     }
 
     function mint(address to, uint256 amount) external {
@@ -127,6 +111,57 @@ contract MockERC20 {
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
         emit Transfer(from, to, amount);
+    }
+}
+
+/// Mock stablecoin with both EIP-3009 and EIP-2612, as real USDC has. Deployed by the Foundry
+/// suites and, via `Core4MicaFullStack.s.sol`, as the local dev stack's first stablecoin.
+///
+/// `receiveWithAuthorization` matters because it is the only truly gasless deposit: one
+/// transaction, submitted by someone else, with nothing for the payer to approve first.
+contract MockERC20 is MockERC20Permit {
+    /// authorizer => nonce => used, the EIP-3009 replay guard. Arbitrary rather than sequential,
+    /// so authorizations can be signed out of order and redeemed in any.
+    mapping(address => mapping(bytes32 => bool)) public authorizationState;
+
+    bytes32 public constant RECEIVE_WITH_AUTHORIZATION_TYPEHASH = keccak256(
+        "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
+    );
+
+    event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce);
+
+    constructor(string memory name_, string memory symbol_, uint8 decimals_)
+        MockERC20Permit(name_, symbol_, decimals_)
+    {}
+
+    /// Pulls `value` from `from` into the caller, authorized by `from`'s EIP-712 signature rather
+    /// than by an allowance. The caller must be the payee, so a third party can submit the
+    /// transaction and pay the gas without being able to redirect the funds.
+    function receiveWithAuthorization(
+        address from,
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        require(to == msg.sender, "EIP3009: caller must be the payee");
+        uint256 currentTime = block.timestamp;
+        require(currentTime > validAfter, "EIP3009: authorization is not yet valid");
+        require(currentTime < validBefore, "EIP3009: authorization is expired");
+        require(!authorizationState[from][nonce], "EIP3009: authorization is used");
+
+        bytes32 structHash =
+            keccak256(abi.encode(RECEIVE_WITH_AUTHORIZATION_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+        require(ecrecover(digest, v, r, s) == from, "EIP3009: invalid signature");
+
+        authorizationState[from][nonce] = true;
+        emit AuthorizationUsed(from, nonce);
+        _transfer(from, to, value);
     }
 }
 
