@@ -1,396 +1,54 @@
-use std::sync::Arc;
+use alloy::{primitives::Address, signers::Signer};
+use rpc::{ApiClientError, SupportedTokensResponse};
 
 use crate::{
-    auth::{AuthSession, AuthTokens},
+    auth::AuthTokens,
     config::Config,
-    contract::{
-        ClearingHouse::{self, ClearingHouseInstance},
-        Core4Mica::{self, Core4MicaInstance},
-        ERC20::{self, ERC20Instance},
-    },
     error::{AuthError, ClientError},
-    validators::{validate_address, validate_url},
 };
-use alloy::{
-    network::{EthereumWallet, TxSigner},
-    primitives::{Address, B256},
-    providers::{DynProvider, Provider, ProviderBuilder},
-    signers::{Signature, Signer},
-};
-use rpc::{
-    ApiClientError, CorePublicParameters, GUARANTEE_CLAIMS_VERSION, RpcProxy,
-    SupportedTokensResponse,
-};
-use tokio::sync::{OnceCell, RwLock};
-use url::Url;
 
-use self::{recipient::RecipientClient, user::UserClient};
-use crypto::bls::BlsPublicKey;
-use std::collections::HashMap;
+use self::{
+    account::AccountClient, deposit::DepositClient, payment::PaymentClient,
+    settlement::SettlementClient, withdraw::WithdrawClient,
+};
 
+mod ctx;
+mod facilitator;
+mod sig;
+
+pub mod account;
+pub mod deposit;
 pub mod model;
-pub mod recipient;
-pub mod user;
+pub mod payment;
+pub mod settlement;
+pub mod withdraw;
 
-struct Inner<S> {
-    cfg: Config<S>,
-    rpc_proxy: RpcProxy,
-    ethereum_http_rpc_url: Url,
-    provider: DynProvider,
-    wallet_provider: OnceCell<DynProvider>,
-    contract_address: Address,
-    operator_public_key: BlsPublicKey,
-    guarantee_domain: [u8; 32],
-    guarantee_domains: HashMap<u64, [u8; 32]>,
-    auth_session: Option<AuthSession<S>>,
-    chain_id: u64,
-    /// Token EIP-712 domain separators as served by core, memoised. Immutable per token per chain,
-    /// so a hit never goes stale; a miss refetches in case core has registered a new asset.
-    token_domain_separators: RwLock<HashMap<Address, B256>>,
-}
+pub(crate) use ctx::ClientCtx;
 
-#[derive(Clone)]
-struct ClientCtx<S>(Arc<Inner<S>>);
-
-impl<S> ClientCtx<S> {
-    async fn new(cfg: Config<S>) -> Result<Self, ClientError>
-    where
-        S: Signer + Sync + Clone,
-    {
-        let rpc_proxy = Self::build_rpc_proxy(&cfg)?;
-        let auth_session = cfg.auth.as_ref().and_then(|auth_cfg| {
-            if cfg.bearer_token.is_some() {
-                None
-            } else {
-                Some(AuthSession::new(auth_cfg.clone(), cfg.signer.clone()))
-            }
-        });
-        let public_params = rpc_proxy
-            .get_public_params()
-            .await
-            .map_err(|e| ClientError::Rpc(e.to_string()))?;
-
-        let ethereum_http_rpc_url = match &cfg.ethereum_http_rpc_url {
-            Some(url) => url.clone(),
-            None => validate_url(&public_params.ethereum_http_rpc_url)
-                .map_err(|e| ClientError::Initialization(e.to_string()))?,
-        };
-
-        let provider = Self::build_provider(&public_params, &ethereum_http_rpc_url).await?;
-        let operator_public_key = Self::parse_operator_public_key(&public_params.public_key)?;
-        let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
-
-        let contract = Core4Mica::new(contract_address, provider.clone());
-        let (guarantee_domain, guarantee_domains) =
-            Self::fetch_guarantee_metadata(&public_params, &contract).await?;
-
-        Ok(Self(Arc::new(Inner {
-            cfg,
-            rpc_proxy,
-            ethereum_http_rpc_url,
-            provider,
-            wallet_provider: OnceCell::new(),
-            contract_address,
-            operator_public_key,
-            guarantee_domain,
-            guarantee_domains,
-            auth_session,
-            chain_id: public_params.chain_id,
-            token_domain_separators: RwLock::new(HashMap::new()),
-        })))
-    }
-
-    fn build_rpc_proxy(cfg: &Config<S>) -> Result<RpcProxy, ClientError> {
-        let mut proxy =
-            RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))?;
-        if let Some(token) = &cfg.bearer_token {
-            proxy = proxy.with_bearer_token(token.clone());
-        }
-        Ok(proxy)
-    }
-
-    async fn build_provider(
-        public_params: &CorePublicParameters,
-        ethereum_http_rpc_url: &Url,
-    ) -> Result<DynProvider, ClientError> {
-        let provider = ProviderBuilder::new()
-            .connect(ethereum_http_rpc_url.as_ref())
-            .await
-            .map_err(|e| ClientError::Provider(e.to_string()))?
-            .erased();
-
-        let provider_chain_id = provider
-            .get_chain_id()
-            .await
-            .map_err(|e| ClientError::Initialization(e.to_string()))?;
-
-        if provider_chain_id != public_params.chain_id {
-            return Err(ClientError::Initialization(format!(
-                "chain id mismatch between core service ({}) and Ethereum provider ({})",
-                public_params.chain_id, provider_chain_id
-            )));
-        }
-
-        Ok(provider)
-    }
-
-    fn parse_operator_public_key(bytes: &[u8]) -> Result<BlsPublicKey, ClientError> {
-        BlsPublicKey::from_bytes(bytes)
-            .map_err(|e| ClientError::Initialization(format!("invalid operator public key: {e}")))
-    }
-
-    fn resolve_contract_address(
-        cfg: &Config<S>,
-        public_params: &CorePublicParameters,
-    ) -> Result<Address, ClientError> {
-        match cfg.contract_address {
-            Some(address) => Ok(address),
-            None => validate_address(&public_params.contract_address)
-                .map_err(|e| ClientError::Initialization(e.to_string())),
-        }
-    }
-
-    /// Loads the on-chain domain separator for every guarantee version this core supports, so
-    /// certs can be verified whichever version issued them. Requests are always signed at
-    /// [`GUARANTEE_CLAIMS_VERSION`], so that one must be supported and enabled.
-    async fn fetch_guarantee_metadata(
-        public_params: &CorePublicParameters,
-        contract: &Core4MicaInstance<DynProvider>,
-    ) -> Result<([u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
-        if !public_params
-            .supported_guarantee_versions
-            .contains(&GUARANTEE_CLAIMS_VERSION)
-        {
-            return Err(ClientError::Initialization(format!(
-                "this client signs guarantee v{GUARANTEE_CLAIMS_VERSION}, which core does not \
-                 support (core supports {:?}); upgrade core or downgrade the SDK",
-                public_params.supported_guarantee_versions
-            )));
-        }
-
-        let mut guarantee_domains = HashMap::new();
-        for &version in &public_params.supported_guarantee_versions {
-            let version_config = contract
-                .getGuaranteeVersionConfig(version)
-                .call()
-                .await
-                .map_err(|e| ClientError::Initialization(e.to_string()))?;
-
-            if !version_config.enabled {
-                if version == GUARANTEE_CLAIMS_VERSION {
-                    return Err(ClientError::Initialization(format!(
-                        "guarantee v{GUARANTEE_CLAIMS_VERSION} is disabled on-chain"
-                    )));
-                }
-                continue;
-            }
-            guarantee_domains.insert(version, version_config.domainSeparator.into());
-
-            if version == GUARANTEE_CLAIMS_VERSION
-                && !public_params.guarantee_domain_separator.is_empty()
-            {
-                let expected_domain = public_params
-                    .guarantee_domain_separator
-                    .parse::<B256>()
-                    .map_err(|e| {
-                        ClientError::Initialization(format!(
-                            "invalid guarantee domain separator from core: {e}"
-                        ))
-                    })?;
-
-                if expected_domain != version_config.domainSeparator {
-                    return Err(ClientError::Initialization(format!(
-                        "guarantee domain mismatch between core metadata and contract for \
-                         version {version}"
-                    )));
-                }
-            }
-        }
-
-        let guarantee_domain = guarantee_domains
-            .get(&GUARANTEE_CLAIMS_VERSION)
-            .copied()
-            .ok_or_else(|| {
-                ClientError::Initialization(format!(
-                    "missing guarantee domain metadata for v{GUARANTEE_CLAIMS_VERSION}"
-                ))
-            })?;
-
-        Ok((guarantee_domain, guarantee_domains))
-    }
-
-    fn contract_address(&self) -> Address {
-        self.0.contract_address
-    }
-
-    fn get_contract(&self) -> Core4MicaInstance<DynProvider> {
-        Core4Mica::new(self.0.contract_address, self.0.provider.clone())
-    }
-
-    /// A token's EIP-712 domain separator, as read from the token by core and relayed over HTTP.
-    ///
-    /// Deliberately not an `eth_call`: signing a gasless deposit must not require the client to
-    /// hold an Ethereum RPC endpoint. Core reads the real value from the token, so this keeps the
-    /// correctness of an on-chain read without the dependency.
-    async fn token_domain_separator(&self, token: Address) -> Result<B256, ClientError> {
-        if let Some(cached) = self.0.token_domain_separators.read().await.get(&token) {
-            return Ok(*cached);
-        }
-
-        let tokens = self
-            .0
-            .rpc_proxy
-            .get_supported_tokens()
-            .await
-            .map_err(|e| ClientError::Rpc(e.to_string()))?;
-
-        let mut cache = self.0.token_domain_separators.write().await;
-        let mut found = None;
-        for info in &tokens.tokens {
-            let Ok(address) = validate_address(&info.address) else {
-                continue;
-            };
-            let Some(raw) = &info.domain_separator else {
-                continue;
-            };
-            let Ok(separator) = raw.parse::<B256>() else {
-                continue;
-            };
-            cache.insert(address, separator);
-            if address == token {
-                found = Some(separator);
-            }
-        }
-
-        found.ok_or_else(|| {
-            ClientError::Initialization(format!(
-                "core did not advertise an EIP-712 domain separator for {token}; the token is \
-                 either unsupported or does not implement EIP-3009"
-            ))
-        })
-    }
-
-    /// Permit2's domain separator, derived locally from the chain id.
-    ///
-    /// Permit2 is deployed at one canonical address on every chain and its domain has a fixed name
-    /// and no version, so this needs neither a chain read nor anything from core.
-    fn permit2_domain_separator(&self) -> B256 {
-        crate::digest::permit2_domain_separator(self.0.chain_id)
-    }
-
-    fn operator_public_key(&self) -> &BlsPublicKey {
-        &self.0.operator_public_key
-    }
-
-    fn guarantee_domain(&self) -> &[u8; 32] {
-        &self.0.guarantee_domain
-    }
-
-    fn guarantee_domain_for_version(&self, version: u64) -> Option<&[u8; 32]> {
-        self.0.guarantee_domains.get(&version)
-    }
-
-    fn signer(&self) -> &S {
-        &self.0.cfg.signer
-    }
-
-    fn signer_address(&self) -> Address
-    where
-        S: Signer,
-    {
-        self.0.cfg.signer.address()
-    }
-
-    async fn rpc_proxy(&self) -> Result<RpcProxy, ApiClientError>
-    where
-        S: Signer + Sync,
-    {
-        let mut proxy = self.0.rpc_proxy.clone();
-        if let Some(auth) = &self.0.auth_session {
-            let token = auth
-                .access_token()
-                .await
-                .map_err(Into::<ApiClientError>::into)?;
-            proxy = proxy.with_bearer_token(token);
-        }
-        Ok(proxy)
-    }
-
-    async fn login(&self) -> Result<AuthTokens, AuthError>
-    where
-        S: Signer + Sync,
-    {
-        let session = self
-            .0
-            .auth_session
-            .as_ref()
-            .ok_or(AuthError::MissingConfig)?;
-        session.login().await
-    }
-
-    async fn get_wallet_provider(&self) -> Result<DynProvider, ClientError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let provider = self
-            .0
-            .wallet_provider
-            .get_or_try_init(|| async {
-                let wallet = EthereumWallet::new(self.0.cfg.signer.clone());
-                ProviderBuilder::new()
-                    .wallet(wallet)
-                    .connect(self.0.ethereum_http_rpc_url.as_ref())
-                    .await
-                    .map_err(|e| ClientError::Provider(e.to_string()))
-                    .map(|p| p.erased())
-            })
-            .await?;
-        Ok(provider.clone())
-    }
-
-    async fn get_write_contract(&self) -> Result<Core4MicaInstance<DynProvider>, ClientError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let provider = self.get_wallet_provider().await?;
-        Ok(Core4Mica::new(self.0.contract_address, provider))
-    }
-
-    async fn get_erc20_write_contract(
-        &self,
-        token_address: Address,
-    ) -> Result<ERC20Instance<DynProvider>, ClientError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let provider = self.get_wallet_provider().await?;
-        Ok(ERC20::new(token_address, provider))
-    }
-
-    async fn get_clearing_house_write_contract(
-        &self,
-        clearing_house_address: Address,
-    ) -> Result<ClearingHouseInstance<DynProvider>, ClientError>
-    where
-        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
-    {
-        let provider = self.get_wallet_provider().await?;
-        Ok(ClearingHouse::new(clearing_house_address, provider))
-    }
-}
-
+/// Entry point to the SDK
 pub struct Client<S> {
     ctx: ClientCtx<S>,
-    pub recipient: RecipientClient<S>,
-    pub user: UserClient<S>,
+    /// Depositing collateral, sponsored or self-funded.
+    pub deposit: DepositClient<S>,
+    /// Requesting, cancelling and finalizing withdrawals.
+    pub withdraw: WithdrawClient<S>,
+    /// Signing, issuing and verifying payment guarantees.
+    pub payment: PaymentClient<S>,
+    /// Settling a clearing cycle, from either side.
+    pub settlement: SettlementClient<S>,
+    /// Reading the signer's own balances and positions.
+    pub account: AccountClient<S>,
 }
 
 impl<S: Clone> Clone for Client<S> {
     fn clone(&self) -> Self {
         Self {
             ctx: self.ctx.clone(),
-            recipient: self.recipient.clone(),
-            user: self.user.clone(),
+            deposit: self.deposit.clone(),
+            withdraw: self.withdraw.clone(),
+            payment: self.payment.clone(),
+            settlement: self.settlement.clone(),
+            account: self.account.clone(),
         }
     }
 }
@@ -403,10 +61,23 @@ impl<S> Client<S> {
         let ctx = ClientCtx::new(cfg).await?;
 
         Ok(Self {
-            ctx: ctx.clone(),
-            recipient: RecipientClient::new(ctx.clone()),
-            user: UserClient::new(ctx),
+            deposit: DepositClient::new(ctx.clone()),
+            withdraw: WithdrawClient::new(ctx.clone()),
+            payment: PaymentClient::new(ctx.clone()),
+            settlement: SettlementClient::new(ctx.clone()),
+            account: AccountClient::new(ctx.clone()),
+            ctx,
         })
+    }
+
+    /// The address this client signs as, and therefore the account every deposit credits.
+    ///
+    /// Saves callers from keeping the signer alongside the client just to recover its address.
+    pub fn signer_address(&self) -> Address
+    where
+        S: Signer,
+    {
+        self.ctx.signer_address()
     }
 
     pub async fn login(&self) -> Result<AuthTokens, AuthError>
@@ -416,7 +87,8 @@ impl<S> Client<S> {
         self.ctx.login().await
     }
 
-    pub async fn get_supported_tokens(&self) -> Result<SupportedTokensResponse, ApiClientError> {
-        self.ctx.0.rpc_proxy.get_supported_tokens().await
+    /// The assets that can be deposited, with the metadata needed to sign for them.
+    pub async fn supported_tokens(&self) -> Result<SupportedTokensResponse, ApiClientError> {
+        self.ctx.supported_tokens().await
     }
 }

@@ -39,15 +39,12 @@ sol! {
 
 mod common;
 use crate::common::{
-    authed_user_client, core_total, eth_rpc_url, fund_user_with_erc20, get_chain_timestamp,
+    authed_user_client, core_total, eth_balance, eth_rpc_url, fund_user_with_erc20,
     mine_confirmations, user_asset, wait_for_collateral_increase,
 };
 
 /// Default anvil account, prefunded with ETH — it plays the facilitator and pays every gas fee.
 const SUBMITTER_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
-/// Mirrors `DEPOSIT_AUTHORIZATION_TTL_SECS` in the SDK.
-const AUTHORIZATION_TTL_SECS: u64 = 3600;
 
 /// A brand-new account with no ETH, authenticated against core purely by signing (no gas).
 async fn new_gasless_depositor()
@@ -57,12 +54,6 @@ async fn new_gasless_depositor()
     let key = format!("0x{}", alloy::hex::encode(signer.to_bytes()));
     let (config, client) = authed_user_client(&key).await?;
     Ok((config, client, address))
-}
-
-async fn eth_balance<S>(config: &Config<S>, who: Address) -> anyhow::Result<U256> {
-    let rpc_url = eth_rpc_url(config).await?;
-    let provider = ProviderBuilder::new().connect(&rpc_url).await?;
-    Ok(provider.get_balance(who).await?)
 }
 
 /// Core4Mica bound to a gas-paying wallet, using the SDK's published ABI.
@@ -103,27 +94,6 @@ async fn submit_authorization<S>(
     Ok(call.send().await?.get_receipt().await?)
 }
 
-/// The SDK stamps `validBefore` from the host clock, but the token checks it against
-/// `block.timestamp`. Other suites on this stack call `evm_increaseTime` (withdrawal grace
-/// periods), which can leave the chain hours or days ahead of wall clock — at which point every
-/// authorization this test signs is already expired on arrival.
-///
-/// Rather than fail confusingly depending on which test ran first, detect the drift and skip.
-async fn skip_on_chain_clock_drift<S>(config: &Config<S>) -> anyhow::Result<bool> {
-    let chain_ts = get_chain_timestamp(config).await?;
-    let host_ts = common::get_now().as_secs();
-    if chain_ts >= host_ts.saturating_add(AUTHORIZATION_TTL_SECS) {
-        eprintln!(
-            "skipping test: chain clock is {}s ahead of the host, so a {AUTHORIZATION_TTL_SECS}s \
-             authorization is already expired on-chain. Restart the stack (`make dev-down dev-up`) \
-             to run this test.",
-            chain_ts.saturating_sub(host_ts)
-        );
-        return Ok(true);
-    }
-    Ok(false)
-}
-
 /// First supported ERC20 that actually implements EIP-3009, with one whole token in its own
 /// decimals.
 ///
@@ -138,7 +108,7 @@ async fn eip3009_token<S>(
     let provider = ProviderBuilder::new().connect(&rpc_url).await?;
     let redeem_selector = alloy::hex::encode(ERC3009Probe::receiveWithAuthorizationCall::SELECTOR);
 
-    for token in client.get_supported_tokens().await?.tokens {
+    for token in client.supported_tokens().await?.tokens {
         let asset = Address::from_str(&token.address)?;
 
         let has_domain_separator = provider
@@ -176,7 +146,7 @@ async fn test_gasless_deposit_credits_signer_and_costs_them_no_gas() -> anyhow::
     }
 
     let (submitter_config, submitter) = authed_user_client(SUBMITTER_KEY).await?;
-    if skip_on_chain_clock_drift(&submitter_config).await? {
+    if common::skip_on_chain_clock_drift(&submitter_config).await? {
         return Ok(());
     }
 
@@ -206,8 +176,8 @@ async fn test_gasless_deposit_credits_signer_and_costs_them_no_gas() -> anyhow::
 
     // Sign locally — no transaction, no allowance, no gas.
     let auth = depositor
-        .user
-        .sign_deposit_authorization(token.address.clone(), amount)
+        .deposit
+        .sign_eip3009(token.address.parse()?, amount)
         .await?;
     assert_eq!(
         auth.from, depositor_address,
@@ -226,7 +196,7 @@ async fn test_gasless_deposit_credits_signer_and_costs_them_no_gas() -> anyhow::
     assert!(receipt.status(), "gasless deposit transaction must succeed");
 
     mine_confirmations(&depositor_config, 2).await?;
-    wait_for_collateral_increase(&depositor.recipient, asset, collateral_before, amount).await?;
+    wait_for_collateral_increase(&depositor.account, asset, collateral_before, amount).await?;
 
     // The collateral landed with the signer, on-chain, not with whoever paid.
     let position = user_asset(&depositor, asset).await?;
@@ -259,7 +229,7 @@ async fn test_gasless_deposit_authorization_cannot_be_replayed() -> anyhow::Resu
     }
 
     let (submitter_config, submitter) = authed_user_client(SUBMITTER_KEY).await?;
-    if skip_on_chain_clock_drift(&submitter_config).await? {
+    if common::skip_on_chain_clock_drift(&submitter_config).await? {
         return Ok(());
     }
 
@@ -285,8 +255,8 @@ async fn test_gasless_deposit_authorization_cannot_be_replayed() -> anyhow::Resu
     .await?;
 
     let auth = depositor
-        .user
-        .sign_deposit_authorization(token.address.clone(), amount)
+        .deposit
+        .sign_eip3009(token.address.parse()?, amount)
         .await?;
 
     submit_authorization(&submitter_config, asset, amount, auth.clone()).await?;
@@ -310,7 +280,7 @@ async fn test_gasless_deposit_rejects_a_tampered_amount() -> anyhow::Result<()> 
     }
 
     let (submitter_config, submitter) = authed_user_client(SUBMITTER_KEY).await?;
-    if skip_on_chain_clock_drift(&submitter_config).await? {
+    if common::skip_on_chain_clock_drift(&submitter_config).await? {
         return Ok(());
     }
 
@@ -335,8 +305,8 @@ async fn test_gasless_deposit_rejects_a_tampered_amount() -> anyhow::Result<()> 
     .await?;
 
     let auth = depositor
-        .user
-        .sign_deposit_authorization(token.address.clone(), amount)
+        .deposit
+        .sign_eip3009(token.address.parse()?, amount)
         .await?;
 
     // The value is inside the signature, so a submitter cannot pull more than was authorized.
@@ -356,7 +326,7 @@ async fn test_gasless_deposit_rejects_a_tampered_amount() -> anyhow::Result<()> 
     let collateral_before = core_total(&depositor, asset).await?;
     submit_authorization(&submitter_config, asset, amount, auth).await?;
     mine_confirmations(&depositor_config, 2).await?;
-    wait_for_collateral_increase(&depositor.recipient, asset, collateral_before, amount).await?;
+    wait_for_collateral_increase(&depositor.account, asset, collateral_before, amount).await?;
 
     Ok(())
 }

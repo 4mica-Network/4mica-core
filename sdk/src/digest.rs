@@ -25,6 +25,16 @@ sol! {
         bytes32 nonce;
     }
 
+    /// EIP-2612's signed struct. Grants `spender` an allowance without the owner sending a
+    /// transaction, which is what makes a Permit2 deposit gasless for tokens that support it.
+    struct Permit {
+        address owner;
+        address spender;
+        uint256 value;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
     /// Permit2 `SignatureTransfer` token permission.
     struct TokenPermissions {
         address token;
@@ -149,6 +159,29 @@ pub fn eip712_digest_for_permit2_transfer(
     let message = PermitTransferFrom {
         permitted: TokenPermissions { token, amount },
         spender,
+        nonce,
+        deadline,
+    };
+    eip712_digest(domain_separator, message.eip712_hash_struct())
+}
+
+/// EIP-712 signing hash for an EIP-2612 `permit`, used to grant Permit2 its allowance.
+///
+/// `domain_separator` is the token's own. `nonce` must be the owner's *current* nonce, which is
+/// what makes a permit single-use — a client without an Ethereum RPC gets it from the
+/// facilitator's `PERMIT2_ALLOWANCE_REQUIRED` response rather than reading the token.
+pub fn eip712_digest_for_permit(
+    domain_separator: B256,
+    owner: Address,
+    spender: Address,
+    value: U256,
+    nonce: U256,
+    deadline: U256,
+) -> B256 {
+    let message = Permit {
+        owner,
+        spender,
+        value,
         nonce,
         deadline,
     };

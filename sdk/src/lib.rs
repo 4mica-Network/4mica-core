@@ -21,7 +21,14 @@ pub use rpc::{
 pub use crate::error::RecipientQueryError;
 pub use auth::{AuthClient, AuthSession, AuthTokens};
 pub use client::Client;
-pub use client::model::{AssetBalanceInfo, RecipientPaymentInfo, StablecoinPosition, UserInfo};
+pub use client::model::{
+    Asset, AssetBalanceInfo, DepositPath, DepositReceipt, RecipientPaymentInfo, StablecoinPosition,
+    UserInfo,
+};
+pub use client::{
+    account::AccountClient, deposit::DepositClient, payment::PaymentClient,
+    settlement::SettlementClient, withdraw::WithdrawClient,
+};
 pub use config::AuthConfig;
 pub use config::{Config, ConfigBuilder};
 // The gasless-deposit authorizations cross a process boundary: a client signs one here, a
@@ -30,6 +37,6 @@ pub use contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization};
 pub use crypto::bls::BLSCert;
 pub use sig::PaymentSignature;
 pub use x402::X402Flow;
-pub use x402::{FlowSigner, X402SettledPayment, X402SignedPayment};
-// Backwards compatibility with earlier facilitator naming.
+/// Alternative name for [`X402Flow`].
 pub use x402::X402Flow as FacilitatorFlow;
+pub use x402::{FlowSigner, X402SettledPayment, X402SignedPayment};

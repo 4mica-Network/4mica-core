@@ -64,6 +64,8 @@ pub struct Config<S> {
     pub contract_address: Option<Address>,
     pub bearer_token: Option<String>,
     pub auth: Option<AuthConfig>,
+    /// Facilitator that sponsors gas for deposits. Without one, every deposit is self-funded.
+    pub facilitator_url: Option<Url>,
 }
 
 pub struct ConfigBuilder<S = PrivateKeySigner> {
@@ -76,6 +78,7 @@ pub struct ConfigBuilder<S = PrivateKeySigner> {
     auth_refresh_margin_secs: Option<u64>,
     auth_refresh_margin_parse_error: Option<String>,
     auth_enabled: bool,
+    facilitator_url: Option<String>,
 }
 
 impl ConfigBuilder<PrivateKeySigner> {
@@ -99,6 +102,9 @@ impl ConfigBuilder<PrivateKeySigner> {
         }
         if let Ok(v) = std::env::var("4MICA_CONTRACT_ADDRESS") {
             builder = builder.contract_address(v);
+        }
+        if let Ok(v) = std::env::var("4MICA_FACILITATOR_URL") {
+            builder = builder.facilitator_url(v);
         }
         if let Ok(v) = std::env::var("4MICA_BEARER_TOKEN") {
             builder = builder.bearer_token(v);
@@ -134,6 +140,7 @@ impl<S> ConfigBuilder<S> {
             auth_refresh_margin_secs: None,
             auth_refresh_margin_parse_error: None,
             auth_enabled: false,
+            facilitator_url: None,
         }
     }
 
@@ -164,6 +171,12 @@ impl<S> ConfigBuilder<S> {
         self
     }
 
+    /// Facilitator that sponsors gas for deposits. Without one, every deposit is self-funded.
+    pub fn facilitator_url(mut self, facilitator_url: String) -> Self {
+        self.facilitator_url = Some(facilitator_url);
+        self
+    }
+
     /// If not provided, the default config will be fetched from the server.
     /// You normally don't need to provide this!
     pub fn contract_address(mut self, contract_address: String) -> Self {
@@ -171,13 +184,13 @@ impl<S> ConfigBuilder<S> {
         self
     }
 
-    /// Optional bearer token for authenticated core HTTP calls.
+    /// Bearer token for authenticated API calls, in place of signing in.
     pub fn bearer_token(mut self, bearer_token: String) -> Self {
         self.bearer_token = Some(bearer_token);
         self
     }
 
-    /// Enable SIWE authentication using the core auth endpoints.
+    /// Authenticate by signing in with the configured signer (SIWE).
     pub fn enable_auth(mut self) -> Self {
         self.auth_enabled = true;
         self
@@ -245,6 +258,13 @@ impl<S> ConfigBuilder<S> {
             None
         };
 
+        let facilitator_url = self
+            .facilitator_url
+            .as_deref()
+            .map(validate_url)
+            .transpose()
+            .map_err(|e| ConfigError::InvalidValue(format!("facilitator_url: {e}")))?;
+
         Ok(Config {
             rpc_url,
             signer,
@@ -252,6 +272,7 @@ impl<S> ConfigBuilder<S> {
             contract_address,
             bearer_token,
             auth,
+            facilitator_url,
         })
     }
 

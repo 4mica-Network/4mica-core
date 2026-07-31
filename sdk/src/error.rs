@@ -1,6 +1,6 @@
 use crate::contract::Core4Mica;
 use alloy::contract as alloy_contract;
-use alloy::primitives::{Address, Bytes};
+use alloy::primitives::{Address, Bytes, U256};
 use anyhow::Error;
 use reqwest::StatusCode;
 use rpc::ApiClientError;
@@ -177,6 +177,36 @@ pub enum DepositError {
     #[error("authorization expired at {expires_at} (now {now})")]
     AuthorizationExpired { expires_at: u64, now: u64 },
 
+    /// Permit2 needs a one-time on-chain `approve(PERMIT2, ...)` that the payer has not made.
+    ///
+    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so the
+    /// approval can be *signed* rather than transacted — see
+    /// [`DepositClient::send_sponsored_permit2`](crate::DepositClient::send_sponsored_permit2),
+    /// which does exactly that. When it is absent the payer must send `approve(PERMIT2, ...)`
+    /// themselves and pay for it.
+    #[error("permit2 requires a prior approve(PERMIT2, ...): {message}")]
+    Permit2AllowanceRequired {
+        message: String,
+        /// The owner's current EIP-2612 nonce. The one input a client with no chain access cannot
+        /// derive for itself.
+        eip2612_nonce: Option<U256>,
+    },
+    /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit with
+    /// [`DepositPath::SelfFunded`](crate::DepositPath::SelfFunded) instead.
+    #[error(
+        "no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url"
+    )]
+    FacilitatorNotConfigured,
+    /// A rejection the facilitator reported that has no dedicated variant here — including codes
+    /// added after this SDK was built, which is why `code` is carried verbatim.
+    #[error("facilitator rejected the deposit ({code}): {message}")]
+    Facilitator {
+        code: String,
+        message: String,
+        /// Whether retrying the identical request may succeed.
+        retryable: bool,
+    },
+
     #[error(transparent)]
     Client(#[from] ClientError),
 
@@ -184,6 +214,51 @@ pub enum DepositError {
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
+}
+
+impl DepositError {
+    /// Maps a facilitator `errorCode` onto a typed variant where one exists.
+    ///
+    /// Unrecognised codes fall through to [`Self::Facilitator`] carrying the raw code rather than
+    /// being flattened into a string, so a client can still branch on a code this SDK predates.
+    pub(crate) fn from_facilitator(
+        code: Option<String>,
+        message: Option<String>,
+        retryable: bool,
+        eip2612_nonce: Option<U256>,
+    ) -> Self {
+        let code = code.unwrap_or_else(|| "UNKNOWN".into());
+        let message = message.unwrap_or_else(|| "facilitator gave no reason".into());
+
+        match code.as_str() {
+            "PERMIT2_ALLOWANCE_REQUIRED" => Self::Permit2AllowanceRequired {
+                message,
+                eip2612_nonce,
+            },
+            "NO_RELAYER_CONFIGURED" | "NO_RELAYER" => Self::FacilitatorNotConfigured,
+            "UNSUPPORTED_ASSET" => Self::InvalidParams(message),
+            _ => Self::Facilitator {
+                code,
+                message,
+                retryable,
+            },
+        }
+    }
+
+    /// Whether a rejection means "this token cannot take an EIP-3009 authorization" rather than "this
+    /// deposit is bad".
+    ///
+    /// A token without `receiveWithAuthorization` reverts opaquely from inside Core4Mica, which the
+    /// facilitator reports as a failed simulation — indistinguishable, from here, from any other
+    /// revert. Retrying over Permit2 is therefore a guess, but a cheap one: the simulation spent no
+    /// gas, and a genuinely bad deposit fails again on the second route with its own error.
+    pub(crate) fn refuses_the_authorization(&self) -> bool {
+        matches!(
+            self,
+            DepositError::Facilitator { code, .. }
+                if code == "SIMULATION_REVERTED" || code == "UNSUPPORTED_TRANSFER_METHOD"
+        )
+    }
 }
 
 #[derive(Debug, Error)]

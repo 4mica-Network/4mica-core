@@ -13,6 +13,7 @@ use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
 use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION};
+use sdk_4mica::error::DepositError;
 use sdk_4mica::{Client, ConfigBuilder};
 use serde_json::{Value, json};
 use std::str::FromStr;
@@ -64,6 +65,29 @@ fn eip712_digest(domain_separator: B256, struct_hash: B256) -> B256 {
     buf.extend_from_slice(domain_separator.as_slice());
     buf.extend_from_slice(struct_hash.as_slice());
     keccak256(buf)
+}
+
+/// EIP-2612 `Permit` digest, as the token computes it before `ecrecover`.
+fn expected_permit_digest(
+    domain_separator: B256,
+    owner: Address,
+    spender: Address,
+    value: U256,
+    nonce: U256,
+    deadline: U256,
+) -> B256 {
+    let type_hash = keccak256(
+        b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+            .as_slice(),
+    );
+    let mut encoded = Vec::with_capacity(32 * 6);
+    encoded.extend_from_slice(type_hash.as_slice());
+    encoded.extend_from_slice(&word_address(owner));
+    encoded.extend_from_slice(&word_address(spender));
+    encoded.extend_from_slice(&word_u256(value));
+    encoded.extend_from_slice(&word_u256(nonce));
+    encoded.extend_from_slice(&word_u256(deadline));
+    eip712_digest(domain_separator, keccak256(encoded))
 }
 
 /// EIP-3009 `ReceiveWithAuthorization` digest, as USDC's FiatToken computes it.
@@ -245,6 +269,106 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
     }
 }
 
+/// Every request a mock facilitator received, so tests can assert on what the SDK actually sent
+/// rather than only on what it returned.
+#[derive(Default)]
+struct FacilitatorLog {
+    deposits: Vec<Value>,
+    verifies: Vec<Value>,
+}
+
+/// A stand-in facilitator that records requests and replies with `response`.
+///
+/// Deliberately dumb: the point is not to re-implement the facilitator, it is to observe what the
+/// SDK puts on the wire and how it maps the reply back.
+async fn spawn_facilitator(
+    response: Value,
+    log: Arc<Mutex<FacilitatorLog>>,
+) -> anyhow::Result<String> {
+    let deposit_log = log.clone();
+    let deposit_response = response.clone();
+    let verify_log = log.clone();
+
+    spawn(
+        Router::new()
+            .route(
+                "/deposit",
+                post(move |Json(body): Json<Value>| {
+                    let log = deposit_log.clone();
+                    let response = deposit_response.clone();
+                    async move {
+                        log.lock().unwrap().deposits.push(body);
+                        Json(response)
+                    }
+                }),
+            )
+            .route(
+                "/deposit/verify",
+                post(move |Json(body): Json<Value>| {
+                    let log = verify_log.clone();
+                    async move {
+                        log.lock().unwrap().verifies.push(body);
+                        Json(json!({ "isValid": true }))
+                    }
+                }),
+            ),
+    )
+    .await
+}
+
+/// Rejects the first `/deposit` with `PERMIT2_ALLOWANCE_REQUIRED`, then accepts the retry. Mirrors
+/// a real facilitator seeing the allowance appear once the sponsored permit lands.
+async fn spawn_allowance_then_success_facilitator(
+    eip2612_nonce: Option<&str>,
+    log: Arc<Mutex<FacilitatorLog>>,
+) -> anyhow::Result<String> {
+    let nonce = eip2612_nonce.map(str::to_string);
+    spawn(Router::new().route(
+        "/deposit",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            let nonce = nonce.clone();
+            async move {
+                let mut guard = log.lock().unwrap();
+                guard.deposits.push(body);
+                let first = guard.deposits.len() == 1;
+                drop(guard);
+
+                if first {
+                    let mut allowance = json!({
+                        "spender": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+                        "allowance": "0",
+                        "required": "1000000",
+                    });
+                    if let Some(nonce) = nonce {
+                        allowance["eip2612Nonce"] = json!(nonce);
+                    }
+                    return Json(json!({
+                        "success": false,
+                        "error": "approve permit2 first",
+                        "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
+                        "retryable": false,
+                        "permit2Allowance": allowance,
+                    }));
+                }
+                Json(success_response())
+            }
+        }),
+    ))
+    .await
+}
+
+fn success_response() -> Value {
+    json!({
+        "success": true,
+        "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "network": "eip155:1337",
+        "from": "0x00000000000000000000000000000000000000a1",
+        "asset": TOKEN.to_string(),
+        "amount": "1000000",
+    })
+}
+
 /// Boots a mock chain + core and returns a `Client` wired to them, plus the signer and call log.
 async fn test_client() -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc<Mutex<CallLog>>)> {
     let log = Arc::new(Mutex::new(CallLog::default()));
@@ -297,6 +421,81 @@ async fn test_client() -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc
     Ok((client, signer_address, log))
 }
 
+/// As [`test_client`], but with a facilitator configured and its request log returned too.
+async fn test_client_with_facilitator(
+    response: Value,
+) -> anyhow::Result<(
+    Client<PrivateKeySigner>,
+    Address,
+    Arc<Mutex<CallLog>>,
+    Arc<Mutex<FacilitatorLog>>,
+)> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, signer, chain_log) =
+        client_against(spawn_facilitator(response, facilitator_log.clone())).await?;
+    Ok((client, signer, chain_log, facilitator_log))
+}
+
+/// Builds a `Client` pointed at a mock chain, a mock core, and whatever facilitator `facilitator`
+/// resolves to. Taking the facilitator as a future lets each test supply its own behaviour without
+/// duplicating the surrounding setup.
+async fn client_against(
+    facilitator: impl std::future::Future<Output = anyhow::Result<String>>,
+) -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc<Mutex<CallLog>>)> {
+    let chain_log = Arc::new(Mutex::new(CallLog::default()));
+    let eth_url = spawn(
+        Router::new()
+            .route("/", post(handle_rpc))
+            .with_state(chain_log.clone()),
+    )
+    .await?;
+
+    let params = public_params(&eth_url);
+    let core_url = spawn(
+        Router::new()
+            .route(
+                "/core/public-params",
+                get(move || {
+                    let params = params.clone();
+                    async move { Json(params) }
+                }),
+            )
+            .route(
+                "/core/tokens",
+                get(|| async {
+                    Json(json!({
+                        "chain_id": CHAIN_ID,
+                        "tokens": [{
+                            "symbol": "USDC",
+                            "address": TOKEN.to_string(),
+                            "decimals": 6,
+                            "domain_separator": format!("0x{}", alloy::hex::encode(TOKEN_DOMAIN)),
+                        }],
+                    }))
+                }),
+            ),
+    )
+    .await?;
+
+    let facilitator_url = facilitator.await?;
+
+    let signer = PrivateKeySigner::random();
+    let signer_address = signer.address();
+    let cfg = ConfigBuilder::default()
+        .rpc_url(core_url)
+        .signer(signer)
+        .ethereum_http_rpc_url(eth_url)
+        .contract_address(CONTRACT.to_string())
+        .facilitator_url(facilitator_url)
+        .build()?;
+
+    let client = Client::new(cfg).await?;
+    // Drop setup traffic so per-test assertions only see what the deposit did.
+    chain_log.lock().unwrap().eth_calls.clear();
+    chain_log.lock().unwrap().methods.clear();
+    Ok((client, signer_address, chain_log))
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -309,10 +508,7 @@ async fn sign_deposit_authorization_recovers_to_signer_over_erc3009_digest() -> 
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
 
     assert_eq!(
         auth.from, signer_address,
@@ -343,10 +539,7 @@ async fn sign_deposit_authorization_binds_core4mica_as_recipient() -> anyhow::Re
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
     let signature = Signature::from_scalars_and_parity(auth.r, auth.s, auth.v == 28);
 
     // A facilitator cannot redirect the funds: only `to == Core4Mica` recovers to the signer.
@@ -374,10 +567,7 @@ async fn sign_deposit_authorization_binds_amount() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
     let signature = Signature::from_scalars_and_parity(auth.r, auth.s, auth.v == 28);
 
     let inflated = expected_erc3009_digest(
@@ -403,10 +593,7 @@ async fn sign_deposit_authorization_takes_the_token_domain_from_core_not_the_cha
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
 
     assert!(
         log.lock().unwrap().domain_separator_targets().is_empty(),
@@ -438,10 +625,7 @@ async fn sign_deposit_authorization_expires_one_hour_out() -> anyhow::Result<()>
     let (client, _signer_address, _log) = test_client().await?;
     let before = now_secs();
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
 
     let after = now_secs();
     let valid_before: u64 = auth.validBefore.to::<u64>();
@@ -463,10 +647,7 @@ async fn sign_deposit_authorization_v_is_ecrecover_compatible() -> anyhow::Resul
 
     // The token calls `ecrecover(digest, v, r, s)`, which rejects a raw 0/1 y-parity.
     for _ in 0..8 {
-        let auth = client
-            .user
-            .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-            .await?;
+        let auth = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
         assert!(
             auth.v == 27 || auth.v == 28,
             "v must be 27 or 28 for ecrecover, got {}",
@@ -480,14 +661,8 @@ async fn sign_deposit_authorization_v_is_ecrecover_compatible() -> anyhow::Resul
 async fn sign_deposit_authorization_uses_a_fresh_nonce_per_call() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
 
-    let first = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
-    let second = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let first = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
+    let second = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
 
     assert_ne!(
         first.nonce, second.nonce,
@@ -498,39 +673,11 @@ async fn sign_deposit_authorization_uses_a_fresh_nonce_per_call() -> anyhow::Res
 }
 
 #[tokio::test]
-async fn sign_deposit_authorization_rejects_an_invalid_token_address() -> anyhow::Result<()> {
-    let (client, _signer_address, log) = test_client().await?;
-
-    // The authorization type does not implement Debug, so match rather than `expect_err`.
-    let err = match client
-        .user
-        .sign_deposit_authorization("not-an-address".to_string(), U256::from(1u64))
-        .await
-    {
-        Ok(_) => panic!("invalid token address must be rejected"),
-        Err(err) => err,
-    };
-
-    assert!(
-        matches!(err, sdk_4mica::error::DepositError::InvalidParams(_)),
-        "expected InvalidParams, got {err:?}"
-    );
-    assert!(
-        log.lock().unwrap().eth_calls.is_empty(),
-        "validation must fail before touching the chain"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn sign_deposit_permit2_recovers_to_signer_over_permit2_digest() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
 
     assert_eq!(auth.from, signer_address, "permit must bind the signer");
     assert_eq!(
@@ -560,10 +707,7 @@ async fn sign_deposit_permit2_binds_core4mica_as_spender() -> anyhow::Result<()>
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
     let signature = Signature::from_raw(&auth.signature)?;
 
     // Only Core4Mica may consume the permit — no other contract can call permitTransferFrom with it.
@@ -590,10 +734,7 @@ async fn sign_deposit_permit2_binds_token_and_amount() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
     let signature = Signature::from_raw(&auth.signature)?;
 
     let wrong_token = expected_permit2_digest(
@@ -631,10 +772,7 @@ async fn sign_deposit_permit2_derives_the_canonical_permit2_domain_offline() -> 
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
 
     assert!(
         log.lock().unwrap().domain_separator_targets().is_empty(),
@@ -664,10 +802,7 @@ async fn sign_deposit_permit2_expires_one_hour_out() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
     let before = now_secs();
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
 
     let after = now_secs();
     let deadline: u64 = auth.deadline.to::<u64>();
@@ -682,14 +817,8 @@ async fn sign_deposit_permit2_expires_one_hour_out() -> anyhow::Result<()> {
 async fn sign_deposit_permit2_uses_a_fresh_nonce_per_call() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
 
-    let first = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
-    let second = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let first = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
+    let second = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
 
     assert_ne!(
         first.nonce, second.nonce,
@@ -699,41 +828,11 @@ async fn sign_deposit_permit2_uses_a_fresh_nonce_per_call() -> anyhow::Result<()
 }
 
 #[tokio::test]
-async fn sign_deposit_permit2_rejects_an_invalid_token_address() -> anyhow::Result<()> {
-    let (client, _signer_address, log) = test_client().await?;
-
-    let err = match client
-        .user
-        .sign_deposit_permit2("0xnope".to_string(), U256::from(1u64))
-        .await
-    {
-        Ok(_) => panic!("invalid token address must be rejected"),
-        Err(err) => err,
-    };
-
-    assert!(
-        matches!(err, sdk_4mica::error::DepositError::InvalidParams(_)),
-        "expected InvalidParams, got {err:?}"
-    );
-    assert!(
-        log.lock().unwrap().eth_calls.is_empty(),
-        "validation must fail before touching the chain"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn gasless_signing_never_broadcasts_a_transaction() -> anyhow::Result<()> {
     let (client, _signer_address, log) = test_client().await?;
 
-    client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
-    client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
+    client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
 
     let methods = log.lock().unwrap().methods.clone();
     for method in &methods {
@@ -752,10 +851,7 @@ async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
 
     // Signing and submission happen in different processes: a gas-sponsoring submitter receives
     // these as an HTTP request body, so the serde derives on both types are load-bearing.
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
     let decoded: sdk_4mica::ReceiveAuthorization =
         serde_json::from_str(&serde_json::to_string(&auth)?)?;
     assert_eq!(decoded.from, signer_address);
@@ -766,15 +862,369 @@ async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
     assert_eq!(decoded.r, auth.r);
     assert_eq!(decoded.s, auth.s);
 
-    let permit = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let permit = client.deposit.sign_permit2(TOKEN, amount).await?;
     let decoded: sdk_4mica::Permit2Authorization =
         serde_json::from_str(&serde_json::to_string(&permit)?)?;
     assert_eq!(decoded.from, signer_address);
     assert_eq!(decoded.nonce, permit.nonce);
     assert_eq!(decoded.deadline, permit.deadline);
     assert_eq!(decoded.signature, permit.signature);
+    Ok(())
+}
+
+// ── facilitator client ──────────────────────────────────────────────────────
+//
+// The facilitator path is the reason the signing above is chain-free: a payer with tokens but no
+// native gas signs here and something else submits. These tests pin the two properties that make
+// that worth having — the SDK never touches an Ethereum RPC, and what it puts on the wire is what
+// the facilitator expects to read.
+
+#[tokio::test]
+async fn facilitator_deposit_never_touches_an_ethereum_rpc() -> anyhow::Result<()> {
+    let (client, signer_address, chain_log, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let receipt = client
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .await?;
+
+    assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
+
+    // The whole point of routing through a facilitator: signing and submitting cost the payer no
+    // chain access at all. A regression here would silently reintroduce the RPC dependency this
+    // path exists to remove.
+    let chain = chain_log.lock().unwrap();
+    assert!(
+        chain.eth_calls.is_empty(),
+        "a facilitator deposit must make no eth_call, saw {:?}",
+        chain.eth_calls
+    );
+    assert!(
+        !chain.methods.iter().any(|m| m.contains("send")),
+        "a facilitator deposit must never broadcast, saw {:?}",
+        chain.methods
+    );
+
+    // …and the request must name the signer, never anyone else.
+    let facilitator = facilitator_log.lock().unwrap();
+    assert_eq!(facilitator.deposits.len(), 1);
+    let body = &facilitator.deposits[0];
+    assert_eq!(
+        body["authorization"]["from"]
+            .as_str()
+            .map(str::to_lowercase),
+        Some(format!("{signer_address:#x}").to_lowercase())
+    );
+    Ok(())
+}
+
+/// The facilitator deserialises these fields directly, so their names and shapes are a contract
+/// between the two crates. Catches drift that would otherwise only surface at runtime.
+#[tokio::test]
+async fn facilitator_deposit_sends_the_expected_wire_shape() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    client
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.deposits[0];
+
+    assert_eq!(body["assetTransferMethod"], "eip3009");
+    assert_eq!(body["amount"], "1000000");
+    assert_eq!(
+        body["asset"].as_str().map(str::to_lowercase),
+        Some(TOKEN.to_string().to_lowercase())
+    );
+    for field in ["from", "validAfter", "validBefore", "nonce", "v", "r", "s"] {
+        assert!(
+            body["authorization"].get(field).is_some(),
+            "authorization is missing {field}: {body}"
+        );
+    }
+    // Sending the unused shape as null would trip the facilitator's exactly-one check.
+    assert!(
+        body.get("permit2Authorization").is_none(),
+        "the unused authorization must be omitted entirely: {body}"
+    );
+    // Omitted rather than null, so the facilitator falls back to its default network.
+    assert!(
+        body.get("network").is_none(),
+        "network must be omitted: {body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn facilitator_permit2_deposit_sends_the_permit2_shape() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    client
+        .deposit
+        .send_permit2(TOKEN, U256::from(1_000_000u64))
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.deposits[0];
+    assert_eq!(body["assetTransferMethod"], "permit2");
+    for field in ["from", "nonce", "deadline", "signature"] {
+        assert!(
+            body["permit2Authorization"].get(field).is_some(),
+            "permit2Authorization is missing {field}: {body}"
+        );
+    }
+    assert!(body.get("authorization").is_none());
+    Ok(())
+}
+
+/// A known code becomes a typed variant so callers can branch without matching on prose.
+#[tokio::test]
+async fn facilitator_maps_a_known_error_code_to_a_typed_variant() -> anyhow::Result<()> {
+    let (client, _signer, _chain, _log) = test_client_with_facilitator(json!({
+        "success": false,
+        "error": "0xabc has approved 0 but 1000 is required",
+        "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
+        "retryable": false,
+    }))
+    .await?;
+
+    let err = client
+        .deposit
+        .send_permit2(TOKEN, U256::from(1_000_000u64))
+        .await
+        .expect_err("expected the facilitator's rejection to surface");
+
+    assert!(
+        matches!(err, DepositError::Permit2AllowanceRequired { .. }),
+        "expected a typed allowance error, got {err:?}"
+    );
+    Ok(())
+}
+
+/// An unrecognised code must survive intact rather than being flattened, so an SDK built today
+/// still lets callers branch on a code the facilitator adds tomorrow.
+#[tokio::test]
+async fn facilitator_passes_through_an_unknown_error_code() -> anyhow::Result<()> {
+    let (client, _signer, _chain, _log) = test_client_with_facilitator(json!({
+        "success": false,
+        "error": "the relayer is on fire",
+        "errorCode": "SOMETHING_ADDED_LATER",
+        "retryable": true,
+    }))
+    .await?;
+
+    let err = client
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .await
+        .expect_err("expected the facilitator's rejection to surface");
+
+    match err {
+        DepositError::Facilitator {
+            code,
+            message,
+            retryable,
+        } => {
+            assert_eq!(code, "SOMETHING_ADDED_LATER");
+            assert!(message.contains("on fire"));
+            assert!(retryable, "retryability must survive an unrecognised code");
+        }
+        other => panic!("expected a passthrough Facilitator error, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// Reporting success without a transaction hash is a broken facilitator, not a successful deposit.
+#[tokio::test]
+async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<()> {
+    let (client, _signer, _chain, _log) =
+        test_client_with_facilitator(json!({ "success": true })).await?;
+
+    let err = client
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .await
+        .expect_err("expected a missing txHash to be rejected");
+    assert!(matches!(err, DepositError::Transport(_)), "got {err:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn facilitator_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .deposit
+        .sign_eip3009(TOKEN, U256::from(1_000_000u64))
+        .await?;
+    client
+        .deposit
+        .verify_eip3009(TOKEN, U256::from(1_000_000u64), authorization)
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    assert_eq!(facilitator.verifies.len(), 1);
+    assert!(
+        facilitator.deposits.is_empty(),
+        "verifying must not submit anything"
+    );
+    Ok(())
+}
+
+/// Without a facilitator the call must say so plainly, so a caller can fall back to a self-funded
+/// deposit rather than discovering it through a transport error.
+#[tokio::test]
+async fn facilitator_calls_fail_clearly_when_none_is_configured() -> anyhow::Result<()> {
+    let (client, _signer, _log) = test_client().await?;
+
+    assert!(!client.deposit.is_gasless_available());
+    let err = client
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .await
+        .expect_err("expected an unconfigured facilitator to be reported");
+    assert!(
+        matches!(err, DepositError::FacilitatorNotConfigured),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// The sponsored path's whole purpose: recover from a missing allowance by *signing* it, without
+/// ever reading the chain for the nonce.
+#[tokio::test]
+async fn sponsored_permit2_signs_the_approval_and_retries() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, signer_address, chain_log) = client_against(
+        spawn_allowance_then_success_facilitator(Some("7"), facilitator_log.clone()),
+    )
+    .await?;
+
+    let receipt = client
+        .deposit
+        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
+        .await?;
+    assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
+
+    let facilitator = facilitator_log.lock().unwrap();
+    assert_eq!(facilitator.deposits.len(), 2, "expected one retry");
+
+    // The first attempt carries no permit — sponsoring an approval the payer may already have made
+    // would waste the facilitator's gas.
+    assert!(facilitator.deposits[0].get("eip2612Permit").is_none());
+
+    // The retry carries one, signed from the nonce the rejection supplied.
+    let permit = &facilitator.deposits[1]["eip2612Permit"];
+    assert!(permit.is_object(), "retry must carry a permit: {permit}");
+    for field in ["value", "deadline", "v", "r", "s"] {
+        assert!(
+            permit.get(field).is_some(),
+            "permit missing {field}: {permit}"
+        );
+    }
+    assert_eq!(
+        facilitator.deposits[1]["permit2Authorization"]["from"]
+            .as_str()
+            .map(str::to_lowercase),
+        Some(format!("{signer_address:#x}").to_lowercase())
+    );
+
+    // Still chain-free: the nonce came over HTTP, not from an eth_call.
+    let chain = chain_log.lock().unwrap();
+    assert!(
+        chain.eth_calls.is_empty(),
+        "the sponsored path must read no chain state, saw {:?}",
+        chain.eth_calls
+    );
+    Ok(())
+}
+
+/// The permit must recover to the signer over the token's `Permit` digest.
+///
+/// Field presence is not enough: a permit with a valid-looking `v` that inverts the parity
+/// serialises identically and is rejected only by the token's `ecrecover`, on-chain.
+#[tokio::test]
+async fn sponsored_permit2_permit_recovers_to_the_signer() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, signer_address, _chain_log) = client_against(
+        spawn_allowance_then_success_facilitator(Some("7"), facilitator_log.clone()),
+    )
+    .await?;
+
+    client
+        .deposit
+        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let permit = &facilitator.deposits[1]["eip2612Permit"];
+    let value = U256::from_str(permit["value"].as_str().expect("value is a string"))?;
+    let deadline = U256::from_str(permit["deadline"].as_str().expect("deadline is a string"))?;
+    let v = permit["v"].as_u64().expect("v is a number") as u8;
+    let r = B256::from_str(permit["r"].as_str().expect("r is a string"))?;
+    let s = B256::from_str(permit["s"].as_str().expect("s is a string"))?;
+
+    assert!(
+        v == 27 || v == 28,
+        "v must be Electrum notation for the token's ecrecover, got {v}"
+    );
+
+    // Nonce 7 is what the facilitator's rejection advertised; signing any other nonce would
+    // produce a permit the token rejects as replayed.
+    let digest = expected_permit_digest(
+        TOKEN_DOMAIN,
+        signer_address,
+        PERMIT2,
+        value,
+        U256::from(7u64),
+        deadline,
+    );
+    let recovered =
+        Signature::from_scalars_and_parity(r, s, v == 28).recover_address_from_prehash(&digest)?;
+    assert_eq!(
+        recovered, signer_address,
+        "permit must recover to the signer over the token's Permit digest"
+    );
+    Ok(())
+}
+
+/// Without an `eip2612Nonce` the token has no EIP-2612 surface, so the approval cannot be signed.
+/// Retrying anyway would burn the facilitator's gas on a permit the token would reject.
+#[tokio::test]
+async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, _signer, _chain) = client_against(spawn_allowance_then_success_facilitator(
+        None,
+        facilitator_log.clone(),
+    ))
+    .await?;
+
+    let err = client
+        .deposit
+        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
+        .await
+        .expect_err("expected the allowance error to surface");
+
+    assert!(
+        matches!(
+            err,
+            DepositError::Permit2AllowanceRequired {
+                eip2612_nonce: None,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        facilitator_log.lock().unwrap().deposits.len(),
+        1,
+        "must not retry when the approval cannot be sponsored"
+    );
     Ok(())
 }

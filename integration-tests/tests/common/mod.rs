@@ -12,7 +12,7 @@ use core_service::persist::{PersistCtx, repo};
 use crypto::hex::DecodeHexError;
 use rpc::RpcProxy;
 use sdk_4mica::{
-    Address, Client, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
+    AccountClient, Address, Asset, Client, Config, ConfigBuilder, DepositPath, U256, UserInfo,
 };
 use serde::Deserialize;
 use std::str::FromStr;
@@ -27,6 +27,8 @@ sol! {
         function mint(address to, uint256 amount) external;
         function owner() external view returns (address);
         function balanceOf(address account) external view returns (uint256);
+        function masterMinter() external view returns (address);
+        function configureMinter(address minter, uint256 minterAllowedAmount) external returns (bool);
     }
 }
 
@@ -148,6 +150,36 @@ pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::R
 }
 
 /// Resolve the Ethereum RPC URL the core service is bound to, from its public params.
+/// Mirrors `DEPOSIT_AUTHORIZATION_TTL_SECS` in the SDK.
+pub const DEPOSIT_AUTHORIZATION_TTL_SECS: u64 = 3600;
+
+pub async fn eth_balance<S>(config: &Config<S>, who: Address) -> anyhow::Result<U256> {
+    let rpc_url = eth_rpc_url(config).await?;
+    let provider = ProviderBuilder::new().connect(&rpc_url).await?;
+    Ok(provider.get_balance(who).await?)
+}
+
+/// The SDK stamps deposit deadlines from the host clock, but the token checks them against
+/// `block.timestamp`. Other suites on this stack call `evm_increaseTime` (withdrawal grace
+/// periods), which can leave the chain hours or days ahead of wall clock — at which point every
+/// authorization signed here is already expired on arrival.
+///
+/// Rather than fail confusingly depending on which test ran first, detect the drift and skip.
+pub async fn skip_on_chain_clock_drift<S>(config: &Config<S>) -> anyhow::Result<bool> {
+    let chain_ts = get_chain_timestamp(config).await?;
+    let host_ts = get_now().as_secs();
+    if chain_ts >= host_ts.saturating_add(DEPOSIT_AUTHORIZATION_TTL_SECS) {
+        eprintln!(
+            "skipping test: chain clock is {}s ahead of the host, so a \
+             {DEPOSIT_AUTHORIZATION_TTL_SECS}s authorization is already expired on-chain. Restart \
+             the stack (`make dev-down dev-up`) to run this test.",
+            chain_ts.saturating_sub(host_ts)
+        );
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub async fn eth_rpc_url<S>(config: &Config<S>) -> anyhow::Result<String> {
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
     if let Some(token) = &config.bearer_token {
@@ -218,11 +250,15 @@ pub async fn fund_user_with_erc20(
     amount: U256,
 ) -> anyhow::Result<()> {
     let provider = ProviderBuilder::new().connect(rpc_url).await?;
-    // An owner-mintable forked token mints from its owner; an unrestricted mock
-    // (no `owner()`) is minted straight from the recipient.
-    let minter = match OwnedERC20::new(token, &provider).owner().call().await {
-        Ok(owner) => owner,
-        Err(_) => user,
+    let probe = OwnedERC20::new(token, &provider);
+
+    // A FiatToken (forked USDC) exposes both `masterMinter()` and `owner()`, but only accounts the
+    // masterMinter has authorised may mint — so it must be checked first. An owner-mintable forked
+    // token mints from its owner; an unrestricted mock (neither role) is minted straight from the
+    // recipient.
+    let (minter, needs_minter_role) = match probe.masterMinter().call().await {
+        Ok(master_minter) => (master_minter, true),
+        Err(_) => (probe.owner().call().await.unwrap_or(user), false),
     };
 
     provider.anvil_impersonate_account(minter).await?;
@@ -235,12 +271,28 @@ pub async fn fund_user_with_erc20(
             .await?;
     }
 
-    let mint = OwnedERC20::mintCall { to: user, amount };
-    let tx = TransactionRequest::default()
-        .with_from(minter)
-        .with_to(token)
-        .with_input(mint.abi_encode());
-    provider.send_transaction(tx).await?.watch().await?;
+    let send_from_minter = async |input: Vec<u8>| -> anyhow::Result<()> {
+        let tx = TransactionRequest::default()
+            .with_from(minter)
+            .with_to(token)
+            .with_input(input);
+        provider.send_transaction(tx).await?.watch().await?;
+        Ok(())
+    };
+
+    // The masterMinter can authorise itself, and the allowance is consumed by the mint below.
+    if needs_minter_role {
+        send_from_minter(
+            OwnedERC20::configureMinterCall {
+                minter,
+                minterAllowedAmount: amount,
+            }
+            .abi_encode(),
+        )
+        .await?;
+    }
+
+    send_from_minter(OwnedERC20::mintCall { to: user, amount }.abi_encode()).await?;
 
     provider.anvil_stop_impersonating_account(minter).await?;
     Ok(())
@@ -288,7 +340,7 @@ pub fn extract_asset_info(assets: &[UserInfo], asset_address: Address) -> Option
 }
 
 pub async fn wait_for_collateral_increase<S: Signer + Sync>(
-    recipient_client: &RecipientClient<S>,
+    account: &AccountClient<S>,
     asset_address: Address,
     starting_total: U256,
     increase_by: U256,
@@ -301,10 +353,7 @@ pub async fn wait_for_collateral_increase<S: Signer + Sync>(
     let mut last_total = starting_total;
 
     loop {
-        if let Some(balance) = recipient_client
-            .get_user_asset_balance(asset_address.clone())
-            .await?
-        {
+        if let Some(balance) = account.asset_balance(asset_address.clone()).await? {
             last_total = balance.total;
             if last_total >= target_total {
                 return Ok(());
@@ -471,8 +520,8 @@ pub async fn authed_recipient_client(
 /// Core's recorded total collateral for `asset`, used as a deposit baseline.
 pub async fn core_total(client: &Client<PrivateKeySigner>, asset: Address) -> anyhow::Result<U256> {
     Ok(client
-        .recipient
-        .get_user_asset_balance(asset.to_string())
+        .account
+        .asset_balance(asset.to_string())
         .await?
         .map_or(U256::ZERO, |balance| balance.total))
 }
@@ -482,7 +531,7 @@ pub async fn user_asset(
     client: &Client<PrivateKeySigner>,
     asset: Address,
 ) -> anyhow::Result<UserInfo> {
-    let assets = client.user.get_user().await?;
+    let assets = client.account.assets().await?;
     extract_asset_info(&assets, asset)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("asset {asset} not found in user info"))
@@ -500,13 +549,20 @@ pub async fn deposit_collateral_and_await(
     };
     let total_before = core_total(client, asset).await?;
 
-    if let Some(token) = &erc20_token {
+    let deposit_asset = match &erc20_token {
+        Some(_) => Asset::Erc20(asset),
+        None => Asset::Native,
+    };
+    if erc20_token.is_some() {
         let rpc_url = eth_rpc_url(config).await?;
         fund_user_with_erc20(&rpc_url, asset, config.signer.address(), amount).await?;
-        client.user.approve_erc20(token.clone(), amount).await?;
+        client.deposit.approve_erc20(asset, amount).await?;
     }
 
-    client.user.deposit(amount, erc20_token).await?;
+    client
+        .deposit
+        .send_via(DepositPath::SelfFunded, deposit_asset, amount)
+        .await?;
     mine_confirmations(config, 2).await?;
-    wait_for_collateral_increase(&client.recipient, asset, total_before, amount).await
+    wait_for_collateral_increase(&client.account, asset, total_before, amount).await
 }

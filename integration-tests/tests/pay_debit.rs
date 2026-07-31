@@ -49,8 +49,8 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
 
     // The debtor's settlement action should describe exactly the net debit owed.
     let pay_action = debtor
-        .user
-        .get_clearing_pay_net_debit_action(cycle_id.clone())
+        .settlement
+        .pay_net_debit_action(cycle_id.clone())
         .await?;
     assert_eq!(pay_action.function_name, "payNetDebit");
     assert_eq!(U256::from_str(&pay_action.amount)?, amount);
@@ -58,7 +58,7 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
     // Debtor pays the net debit on-chain; a successful receipt is the proof the
     // ClearingHouse accepted the payment (verifying the settlement itself, not
     // core's asynchronous event mirroring).
-    let pay_receipt = debtor.user.pay_net_debit(cycle_id.clone()).await?;
+    let pay_receipt = debtor.settlement.pay_net_debit(cycle_id.clone()).await?;
     assert!(
         pay_receipt.status(),
         "payNetDebit transaction reverted: {:?}",
@@ -68,15 +68,15 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
     // The creditor's action should mirror the same net credit, now fully funded
     // by the debtor's payment.
     let claim_action = creditor
-        .recipient
-        .get_clearing_claim_net_credit_action(cycle_id.clone())
+        .settlement
+        .claim_net_credit_action(cycle_id.clone())
         .await?;
     assert_eq!(claim_action.function_name, "claimNetCredit");
     assert_eq!(U256::from_str(&claim_action.amount)?, amount);
 
     // Creditor claims the net credit on-chain.
     let claim_receipt = creditor
-        .recipient
+        .settlement
         .claim_net_credit(cycle_id.clone())
         .await?;
     assert!(

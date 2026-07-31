@@ -1,4 +1,4 @@
-use alloy::primitives::U256;
+use alloy::primitives::{Address, B256, U256};
 use rpc::{AssetBalanceInfo as RpcAssetBalanceInfo, UserTransactionInfo as RpcUserTransactionInfo};
 
 use crate::contract::Core4Mica;
@@ -86,4 +86,49 @@ impl From<RpcUserTransactionInfo> for RecipientPaymentInfo {
             created_at: value.created_at,
         }
     }
+}
+
+/// What to deposit. Native ETH has no gasless path — no authorization scheme covers it — so it is
+/// always self-funded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asset {
+    Native,
+    Erc20(Address),
+}
+
+/// How a deposit reached the contract. Carried on [`DepositReceipt`] because "it worked" hides the
+/// one thing a caller cares about: whether they paid for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepositPath {
+    /// EIP-3009 `receiveWithAuthorization`, submitted by the facilitator. One transaction, none of
+    /// it the payer's.
+    Eip3009,
+    /// Permit2, submitted by the facilitator. Gasless only because the payer already approved
+    /// Permit2 in some earlier transaction.
+    Permit2,
+    /// Permit2 with the approval signed rather than transacted, both submitted by the facilitator.
+    SponsoredPermit2,
+    /// The payer's own transaction, paying their own gas.
+    SelfFunded,
+}
+
+impl DepositPath {
+    /// Whether the payer's own funds paid for the transaction.
+    pub fn costs_the_payer_gas(&self) -> bool {
+        matches!(self, Self::SelfFunded)
+    }
+}
+
+/// Outcome of a deposit, whichever route delivered it.
+#[derive(Debug, Clone)]
+pub struct DepositReceipt {
+    pub tx_hash: B256,
+    /// Which route delivered the deposit — in particular, whether the payer paid gas.
+    pub path: DepositPath,
+    /// The account credited — always the signer, never the facilitator. Zero when the facilitator
+    /// reported no `from`, which is worth treating as a failed check rather than a match.
+    pub from: Address,
+    pub asset: Address,
+    pub amount: U256,
+    pub network: Option<String>,
 }

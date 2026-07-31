@@ -33,8 +33,8 @@ where
         claims: PaymentGuaranteeRequestClaims,
         scheme: SigningScheme,
     ) -> Result<PaymentSignature, X402Error> {
-        self.user
-            .sign_payment(claims, scheme)
+        self.payment
+            .sign_request(claims, scheme)
             .await
             .map_err(X402Error::Signing)
     }

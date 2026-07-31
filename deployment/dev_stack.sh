@@ -47,6 +47,12 @@ CORE_HOST="${CORE_HOST:-0.0.0.0}"
 CORE_PORT="${CORE_PORT:-3000}"
 CHAIN_ID="${CHAIN_ID:-31337}"
 
+# Fork a live chain instead of starting a bare one. Empty — the default — keeps the stack
+# self-contained: mock stablecoins and a mock Aave are deployed onto a fresh chain, so nothing
+# external has to be reachable or funded. Set it to run against real deployed tokens, and name them
+# with STABLECOIN_0..n-1 (STABLECOINS_COUNT must match); the chain id then comes from the fork.
+FORK_RPC_URL="${FORK_RPC_URL:-}"
+
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-qwerty123456}"
 POSTGRES_DB="${POSTGRES_DB:-core}"
 
@@ -60,8 +66,12 @@ DEV_BLS_PRIVATE_KEY="${DEV_BLS_PRIVATE_KEY:-0x0000000000000000000000000000000000
 AUTH_JWT_SECRET="${AUTH_JWT_SECRET:-asecureauthjwtsecretkey}"
 
 # Stablecoin inputs for the constructor. The local stack deploys real ERC20 mocks
-# (DEPLOY_MOCK_STABLECOINS) so the core service can read their symbol()/decimals();
-STABLECOINS_COUNT="${STABLECOINS_COUNT:-1}"
+# (DEPLOY_MOCK_STABLECOINS) so the core service can read their symbol()/decimals().
+#
+# Two by default, because the mocks differ: the first implements EIP-3009, the rest only EIP-2612.
+# One of each is what the two gasless deposit paths need — the truly gasless one and the sponsored
+# Permit2 approval — so a single token would leave half the surface untestable locally.
+STABLECOINS_COUNT="${STABLECOINS_COUNT:-2}"
 
 RPC_HTTP="http://127.0.0.1:${ANVIL_PORT}"
 RPC_WS="ws://127.0.0.1:${ANVIL_PORT}"
@@ -95,15 +105,26 @@ start_anvil() {
     ok "anvil already running (pid $(cat "$ANVIL_PID"))"
     return
   fi
-  log "Starting anvil on ${ANVIL_PORT} (hardfork prague)…"
-  nohup anvil --hardfork prague --host 0.0.0.0 --port "$ANVIL_PORT" \
-    >"$ANVIL_LOG" 2>&1 &
+  if [ -n "$FORK_RPC_URL" ]; then
+    log "Starting anvil on ${ANVIL_PORT} (hardfork prague, forking ${FORK_RPC_URL})…"
+    nohup anvil --hardfork prague --host 0.0.0.0 --port "$ANVIL_PORT" \
+      --fork-url "$FORK_RPC_URL" >"$ANVIL_LOG" 2>&1 &
+  else
+    log "Starting anvil on ${ANVIL_PORT} (hardfork prague, chain ${CHAIN_ID})…"
+    nohup anvil --hardfork prague --host 0.0.0.0 --port "$ANVIL_PORT" \
+      --chain-id "$CHAIN_ID" >"$ANVIL_LOG" 2>&1 &
+  fi
   echo $! >"$ANVIL_PID"
   for _ in $(seq 1 30); do
     if curl -s -X POST "$RPC_HTTP" -H 'Content-Type: application/json' \
          --data '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":1}' \
          | grep -q anvil; then
-      ok "anvil ready ($RPC_HTTP)"
+      # A forked chain keeps its own id, so read it back rather than assume: it lands in .env and
+      # must match what the SDK sees, or every client refuses to start on a chain-id mismatch.
+      if [ -n "$FORK_RPC_URL" ]; then
+        CHAIN_ID="$(cast chain-id --rpc-url "$RPC_HTTP")"
+      fi
+      ok "anvil ready ($RPC_HTTP, chain ${CHAIN_ID})"
       return
     fi
     sleep 0.5
@@ -119,6 +140,15 @@ deploy_contracts() {
   eval "$(BLS_PRIVATE_KEY="$DEV_BLS_PRIVATE_KEY" \
     cargo run -q -p crypto-4mica --bin print-vk)"
 
+  # Stablecoin collateral is denominated in Aave scaled units, so every stablecoin deposit reverts
+  # with AaveNotConfigured until an aToken and pool exist. The full-stack script deploys a stand-in
+  # for whichever tokens it ends up with, which is why no addresses pass through here.
+  local deploy_mock_stablecoins=true
+  if [ -n "$FORK_RPC_URL" ]; then
+    deploy_mock_stablecoins=false
+    [ -n "${STABLECOIN_0:-}" ] || die "FORK_RPC_URL is set, so name the forked chain's tokens with STABLECOIN_0..$((STABLECOINS_COUNT - 1))"
+  fi
+
   log "Deploying full stack with forge…"
   (
     cd "$REPO_ROOT/contracts"
@@ -126,7 +156,8 @@ deploy_contracts() {
     ACCESS_MANAGER_ADMIN="$ACCESS_MANAGER_ADMIN" \
     DEPLOY_ENVIRONMENT=development \
     CREATE2_SALT="$CREATE2_SALT" \
-    STABLECOINS_COUNT="$STABLECOINS_COUNT" DEPLOY_MOCK_STABLECOINS=true \
+    STABLECOINS_COUNT="$STABLECOINS_COUNT" DEPLOY_MOCK_STABLECOINS="$deploy_mock_stablecoins" \
+    DEPLOY_MOCK_AAVE=true \
     VK_X0="$VK_X0" VK_X1="$VK_X1" VK_Y0="$VK_Y0" VK_Y1="$VK_Y1" \
       forge script script/Core4MicaFullStack.s.sol:Core4MicaFullStackScript \
         --rpc-url "$RPC_HTTP" --broadcast --via-ir -vvvv
@@ -136,6 +167,12 @@ deploy_contracts() {
   [ -n "$CORE4MICA_ADDR" ] || die "could not parse Core4Mica address from deploy log"
   ok "Core4Mica deployed at $CORE4MICA_ADDR"
   echo "$CORE4MICA_ADDR" >"$DEV_DIR/core4mica.addr"
+
+  # Written to .env below purely so a human can `cast` at them; core discovers tokens on-chain.
+  STABLECOIN_ADDRS="$(grep -oE 'MockERC20 [A-Z0-9]+ deployed: 0x[0-9a-fA-F]{40}' "$DEPLOY_LOG" \
+    | grep -oE '0x[0-9a-fA-F]{40}' | tr '\n' ' ')"
+
+  echo "$STABLECOIN_ADDRS" >"$DEV_DIR/stablecoins.addr"
 
   CLEARING_HOUSE_ADDR="$(grep -oP '(?<=ClearingHouse: )0x[0-9a-fA-F]{40}' "$DEPLOY_LOG" | tail -1)"
   [ -n "$CLEARING_HOUSE_ADDR" ] || die "could not parse ClearingHouse address from deploy log"
@@ -169,6 +206,9 @@ AUTH_JWT_SECRET=$AUTH_JWT_SECRET
 BLS_PRIVATE_KEY="$DEV_BLS_PRIVATE_KEY"
 
 # Ethereum / anvil
+# Stablecoins the deploy created, for eyeballing with `cast`. Core discovers them on-chain, and
+# tests ask core, so nothing reads this back.
+DEV_STABLECOINS="$(cat "$DEV_DIR/stablecoins.addr" 2>/dev/null || true)"
 ETHEREUM_HTTP_RPC_URL="$RPC_HTTP"
 ETHEREUM_WS_RPC_URL="$RPC_WS"
 # Advertised to SDK clients via getPublicParams; same anvil endpoint for the local stack.

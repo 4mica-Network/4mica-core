@@ -8,7 +8,13 @@ import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {Core4Mica} from "../src/Core4Mica.sol";
 import {ClearingHouse} from "../src/ClearingHouse.sol";
 import {DeterministicCreate2} from "./utils/DeterministicCreate2.sol";
-import {MockERC20} from "../test/Core4MicaTestBase.sol";
+import {MockERC20, MockERC20Permit} from "../test/Core4MicaTestBase.sol";
+import {
+    MockAavePool,
+    MockAToken,
+    MockAaveProtocolDataProvider,
+    MockPoolAddressesProvider
+} from "../test/helpers/MockAave.sol";
 
 /// @notice Deploys full guarantee stack: AccessManager + Core4Mica + ClearingHouse.
 ///
@@ -68,6 +74,9 @@ contract Core4MicaFullStackScript is Script {
 
     uint32 public constant DEFAULT_ADMIN_EXECUTION_DELAY = 72 hours;
     uint32 public constant DEFAULT_ROLE_GRANT_DELAY = 72 hours;
+
+    /// Aave's ray, i.e. a liquidity index of exactly 1.0.
+    uint256 internal constant MOCK_AAVE_RAY = 1e27;
 
     uint32 public constant MIN_ADMIN_EXECUTION_DELAY = 24 hours;
     uint32 public constant MIN_ROLE_GRANT_DELAY = 24 hours;
@@ -424,8 +433,9 @@ contract Core4MicaFullStackScript is Script {
             // First token is a USDC stand-in; any extras get a distinct suffixed symbol.
             string memory name = i == 0 ? "USD Coin" : string.concat("USD Coin ", vm.toString(i));
             string memory symbol = i == 0 ? "USDC" : string.concat("USDC", vm.toString(i));
-            MockERC20 token = new MockERC20(name, symbol, 6);
-            assets[i] = address(token);
+            // Only the first gets EIP-3009. The others are EIP-2612-only, which is what most listed
+            // stablecoins are — and the only shape that exercises the sponsored-approval path.
+            assets[i] = i == 0 ? address(new MockERC20(name, symbol, 6)) : address(new MockERC20Permit(name, symbol, 6));
             console.log(string.concat("MockERC20 ", symbol, " deployed:"), assets[i]);
         }
     }
@@ -453,6 +463,15 @@ contract Core4MicaFullStackScript is Script {
     }
 
     function _configureOptionalAave(Core4Mica core4Mica, address[] memory stablecoins) internal {
+        // A stand-in Aave deployed here rather than beforehand, so a local stack needs no addresses
+        // carried between two script runs — and works even when the stablecoins themselves were
+        // deployed moments ago and had no address to configure against.
+        if (vm.envOr("DEPLOY_MOCK_AAVE", false)) {
+            (address mockProvider, address[] memory mockATokens) = _deployMockAave(stablecoins);
+            _applyAaveConfiguration(core4Mica, stablecoins, mockProvider, mockATokens);
+            return;
+        }
+
         bool configureAave = vm.envOr("CONFIGURE_AAVE", false);
         address provider = vm.envOr("AAVE_POOL_ADDRESSES_PROVIDER", address(0));
         (address[] memory aTokens, bool anyATokenSet, bool allATokensSet) = _loadStablecoinATokens(stablecoins.length);
@@ -462,15 +481,7 @@ contract Core4MicaFullStackScript is Script {
         }
 
         if (configureAave) {
-            core4Mica.configureAave(provider, aTokens);
-            if (address(core4Mica.aaveAddressesProvider()) != provider) {
-                revert AaveReadbackMismatch("provider");
-            }
-            for (uint256 i = 0; i < stablecoins.length; i++) {
-                if (core4Mica.stablecoinAToken(stablecoins[i]) != aTokens[i]) {
-                    revert AaveReadbackMismatch(string.concat("stablecoinAToken", vm.toString(i)));
-                }
-            }
+            _applyAaveConfiguration(core4Mica, stablecoins, provider, aTokens);
         }
 
         bool setYieldFee = vm.envOr("SET_YIELD_FEE_BPS", false);
@@ -482,6 +493,53 @@ contract Core4MicaFullStackScript is Script {
                 revert YieldFeeReadbackMismatch(yieldFeeBps, storedYieldFeeBps);
             }
         }
+    }
+
+    function _applyAaveConfiguration(
+        Core4Mica core4Mica,
+        address[] memory stablecoins,
+        address provider,
+        address[] memory aTokens
+    ) internal {
+        core4Mica.configureAave(provider, aTokens);
+        if (address(core4Mica.aaveAddressesProvider()) != provider) {
+            revert AaveReadbackMismatch("provider");
+        }
+        for (uint256 i = 0; i < stablecoins.length; i++) {
+            if (core4Mica.stablecoinAToken(stablecoins[i]) != aTokens[i]) {
+                revert AaveReadbackMismatch(string.concat("stablecoinAToken", vm.toString(i)));
+            }
+        }
+    }
+
+    /// Deploys a stand-in Aave covering exactly `stablecoins`: one pool and data provider, one
+    /// aToken each. Mirrors `DeployMockAave.s.sol`, which remains for retrofitting a stack that is
+    /// already deployed.
+    function _deployMockAave(address[] memory stablecoins)
+        internal
+        returns (address provider, address[] memory aTokens)
+    {
+        MockAavePool pool = new MockAavePool();
+        MockAaveProtocolDataProvider dataProvider = new MockAaveProtocolDataProvider();
+
+        aTokens = new address[](stablecoins.length);
+        for (uint256 i = 0; i < stablecoins.length; i++) {
+            MockAToken aToken =
+                new MockAToken(stablecoins[i], address(pool), "Mock aToken", string.concat("maTKN", vm.toString(i)));
+            // Index fixed at ray: scaled balances equal face value, so collateral does not drift
+            // from what was deposited while a local stack sits idle.
+            pool.setReserve(stablecoins[i], address(aToken), MOCK_AAVE_RAY);
+            dataProvider.setReserveAToken(stablecoins[i], address(aToken));
+            aTokens[i] = address(aToken);
+        }
+
+        MockPoolAddressesProvider addressesProvider = new MockPoolAddressesProvider();
+        addressesProvider.setPool(address(pool));
+        addressesProvider.setPoolDataProvider(address(dataProvider));
+
+        console.log("MockAavePool:", address(pool));
+        console.log("MockPoolAddressesProvider:", address(addressesProvider));
+        return (address(addressesProvider), aTokens);
     }
 
     function _loadStablecoinATokens(uint256 count)
