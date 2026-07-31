@@ -508,10 +508,7 @@ async fn sign_deposit_authorization_recovers_to_signer_over_erc3009_digest() -> 
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
 
     assert_eq!(
         auth.from, signer_address,
@@ -542,10 +539,7 @@ async fn sign_deposit_authorization_binds_core4mica_as_recipient() -> anyhow::Re
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
     let signature = Signature::from_scalars_and_parity(auth.r, auth.s, auth.v == 28);
 
     // A facilitator cannot redirect the funds: only `to == Core4Mica` recovers to the signer.
@@ -573,10 +567,7 @@ async fn sign_deposit_authorization_binds_amount() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
     let signature = Signature::from_scalars_and_parity(auth.r, auth.s, auth.v == 28);
 
     let inflated = expected_erc3009_digest(
@@ -602,10 +593,7 @@ async fn sign_deposit_authorization_takes_the_token_domain_from_core_not_the_cha
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
 
     assert!(
         log.lock().unwrap().domain_separator_targets().is_empty(),
@@ -637,10 +625,7 @@ async fn sign_deposit_authorization_expires_one_hour_out() -> anyhow::Result<()>
     let (client, _signer_address, _log) = test_client().await?;
     let before = now_secs();
 
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
 
     let after = now_secs();
     let valid_before: u64 = auth.validBefore.to::<u64>();
@@ -662,10 +647,7 @@ async fn sign_deposit_authorization_v_is_ecrecover_compatible() -> anyhow::Resul
 
     // The token calls `ecrecover(digest, v, r, s)`, which rejects a raw 0/1 y-parity.
     for _ in 0..8 {
-        let auth = client
-            .user
-            .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-            .await?;
+        let auth = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
         assert!(
             auth.v == 27 || auth.v == 28,
             "v must be 27 or 28 for ecrecover, got {}",
@@ -679,14 +661,8 @@ async fn sign_deposit_authorization_v_is_ecrecover_compatible() -> anyhow::Resul
 async fn sign_deposit_authorization_uses_a_fresh_nonce_per_call() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
 
-    let first = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
-    let second = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let first = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
+    let second = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
 
     assert_ne!(
         first.nonce, second.nonce,
@@ -697,39 +673,11 @@ async fn sign_deposit_authorization_uses_a_fresh_nonce_per_call() -> anyhow::Res
 }
 
 #[tokio::test]
-async fn sign_deposit_authorization_rejects_an_invalid_token_address() -> anyhow::Result<()> {
-    let (client, _signer_address, log) = test_client().await?;
-
-    // The authorization type does not implement Debug, so match rather than `expect_err`.
-    let err = match client
-        .user
-        .sign_deposit_authorization("not-an-address".to_string(), U256::from(1u64))
-        .await
-    {
-        Ok(_) => panic!("invalid token address must be rejected"),
-        Err(err) => err,
-    };
-
-    assert!(
-        matches!(err, sdk_4mica::error::DepositError::InvalidParams(_)),
-        "expected InvalidParams, got {err:?}"
-    );
-    assert!(
-        log.lock().unwrap().eth_calls.is_empty(),
-        "validation must fail before touching the chain"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn sign_deposit_permit2_recovers_to_signer_over_permit2_digest() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
 
     assert_eq!(auth.from, signer_address, "permit must bind the signer");
     assert_eq!(
@@ -759,10 +707,7 @@ async fn sign_deposit_permit2_binds_core4mica_as_spender() -> anyhow::Result<()>
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
     let signature = Signature::from_raw(&auth.signature)?;
 
     // Only Core4Mica may consume the permit — no other contract can call permitTransferFrom with it.
@@ -789,10 +734,7 @@ async fn sign_deposit_permit2_binds_token_and_amount() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
     let signature = Signature::from_raw(&auth.signature)?;
 
     let wrong_token = expected_permit2_digest(
@@ -830,10 +772,7 @@ async fn sign_deposit_permit2_derives_the_canonical_permit2_domain_offline() -> 
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
 
     assert!(
         log.lock().unwrap().domain_separator_targets().is_empty(),
@@ -863,10 +802,7 @@ async fn sign_deposit_permit2_expires_one_hour_out() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
     let before = now_secs();
 
-    let auth = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let auth = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
 
     let after = now_secs();
     let deadline: u64 = auth.deadline.to::<u64>();
@@ -881,14 +817,8 @@ async fn sign_deposit_permit2_expires_one_hour_out() -> anyhow::Result<()> {
 async fn sign_deposit_permit2_uses_a_fresh_nonce_per_call() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
 
-    let first = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
-    let second = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    let first = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
+    let second = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
 
     assert_ne!(
         first.nonce, second.nonce,
@@ -898,41 +828,11 @@ async fn sign_deposit_permit2_uses_a_fresh_nonce_per_call() -> anyhow::Result<()
 }
 
 #[tokio::test]
-async fn sign_deposit_permit2_rejects_an_invalid_token_address() -> anyhow::Result<()> {
-    let (client, _signer_address, log) = test_client().await?;
-
-    let err = match client
-        .user
-        .sign_deposit_permit2("0xnope".to_string(), U256::from(1u64))
-        .await
-    {
-        Ok(_) => panic!("invalid token address must be rejected"),
-        Err(err) => err,
-    };
-
-    assert!(
-        matches!(err, sdk_4mica::error::DepositError::InvalidParams(_)),
-        "expected InvalidParams, got {err:?}"
-    );
-    assert!(
-        log.lock().unwrap().eth_calls.is_empty(),
-        "validation must fail before touching the chain"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn gasless_signing_never_broadcasts_a_transaction() -> anyhow::Result<()> {
     let (client, _signer_address, log) = test_client().await?;
 
-    client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1u64))
-        .await?;
-    client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), U256::from(1u64))
-        .await?;
+    client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
+    client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
 
     let methods = log.lock().unwrap().methods.clone();
     for method in &methods {
@@ -951,10 +851,7 @@ async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
 
     // Signing and submission happen in different processes: a gas-sponsoring submitter receives
     // these as an HTTP request body, so the serde derives on both types are load-bearing.
-    let auth = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), amount)
-        .await?;
+    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
     let decoded: sdk_4mica::ReceiveAuthorization =
         serde_json::from_str(&serde_json::to_string(&auth)?)?;
     assert_eq!(decoded.from, signer_address);
@@ -965,10 +862,7 @@ async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
     assert_eq!(decoded.r, auth.r);
     assert_eq!(decoded.s, auth.s);
 
-    let permit = client
-        .user
-        .sign_deposit_permit2(TOKEN.to_string(), amount)
-        .await?;
+    let permit = client.deposit.sign_permit2(TOKEN, amount).await?;
     let decoded: sdk_4mica::Permit2Authorization =
         serde_json::from_str(&serde_json::to_string(&permit)?)?;
     assert_eq!(decoded.from, signer_address);
@@ -991,8 +885,8 @@ async fn facilitator_deposit_never_touches_an_ethereum_rpc() -> anyhow::Result<(
         test_client_with_facilitator(success_response()).await?;
 
     let receipt = client
-        .facilitator
-        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await?;
 
     assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
@@ -1033,8 +927,8 @@ async fn facilitator_deposit_sends_the_expected_wire_shape() -> anyhow::Result<(
         test_client_with_facilitator(success_response()).await?;
 
     client
-        .facilitator
-        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
@@ -1071,8 +965,8 @@ async fn facilitator_permit2_deposit_sends_the_permit2_shape() -> anyhow::Result
         test_client_with_facilitator(success_response()).await?;
 
     client
-        .facilitator
-        .deposit_with_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_permit2(TOKEN, U256::from(1_000_000u64))
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
@@ -1100,8 +994,8 @@ async fn facilitator_maps_a_known_error_code_to_a_typed_variant() -> anyhow::Res
     .await?;
 
     let err = client
-        .facilitator
-        .deposit_with_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_permit2(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected the facilitator's rejection to surface");
 
@@ -1125,8 +1019,8 @@ async fn facilitator_passes_through_an_unknown_error_code() -> anyhow::Result<()
     .await?;
 
     let err = client
-        .facilitator
-        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected the facilitator's rejection to surface");
 
@@ -1152,8 +1046,8 @@ async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<(
         test_client_with_facilitator(json!({ "success": true })).await?;
 
     let err = client
-        .facilitator
-        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected a missing txHash to be rejected");
     assert!(matches!(err, DepositError::Transport(_)), "got {err:?}");
@@ -1166,12 +1060,12 @@ async fn facilitator_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<
         test_client_with_facilitator(success_response()).await?;
 
     let authorization = client
-        .user
-        .sign_deposit_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .sign_eip3009(TOKEN, U256::from(1_000_000u64))
         .await?;
     client
-        .facilitator
-        .verify_deposit_authorization(TOKEN.to_string(), U256::from(1_000_000u64), authorization)
+        .deposit
+        .verify_eip3009(TOKEN, U256::from(1_000_000u64), authorization)
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
@@ -1184,15 +1078,15 @@ async fn facilitator_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<
 }
 
 /// Without a facilitator the call must say so plainly, so a caller can fall back to a self-funded
-/// `user.deposit` rather than discovering it through a transport error.
+/// deposit rather than discovering it through a transport error.
 #[tokio::test]
 async fn facilitator_calls_fail_clearly_when_none_is_configured() -> anyhow::Result<()> {
     let (client, _signer, _log) = test_client().await?;
 
-    assert!(!client.facilitator.is_configured());
+    assert!(!client.deposit.is_gasless_available());
     let err = client
-        .facilitator
-        .deposit_with_authorization(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected an unconfigured facilitator to be reported");
     assert!(
@@ -1213,8 +1107,8 @@ async fn sponsored_permit2_signs_the_approval_and_retries() -> anyhow::Result<()
     .await?;
 
     let receipt = client
-        .facilitator
-        .deposit_with_sponsored_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
         .await?;
     assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
 
@@ -1264,8 +1158,8 @@ async fn sponsored_permit2_permit_recovers_to_the_signer() -> anyhow::Result<()>
     .await?;
 
     client
-        .facilitator
-        .deposit_with_sponsored_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
@@ -1312,8 +1206,8 @@ async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Re
     .await?;
 
     let err = client
-        .facilitator
-        .deposit_with_sponsored_permit2(TOKEN.to_string(), U256::from(1_000_000u64))
+        .deposit
+        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected the allowance error to surface");
 

@@ -14,7 +14,7 @@ async fn test_deposit_all_supported_erc20s_credit_collateral() -> anyhow::Result
     }
 
     let (config, client) = authed_user_client(USER_KEY).await?;
-    let supported = client.get_supported_tokens().await?;
+    let supported = client.supported_tokens().await?;
     assert!(
         !supported.tokens.is_empty(),
         "core must advertise at least one supported ERC20"

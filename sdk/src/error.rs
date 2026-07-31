@@ -181,18 +181,18 @@ pub enum DepositError {
     ///
     /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so the
     /// approval can be *signed* rather than transacted — see
-    /// [`FacilitatorClient::deposit_with_sponsored_permit2`](crate::client::facilitator::FacilitatorClient::deposit_with_sponsored_permit2),
+    /// [`DepositClient::send_sponsored_permit2`](crate::DepositClient::send_sponsored_permit2),
     /// which does exactly that. When it is absent the payer must send `approve(PERMIT2, ...)`
     /// themselves and pay for it.
     #[error("permit2 requires a prior approve(PERMIT2, ...): {message}")]
     Permit2AllowanceRequired {
         message: String,
-        /// The owner's current EIP-2612 nonce, as reported by the facilitator. The one input a
-        /// client without an Ethereum RPC cannot derive for itself.
+        /// The owner's current EIP-2612 nonce. The one input a client with no chain access cannot
+        /// derive for itself.
         eip2612_nonce: Option<U256>,
     },
-    /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit directly
-    /// with [`UserClient::deposit`](crate::client::user::UserClient::deposit) instead.
+    /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit with
+    /// [`DepositPath::SelfFunded`](crate::DepositPath::SelfFunded) instead.
     #[error(
         "no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url"
     )]
@@ -243,6 +243,21 @@ impl DepositError {
                 retryable,
             },
         }
+    }
+
+    /// Whether a rejection means "this token cannot take an EIP-3009 authorization" rather than "this
+    /// deposit is bad".
+    ///
+    /// A token without `receiveWithAuthorization` reverts opaquely from inside Core4Mica, which the
+    /// facilitator reports as a failed simulation — indistinguishable, from here, from any other
+    /// revert. Retrying over Permit2 is therefore a guess, but a cheap one: the simulation spent no
+    /// gas, and a genuinely bad deposit fails again on the second route with its own error.
+    pub(crate) fn refuses_the_authorization(&self) -> bool {
+        matches!(
+            self,
+            DepositError::Facilitator { code, .. }
+                if code == "SIMULATION_REVERTED" || code == "UNSUPPORTED_TRANSFER_METHOD"
+        )
     }
 }
 

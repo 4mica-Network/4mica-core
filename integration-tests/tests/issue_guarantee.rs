@@ -25,7 +25,7 @@ async fn test_issue_and_verify_payment_guarantee() -> anyhow::Result<()> {
     // Native ETH first, then every ERC20 the deployment supports (USDC, etc.).
     issue_and_verify_for_asset(&client, &config, wallet_address, None, 18).await?;
 
-    let supported = client.get_supported_tokens().await?;
+    let supported = client.supported_tokens().await?;
     assert!(
         !supported.tokens.is_empty(),
         "core must advertise at least one supported ERC20"
@@ -61,8 +61,8 @@ async fn issue_and_verify_for_asset(
     let guarantee_amount = unit / U256::from(10u64);
 
     let locked_before = client
-        .recipient
-        .get_user_asset_balance(asset_address.to_string())
+        .account
+        .asset_balance(asset_address.to_string())
         .await?
         .map_or(U256::ZERO, |balance| balance.locked);
 
@@ -79,15 +79,15 @@ async fn issue_and_verify_for_asset(
     );
 
     let signature = client
-        .user
-        .sign_payment(claims.clone(), SigningScheme::Eip712)
+        .payment
+        .sign_request(claims.clone(), SigningScheme::Eip712)
         .await?;
 
     let cert = client
-        .recipient
-        .issue_payment_guarantee(claims.clone(), signature.signature, SigningScheme::Eip712)
+        .payment
+        .issue_guarantee(claims.clone(), signature.signature, SigningScheme::Eip712)
         .await?;
-    let verified = client.recipient.verify_payment_guarantee(&cert)?;
+    let verified = client.payment.verify_guarantee(&cert)?;
 
     assert_eq!(
         Address::from_str(&verified.user_address)?,
@@ -104,8 +104,8 @@ async fn issue_and_verify_for_asset(
     assert_eq!(Address::from_str(&verified.asset_address)?, asset_address);
 
     let locked_after = client
-        .recipient
-        .get_user_asset_balance(asset_address.to_string())
+        .account
+        .asset_balance(asset_address.to_string())
         .await?
         .map_or(U256::ZERO, |balance| balance.locked);
     assert_eq!(
@@ -141,14 +141,14 @@ async fn test_issue_duplicate_guarantee_is_rejected() -> anyhow::Result<()> {
     );
 
     let signature = client
-        .user
-        .sign_payment(claims.clone(), SigningScheme::Eip712)
+        .payment
+        .sign_request(claims.clone(), SigningScheme::Eip712)
         .await?;
 
     // First issuance succeeds.
     client
-        .recipient
-        .issue_payment_guarantee(
+        .payment
+        .issue_guarantee(
             claims.clone(),
             signature.signature.clone(),
             SigningScheme::Eip712,
@@ -156,8 +156,8 @@ async fn test_issue_duplicate_guarantee_is_rejected() -> anyhow::Result<()> {
         .await?;
 
     let err = client
-        .recipient
-        .issue_payment_guarantee(claims.clone(), signature.signature, SigningScheme::Eip712)
+        .payment
+        .issue_guarantee(claims.clone(), signature.signature, SigningScheme::Eip712)
         .await
         .expect_err("expected duplicate guarantee to be rejected");
 

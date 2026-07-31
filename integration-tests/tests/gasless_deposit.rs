@@ -108,7 +108,7 @@ async fn eip3009_token<S>(
     let provider = ProviderBuilder::new().connect(&rpc_url).await?;
     let redeem_selector = alloy::hex::encode(ERC3009Probe::receiveWithAuthorizationCall::SELECTOR);
 
-    for token in client.get_supported_tokens().await?.tokens {
+    for token in client.supported_tokens().await?.tokens {
         let asset = Address::from_str(&token.address)?;
 
         let has_domain_separator = provider
@@ -176,8 +176,8 @@ async fn test_gasless_deposit_credits_signer_and_costs_them_no_gas() -> anyhow::
 
     // Sign locally — no transaction, no allowance, no gas.
     let auth = depositor
-        .user
-        .sign_deposit_authorization(token.address.clone(), amount)
+        .deposit
+        .sign_eip3009(token.address.parse()?, amount)
         .await?;
     assert_eq!(
         auth.from, depositor_address,
@@ -196,7 +196,7 @@ async fn test_gasless_deposit_credits_signer_and_costs_them_no_gas() -> anyhow::
     assert!(receipt.status(), "gasless deposit transaction must succeed");
 
     mine_confirmations(&depositor_config, 2).await?;
-    wait_for_collateral_increase(&depositor.recipient, asset, collateral_before, amount).await?;
+    wait_for_collateral_increase(&depositor.account, asset, collateral_before, amount).await?;
 
     // The collateral landed with the signer, on-chain, not with whoever paid.
     let position = user_asset(&depositor, asset).await?;
@@ -255,8 +255,8 @@ async fn test_gasless_deposit_authorization_cannot_be_replayed() -> anyhow::Resu
     .await?;
 
     let auth = depositor
-        .user
-        .sign_deposit_authorization(token.address.clone(), amount)
+        .deposit
+        .sign_eip3009(token.address.parse()?, amount)
         .await?;
 
     submit_authorization(&submitter_config, asset, amount, auth.clone()).await?;
@@ -305,8 +305,8 @@ async fn test_gasless_deposit_rejects_a_tampered_amount() -> anyhow::Result<()> 
     .await?;
 
     let auth = depositor
-        .user
-        .sign_deposit_authorization(token.address.clone(), amount)
+        .deposit
+        .sign_eip3009(token.address.parse()?, amount)
         .await?;
 
     // The value is inside the signature, so a submitter cannot pull more than was authorized.
@@ -326,7 +326,7 @@ async fn test_gasless_deposit_rejects_a_tampered_amount() -> anyhow::Result<()> 
     let collateral_before = core_total(&depositor, asset).await?;
     submit_authorization(&submitter_config, asset, amount, auth).await?;
     mine_confirmations(&depositor_config, 2).await?;
-    wait_for_collateral_increase(&depositor.recipient, asset, collateral_before, amount).await?;
+    wait_for_collateral_increase(&depositor.account, asset, collateral_before, amount).await?;
 
     Ok(())
 }

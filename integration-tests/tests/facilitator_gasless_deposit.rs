@@ -43,11 +43,12 @@ async fn assert_gasless(
     let label = format!("{path:?}");
     let payer = client.signer_address();
     let amount = U256::from(ONE_USDC);
-    let collateral_before = client.user.get_principal_balance(token.to_string()).await?;
+    let collateral_before = client.account.principal_balance(token.to_string()).await?;
     let gas_before = eth_balance(config, payer).await?;
 
     let receipt = client
-        .deposit_via(path, Asset::Erc20(token), amount)
+        .deposit
+        .send_via(path, Asset::Erc20(token), amount)
         .await?;
 
     assert_eq!(
@@ -64,7 +65,7 @@ async fn assert_gasless(
         "{label}: the payer sent a transaction — this was not gasless"
     );
     assert_eq!(
-        client.user.get_principal_balance(token.to_string()).await? - collateral_before,
+        client.account.principal_balance(token.to_string()).await? - collateral_before,
         amount,
         "{label}: expected 1 USDC of collateral to land on the payer"
     );

@@ -1,6 +1,6 @@
 use alloy::primitives::{Address, utils::parse_ether};
 use sdk_4mica::{
-    U256,
+    Asset, U256,
     error::{FinalizeWithdrawalError, RequestWithdrawalError},
 };
 use std::str::FromStr;
@@ -32,8 +32,8 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     // Request a 0.5 ETH withdrawal; it should be recorded against the asset.
     let withdrawal_amount = parse_ether("0.5")?;
     client
-        .user
-        .request_withdrawal(withdrawal_amount, None)
+        .withdraw
+        .request(Asset::Native, withdrawal_amount)
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -42,7 +42,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     assert!(after_request.withdrawal_request_timestamp > 0);
 
     // Cancel it; the request clears and collateral is left unchanged.
-    client.user.cancel_withdrawal(None).await?;
+    client.withdraw.cancel(Asset::Native).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let after_cancel = user_asset(&client, ETH_ASSET_ADDRESS).await?;
@@ -69,13 +69,13 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
     deposit_collateral_and_await(&client, &config, None, parse_ether("2")?).await?;
 
     client
-        .user
-        .request_withdrawal(parse_ether("1")?, None)
+        .withdraw
+        .request(Asset::Native, parse_ether("1")?)
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Finalizing before the grace period elapses must be rejected.
-    let result = client.user.finalize_withdrawal(None).await;
+    let result = client.withdraw.finalize(Asset::Native).await;
     assert!(
         matches!(result, Err(FinalizeWithdrawalError::GracePeriodNotElapsed)),
         "expected withdrawal finalize to fail due to grace period not elapsed"
@@ -101,8 +101,8 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     // Requesting more than the deposited collateral must be rejected.
     let collateral = user_asset(&client, ETH_ASSET_ADDRESS).await?.collateral;
     let result = client
-        .user
-        .request_withdrawal(collateral + parse_ether("1")?, None)
+        .withdraw
+        .request(Asset::Native, collateral + parse_ether("1")?)
         .await;
     assert!(
         matches!(result, Err(RequestWithdrawalError::InsufficientAvailable)),
@@ -130,8 +130,8 @@ async fn test_withdrawal_finalizes_after_grace_period() -> anyhow::Result<()> {
 
     let withdrawal_amount = parse_ether("0.5")?;
     client
-        .user
-        .request_withdrawal(withdrawal_amount, None)
+        .withdraw
+        .request(Asset::Native, withdrawal_amount)
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -140,7 +140,7 @@ async fn test_withdrawal_finalizes_after_grace_period() -> anyhow::Result<()> {
     // impractical — we elapse it on anvil instead.
     let grace = withdrawal_grace_period(&config).await?;
     advance_chain_time(&config, grace + 60).await?;
-    client.user.finalize_withdrawal(None).await?;
+    client.withdraw.finalize(Asset::Native).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // The request is cleared and collateral dropped by the withdrawn amount.
@@ -166,7 +166,7 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
             .await?;
 
     // Pick the first ERC20 the deployment supports.
-    let supported = client.get_supported_tokens().await?;
+    let supported = client.supported_tokens().await?;
     let token = supported
         .tokens
         .first()
@@ -179,8 +179,8 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     // Request a withdrawal of half; it is recorded against the ERC20 asset.
     let withdrawal_amount = amount / U256::from(2u64);
     client
-        .user
-        .request_withdrawal(withdrawal_amount, Some(token.address.clone()))
+        .withdraw
+        .request(Asset::Erc20(token_address), withdrawal_amount)
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -189,10 +189,7 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     assert!(after_request.withdrawal_request_timestamp > 0);
 
     // Cancel and verify the request clears.
-    client
-        .user
-        .cancel_withdrawal(Some(token.address.clone()))
-        .await?;
+    client.withdraw.cancel(Asset::Erc20(token_address)).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let after_cancel = user_asset(&client, token_address).await?;

@@ -64,8 +64,7 @@ pub struct Config<S> {
     pub contract_address: Option<Address>,
     pub bearer_token: Option<String>,
     pub auth: Option<AuthConfig>,
-    /// Facilitator that sponsors gas for deposits. Absent disables
-    /// [`Client::facilitator`](crate::Client::facilitator); deposits must then be self-funded.
+    /// Facilitator that sponsors gas for deposits. Without one, every deposit is self-funded.
     pub facilitator_url: Option<Url>,
 }
 
@@ -172,9 +171,7 @@ impl<S> ConfigBuilder<S> {
         self
     }
 
-    /// Facilitator that sponsors gas for deposits, enabling
-    /// [`Client::facilitator`](crate::Client::facilitator). Without one, deposits must be
-    /// self-funded via [`UserClient::deposit`](crate::client::user::UserClient::deposit).
+    /// Facilitator that sponsors gas for deposits. Without one, every deposit is self-funded.
     pub fn facilitator_url(mut self, facilitator_url: String) -> Self {
         self.facilitator_url = Some(facilitator_url);
         self
@@ -187,13 +184,13 @@ impl<S> ConfigBuilder<S> {
         self
     }
 
-    /// Optional bearer token for authenticated core HTTP calls.
+    /// Bearer token for authenticated API calls, in place of signing in.
     pub fn bearer_token(mut self, bearer_token: String) -> Self {
         self.bearer_token = Some(bearer_token);
         self
     }
 
-    /// Enable SIWE authentication using the core auth endpoints.
+    /// Authenticate by signing in with the configured signer (SIWE).
     pub fn enable_auth(mut self) -> Self {
         self.auth_enabled = true;
         self

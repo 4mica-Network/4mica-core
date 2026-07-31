@@ -12,7 +12,7 @@ use core_service::persist::{PersistCtx, repo};
 use crypto::hex::DecodeHexError;
 use rpc::RpcProxy;
 use sdk_4mica::{
-    Address, Client, Config, ConfigBuilder, U256, UserInfo, client::recipient::RecipientClient,
+    AccountClient, Address, Asset, Client, Config, ConfigBuilder, DepositPath, U256, UserInfo,
 };
 use serde::Deserialize;
 use std::str::FromStr;
@@ -340,7 +340,7 @@ pub fn extract_asset_info(assets: &[UserInfo], asset_address: Address) -> Option
 }
 
 pub async fn wait_for_collateral_increase<S: Signer + Sync>(
-    recipient_client: &RecipientClient<S>,
+    account: &AccountClient<S>,
     asset_address: Address,
     starting_total: U256,
     increase_by: U256,
@@ -353,10 +353,7 @@ pub async fn wait_for_collateral_increase<S: Signer + Sync>(
     let mut last_total = starting_total;
 
     loop {
-        if let Some(balance) = recipient_client
-            .get_user_asset_balance(asset_address.clone())
-            .await?
-        {
+        if let Some(balance) = account.asset_balance(asset_address.clone()).await? {
             last_total = balance.total;
             if last_total >= target_total {
                 return Ok(());
@@ -523,8 +520,8 @@ pub async fn authed_recipient_client(
 /// Core's recorded total collateral for `asset`, used as a deposit baseline.
 pub async fn core_total(client: &Client<PrivateKeySigner>, asset: Address) -> anyhow::Result<U256> {
     Ok(client
-        .recipient
-        .get_user_asset_balance(asset.to_string())
+        .account
+        .asset_balance(asset.to_string())
         .await?
         .map_or(U256::ZERO, |balance| balance.total))
 }
@@ -534,7 +531,7 @@ pub async fn user_asset(
     client: &Client<PrivateKeySigner>,
     asset: Address,
 ) -> anyhow::Result<UserInfo> {
-    let assets = client.user.get_user().await?;
+    let assets = client.account.assets().await?;
     extract_asset_info(&assets, asset)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("asset {asset} not found in user info"))
@@ -552,13 +549,20 @@ pub async fn deposit_collateral_and_await(
     };
     let total_before = core_total(client, asset).await?;
 
-    if let Some(token) = &erc20_token {
+    let deposit_asset = match &erc20_token {
+        Some(_) => Asset::Erc20(asset),
+        None => Asset::Native,
+    };
+    if erc20_token.is_some() {
         let rpc_url = eth_rpc_url(config).await?;
         fund_user_with_erc20(&rpc_url, asset, config.signer.address(), amount).await?;
-        client.user.approve_erc20(token.clone(), amount).await?;
+        client.deposit.approve_erc20(asset, amount).await?;
     }
 
-    client.user.deposit(amount, erc20_token).await?;
+    client
+        .deposit
+        .send_via(DepositPath::SelfFunded, deposit_asset, amount)
+        .await?;
     mine_confirmations(config, 2).await?;
-    wait_for_collateral_increase(&client.recipient, asset, total_before, amount).await
+    wait_for_collateral_increase(&client.account, asset, total_before, amount).await
 }

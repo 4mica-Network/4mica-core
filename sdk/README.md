@@ -43,8 +43,8 @@ clearing methods below.
 
 That gives each side one settlement call per cycle:
 
-- Payers who owe: `user.pay_net_debit(cycle_id)`
-- Recipients who are owed: `recipient.claim_net_credit(cycle_id)`
+- Payers who owe: `settlement.pay_net_debit(cycle_id)`
+- Recipients who are owed: `settlement.claim_net_credit(cycle_id)`
 
 Both are single netted amounts covering every payment in the window, not one call per payment.
 
@@ -60,10 +60,7 @@ A guarantee that carries a `validation` requirement is payable only once the nam
 approves it, and is cancelled if that has not happened by the deadline. Core resolves only
 validators it whitelists, listed in `/core/public-params` as `validators`.
 
-- `user.sign_payment(...)` signs explicit V1 claims.
-- `user.sign_payment_v2(...)` signs explicit V2 claims.
-- `user.sign_payment_auto(...)` chooses V1 or V2 from core metadata plus optional
-  `PaymentGuaranteeValidationInput`.
+- `payment.sign_request(...)` signs the claims a guarantee is issued against.
 
 ## Initialization and Configuration
 
@@ -157,11 +154,16 @@ Add `dotenv = "0.15"` to your app dependencies if you load `.env` files this way
 
 ## Usage
 
-The SDK provides client interfaces for both sides of the payment flow plus a helper to bridge HTTP 402 resources:
+`Client` groups its methods by what you are doing:
 
-- `UserClient`: payer controls collateral, signs payments, and pays net debits
-- `RecipientClient`: payment recipient issues and verifies guarantees, and claims net credits
-- `X402Flow`: builds X-PAYMENT headers for X402-protected HTTP endpoints
+- `client.deposit`: deposit collateral, sponsored or self-funded
+- `client.withdraw`: request, cancel and finalize withdrawals
+- `client.payment`: sign payment requests, issue and verify guarantees
+- `client.settlement`: pay a net debit or claim a net credit for a cycle
+- `client.account`: read your own balances and positions
+
+Plus `X402Flow`, a standalone helper that builds X-PAYMENT headers for X402-protected HTTP
+endpoints.
 
 ### X402 flow (HTTP 402)
 
@@ -350,54 +352,76 @@ Notes:
 
 ### API Methods Summary
 
-#### UserClient Methods
+#### `client.deposit`
 
-- `approve_erc20(token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the 4Mica contract to spend ERC20 tokens on behalf of the user
-- `approve_clearing_house_erc20(cycle_id: String, token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the ClearingHouse to spend ERC20 tokens before paying a net debit in that asset
-- `deposit(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, DepositError>`: Deposit collateral in ETH or ERC20 token
-- `get_user() -> Result<Vec<UserInfo>, GetUserError>`: Get current user information for all assets
-- `get_principal_balance(asset: String) -> Result<U256, GetUserError>`: Get the user's principal balance for an asset
-- `get_withdrawable_balance(asset: String) -> Result<U256, GetUserError>`: Get the user's withdrawable balance for an asset
-- `get_stablecoin_position(asset: String) -> Result<StablecoinPosition, GetUserError>`: Get the user's yield-bearing stablecoin position
-- `get_clearing_pay_net_debit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Fetch the prepared `payNetDebit` call (amount, proof, contract) for a cycle
+- `send(asset: Asset, amount: U256) -> Result<DepositReceipt, DepositError>`: Deposit over the cheapest route available, falling back to a self-funded transaction
+- `send_via(path: DepositPath, asset: Asset, amount: U256) -> Result<DepositReceipt, DepositError>`: Deposit over one specific route, failing rather than choosing another
+- `send_eip3009(token: Address, amount: U256) -> Result<DepositReceipt, DepositError>`: Gasless deposit of an EIP-3009 token
+- `send_permit2(token: Address, amount: U256) -> Result<DepositReceipt, DepositError>`: Gasless deposit through Permit2, given an existing Permit2 approval
+- `send_sponsored_permit2(token: Address, amount: U256) -> Result<DepositReceipt, DepositError>`: As above, signing the missing Permit2 approval where the token supports EIP-2612
+- `sign_eip3009(token: Address, amount: U256) -> Result<ReceiveAuthorization, DepositError>`: Sign an authorization for someone else to submit
+- `sign_permit2(token: Address, amount: U256) -> Result<Permit2Authorization, DepositError>`: Sign a Permit2 authorization for someone else to submit
+- `submit_eip3009(token, amount, authorization) -> Result<DepositReceipt, DepositError>`: Deposit with an authorization signed elsewhere
+- `submit_permit2(token, amount, authorization) -> Result<DepositReceipt, DepositError>`: Deposit with a Permit2 authorization signed elsewhere
+- `verify_eip3009(token, amount, authorization) -> Result<(), DepositError>`: Preflight an authorization without spending gas
+- `approve_erc20(token: Address, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the 4Mica contract to spend an ERC20, needed only for self-funded deposits
+- `is_gasless_available() -> bool`: Whether a sponsored route is configured at all
+
+#### `client.withdraw`
+
+- `request(asset: Asset, amount: U256) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request a withdrawal, starting its waiting period
+- `cancel(asset: Asset) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel a pending withdrawal request
+- `finalize(asset: Asset) -> Result<TransactionReceipt, FinalizeWithdrawalError>`: Pay out a request whose waiting period has elapsed
+
+#### `client.payment`
+
+- `sign_request(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a payment as the payer
+- `issue_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Redeem a payer's signature for a guarantee, as the recipient
+- `verify_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a certificate and extract its claims
+- `list_received() -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>`: Payments guaranteed to the signer as a recipient
+- `guarantee_domain() -> &[u8; 32]`: The EIP-712 domain guarantees are signed under
+
+#### `client.settlement`
+
 - `pay_net_debit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Pay the caller's committed net debit for a cycle
-- `sign_payment(claims: PaymentGuaranteeRequestClaims, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V1 payment (`PaymentGuaranteeRequestClaims` is the SDK alias for V1 claims)
-- `sign_payment_v2(claims: PaymentGuaranteeRequestClaimsV2, scheme: SigningScheme) -> Result<PaymentSignature, SignPaymentError>`: Sign a V2 payment with validation policy fields
-- `sign_payment_auto(intent: PaymentGuaranteeIntent, validation: Option<PaymentGuaranteeValidationInput>, scheme: SigningScheme) -> Result<PreparedPaymentGuaranteeRequest, SignPaymentError>`: Build and sign either V1 or V2 claims using core metadata
-- `request_withdrawal(amount: U256, erc20_token: Option<String>) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request withdrawal of collateral in ETH or ERC20 token
-- `cancel_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel pending withdrawal
-- `finalize_withdrawal(erc20_token: Option<String>) -> Result<TransactionReceipt, FinalizeWithdrawalError>`: Finalize withdrawal after waiting period
-
-#### RecipientClient Methods
-
-- `verify_payment_guarantee(cert: &BLSCert) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError>`: Verify a BLS certificate and extract claims
-- `issue_payment_guarantee(claims: PaymentGuaranteeRequestClaims, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a payment guarantee
-- `issue_payment_guarantee_v2(claims: PaymentGuaranteeRequestClaimsV2, signature: String, scheme: SigningScheme) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a V2 payment guarantee
-- `issue_prepared_payment_guarantee(request: PreparedPaymentGuaranteeRequest) -> Result<BLSCert, IssuePaymentGuaranteeError>`: Issue a guarantee from the output of `sign_payment_auto`
-- `get_clearing_claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: Fetch the prepared `claimNetCredit` call (amount, proof, contract) for a cycle
 - `claim_net_credit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Claim the caller's committed net credit for a cycle
-- `list_recipient_payments() -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError>`: List all payments for the recipient
-- `get_user_asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Get the authenticated signer's asset balance
-- `active_guarantee_version() -> u64` / `active_guarantee_domain() -> &[u8; 32]`: Guarantee metadata cached from `/core/public-params`
+- `pay_net_debit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: The prepared `payNetDebit` call (amount, proof, contract)
+- `claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: The prepared `claimNetCredit` call
+- `approve_erc20(cycle_id: String, token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the contract that settles this cycle, which is not the 4Mica contract
 
-> **Note:** `BLSCert` now exposes typed claims and signatures. Use `cert.claims().to_hex()` or `cert.signature().to_hex()` when you need hex strings.
+#### `client.account`
+
+- `assets() -> Result<Vec<UserInfo>, GetUserError>`: Every asset the signer holds collateral in
+- `principal_balance(asset: String) -> Result<U256, GetUserError>`: Collateral deposited in an asset, before yield
+- `withdrawable_balance(asset: String) -> Result<U256, GetUserError>`: What could be withdrawn right now
+- `stablecoin_position(asset: String) -> Result<StablecoinPosition, GetUserError>`: Full yield-bearing stablecoin position
+- `asset_balance(asset_address: String) -> Result<Option<AssetBalanceInfo>, RecipientQueryError>`: Balance as guarantees are accounted against it, including the locked portion
+
+#### `Client`
+
+- `signer_address() -> Address`: The address this client signs as
+- `supported_tokens() -> Result<SupportedTokensResponse, ApiClientError>`: Assets that can be deposited
+- `login() -> Result<AuthTokens, AuthError>`: Sign in with the configured signer
+
+> **Note:** `BLSCert` exposes typed claims and signatures. Use `cert.claims().to_hex()` or `cert.signature().to_hex()` when you need hex strings.
 
 > **Note:** Each method returns a specific error type that provides detailed information about what went wrong. See the [Error Handling](#error-handling) section for comprehensive documentation and examples.
 
-### User Client (Payer)
+### Collateral
 
-The user client allows you to manage your collateral and sign payments in ETH or ERC20 tokens.
+#### Approve ERC20 Token (self-funded deposits only)
 
-#### Approve ERC20 Token (Required before depositing or paying with ERC20)
+Sponsored deposits carry their own authorization; only a self-funded ERC20 deposit needs an
+allowance first.
 
 ```rust
-use sdk_4mica::U256;
+use sdk_4mica::{Address, U256};
 
 // Approve the 4Mica contract to spend 1000 USDC on your behalf
-let token_address = "0x1234567890123456789012345678901234567890".to_string();
+let token_address: Address = "0x1234567890123456789012345678901234567890".parse()?;
 let amount = U256::from(1000_000_000u128); // 1000 USDC (6 decimals)
 
-match client.user.approve_erc20(token_address, amount).await {
+match client.deposit.approve_erc20(token_address, amount).await {
     Ok(receipt) => {
         println!("ERC20 approval successful: {:?}", receipt.transaction_hash);
     }
@@ -409,32 +433,37 @@ match client.user.approve_erc20(token_address, amount).await {
 
 #### Deposit Collateral
 
-```rust
-use sdk_4mica::U256;
+`send` takes the cheapest route the asset and configuration allow, and reports which one ran.
 
-// Deposit 1 ETH as collateral
+```rust
+use sdk_4mica::{Address, Asset, U256};
+
+// Deposit 1 ETH as collateral. Native ETH is always self-funded.
 let amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH in wei
-match client.user.deposit(amount, None).await {
+match client.deposit.send(Asset::Native, amount).await {
     Ok(receipt) => {
-        println!("Deposit successful: {:?}", receipt.transaction_hash);
+        println!("Deposit successful: {:?}", receipt.tx_hash);
     }
     Err(e) => {
         eprintln!("Deposit failed: {}", e);
     }
 }
 
-// Or deposit 1000 USDC (make sure to approve first!)
-let token_address = "0x1234567890123456789012345678901234567890".to_string();
+// Or deposit 1000 USDC, gaslessly where the token and facilitator allow it.
+let token_address: Address = "0x1234567890123456789012345678901234567890".parse()?;
 let amount = U256::from(1000_000_000u128);
-let receipt = client.user.deposit(amount, Some(token_address)).await?;
-println!("USDC deposit successful: {:?}", receipt.transaction_hash);
+let receipt = client.deposit.send(Asset::Erc20(token_address), amount).await?;
+println!("USDC deposit successful over {:?}: {:?}", receipt.path, receipt.tx_hash);
+
+// To rule out ever paying gas yourself, name the route instead of letting it fall back.
+let receipt = client.deposit.send_eip3009(token_address, amount).await?;
 ```
 
-#### Get User Info
+#### Read Your Positions
 
 ```rust
-// Get information about the current user for all assets
-let user_assets = client.user.get_user().await?;
+// Every asset you hold collateral in
+let user_assets = client.account.assets().await?;
 for user_info in user_assets {
     println!("Asset: {}", user_info.asset);
     println!("Collateral: {}", user_info.collateral);
@@ -444,14 +473,59 @@ for user_info in user_assets {
 }
 ```
 
+### Withdrawals
+
+#### Request Withdrawal
+
+```rust
+use sdk_4mica::{Address, Asset, U256};
+
+// Request to withdraw 0.5 ETH
+let amount = U256::from(500_000_000_000_000_000u128);
+let receipt = client.withdraw.request(Asset::Native, amount).await?;
+println!("Withdrawal requested: {:?}", receipt.transaction_hash);
+
+// Or request to withdraw 500 USDC
+let token_address: Address = "0x1234567890123456789012345678901234567890".parse()?;
+let amount_usdc = U256::from(500_000_000u128);
+let receipt = client.withdraw.request(Asset::Erc20(token_address), amount_usdc).await?;
+println!("USDC withdrawal requested: {:?}", receipt.transaction_hash);
+```
+
+#### Cancel Withdrawal
+
+```rust
+// Cancel a pending ETH withdrawal request
+let receipt = client.withdraw.cancel(Asset::Native).await?;
+println!("Withdrawal cancelled: {:?}", receipt.transaction_hash);
+
+// Cancel a pending USDC withdrawal request
+let receipt = client.withdraw.cancel(Asset::Erc20(token_address)).await?;
+println!("USDC withdrawal cancelled: {:?}", receipt.transaction_hash);
+```
+
+#### Finalize Withdrawal
+
+```rust
+// Finalize ETH withdrawal (after the waiting period)
+let receipt = client.withdraw.finalize(Asset::Native).await?;
+println!("Withdrawal finalized: {:?}", receipt.transaction_hash);
+
+// Finalize USDC withdrawal (after the waiting period)
+let receipt = client.withdraw.finalize(Asset::Erc20(token_address)).await?;
+println!("USDC withdrawal finalized: {:?}", receipt.transaction_hash);
+```
+
+### Payment Guarantees
+
 #### Sign a Payment
 
 ```rust
 use sdk_4mica::{PaymentGuaranteeRequestClaims, SigningScheme, U256};
 
 // Create payment claims for ETH payment.
-// req_id is a random per-request nonce (see the note below); core binds the
-// guarantee to the active settlement cycle for you.
+// req_id is a random per-request nonce (see the note below); the guarantee is
+// bound to the active settlement cycle for you.
 let req_id = U256::from_be_bytes(rand::random::<[u8; 32]>());
 
 let claims = PaymentGuaranteeRequestClaims::new(
@@ -464,7 +538,7 @@ let claims = PaymentGuaranteeRequestClaims::new(
 );
 
 // Sign using EIP-712 (recommended)
-match client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await {
+match client.payment.sign_request(claims.clone(), SigningScheme::Eip712).await {
     Ok(payment_sig) => {
         println!("Signature: {}", payment_sig.signature);
         println!("Scheme: {:?}", payment_sig.scheme);
@@ -475,7 +549,7 @@ match client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await {
 }
 
 // Or use EIP-191 (personal_sign)
-let payment_sig = client.user.sign_payment(claims, SigningScheme::Eip191).await?;
+let payment_sig = client.payment.sign_request(claims, SigningScheme::Eip191).await?;
 
 // For ERC20 token payment, pass the token address
 let usdc_token = "0x1234567890123456789012345678901234567890".to_string();
@@ -487,80 +561,10 @@ let claims_usdc = PaymentGuaranteeRequestClaims::new(
     1704067200,
     Some(usdc_token),
 );
-let payment_sig_usdc = client.user.sign_payment(claims_usdc, SigningScheme::Eip712).await?;
+let payment_sig_usdc = client.payment.sign_request(claims_usdc, SigningScheme::Eip712).await?;
 ```
 
 > **Note on `req_id`:** `req_id` is a per-request nonce, **not** a sequential counter. Use a freshly generated random `U256` for each guarantee request. Replay protection comes from two independent checks: a request is bound to one settlement cycle via its signed `timestamp` (a request whose timestamp predates the active cycle is rejected as stale), and within a cycle the `(req_id, ...)` digest must be unique, so reusing a `req_id` for an otherwise-identical request is rejected as a duplicate. Random `req_id`s avoid accidental collisions; they do not need to increase or follow any order. `X402Flow` does this for you.
-
-#### Request Withdrawal
-
-```rust
-use sdk_4mica::U256;
-
-// Request to withdraw 0.5 ETH
-let amount = U256::from(500_000_000_000_000_000u128);
-let receipt = client.user.request_withdrawal(amount, None).await?;
-println!("Withdrawal requested: {:?}", receipt.transaction_hash);
-
-// Or request to withdraw 500 USDC
-let token_address = "0x1234567890123456789012345678901234567890".to_string();
-let amount_usdc = U256::from(500_000_000u128);
-let receipt = client.user.request_withdrawal(amount_usdc, Some(token_address)).await?;
-println!("USDC withdrawal requested: {:?}", receipt.transaction_hash);
-```
-
-#### Cancel Withdrawal
-
-```rust
-// Cancel a pending ETH withdrawal request
-let receipt = client.user.cancel_withdrawal(None).await?;
-println!("Withdrawal cancelled: {:?}", receipt.transaction_hash);
-
-// Cancel a pending USDC withdrawal request
-let token_address = "0x1234567890123456789012345678901234567890".to_string();
-let receipt = client.user.cancel_withdrawal(Some(token_address)).await?;
-println!("USDC withdrawal cancelled: {:?}", receipt.transaction_hash);
-```
-
-#### Finalize Withdrawal
-
-```rust
-// Finalize ETH withdrawal (after the waiting period)
-let receipt = client.user.finalize_withdrawal(None).await?;
-println!("Withdrawal finalized: {:?}", receipt.transaction_hash);
-
-// Finalize USDC withdrawal (after the waiting period)
-let token_address = "0x1234567890123456789012345678901234567890".to_string();
-let receipt = client.user.finalize_withdrawal(Some(token_address)).await?;
-println!("USDC withdrawal finalized: {:?}", receipt.transaction_hash);
-```
-
-#### Pay a Net Debit
-
-Once a cycle's netting is committed on-chain, a payer who ended the window owing money
-makes a single call covering every payment they made in it.
-
-```rust
-use sdk_4mica::U256;
-
-let cycle_id = "0x0000000000000000000000000000000000000000:1784210160".to_string();
-
-// For ERC20 assets, approve the ClearingHouse first. The clearing contract is a
-// different address from the Core4Mica contract that `approve_erc20` targets.
-let usdc = "0x1234567890123456789012345678901234567890".to_string();
-client
-    .user
-    .approve_clearing_house_erc20(cycle_id.clone(), usdc, U256::from(1000_000_000u128))
-    .await?;
-
-// Native-asset debits carry their value with the call; no approval needed.
-let receipt = client.user.pay_net_debit(cycle_id).await?;
-println!("Net debit paid: {:?}", receipt.transaction_hash);
-```
-
-### Recipient Client
-
-The recipient client allows you to issue and verify payment guarantees, and to claim your netted credit once a cycle is committed on-chain.
 
 #### Issue Payment Guarantee
 
@@ -577,17 +581,42 @@ let claims = PaymentGuaranteeRequestClaims::new(
     None, // None for ETH
 );
 
-let payment_sig = client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
+let payment_sig = client.payment.sign_request(claims.clone(), SigningScheme::Eip712).await?;
 
-let bls_cert = client.recipient.issue_payment_guarantee(
+let bls_cert = client.payment.issue_guarantee(
     claims,
     payment_sig.signature,
     payment_sig.scheme,
 ).await?;
 
-// Core stamped the active cycle onto the issued claims.
-let issued = client.recipient.verify_payment_guarantee(&bls_cert)?;
+// The issued claims name the cycle the guarantee was bound to.
+let issued = client.payment.verify_guarantee(&bls_cert)?;
 println!("Guarantee bound to cycle: {:#x}", issued.cycle_id);
+```
+
+### Settlement
+
+#### Pay a Net Debit
+
+Once a cycle's netting is committed on-chain, a payer who ended the window owing money
+makes a single call covering every payment they made in it.
+
+```rust
+use sdk_4mica::U256;
+
+let cycle_id = "0x0000000000000000000000000000000000000000:1784210160".to_string();
+
+// For ERC20 assets, approve the settling contract first. It is a different address
+// from the one `client.deposit.approve_erc20` targets.
+let usdc = "0x1234567890123456789012345678901234567890".to_string();
+client
+    .settlement
+    .approve_erc20(cycle_id.clone(), usdc, U256::from(1000_000_000u128))
+    .await?;
+
+// Native-asset debits carry their value with the call; no approval needed.
+let receipt = client.settlement.pay_net_debit(cycle_id).await?;
+println!("Net debit paid: {:?}", receipt.transaction_hash);
 ```
 
 #### Claim a Net Credit
@@ -600,13 +629,13 @@ let cycle_id = "0x0000000000000000000000000000000000000000:1784210160".to_string
 
 // Inspect the prepared call first (amount, Merkle proof, ClearingHouse address)
 let action = client
-    .recipient
-    .get_clearing_claim_net_credit_action(cycle_id.clone())
+    .settlement
+    .claim_net_credit_action(cycle_id.clone())
     .await?;
 println!("claiming {} via {}", action.amount, action.contract_address);
 
 // Or just execute it
-let receipt = client.recipient.claim_net_credit(cycle_id).await?;
+let receipt = client.settlement.claim_net_credit(cycle_id).await?;
 println!("Net credit claimed: {:?}", receipt.transaction_hash);
 ```
 
@@ -617,7 +646,7 @@ Here's a complete example showing a payment flow with ETH:
 ```rust
 use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
+    Address, Asset, Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
 use std::str::FromStr;
 
@@ -636,11 +665,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. User deposits collateral
     let deposit_amount = U256::from(2_000_000_000_000_000_000u128); // 2 ETH
-    let receipt = user_client.user.deposit(deposit_amount, None).await?;
-    println!("Deposited collateral: {:?}", receipt.transaction_hash);
+    let receipt = user_client.deposit.send(Asset::Native, deposit_amount).await?;
+    println!("Deposited collateral: {:?}", receipt.tx_hash);
 
-    // 3. User signs a payment. No setup call is needed first: core binds the
-    //    guarantee to whichever settlement cycle is open.
+    // 3. User signs a payment. No setup call is needed first: the guarantee is bound
+    //    to whichever settlement cycle is open.
     let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
     let recipient_address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".to_string();
     let claims = PaymentGuaranteeRequestClaims::new(
@@ -653,21 +682,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_secs(),
         None, // None for ETH
     );
-    let payment_sig = user_client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
+    let payment_sig = user_client.payment.sign_request(claims.clone(), SigningScheme::Eip712).await?;
     println!("Payment signed");
 
     // 4. Recipient issues the guarantee
     let bls_cert = recipient_client
-        .recipient
-        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
+        .payment
+        .issue_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
-    let issued = recipient_client.recipient.verify_payment_guarantee(&bls_cert)?;
+    let issued = recipient_client.payment.verify_guarantee(&bls_cert)?;
     println!("Guarantee issued in cycle {:#x}", issued.cycle_id);
 
     // 5. Later, once the cycle is netted and committed on-chain, each side makes
     //    one settlement call covering every payment in that window:
-    //      user_client.user.pay_net_debit(cycle_id).await?;
-    //      recipient_client.recipient.claim_net_credit(cycle_id).await?;
+    //      user_client.settlement.pay_net_debit(cycle_id).await?;
+    //      recipient_client.settlement.claim_net_credit(cycle_id).await?;
 
     Ok(())
 }
@@ -680,7 +709,7 @@ Here's a complete example showing a payment flow with an ERC20 token:
 ```rust
 use alloy::signers::local::PrivateKeySigner;
 use sdk_4mica::{
-    Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
+    Address, Asset, Client, ConfigBuilder, PaymentGuaranteeRequestClaims, SigningScheme, U256,
 };
 use std::str::FromStr;
 
@@ -698,16 +727,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recipient_client = Client::new(recipient_config).await?;
 
     let usdc_token = "0x1234567890123456789012345678901234567890".to_string();
+    let usdc_address: Address = usdc_token.parse()?;
 
-    // 1. User approves the 4Mica contract to spend USDC
-    let approval_amount = U256::from(10000_000_000u128); // 10,000 USDC
-    user_client.user.approve_erc20(usdc_token.clone(), approval_amount).await?;
-    println!("Approved USDC spending");
-
-    // 2. User deposits USDC collateral
+    // 1. User deposits USDC collateral. `send` prefers a sponsored route, which needs
+    //    no allowance; it only falls back to a self-funded transaction, and only that
+    //    fallback needs the approval below.
     let deposit_amount = U256::from(5000_000_000u128); // 5,000 USDC
-    user_client.user.deposit(deposit_amount, Some(usdc_token.clone())).await?;
-    println!("Deposited USDC collateral");
+    if !user_client.deposit.is_gasless_available() {
+        let approval_amount = U256::from(10000_000_000u128); // 10,000 USDC
+        user_client.deposit.approve_erc20(usdc_address, approval_amount).await?;
+    }
+    let receipt = user_client
+        .deposit
+        .send(Asset::Erc20(usdc_address), deposit_amount)
+        .await?;
+    println!("Deposited USDC collateral over {:?}", receipt.path);
 
     // 3. User signs a USDC payment
     let user_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
@@ -722,21 +756,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_secs(),
         Some(usdc_token.clone()),
     );
-    let payment_sig = user_client.user.sign_payment(claims.clone(), SigningScheme::Eip712).await?;
+    let payment_sig = user_client.payment.sign_request(claims.clone(), SigningScheme::Eip712).await?;
     println!("Payment signed");
 
     // 4. Recipient issues the guarantee
     let bls_cert = recipient_client
-        .recipient
-        .issue_payment_guarantee(claims, payment_sig.signature, payment_sig.scheme)
+        .payment
+        .issue_guarantee(claims, payment_sig.signature, payment_sig.scheme)
         .await?;
-    let issued = recipient_client.recipient.verify_payment_guarantee(&bls_cert)?;
+    let issued = recipient_client.payment.verify_guarantee(&bls_cert)?;
     println!("Guarantee issued in cycle {:#x}", issued.cycle_id);
 
     // 5. At cycle settlement the payer approves the ClearingHouse for the ERC20
     //    net debit, then pays it:
-    //      user_client.user.approve_clearing_house_erc20(cycle_id.clone(), usdc_token, amount).await?;
-    //      user_client.user.pay_net_debit(cycle_id).await?;
+    //      user_client.settlement.approve_erc20(cycle_id.clone(), usdc_token, amount).await?;
+    //      user_client.settlement.pay_net_debit(cycle_id).await?;
 
     Ok(())
 }
@@ -896,12 +930,12 @@ cargo build --release
 - **Signature verification**: The SDK ensures the signer address matches the claims user address before signing
 - **Use EIP-712**: Prefer EIP-712 signing over EIP-191 for better security and structured data hashing
 - **Handle errors properly**: Always handle errors explicitly. The SDK provides specific error types for each failure scenario to help you build robust applications
-- **Check signer addresses**: For `RecipientClient` operations, ensure your signer address matches the recipient address. The SDK will return `InvalidParams` errors for mismatches
+- **Check signer addresses**: When acting as a recipient, ensure your signer address matches the recipient address. The SDK will return `InvalidParams` errors for mismatches
 - **Validate amounts**: The SDK prevents zero-amount transactions at the contract level, but you should validate amounts in your application for better UX
-- **ERC20 Approvals**: Always approve the 4Mica contract before depositing or paying with ERC20 tokens. Approve only the amount you need to minimize risk. Paying an ERC20 net debit needs a *separate* approval for the ClearingHouse via `approve_clearing_house_erc20` — it is a different contract from the one `approve_erc20` targets
+- **ERC20 Approvals**: A self-funded ERC20 deposit needs `client.deposit.approve_erc20` first; sponsored routes carry their own authorization and need none. Approve only the amount you need. Paying an ERC20 net debit needs a _separate_ approval via `client.settlement.approve_erc20` — a different contract from the one the deposit approval targets
 - **Asset Matching**: Cycles are scoped to a single asset. Ensure the asset in your payment claims matches the asset you intend to settle in; the contract will reject mismatched assets
 - **Use random `req_id`s**: Never reuse or sequence `req_id`. A duplicate within a cycle is rejected, and `X402Flow` generates one for you
-- **Multi-Asset Management**: Each asset (ETH and each ERC20 token) has its own collateral balance and withdrawal request. Use `get_user()` to view all your asset balances
+- **Multi-Asset Management**: Each asset (ETH and each ERC20 token) has its own collateral balance and withdrawal request. Use `client.account.assets()` to view all your asset balances
 
 ## License
 
