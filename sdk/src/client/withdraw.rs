@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     client::{
-        ClientCtx,
+        ClientCtx, await_receipt,
         facilitator::FacilitatorFailure,
         model::{Asset, WithdrawPath, WithdrawReceipt},
         sig,
@@ -69,7 +69,6 @@ where
         asset: Asset,
         amount: U256,
     ) -> Result<WithdrawReceipt, RequestWithdrawalError> {
-        let asset = asset_address(asset);
         let authorization = self.sign_request(asset, amount).await?;
         self.submit_request(authorization).await
     }
@@ -79,7 +78,6 @@ where
         &self,
         asset: Asset,
     ) -> Result<WithdrawReceipt, CancelWithdrawalError> {
-        let asset = asset_address(asset);
         let authorization = self.sign_cancel(asset).await?;
         self.submit_cancel(authorization).await
     }
@@ -91,29 +89,28 @@ where
         &self,
         asset: Asset,
     ) -> Result<WithdrawReceipt, FinalizeWithdrawalError> {
-        let asset = asset_address(asset);
-        let user = self.ctx.signer_address();
-        let request = WithdrawRequest::finalize(user, asset);
-        let response: WithdrawResponse = self.ctx.facilitator().post("withdraw", &request).await?;
-        response.into_receipt(user, asset).map_err(Into::into)
+        let (user, asset) = (self.ctx.signer_address(), asset.address());
+        Ok(self
+            .submit(WithdrawRequest::Finalize { user, asset }, user, asset)
+            .await?)
     }
 
     /// Signs a withdrawal request without submitting it, for callers that redeem it elsewhere — a
     /// hardware wallet, another process, or a later session.
     pub async fn sign_request(
         &self,
-        asset: Address,
+        asset: Asset,
         amount: U256,
     ) -> Result<WithdrawalRequestAuthorization, RequestWithdrawalError> {
-        Ok(sig::request_withdrawal_authorization(&self.ctx, asset, amount).await?)
+        Ok(sig::request_withdrawal_authorization(&self.ctx, asset.address(), amount).await?)
     }
 
     /// Signs a cancellation without submitting it.
     pub async fn sign_cancel(
         &self,
-        asset: Address,
+        asset: Asset,
     ) -> Result<WithdrawalCancelAuthorization, CancelWithdrawalError> {
-        Ok(sig::cancel_withdrawal_authorization(&self.ctx, asset).await?)
+        Ok(sig::cancel_withdrawal_authorization(&self.ctx, asset.address()).await?)
     }
 
     /// Submits a withdrawal request signed elsewhere. The authorization is self-contained, so it
@@ -123,9 +120,9 @@ where
         authorization: WithdrawalRequestAuthorization,
     ) -> Result<WithdrawReceipt, RequestWithdrawalError> {
         let (user, asset) = (authorization.user, authorization.asset);
-        let request = WithdrawRequest::request(authorization);
-        let response: WithdrawResponse = self.ctx.facilitator().post("withdraw", &request).await?;
-        response.into_receipt(user, asset).map_err(Into::into)
+        Ok(self
+            .submit(WithdrawRequest::Request { authorization }, user, asset)
+            .await?)
     }
 
     /// Submits a cancellation signed elsewhere.
@@ -134,9 +131,9 @@ where
         authorization: WithdrawalCancelAuthorization,
     ) -> Result<WithdrawReceipt, CancelWithdrawalError> {
         let (user, asset) = (authorization.user, authorization.asset);
-        let request = WithdrawRequest::cancel(authorization);
-        let response: WithdrawResponse = self.ctx.facilitator().post("withdraw", &request).await?;
-        response.into_receipt(user, asset).map_err(Into::into)
+        Ok(self
+            .submit(WithdrawRequest::Cancel { authorization }, user, asset)
+            .await?)
     }
 
     /// Preflight: runs every check a real submission would run, without spending anyone's gas.
@@ -147,7 +144,9 @@ where
         &self,
         authorization: WithdrawalRequestAuthorization,
     ) -> Result<(), RequestWithdrawalError> {
-        Ok(self.verify(WithdrawRequest::request(authorization)).await?)
+        Ok(self
+            .verify(WithdrawRequest::Request { authorization })
+            .await?)
     }
 
     /// Preflight for a cancellation. See [`Self::verify_request`].
@@ -155,14 +154,31 @@ where
         &self,
         authorization: WithdrawalCancelAuthorization,
     ) -> Result<(), CancelWithdrawalError> {
-        Ok(self.verify(WithdrawRequest::cancel(authorization)).await?)
+        Ok(self
+            .verify(WithdrawRequest::Cancel { authorization })
+            .await?)
     }
 
     /// Preflight for a finalization — worth more here than elsewhere, since it is the one step that
     /// can be refused purely by the clock.
     pub async fn verify_finalize(&self, asset: Asset) -> Result<(), FinalizeWithdrawalError> {
-        let request = WithdrawRequest::finalize(self.ctx.signer_address(), asset_address(asset));
+        let request = WithdrawRequest::Finalize {
+            user: self.ctx.signer_address(),
+            asset: asset.address(),
+        };
         Ok(self.verify(request).await?)
+    }
+
+    /// `user` and `asset` are what the receipt falls back to when the facilitator does not echo
+    /// them; they must describe the same action the request does.
+    async fn submit(
+        &self,
+        request: WithdrawRequest,
+        user: Address,
+        asset: Address,
+    ) -> Result<WithdrawReceipt, SponsorshipError> {
+        let response: WithdrawResponse = self.ctx.facilitator().post("withdraw", &request).await?;
+        response.into_receipt(user, asset)
     }
 
     async fn verify(&self, request: WithdrawRequest) -> Result<(), SponsorshipError> {
@@ -238,19 +254,12 @@ where
         amount: U256,
     ) -> Result<WithdrawReceipt, RequestWithdrawalError> {
         let contract = self.ctx.get_write_contract().await?;
-        let send_result = match asset {
+        let sent = match asset {
             Asset::Erc20(token) => contract.requestWithdrawal_1(token, amount).send().await,
             Asset::Native => contract.requestWithdrawal_0(amount).send().await,
         };
 
-        let receipt = send_result
-            .map_err(RequestWithdrawalError::from)?
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(RequestWithdrawalError::from)?;
-
-        Ok(self.self_funded_receipt(receipt, asset))
+        Ok(self.self_funded_receipt(await_receipt(sent).await?, asset))
     }
 
     /// Cancels with the user's own transaction.
@@ -259,19 +268,12 @@ where
         asset: Asset,
     ) -> Result<WithdrawReceipt, CancelWithdrawalError> {
         let contract = self.ctx.get_write_contract().await?;
-        let send_result = match asset {
+        let sent = match asset {
             Asset::Erc20(token) => contract.cancelWithdrawal_1(token).send().await,
             Asset::Native => contract.cancelWithdrawal_0().send().await,
         };
 
-        let receipt = send_result
-            .map_err(CancelWithdrawalError::from)?
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(CancelWithdrawalError::from)?;
-
-        Ok(self.self_funded_receipt(receipt, asset))
+        Ok(self.self_funded_receipt(await_receipt(sent).await?, asset))
     }
 
     /// Finalizes with the user's own transaction.
@@ -280,19 +282,12 @@ where
         asset: Asset,
     ) -> Result<WithdrawReceipt, FinalizeWithdrawalError> {
         let contract = self.ctx.get_write_contract().await?;
-        let send_result = match asset {
+        let sent = match asset {
             Asset::Erc20(token) => contract.finalizeWithdrawal_1(token).send().await,
             Asset::Native => contract.finalizeWithdrawal_0().send().await,
         };
 
-        let receipt = send_result
-            .map_err(FinalizeWithdrawalError::from)?
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(FinalizeWithdrawalError::from)?;
-
-        Ok(self.self_funded_receipt(receipt, asset))
+        Ok(self.self_funded_receipt(await_receipt(sent).await?, asset))
     }
 
     fn self_funded_receipt(&self, receipt: TransactionReceipt, asset: Asset) -> WithdrawReceipt {
@@ -300,16 +295,9 @@ where
             tx_hash: receipt.transaction_hash,
             path: WithdrawPath::SelfFunded,
             user: self.ctx.signer_address(),
-            asset: asset_address(asset),
+            asset: asset.address(),
             network: None,
         }
-    }
-}
-
-fn asset_address(asset: Asset) -> Address {
-    match asset {
-        Asset::Erc20(token) => token,
-        Asset::Native => Address::ZERO,
     }
 }
 
@@ -372,20 +360,6 @@ enum WithdrawRequest {
     },
     /// No authorization: `finalizeWithdrawalFor` is permissionless because it pays `user`.
     Finalize { user: Address, asset: Address },
-}
-
-impl WithdrawRequest {
-    fn request(authorization: WithdrawalRequestAuthorization) -> Self {
-        Self::Request { authorization }
-    }
-
-    fn cancel(authorization: WithdrawalCancelAuthorization) -> Self {
-        Self::Cancel { authorization }
-    }
-
-    fn finalize(user: Address, asset: Address) -> Self {
-        Self::Finalize { user, asset }
-    }
 }
 
 #[derive(Debug, Deserialize)]

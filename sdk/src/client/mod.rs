@@ -1,4 +1,7 @@
-use alloy::{primitives::Address, signers::Signer};
+use alloy::{
+    network::Ethereum, primitives::Address, providers::PendingTransactionBuilder,
+    rpc::types::TransactionReceipt, signers::Signer,
+};
 use rpc::{ApiClientError, SupportedTokensResponse};
 
 use crate::{
@@ -24,6 +27,16 @@ pub mod settlement;
 pub mod withdraw;
 
 pub(crate) use ctx::ClientCtx;
+
+/// Waits for a sent transaction to be mined.
+///
+/// Broadcasting and waiting fail with different error types; folding them into the contract error
+/// leaves callers a single `?` that decodes the revert into their own error.
+pub(crate) async fn await_receipt(
+    sent: Result<PendingTransactionBuilder<Ethereum>, alloy::contract::Error>,
+) -> Result<TransactionReceipt, alloy::contract::Error> {
+    sent?.get_receipt().await.map_err(Into::into)
+}
 
 /// Entry point to the SDK
 pub struct Client<S> {

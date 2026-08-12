@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     client::{
-        ClientCtx,
+        ClientCtx, await_receipt,
         facilitator::FacilitatorFailure,
         model::{Asset, DepositPath, DepositReceipt},
         sig::{self, Eip2612Permit},
@@ -342,17 +342,7 @@ where
         let spender = self.ctx.contract_address();
         let contract = self.ctx.get_erc20_write_contract(token).await?;
 
-        let send_result = contract
-            .approve(spender, amount)
-            .send()
-            .await
-            .map_err(ApproveErc20Error::from)?;
-
-        send_result
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(ApproveErc20Error::from)
+        Ok(await_receipt(contract.approve(spender, amount).send().await).await?)
     }
 
     /// The payer's own transaction, reported in the same shape as a sponsored one.
@@ -365,26 +355,17 @@ where
         amount: U256,
     ) -> Result<DepositReceipt, DepositError> {
         let contract = self.ctx.get_write_contract().await?;
-        let send_result = match asset {
+        let sent = match asset {
             Asset::Erc20(token) => contract.depositStablecoin(token, amount).send().await,
             Asset::Native => contract.deposit().value(amount).send().await,
         };
-
-        let receipt = send_result
-            .map_err(DepositError::from)?
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(DepositError::from)?;
+        let receipt = await_receipt(sent).await?;
 
         Ok(DepositReceipt {
             tx_hash: receipt.transaction_hash,
             path: DepositPath::SelfFunded,
             from: self.ctx.signer_address(),
-            asset: match asset {
-                Asset::Erc20(token) => token,
-                Asset::Native => Address::ZERO,
-            },
+            asset: asset.address(),
             amount,
             network: None,
         })

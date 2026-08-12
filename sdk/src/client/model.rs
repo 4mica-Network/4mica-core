@@ -99,6 +99,16 @@ pub enum Asset {
     Erc20(Address),
 }
 
+impl Asset {
+    /// How the contract names the asset: the token address, or `Address::ZERO` for ETH.
+    pub fn address(self) -> Address {
+        match self {
+            Self::Erc20(token) => token,
+            Self::Native => Address::ZERO,
+        }
+    }
+}
+
 /// How a deposit reached the contract. Carried on [`DepositReceipt`] because "it worked" hides the
 /// one thing a caller cares about: whether they paid for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

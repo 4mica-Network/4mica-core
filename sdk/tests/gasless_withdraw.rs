@@ -380,7 +380,7 @@ async fn a_signed_request_recovers_to_the_signer_over_the_contracts_digest() -> 
 
     let auth = client
         .withdraw
-        .sign_request(TOKEN, U256::from(AMOUNT))
+        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
         .await?;
 
     assert_eq!(auth.user, signer);
@@ -411,7 +411,7 @@ async fn a_signed_request_recovers_to_the_signer_over_the_contracts_digest() -> 
 async fn a_signed_cancel_recovers_to_the_signer_over_the_contracts_digest() -> anyhow::Result<()> {
     let (client, signer, _log) = client_with(None).await?;
 
-    let auth = client.withdraw.sign_cancel(TOKEN).await?;
+    let auth = client.withdraw.sign_cancel(Asset::Erc20(TOKEN)).await?;
 
     let digest = expected_cancel_digest(
         auth.user,
@@ -433,7 +433,7 @@ async fn eth_withdrawals_can_be_signed_too() -> anyhow::Result<()> {
 
     let auth = client
         .withdraw
-        .sign_request(Address::ZERO, U256::from(AMOUNT))
+        .sign_request(Asset::Native, U256::from(AMOUNT))
         .await?;
 
     assert_eq!(auth.asset, Address::ZERO);
@@ -458,11 +458,11 @@ async fn each_authorization_gets_a_fresh_nonce() -> anyhow::Result<()> {
 
     let first = client
         .withdraw
-        .sign_request(TOKEN, U256::from(AMOUNT))
+        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
         .await?;
     let second = client
         .withdraw
-        .sign_request(TOKEN, U256::from(AMOUNT))
+        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
         .await?;
 
     assert_ne!(first.nonce, second.nonce);
@@ -477,7 +477,7 @@ async fn signing_reads_the_contracts_domain_separator_not_a_tokens() -> anyhow::
 
     client
         .withdraw
-        .sign_request(TOKEN, U256::from(AMOUNT))
+        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
         .await?;
 
     let targets = log.lock().unwrap().domain_separator_targets();
@@ -493,9 +493,9 @@ async fn the_domain_separator_is_read_once() -> anyhow::Result<()> {
 
     client
         .withdraw
-        .sign_request(TOKEN, U256::from(AMOUNT))
+        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
         .await?;
-    client.withdraw.sign_cancel(TOKEN).await?;
+    client.withdraw.sign_cancel(Asset::Erc20(TOKEN)).await?;
 
     assert_eq!(log.lock().unwrap().domain_separator_targets().len(), 1);
     Ok(())
