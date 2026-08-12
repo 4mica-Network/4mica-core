@@ -7,6 +7,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {BLS} from "@solady/src/utils/ext/ithaca/BLS.sol";
 import {IAavePool} from "./interfaces/IAavePool.sol";
 import {IPoolAddressesProvider} from "./interfaces/IPoolAddressesProvider.sol";
@@ -101,13 +103,49 @@ struct Permit2Authorization {
     bytes signature;
 }
 
+/// @notice A user's EIP-712 authorization to open a withdrawal request on their behalf. Any caller
+/// may submit it (e.g. a facilitator sponsoring gas); the request is always recorded against `user`
+/// (the signer), never `msg.sender`, and `signature` is verified against the digest of every other
+/// field — so a submitter can change none of them.
+/// @dev `signature` is not part of the signed struct; see `REQUEST_WITHDRAWAL_TYPEHASH`.
+struct WithdrawalRequestAuthorization {
+    address user;
+    address asset;
+    uint256 amount;
+    uint256 validAfter;
+    uint256 validBefore;
+    bytes32 nonce;
+    bytes signature;
+}
+
+/// @notice A user's EIP-712 authorization to cancel their pending withdrawal request for `asset`.
+/// Submittable by anyone, always applied to `user`.
+/// @dev `signature` is not part of the signed struct; see `CANCEL_WITHDRAWAL_TYPEHASH`.
+struct WithdrawalCancelAuthorization {
+    address user;
+    address asset;
+    uint256 validAfter;
+    uint256 validBefore;
+    bytes32 nonce;
+    bytes signature;
+}
+
 /// @title Core4Mica
 /// @notice Manages user collateral, delayed withdrawals, and make-whole payouts.
-contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
+contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     using SafeERC20 for IERC20;
 
     uint256 public constant MAX_YIELD_FEE_BPS = 5000;
     uint256 public constant RECONCILIATION_DUST_TOLERANCE_SCALED = 1;
+
+    /// @notice EIP-712 type hash for `WithdrawalRequestAuthorization`, minus its `signature` field.
+    bytes32 public constant REQUEST_WITHDRAWAL_TYPEHASH = keccak256(
+        "RequestWithdrawal(address user,address asset,uint256 amount,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
+    );
+
+    /// @notice EIP-712 type hash for `WithdrawalCancelAuthorization`, minus its `signature` field.
+    bytes32 public constant CANCEL_WITHDRAWAL_TYPEHASH =
+        keccak256("CancelWithdrawal(address user,address asset,uint256 validAfter,uint256 validBefore,bytes32 nonce)");
 
     // ========= Errors =========
     error AmountZero();
@@ -139,6 +177,9 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
     error ReconciliationLoss(address asset, uint256 tracked, uint256 observed);
     error SurplusClaimExceedsAvailable();
     error ValueMismatch(uint256 expected, uint256 actual);
+    error AuthorizationExpired(uint256 validBefore);
+    error AuthorizationNotYetValid(uint256 validAfter);
+    error AuthorizationAlreadyUsed(address user, bytes32 nonce);
 
     // ========= Storage =========
     /// @notice Delay between `requestWithdrawal` and `finalizeWithdrawal`.
@@ -218,11 +259,18 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
 
     mapping(address => mapping(address => WithdrawalRequest)) public withdrawalRequests;
 
+    /// @notice Whether a user's authorization nonce has been consumed. Random per authorization
+    /// rather than sequential, so a user can have several signed and outstanding at once and the
+    /// order they are submitted in does not matter — the same shape EIP-3009 uses for deposits.
+    mapping(address => mapping(bytes32 => bool)) public authorizationState;
+
     // ========= Events =========
     event CollateralDeposited(address indexed user, address indexed asset, uint256 amount);
     event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
     event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
     event WithdrawalCanceled(address indexed user, address indexed asset);
+    /// A signed authorization was consumed, burning its nonce.
+    event AuthorizationUsed(address indexed user, bytes32 indexed nonce);
     event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
     event MinWithdrawalGracePeriodUpdated(uint256 newMinGracePeriod);
     event VerificationKeyUpdated(BLS.G1Point newVerificationKey);
@@ -250,7 +298,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         BLS.G1Point memory verificationKey,
         address[] memory stablecoins_,
         uint256 minGracePeriod_
-    ) AccessManaged(manager) {
+    ) AccessManaged(manager) EIP712("Core4Mica", "1") {
         if (stablecoins_.length == 0) revert AmountZero();
         // Set the withdrawal-grace floor atomically at deploy so it can never be left at 0 by a
         // forgotten setter call. May be 0 only for explicit opt-out (e.g. tests); production
@@ -664,6 +712,115 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable {
         }
 
         _finalizeStablecoinWithdrawal(user, asset, request);
+    }
+
+    // ========= Gasless withdrawals =========
+
+    /// @notice This contract's EIP-712 domain separator, exposed so a signer can build a digest
+    /// without reconstructing name/version/chainId — a wrong reconstruction produces a well-formed
+    /// separator that verification then rejects for no discoverable reason.
+    // forge-lint: disable-next-line(mixed-case-function)
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    /// @notice Open a withdrawal request on behalf of `auth.user` from their EIP-712 signature. Any
+    /// caller may submit this; the request is recorded against `auth.user`, never `msg.sender`.
+    /// @dev The signature covers the asset, the amount and the validity window, so a sponsoring
+    /// relayer can neither withdraw a different asset nor inflate the amount — the worst it can do
+    /// is decline to submit. Pass `asset = address(0)` for ETH.
+    function requestWithdrawalWithAuthorization(WithdrawalRequestAuthorization calldata auth)
+        external
+        supportedAsset(auth.asset)
+        nonZero(auth.amount)
+        whenNotPaused
+    {
+        _consumeAuthorization(
+            auth.user,
+            auth.validAfter,
+            auth.validBefore,
+            auth.nonce,
+            keccak256(
+                abi.encode(
+                    REQUEST_WITHDRAWAL_TYPEHASH,
+                    auth.user,
+                    auth.asset,
+                    auth.amount,
+                    auth.validAfter,
+                    auth.validBefore,
+                    auth.nonce
+                )
+            ),
+            auth.signature
+        );
+        requestWithdrawalInternal(auth.user, auth.asset, auth.amount);
+    }
+
+    /// @notice Cancel `auth.user`'s pending withdrawal request from their EIP-712 signature. Any
+    /// caller may submit this; the cancellation always applies to `auth.user`.
+    function cancelWithdrawalWithAuthorization(WithdrawalCancelAuthorization calldata auth)
+        external
+        supportedAsset(auth.asset)
+        whenNotPaused
+    {
+        _consumeAuthorization(
+            auth.user,
+            auth.validAfter,
+            auth.validBefore,
+            auth.nonce,
+            keccak256(
+                abi.encode(
+                    CANCEL_WITHDRAWAL_TYPEHASH, auth.user, auth.asset, auth.validAfter, auth.validBefore, auth.nonce
+                )
+            ),
+            auth.signature
+        );
+        cancelWithdrawalInternal(auth.user, auth.asset);
+    }
+
+    /// @notice Pay out `user`'s withdrawal request once its grace period has elapsed.
+    /// @dev Deliberately permissionless rather than signature-gated. The funds go to `user` and the
+    /// amount was fixed when they requested it, so a submitter gains nothing; requiring a signature
+    /// here would instead mean the user has to be around to produce one a grace period after the
+    /// request, which defeats the point of sponsoring it. The trade-off is that anyone may finalize
+    /// the moment the period elapses, ending yield accrual slightly earlier than the user might
+    /// have chosen — cancel before then to avoid that.
+    function finalizeWithdrawalFor(address user, address asset)
+        external
+        nonReentrant
+        supportedAsset(asset)
+        whenNotPaused
+    {
+        finalizeWithdrawalInternal(user, asset);
+    }
+
+    /// Validates a signed authorization and burns its nonce, reverting if it is outside its window,
+    /// already spent, or not signed by `user`.
+    ///
+    /// `SignatureChecker` accepts an EIP-1271 contract signature as well as an ECDSA one, so smart
+    /// accounts can authorize a sponsored withdrawal the same way an EOA does.
+    function _consumeAuthorization(
+        address user,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        bytes32 structHash,
+        bytes calldata signature
+    ) internal {
+        // forge-lint: disable-next-line(block-timestamp)
+        uint256 nowTs = block.timestamp;
+        if (nowTs >= validBefore) revert AuthorizationExpired(validBefore);
+        if (nowTs < validAfter) revert AuthorizationNotYetValid(validAfter);
+        if (authorizationState[user][nonce]) revert AuthorizationAlreadyUsed(user, nonce);
+
+        if (!SignatureChecker.isValidSignatureNow(user, _hashTypedDataV4(structHash), signature)) {
+            revert InvalidSignature();
+        }
+
+        // Burned before the action runs, so a re-entrant submission of the same authorization finds
+        // the nonce already spent.
+        authorizationState[user][nonce] = true;
+        emit AuthorizationUsed(user, nonce);
     }
 
     // ========= Settlement (ClearingHouse) =========

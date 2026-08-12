@@ -88,8 +88,11 @@ impl From<RpcUserTransactionInfo> for RecipientPaymentInfo {
     }
 }
 
-/// What to deposit. Native ETH has no gasless path — no authorization scheme covers it — so it is
-/// always self-funded.
+/// Which asset an operation moves.
+///
+/// Native ETH has no gasless *deposit* path — no authorization scheme covers it — so a deposit of
+/// it is always self-funded. Withdrawals are unaffected: Core4Mica verifies those signatures
+/// itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Asset {
     Native,
@@ -130,5 +133,37 @@ pub struct DepositReceipt {
     pub from: Address,
     pub asset: Address,
     pub amount: U256,
+    pub network: Option<String>,
+}
+
+/// How a withdrawal step reached the contract.
+///
+/// Unlike deposits there is one sponsored route rather than three: the contract verifies the
+/// signature itself, so nothing depends on what the asset implements — ETH included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawPath {
+    /// Signed by the user, submitted and paid for by the facilitator.
+    Sponsored,
+    /// The user's own transaction, paying their own gas.
+    SelfFunded,
+}
+
+impl WithdrawPath {
+    /// Whether the user's own funds paid for the transaction.
+    pub fn costs_the_user_gas(&self) -> bool {
+        matches!(self, Self::SelfFunded)
+    }
+}
+
+/// Outcome of a withdrawal request, cancellation or finalization.
+#[derive(Debug, Clone)]
+pub struct WithdrawReceipt {
+    pub tx_hash: B256,
+    /// Which route delivered it — in particular, whether the user paid gas.
+    pub path: WithdrawPath,
+    /// The account the action applied to — always the signer, never the facilitator.
+    pub user: Address,
+    /// `Address::ZERO` for ETH.
+    pub asset: Address,
     pub network: Option<String>,
 }

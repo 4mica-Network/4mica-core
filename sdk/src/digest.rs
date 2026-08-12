@@ -49,6 +49,27 @@ sol! {
         uint256 nonce;
         uint256 deadline;
     }
+
+    /// Core4Mica's signed struct for opening a withdrawal request without transacting. The asset,
+    /// the amount and the window are all bound, so a submitter can change none of them.
+    struct RequestWithdrawal {
+        address user;
+        address asset;
+        uint256 amount;
+        uint256 validAfter;
+        uint256 validBefore;
+        bytes32 nonce;
+    }
+
+    /// Core4Mica's signed struct for cancelling a pending withdrawal request. No amount: a
+    /// cancellation clears whatever request is outstanding for `asset`.
+    struct CancelWithdrawal {
+        address user;
+        address asset;
+        uint256 validAfter;
+        uint256 validBefore;
+        bytes32 nonce;
+    }
 }
 
 fn sol_validation(validation: &ValidationRequirement) -> SolValidation {
@@ -188,6 +209,47 @@ pub fn eip712_digest_for_permit(
     eip712_digest(domain_separator, message.eip712_hash_struct())
 }
 
+/// EIP-712 signing hash for a sponsored `requestWithdrawalWithAuthorization`.
+/// `domain_separator` is Core4Mica's own `DOMAIN_SEPARATOR()`. Pass `Address::ZERO` for ETH.
+pub fn eip712_digest_for_request_withdrawal(
+    domain_separator: B256,
+    user: Address,
+    asset: Address,
+    amount: U256,
+    valid_after: U256,
+    valid_before: U256,
+    nonce: B256,
+) -> B256 {
+    let message = RequestWithdrawal {
+        user,
+        asset,
+        amount,
+        validAfter: valid_after,
+        validBefore: valid_before,
+        nonce,
+    };
+    eip712_digest(domain_separator, message.eip712_hash_struct())
+}
+
+/// EIP-712 signing hash for a sponsored `cancelWithdrawalWithAuthorization`.
+pub fn eip712_digest_for_cancel_withdrawal(
+    domain_separator: B256,
+    user: Address,
+    asset: Address,
+    valid_after: U256,
+    valid_before: U256,
+    nonce: B256,
+) -> B256 {
+    let message = CancelWithdrawal {
+        user,
+        asset,
+        validAfter: valid_after,
+        validBefore: valid_before,
+        nonce,
+    };
+    eip712_digest(domain_separator, message.eip712_hash_struct())
+}
+
 /// EIP-712 signing hash for any supported guarantee request version.
 /// Add a new `PaymentGuaranteeRequestClaims` variant here when introducing V3.
 pub fn eip712_digest_for_claims(
@@ -274,6 +336,9 @@ mod deposit_tests {
     // these, the produced signature will not verify on-chain — so pin them exactly.
     const ERC3009_TYPE: &str = "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
     const PERMIT2_TYPE: &str = "PermitTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline)TokenPermissions(address token,uint256 amount)";
+    // Must match Core4Mica's REQUEST_WITHDRAWAL_TYPEHASH / CANCEL_WITHDRAWAL_TYPEHASH exactly.
+    const REQUEST_WITHDRAWAL_TYPE: &str = "RequestWithdrawal(address user,address asset,uint256 amount,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
+    const CANCEL_WITHDRAWAL_TYPE: &str = "CancelWithdrawal(address user,address asset,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
 
     #[test]
     fn receive_authorization_type_hash_matches_erc3009() {
@@ -373,6 +438,80 @@ mod deposit_tests {
     #[test]
     fn permit2_domain_separator_is_chain_specific() {
         assert_ne!(permit2_domain_separator(84532), permit2_domain_separator(1));
+    }
+
+    #[test]
+    fn request_withdrawal_type_hash_matches_the_contract() {
+        let msg = RequestWithdrawal {
+            user: Address::ZERO,
+            asset: Address::ZERO,
+            amount: U256::ZERO,
+            validAfter: U256::ZERO,
+            validBefore: U256::ZERO,
+            nonce: B256::ZERO,
+        };
+        assert_eq!(msg.eip712_type_hash(), keccak256(REQUEST_WITHDRAWAL_TYPE));
+    }
+
+    #[test]
+    fn cancel_withdrawal_type_hash_matches_the_contract() {
+        let msg = CancelWithdrawal {
+            user: Address::ZERO,
+            asset: Address::ZERO,
+            validAfter: U256::ZERO,
+            validBefore: U256::ZERO,
+            nonce: B256::ZERO,
+        };
+        assert_eq!(msg.eip712_type_hash(), keccak256(CANCEL_WITHDRAWAL_TYPE));
+    }
+
+    /// The two withdrawal actions share a nonce namespace on-chain, so their digests must differ
+    /// even when every shared field agrees — otherwise one signature would authorize both.
+    #[test]
+    fn request_and_cancel_digests_differ_for_the_same_inputs() {
+        let domain = b256!("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+        let user = address!("00000000000000000000000000000000000000a1");
+        let asset = address!("000000000000000000000000000000000000da0c");
+        let nonce = b256!("dead00000000000000000000000000000000000000000000000000000000beef");
+
+        let request = eip712_digest_for_request_withdrawal(
+            domain,
+            user,
+            asset,
+            U256::ZERO,
+            U256::ZERO,
+            U256::from(2_000_000_000u64),
+            nonce,
+        );
+        let cancel = eip712_digest_for_cancel_withdrawal(
+            domain,
+            user,
+            asset,
+            U256::ZERO,
+            U256::from(2_000_000_000u64),
+            nonce,
+        );
+        assert_ne!(request, cancel);
+    }
+
+    #[test]
+    fn request_withdrawal_digest_signature_recovers_to_signer() {
+        let signer = PrivateKeySigner::random();
+        let domain = b256!("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+        let digest = eip712_digest_for_request_withdrawal(
+            domain,
+            signer.address(),
+            address!("000000000000000000000000000000000000da0c"),
+            U256::from(1_000_000u64),
+            U256::ZERO,
+            U256::from(2_000_000_000u64),
+            b256!("dead00000000000000000000000000000000000000000000000000000000beef"),
+        );
+        let sig = signer.sign_hash_sync(&digest).expect("sign");
+        assert_eq!(
+            sig.recover_address_from_prehash(&digest).unwrap(),
+            signer.address()
+        );
     }
 
     #[test]

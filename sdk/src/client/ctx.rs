@@ -44,6 +44,8 @@ struct Inner<S> {
     /// Token EIP-712 domain separators, memoised. Immutable per token per chain, so a hit never
     /// goes stale; a miss refetches in case a new asset has been registered.
     token_domain_separators: RwLock<HashMap<Address, B256>>,
+    /// Core4Mica's own EIP-712 domain separator, read once. Fixed for the lifetime of a deployment.
+    core_domain_separator: OnceCell<B256>,
 }
 
 /// Everything the sub-clients share: configuration, connections, and the metadata resolved once at
@@ -106,6 +108,7 @@ impl<S> ClientCtx<S> {
             auth_session,
             chain_id: public_params.chain_id,
             token_domain_separators: RwLock::new(HashMap::new()),
+            core_domain_separator: OnceCell::new(),
         })))
     }
 
@@ -276,6 +279,29 @@ impl<S> ClientCtx<S> {
                  unsupported or does not implement EIP-3009"
             ))
         })
+    }
+
+    /// Core4Mica's EIP-712 domain separator, read from the contract and cached.
+    ///
+    /// Read rather than reconstructed from name/version/chainId for the same reason a token's is:
+    /// a wrong reconstruction yields a well-formed separator that verification rejects with no
+    /// indication of why.
+    pub(crate) async fn core_domain_separator(&self) -> Result<B256, ClientError> {
+        self.0
+            .core_domain_separator
+            .get_or_try_init(|| async {
+                self.get_contract()
+                    .DOMAIN_SEPARATOR()
+                    .call()
+                    .await
+                    .map_err(|e| {
+                        ClientError::Provider(format!(
+                            "failed to read Core4Mica DOMAIN_SEPARATOR: {e}"
+                        ))
+                    })
+            })
+            .await
+            .copied()
     }
 
     /// Permit2's domain separator, derived locally from the chain id.

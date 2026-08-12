@@ -35,6 +35,9 @@ sol! {
         /// `amount` was too small to mint any scaled collateral.
         error ZeroCollateralCredit(address asset, uint256 amount);
         error EscrowScaledUnderflow(address asset, uint256 requested, uint256 available);
+        error AuthorizationExpired(uint256 validBefore);
+        error AuthorizationNotYetValid(uint256 validAfter);
+        error AuthorizationAlreadyUsed(address user, bytes32 nonce);
 
         function withdrawalGracePeriod() external view returns (uint256);
         function aaveAddressesProvider() external view returns (address);
@@ -49,6 +52,7 @@ sol! {
         event CollateralWithdrawn(address indexed user, address indexed asset, uint256 amount);
         event WithdrawalRequested(address indexed user, address indexed asset, uint256 when, uint256 amount);
         event WithdrawalCanceled(address indexed user, address indexed asset);
+        event AuthorizationUsed(address indexed user, bytes32 indexed nonce);
         event WithdrawalGracePeriodUpdated(uint256 newGracePeriod);
         event VerificationKeyUpdated((bytes32,bytes32,bytes32,bytes32) newVerificationKey);
         event GuaranteeVersionUpdated(
@@ -140,6 +144,34 @@ sol! {
             bytes signature;
         }
 
+        /// A user's EIP-712 authorization to open a withdrawal request on their behalf. Any caller
+        /// may submit it; the request is recorded against `user`, the signer, never `msg.sender`.
+        /// `asset` is `address(0)` for ETH.
+        ///
+        /// `signature` covers every other field, so a submitter can alter none of them.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        struct WithdrawalRequestAuthorization {
+            address user;
+            address asset;
+            uint256 amount;
+            uint256 validAfter;
+            uint256 validBefore;
+            bytes32 nonce;
+            bytes signature;
+        }
+
+        /// A user's EIP-712 authorization to cancel their pending withdrawal request for `asset`.
+        /// Shares its nonce namespace with [`WithdrawalRequestAuthorization`].
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        struct WithdrawalCancelAuthorization {
+            address user;
+            address asset;
+            uint256 validAfter;
+            uint256 validBefore;
+            bytes32 nonce;
+            bytes signature;
+        }
+
         /// @param manager Address of AccessManager
         /// @param verificationKey Initial BLS verification key
         constructor(
@@ -162,6 +194,22 @@ sol! {
         function cancelWithdrawal(address asset) external;
         function finalizeWithdrawal() external;
         function finalizeWithdrawal(address asset) external;
+
+        /// Gasless withdrawal request: a third party submits the user's EIP-712 signature and the
+        /// request is recorded against `auth.user`.
+        function requestWithdrawalWithAuthorization(WithdrawalRequestAuthorization calldata auth) external;
+        /// Gasless cancellation of `auth.user`'s pending request.
+        function cancelWithdrawalWithAuthorization(WithdrawalCancelAuthorization calldata auth) external;
+        /// Permissionless finalization. Pays `user`, so no signature is needed — and requiring one
+        /// would mean the user must be around a grace period after requesting.
+        function finalizeWithdrawalFor(address user, address asset) external;
+
+        /// Core4Mica's own EIP-712 domain separator, for building withdrawal-authorization digests.
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+        /// True once `nonce` has been spent by one of `user`'s authorizations.
+        function authorizationState(address user, bytes32 nonce) external view returns (bool);
+        function REQUEST_WITHDRAWAL_TYPEHASH() external view returns (bytes32);
+        function CANCEL_WITHDRAWAL_TYPEHASH() external view returns (bytes32);
 
         function setWithdrawalGracePeriod(uint256 _gracePeriod) external;
         function setGuaranteeVerificationKey((bytes32,bytes32,bytes32,bytes32) verificationKey) external;

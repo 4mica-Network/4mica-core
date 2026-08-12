@@ -90,6 +90,33 @@ pub enum SignPaymentError {
     Rpc(#[from] ApiClientError),
 }
 
+/// A sponsored action the facilitator declined, or could not be asked to perform at all.
+///
+/// Shared by every gasless route: the rejection envelope is the same whatever is being sponsored,
+/// so a caller branches on `code` identically no matter which client produced the error.
+#[derive(Debug, Error)]
+pub enum SponsorshipError {
+    /// No facilitator URL was configured, so there is nobody to pay the gas. Every client falls
+    /// back to the caller's own transaction on this, rather than surfacing it.
+    #[error(
+        "no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url"
+    )]
+    NotConfigured,
+    /// The facilitator refused. `code` is carried verbatim so a caller can still branch on a code
+    /// this SDK predates.
+    #[error("facilitator rejected the request ({code}): {message}")]
+    Rejected {
+        code: String,
+        message: String,
+        /// Whether retrying the identical request may succeed.
+        retryable: bool,
+    },
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+    #[error("provider/transport error: {0}")]
+    Transport(String),
+}
+
 #[derive(Debug, Error)]
 pub enum FinalizeWithdrawalError {
     #[error("invalid params: {0}")]
@@ -108,6 +135,9 @@ pub enum FinalizeWithdrawalError {
         requested: String,
         actual: String,
     },
+
+    #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -130,6 +160,9 @@ pub enum RequestWithdrawalError {
     UnsupportedAsset(Address),
 
     #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
+
+    #[error(transparent)]
     Client(#[from] ClientError),
 
     #[error("unknown revert (selector {selector:#x})")]
@@ -144,6 +177,9 @@ pub enum CancelWithdrawalError {
     InvalidParams(String),
     #[error("no withdrawal requested")]
     NoWithdrawalRequested,
+
+    #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -214,6 +250,23 @@ pub enum DepositError {
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
+}
+
+/// Deposits predate the shared sponsorship type and keep their own richer variants, so transport
+/// failures are folded into those rather than carried as a nested error.
+impl From<SponsorshipError> for DepositError {
+    fn from(err: SponsorshipError) -> Self {
+        match err {
+            SponsorshipError::NotConfigured => Self::FacilitatorNotConfigured,
+            SponsorshipError::InvalidParams(message) => Self::InvalidParams(message),
+            SponsorshipError::Transport(message) => Self::Transport(message),
+            SponsorshipError::Rejected {
+                code,
+                message,
+                retryable,
+            } => Self::from_facilitator(Some(code), Some(message), retryable, None),
+        }
+    }
 }
 
 impl DepositError {
