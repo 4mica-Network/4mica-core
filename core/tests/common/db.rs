@@ -21,10 +21,34 @@ pub async fn ensure_migrations(ctx: &PersistCtx) -> Result<()> {
     Ok(())
 }
 
+/// Pins the settlement timeline every core test runs under, whatever the ambient environment says.
+///
+/// `CoreService::new` refuses to start unless
+/// `cycle + resolution_cutoff + commit_delay + finality_window + seizure_margin` is under the
+/// deployed `withdrawalGracePeriod`. Development deployments set that to 60s so withdrawals are
+/// testable at all, which the shipped defaults — a day-long cycle, 144900s in total — miss by four
+/// orders of magnitude. Inheriting the environment therefore makes every test that builds a service
+/// pass or fail on whether a generated `.env` happens to be present, which is the difference
+/// between a developer's machine and a CI checkout.
+///
+/// These total 47s, leaving headroom under 60s. Raise them only against that budget.
+pub fn apply_test_settlement_windows(cfg: &mut AppConfig) {
+    let settlement = &mut cfg.settlement_cycle;
+    settlement.cycle_secs = 20;
+    settlement.resolution_cutoff_secs = 5;
+    settlement.clearing_commit_delay_secs = 2;
+    settlement.payment_submission_window_secs = 5;
+    settlement.payment_finality_window_secs = 10;
+    settlement.seizure_margin_secs = 10;
+    settlement.shortfall_grace_secs = 10;
+}
+
 pub fn init_config() -> Result<AppConfig> {
     dotenv::dotenv().ok();
     dotenv::from_filename("../.env").ok();
-    AppConfig::fetch()
+    let mut cfg = AppConfig::fetch()?;
+    apply_test_settlement_windows(&mut cfg);
+    Ok(cfg)
 }
 
 pub async fn setup_db_test_env() -> Result<(AppConfig, PersistCtx)> {

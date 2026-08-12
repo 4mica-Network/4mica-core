@@ -30,7 +30,7 @@ use super::contract::{
     MockERC20::{self, MockERC20Instance},
     MockPoolAddressesProvider,
 };
-use super::db::{clear_all_tables, ensure_migrations};
+use super::db::{apply_test_settlement_windows, clear_all_tables, ensure_migrations};
 
 pub const OPERATOR_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
@@ -146,7 +146,11 @@ fn init_config() -> AppConfig {
     unsafe {
         std::env::set_var(eth_env_key, operator_key);
     }
-    AppConfig::fetch().expect("Failed to load test config")
+    let mut cfg = AppConfig::fetch().expect("Failed to load test config");
+    // Same windows as every other core test, so a cycle behaves identically whether the suite runs
+    // against a freshly deployed contract or the dev stack's.
+    apply_test_settlement_windows(&mut cfg);
+    cfg
 }
 
 fn force_local_e2e_guarantee_defaults(cfg: &mut AppConfig) {
