@@ -41,6 +41,8 @@ const PERMIT2_DOMAIN: B256 =
     b256!("1f520b5ee38ad937955892c3dfc7055e8eeb515d905781b6951e4c687917c530");
 const GUARANTEE_DOMAIN: B256 =
     b256!("3333333333333333333333333333333333333333333333333333333333333333");
+/// Core4Mica's own domain. No deposit signs under it, so any appearance here is a bug.
+const CORE_DOMAIN: B256 = b256!("4444444444444444444444444444444444444444444444444444444444444444");
 
 /// Matches `DEPOSIT_AUTHORIZATION_TTL_SECS` in `sdk/src/client/user.rs`.
 const EXPECTED_TTL_SECS: u64 = 3600;
@@ -265,6 +267,7 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
         chain_id: CHAIN_ID,
         supported_guarantee_versions: vec![GUARANTEE_CLAIMS_VERSION],
         guarantee_domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        core_domain_separator: format!("0x{}", alloy::hex::encode(CORE_DOMAIN)),
         validators: vec![],
     }
 }

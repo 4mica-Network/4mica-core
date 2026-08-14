@@ -44,8 +44,9 @@ struct Inner<S> {
     /// Token EIP-712 domain separators, memoised. Immutable per token per chain, so a hit never
     /// goes stale; a miss refetches in case a new asset has been registered.
     token_domain_separators: RwLock<HashMap<Address, B256>>,
-    /// Core4Mica's own EIP-712 domain separator, read once. Fixed for the lifetime of a deployment.
-    core_domain_separator: OnceCell<B256>,
+    /// Core4Mica's own EIP-712 domain separator, resolved at startup. Fixed for the lifetime of a
+    /// deployment.
+    core_domain_separator: B256,
 }
 
 /// Everything the sub-clients share: configuration, connections, and the metadata resolved once at
@@ -91,6 +92,7 @@ impl<S> ClientCtx<S> {
         let contract = Core4Mica::new(contract_address, provider.clone());
         let (guarantee_domain, guarantee_domains) =
             Self::fetch_guarantee_metadata(&public_params, &contract).await?;
+        let core_domain_separator = Self::resolve_core_domain_separator(&public_params)?;
 
         let facilitator = Facilitator::new(cfg.facilitator_url.clone());
 
@@ -108,7 +110,7 @@ impl<S> ClientCtx<S> {
             auth_session,
             chain_id: public_params.chain_id,
             token_domain_separators: RwLock::new(HashMap::new()),
-            core_domain_separator: OnceCell::new(),
+            core_domain_separator,
         })))
     }
 
@@ -231,6 +233,26 @@ impl<S> ClientCtx<S> {
         Ok((guarantee_domain, guarantee_domains))
     }
 
+    /// Core4Mica's EIP-712 domain separator, taken from what core publishes.
+    fn resolve_core_domain_separator(
+        public_params: &CorePublicParameters,
+    ) -> Result<B256, ClientError> {
+        if public_params.core_domain_separator.is_empty() {
+            return Err(ClientError::Initialization(
+                "core does not publish the Core4Mica domain separator, which this client needs to \
+                 sign withdrawal authorizations; upgrade core"
+                    .to_string(),
+            ));
+        }
+
+        public_params
+            .core_domain_separator
+            .parse::<B256>()
+            .map_err(|e| {
+                ClientError::Initialization(format!("invalid core domain separator from core: {e}"))
+            })
+    }
+
     pub(crate) fn contract_address(&self) -> Address {
         self.0.contract_address
     }
@@ -281,27 +303,9 @@ impl<S> ClientCtx<S> {
         })
     }
 
-    /// Core4Mica's EIP-712 domain separator, read from the contract and cached.
-    ///
-    /// Read rather than reconstructed from name/version/chainId for the same reason a token's is:
-    /// a wrong reconstruction yields a well-formed separator that verification rejects with no
-    /// indication of why.
-    pub(crate) async fn core_domain_separator(&self) -> Result<B256, ClientError> {
-        self.0
-            .core_domain_separator
-            .get_or_try_init(|| async {
-                self.get_contract()
-                    .DOMAIN_SEPARATOR()
-                    .call()
-                    .await
-                    .map_err(|e| {
-                        ClientError::Provider(format!(
-                            "failed to read Core4Mica DOMAIN_SEPARATOR: {e}"
-                        ))
-                    })
-            })
-            .await
-            .copied()
+    /// Core4Mica's EIP-712 domain separator, resolved at startup.
+    pub(crate) fn core_domain_separator(&self) -> B256 {
+        self.0.core_domain_separator
     }
 
     /// Permit2's domain separator, derived locally from the chain id.

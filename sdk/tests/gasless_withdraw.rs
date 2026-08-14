@@ -101,8 +101,8 @@ fn selector(signature: &str) -> [u8; 4] {
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
-/// Every JSON-RPC call the SDK made, so tests can assert which contract was asked for a domain
-/// separator and — crucially — whether a transaction was ever broadcast.
+/// Every JSON-RPC call the SDK made, so tests can assert that signing stays off the chain and —
+/// crucially — whether a transaction was ever broadcast.
 #[derive(Default)]
 struct CallLog {
     methods: Vec<String>,
@@ -114,15 +114,6 @@ impl CallLog {
         self.methods
             .iter()
             .any(|method| method == "eth_sendRawTransaction")
-    }
-
-    fn domain_separator_targets(&self) -> Vec<Address> {
-        let want = selector("DOMAIN_SEPARATOR()");
-        self.eth_calls
-            .iter()
-            .filter(|(_, sel)| *sel == want)
-            .map(|(to, _)| *to)
-            .collect()
     }
 }
 
@@ -198,14 +189,8 @@ async fn handle_rpc(
             if sel == selector("getGuaranteeVersionConfig(uint64)") {
                 return json_rpc_result(&id, json!(encode_guarantee_version_config()));
             }
-            // Core4Mica's own separator. Unlike a token's, this one *is* read from the chain: it
-            // belongs to our contract, and reading beats reconstructing name/version/chainId.
-            if sel == selector("DOMAIN_SEPARATOR()") && to == CONTRACT {
-                return json_rpc_result(
-                    &id,
-                    json!(format!("0x{}", alloy::hex::encode(CORE_DOMAIN))),
-                );
-            }
+            // No `DOMAIN_SEPARATOR()` case, deliberately: the separator comes from core over HTTP,
+            // so an eth_call for one is a regression and fails here as a JSON-RPC error.
             Json(json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -239,6 +224,7 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
         chain_id: CHAIN_ID,
         ethereum_http_rpc_url: eth_rpc_url.to_string(),
         guarantee_domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        core_domain_separator: format!("0x{}", alloy::hex::encode(CORE_DOMAIN)),
         supported_guarantee_versions: vec![GUARANTEE_CLAIMS_VERSION],
         eip712_name: "4Mica".into(),
         eip712_version: "1".into(),
@@ -469,26 +455,10 @@ async fn each_authorization_gets_a_fresh_nonce() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Signing must read Core4Mica's separator, never a token's — the two are different domains and
-/// signing under the wrong one produces a signature that verifies nowhere.
+/// Signing is pure: the separator comes from core over HTTP and is resolved at startup, so a payer
+/// can authorize a withdrawal with no chain access of their own.
 #[tokio::test]
-async fn signing_reads_the_contracts_domain_separator_not_a_tokens() -> anyhow::Result<()> {
-    let (client, _signer, log) = client_with(None).await?;
-
-    client
-        .withdraw
-        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
-        .await?;
-
-    let targets = log.lock().unwrap().domain_separator_targets();
-    assert_eq!(targets, vec![CONTRACT]);
-    Ok(())
-}
-
-/// Read once and cached: the separator is fixed for a deployment, so a second signature must not
-/// cost another round trip.
-#[tokio::test]
-async fn the_domain_separator_is_read_once() -> anyhow::Result<()> {
+async fn signing_never_touches_the_chain() -> anyhow::Result<()> {
     let (client, _signer, log) = client_with(None).await?;
 
     client
@@ -497,7 +467,50 @@ async fn the_domain_separator_is_read_once() -> anyhow::Result<()> {
         .await?;
     client.withdraw.sign_cancel(Asset::Erc20(TOKEN)).await?;
 
-    assert_eq!(log.lock().unwrap().domain_separator_targets().len(), 1);
+    let calls = log.lock().unwrap().eth_calls.clone();
+    assert!(calls.is_empty(), "signing made chain calls: {calls:?}");
+    Ok(())
+}
+
+/// Since the separator is never read from the chain, a core that does not publish one leaves the
+/// client no way to sign. It must say so at startup rather than sign under a guessed domain.
+#[tokio::test]
+async fn a_core_that_publishes_no_separator_is_refused() -> anyhow::Result<()> {
+    let log = Arc::new(Mutex::new(CallLog::default()));
+    let eth_url = spawn(
+        Router::new()
+            .route("/", post(handle_rpc))
+            .with_state(log.clone()),
+    )
+    .await?;
+
+    let mut params = public_params(&eth_url);
+    params.core_domain_separator = String::new();
+    let core_url = spawn(Router::new().route(
+        "/core/public-params",
+        get(move || {
+            let params = params.clone();
+            async move { Json(params) }
+        }),
+    ))
+    .await?;
+
+    let config = ConfigBuilder::default()
+        .rpc_url(core_url)
+        .signer(PrivateKeySigner::random())
+        .ethereum_http_rpc_url(eth_url)
+        .contract_address(CONTRACT.to_string())
+        .build()?;
+
+    let err = Client::new(config)
+        .await
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "client built successfully".to_string());
+    assert!(
+        err.contains("does not publish the Core4Mica domain separator"),
+        "unexpected outcome: {err}"
+    );
     Ok(())
 }
 

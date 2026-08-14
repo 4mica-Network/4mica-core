@@ -49,6 +49,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -72,6 +73,7 @@ async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -113,6 +115,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -166,6 +169,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -195,6 +199,7 @@ async fn verify_validated_eip712_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -216,6 +221,7 @@ async fn verify_validated_eip191_signature_ok() -> anyhow::Result<()> {
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -237,6 +243,7 @@ async fn verify_validated_signature_fails_if_subject_tampered() -> anyhow::Resul
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -264,6 +271,7 @@ async fn verify_validated_signature_fails_if_validator_tampered() -> anyhow::Res
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -291,6 +299,7 @@ async fn verify_validated_signature_fails_if_deadline_tampered() -> anyhow::Resu
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],
@@ -318,6 +327,7 @@ async fn verify_validated_signature_fails_if_params_tampered() -> anyhow::Result
         eip712_version: "1".to_string(),
         chain_id: 1,
         supported_guarantee_versions: vec![1],
+        core_domain_separator: String::new(),
         guarantee_domain_separator:
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
         validators: vec![common::api::TEST_VALIDATOR_URI.to_string()],

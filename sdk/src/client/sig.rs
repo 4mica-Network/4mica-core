@@ -170,7 +170,7 @@ where
     let nonce = B256::from(rand::random::<[u8; 32]>());
 
     let digest = eip712_digest_for_request_withdrawal(
-        core_domain_separator(ctx).await?,
+        ctx.core_domain_separator(),
         user,
         asset,
         amount,
@@ -203,7 +203,7 @@ where
     let nonce = B256::from(rand::random::<[u8; 32]>());
 
     let digest = eip712_digest_for_cancel_withdrawal(
-        core_domain_separator(ctx).await?,
+        ctx.core_domain_separator(),
         user,
         asset,
         U256::ZERO,
@@ -219,12 +219,6 @@ where
         nonce,
         signature: sign_bytes(ctx, &digest).await?,
     })
-}
-
-async fn core_domain_separator<S>(ctx: &ClientCtx<S>) -> Result<B256, SponsorshipError> {
-    ctx.core_domain_separator()
-        .await
-        .map_err(|e| SponsorshipError::Transport(e.to_string()))
 }
 
 /// Signs `digest` into the packed 65-byte form Core4Mica's `SignatureChecker` expects.

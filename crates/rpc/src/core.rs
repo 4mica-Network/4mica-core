@@ -110,6 +110,9 @@ pub struct CorePublicParameters {
     /// Domain separator core uses for BLS guarantee signing at the current version.
     #[serde(default)]
     pub guarantee_domain_separator: String,
+    /// The Core4Mica contract's own EIP-712 `DOMAIN_SEPARATOR()`, read on-chain by core.
+    #[serde(default)]
+    pub core_domain_separator: String,
     /// Validators this operator whitelisted. A validation requirement may only name one of these.
     #[serde(default)]
     pub validators: Vec<String>,
@@ -174,6 +177,7 @@ mod tests {
             eip712_version: "1".to_string(),
             chain_id: 1,
             supported_guarantee_versions: vec![1],
+            core_domain_separator: String::new(),
             guarantee_domain_separator: String::new(),
             validators: Vec::new(),
         }

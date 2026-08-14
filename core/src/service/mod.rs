@@ -15,7 +15,7 @@ use alloy::providers::{DynProvider, Provider, ProviderBuilder, WsConnect};
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use crypto::bls::KeyMaterial;
-use log::{error, info};
+use log::{error, info, warn};
 use rpc::{
     CorePublicParameters, GUARANTEE_CLAIMS_VERSION, SUPPORTED_GUARANTEE_VERSIONS,
     SupportedTokensResponse, UserSuspensionStatus,
@@ -90,6 +90,7 @@ pub struct CoreServiceDeps {
     pub guarantee_domains: HashMap<u64, [u8; 32]>,
     pub validators: ValidatorRegistry,
     pub withdrawal_grace_period: u64,
+    pub core_domain_separator: Option<[u8; 32]>,
 }
 
 impl CoreService {
@@ -136,6 +137,26 @@ impl CoreService {
             withdrawal_grace_period
         );
 
+        // A deployment old enough to lack `DOMAIN_SEPARATOR()` also lacks the gasless-withdrawal
+        // entrypoints, so leaving the separator unpublished disables a feature that contract could
+        // not serve anyway. Everything else core does is unaffected, so this must not be fatal.
+        let core_domain_separator = match contract_api.get_core_domain_separator().await {
+            Ok(separator) => {
+                info!(
+                    "on-chain core domain separator: {}",
+                    crypto::hex::encode_hex(&separator)
+                );
+                Some(separator)
+            }
+            Err(e) => {
+                warn!(
+                    "contract does not expose DOMAIN_SEPARATOR() ({e}); gasless withdrawals are \
+                     unavailable until it is redeployed"
+                );
+                None
+            }
+        };
+
         // Fail fast if the settlement-cycle timeline does not leave the operator
         // enough margin to seize a defaulter's collateral before it can be withdrawn.
         config
@@ -159,6 +180,7 @@ impl CoreService {
                 guarantee_domains,
                 validators,
                 withdrawal_grace_period,
+                core_domain_separator,
             },
         )
     }
@@ -183,6 +205,10 @@ impl CoreService {
                 anyhow!("missing guarantee domain for version {GUARANTEE_CLAIMS_VERSION}")
             })?;
         let guarantee_domain_separator = crypto::hex::encode_hex(current_domain);
+        let core_domain_separator = deps
+            .core_domain_separator
+            .map(|separator| crypto::hex::encode_hex(&separator))
+            .unwrap_or_default();
 
         let inner = Inner {
             config,
@@ -195,6 +221,7 @@ impl CoreService {
                 chain_id: deps.chain_id,
                 supported_guarantee_versions: SUPPORTED_GUARANTEE_VERSIONS.to_vec(),
                 guarantee_domain_separator,
+                core_domain_separator,
                 validators: deps.validators.validators(),
             },
             validators: deps.validators,
