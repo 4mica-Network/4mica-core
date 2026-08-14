@@ -19,14 +19,14 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
-rpc = { version = "2.0.0-alpha.2", path = "crates/rpc", package = "rpc-4mica" }
-validators = { version = "2.0.0-alpha.2", path = "crates/validators", package = "validators-4mica" }
-crypto = { version = "2.0.0-alpha.2", path = "crates/crypto", package = "crypto-4mica" }
-blockchain = { version = "2.0.0-alpha.2", path = "crates/blockchain", package = "blockchain-4mica" }
-migration = { version = "2.0.0-alpha.2", path = "crates/migration" }
-entities = { version = "2.0.0-alpha.2", path = "crates/entities" }
-metrics-4mica = { version = "2.0.0-alpha.2", path = "crates/metrics" }
-derive-4mica = { version = "2.0.0-alpha.2", path = "crates/derive" }
+rpc = { version = "2.0.0-alpha.3", path = "crates/rpc", package = "rpc-4mica" }
+validators = { version = "2.0.0-alpha.3", path = "crates/validators", package = "validators-4mica" }
+crypto = { version = "2.0.0-alpha.3", path = "crates/crypto", package = "crypto-4mica" }
+blockchain = { version = "2.0.0-alpha.3", path = "crates/blockchain", package = "blockchain-4mica" }
+migration = { version = "2.0.0-alpha.3", path = "crates/migration" }
+entities = { version = "2.0.0-alpha.3", path = "crates/entities" }
+metrics-4mica = { version = "2.0.0-alpha.3", path = "crates/metrics" }
+derive-4mica = { version = "2.0.0-alpha.3", path = "crates/derive" }
 
 chrono = "0.4.44"
 anyhow = "1.0.102"

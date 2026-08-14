@@ -1,7 +1,7 @@
 
 [package]
 name = "derive-4mica"
-version = "2.0.0-alpha.2"
+version = "2.0.0-alpha.3"
 edition.workspace = true
 authors = ["4Mica Network <engineering@4mica.io>"]
 description = "Derive macros for the 4Mica payment network."
