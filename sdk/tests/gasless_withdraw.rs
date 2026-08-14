@@ -249,7 +249,7 @@ async fn spawn_facilitator(
             let log = log.clone();
             let response = response.clone();
             async move {
-                let response = echoing_user(response, &body);
+                let response = echoing_request(response, &body);
                 log.lock().unwrap().withdrawals.push(body);
                 Json(response)
             }
@@ -263,21 +263,22 @@ fn success_response() -> Value {
         "success": true,
         "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
         "network": "eip155:1337",
-        "asset": TOKEN.to_string(),
     })
 }
 
-/// Stamps `response` with the user the request carried, as a real facilitator echoes the account it
-/// acted for. The SDK refuses a receipt naming anyone else, and a canned address could never match
-/// the signer, which is random per test.
-fn echoing_user(mut response: Value, request: &Value) -> Value {
-    // A finalize carries no authorization: it names the user directly.
-    let user = request
-        .get("authorization")
-        .and_then(|auth| auth.get("user"))
-        .or_else(|| request.get("user"));
-    if let (Some(user), Some(response)) = (user, response.as_object_mut()) {
-        response.insert("user".into(), user.clone());
+/// Stamps `response` with the user and asset the request carried, as a real facilitator echoes what
+/// it acted on. The SDK refuses a receipt naming anything else, and canned values could match
+/// neither the signer, which is random per test, nor a withdrawal of an asset other than `TOKEN`.
+fn echoing_request(mut response: Value, request: &Value) -> Value {
+    // A finalize carries no authorization: it names the user and asset directly.
+    let authorization = request.get("authorization");
+    for field in ["user", "asset"] {
+        let echoed = authorization
+            .and_then(|auth| auth.get(field))
+            .or_else(|| request.get(field));
+        if let (Some(echoed), Some(fields)) = (echoed, response.as_object_mut()) {
+            fields.insert(field.into(), echoed.clone());
+        }
     }
     response
 }

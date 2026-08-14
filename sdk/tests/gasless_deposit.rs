@@ -1068,7 +1068,10 @@ async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<(
         .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected a missing txHash to be rejected");
-    assert!(matches!(err, DepositError::OutcomeUnknown(_)), "got {err:?}");
+    assert!(
+        matches!(err, DepositError::OutcomeUnknown(_)),
+        "got {err:?}"
+    );
     Ok(())
 }
 
