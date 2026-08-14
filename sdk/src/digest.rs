@@ -143,6 +143,24 @@ pub fn permit2_domain_separator(chain_id: u64) -> B256 {
     eip712_domain_separator("Permit2", None, chain_id, crate::contract::PERMIT2_ADDRESS)
 }
 
+/// Core4Mica's own domain separator for the deployment at `contract` on `chain_id`.
+///
+/// The contract fixes its domain as `EIP712("Core4Mica", "1")`, so the address and chain id
+/// determine it — no chain read, and no metadata anyone has to publish.
+pub fn core_domain_separator(chain_id: u64, contract: Address) -> B256 {
+    eip712_domain_separator(
+        CORE_EIP712_NAME,
+        Some(CORE_EIP712_VERSION),
+        chain_id,
+        contract,
+    )
+}
+
+/// Core4Mica's EIP-712 domain, as the contract declares it. Distinct from the operator's own
+/// request-signing domain, which core publishes in its public parameters.
+const CORE_EIP712_NAME: &str = "Core4Mica";
+const CORE_EIP712_VERSION: &str = "1";
+
 /// EIP-712 signing hash for an EIP-3009 `receiveWithAuthorization` gasless deposit.
 /// `domain_separator` is the deposited token's own `DOMAIN_SEPARATOR()`.
 #[allow(clippy::too_many_arguments)]
@@ -438,6 +456,43 @@ mod deposit_tests {
     #[test]
     fn permit2_domain_separator_is_chain_specific() {
         assert_ne!(permit2_domain_separator(84532), permit2_domain_separator(1));
+    }
+
+    /// Pins the literals Core4Mica declares in `EIP712("Core4Mica", "1")`. Deriving the separator
+    /// rather than reading it is only sound while these hold; a contract that changes either signs
+    /// under a domain nothing produced here would verify against.
+    #[test]
+    fn core_domain_separator_matches_the_contracts_declared_domain() {
+        let contract = address!("00000000000000000000000000000000c04e4a1c");
+        assert_eq!(
+            core_domain_separator(84532, contract),
+            eip712_domain_separator("Core4Mica", Some("1"), 84532, contract)
+        );
+    }
+
+    /// Core signs requests under its own operator domain. Reusing that name here would produce a
+    /// well-formed separator that Core4Mica rejects.
+    #[test]
+    fn core_domain_separator_is_not_the_operator_signing_domain() {
+        let contract = address!("00000000000000000000000000000000c04e4a1c");
+        assert_ne!(
+            core_domain_separator(84532, contract),
+            eip712_domain_separator("4mica", Some("1"), 84532, contract)
+        );
+    }
+
+    #[test]
+    fn core_domain_separator_is_deployment_specific() {
+        let contract = address!("00000000000000000000000000000000c04e4a1c");
+        let other = address!("00000000000000000000000000000000c04e4a1d");
+        assert_ne!(
+            core_domain_separator(84532, contract),
+            core_domain_separator(1, contract)
+        );
+        assert_ne!(
+            core_domain_separator(84532, contract),
+            core_domain_separator(84532, other)
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use alloy::primitives::{Address, B256, Signature, U256, address, b256, keccak256
 use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
-use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION};
+use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
 use sdk_4mica::error::DepositError;
 use sdk_4mica::{Client, ConfigBuilder};
 use serde_json::{Value, json};
@@ -267,6 +267,10 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
         chain_id: CHAIN_ID,
         supported_guarantee_versions: vec![GUARANTEE_CLAIMS_VERSION],
         guarantee_domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        guarantee_domains: vec![GuaranteeVersionDomain {
+            version: GUARANTEE_CLAIMS_VERSION,
+            domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        }],
         core_domain_separator: format!("0x{}", alloy::hex::encode(CORE_DOMAIN)),
         validators: vec![],
     }
@@ -1071,6 +1075,20 @@ async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<(
     assert!(
         matches!(err, DepositError::OutcomeUnknown(_)),
         "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Everything construction needs comes from core, so a client that only ever takes sponsored paths
+/// never has to reach an Ethereum node — not even to be built.
+#[tokio::test]
+async fn building_a_client_touches_no_ethereum_rpc() -> anyhow::Result<()> {
+    let (_client, _signer, log) = test_client().await?;
+
+    let methods = log.lock().unwrap().methods.clone();
+    assert!(
+        methods.is_empty(),
+        "construction reached the chain: {methods:?}"
     );
     Ok(())
 }

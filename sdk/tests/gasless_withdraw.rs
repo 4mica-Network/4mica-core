@@ -12,7 +12,7 @@ use alloy::primitives::{Address, B256, Signature, U256, address, b256, keccak256
 use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
-use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION};
+use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
 use sdk_4mica::error::{CancelWithdrawalError, RequestWithdrawalError, SponsorshipError};
 use sdk_4mica::{Asset, Client, ConfigBuilder, WithdrawPath};
 use serde_json::{Value, json};
@@ -61,6 +61,7 @@ fn eip712_digest(domain_separator: B256, struct_hash: B256) -> B256 {
 }
 
 fn expected_request_digest(
+    domain: B256,
     user: Address,
     asset: Address,
     amount: U256,
@@ -76,10 +77,11 @@ fn expected_request_digest(
     encoded.extend_from_slice(&valid_after.to_be_bytes::<32>());
     encoded.extend_from_slice(&valid_before.to_be_bytes::<32>());
     encoded.extend_from_slice(nonce.as_slice());
-    eip712_digest(CORE_DOMAIN, keccak256(encoded))
+    eip712_digest(domain, keccak256(encoded))
 }
 
 fn expected_cancel_digest(
+    domain: B256,
     user: Address,
     asset: Address,
     valid_after: U256,
@@ -93,7 +95,25 @@ fn expected_cancel_digest(
     encoded.extend_from_slice(&valid_after.to_be_bytes::<32>());
     encoded.extend_from_slice(&valid_before.to_be_bytes::<32>());
     encoded.extend_from_slice(nonce.as_slice());
-    eip712_digest(CORE_DOMAIN, keccak256(encoded))
+    eip712_digest(domain, keccak256(encoded))
+}
+
+/// Core4Mica's domain separator as the contract builds it, from `EIP712("Core4Mica", "1")`. Spelled
+/// out rather than taken from the SDK, so a wrong name or version there cannot cancel out.
+fn expected_core_domain(chain_id: u64, contract: Address) -> B256 {
+    let mut encoded = Vec::with_capacity(32 * 5);
+    encoded.extend_from_slice(
+        keccak256(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                .as_slice(),
+        )
+        .as_slice(),
+    );
+    encoded.extend_from_slice(keccak256(b"Core4Mica".as_slice()).as_slice());
+    encoded.extend_from_slice(keccak256(b"1".as_slice()).as_slice());
+    encoded.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+    encoded.extend_from_slice(&word_address(contract));
+    keccak256(encoded)
 }
 
 fn selector(signature: &str) -> [u8; 4] {
@@ -224,6 +244,10 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
         chain_id: CHAIN_ID,
         ethereum_http_rpc_url: eth_rpc_url.to_string(),
         guarantee_domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        guarantee_domains: vec![GuaranteeVersionDomain {
+            version: GUARANTEE_CLAIMS_VERSION,
+            domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        }],
         core_domain_separator: format!("0x{}", alloy::hex::encode(CORE_DOMAIN)),
         supported_guarantee_versions: vec![GUARANTEE_CLAIMS_VERSION],
         eip712_name: "4Mica".into(),
@@ -391,6 +415,7 @@ async fn a_signed_request_recovers_to_the_signer_over_the_contracts_digest() -> 
     assert_eq!(auth.validAfter, U256::ZERO);
 
     let digest = expected_request_digest(
+        CORE_DOMAIN,
         auth.user,
         auth.asset,
         auth.amount,
@@ -416,6 +441,7 @@ async fn a_signed_cancel_recovers_to_the_signer_over_the_contracts_digest() -> a
     let auth = client.withdraw.sign_cancel(Asset::Erc20(TOKEN)).await?;
 
     let digest = expected_cancel_digest(
+        CORE_DOMAIN,
         auth.user,
         auth.asset,
         auth.validAfter,
@@ -440,6 +466,7 @@ async fn eth_withdrawals_can_be_signed_too() -> anyhow::Result<()> {
 
     assert_eq!(auth.asset, Address::ZERO);
     let digest = expected_request_digest(
+        CORE_DOMAIN,
         auth.user,
         auth.asset,
         auth.amount,
@@ -488,10 +515,55 @@ async fn signing_never_touches_the_chain() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Since the separator is never read from the chain, a core that does not publish one leaves the
-/// client no way to sign. It must say so at startup rather than sign under a guessed domain.
+/// A core too old to publish the guarantee domains is no obstacle either — the client reads them
+/// off the contract instead, which is the one thing at startup that still needs an endpoint.
 #[tokio::test]
-async fn a_core_that_publishes_no_separator_is_refused() -> anyhow::Result<()> {
+async fn a_core_that_publishes_no_guarantee_domains_reads_them_from_the_chain() -> anyhow::Result<()>
+{
+    let log = Arc::new(Mutex::new(CallLog::default()));
+    let eth_url = spawn(
+        Router::new()
+            .route("/", post(handle_rpc))
+            .with_state(log.clone()),
+    )
+    .await?;
+
+    let mut params = public_params(&eth_url);
+    params.guarantee_domains = Vec::new();
+    let core_url = spawn(Router::new().route(
+        "/core/public-params",
+        get(move || {
+            let params = params.clone();
+            async move { Json(params) }
+        }),
+    ))
+    .await?;
+
+    let client = Client::new(
+        ConfigBuilder::default()
+            .rpc_url(core_url)
+            .signer(PrivateKeySigner::random())
+            .ethereum_http_rpc_url(eth_url)
+            .contract_address(CONTRACT.to_string())
+            .build()?,
+    )
+    .await?;
+
+    assert_eq!(client.payment.guarantee_domain(), &GUARANTEE_DOMAIN.0);
+    let want = selector("getGuaranteeVersionConfig(uint64)");
+    let calls = log.lock().unwrap().eth_calls.clone();
+    assert!(
+        calls.iter().any(|(_, sel)| *sel == want),
+        "expected the version config to be read from the contract, saw {calls:?}"
+    );
+    Ok(())
+}
+
+/// A core too old to publish the separator is no obstacle: the contract's domain is fixed, so the
+/// client derives it and signs under exactly what the contract will check.
+#[tokio::test]
+async fn a_core_that_publishes_no_separator_falls_back_to_the_derived_domain() -> anyhow::Result<()>
+{
     let log = Arc::new(Mutex::new(CallLog::default()));
     let eth_url = spawn(
         Router::new()
@@ -518,15 +590,55 @@ async fn a_core_that_publishes_no_separator_is_refused() -> anyhow::Result<()> {
         .contract_address(CONTRACT.to_string())
         .build()?;
 
-    let err = Client::new(config)
-        .await
-        .err()
-        .map(|e| e.to_string())
-        .unwrap_or_else(|| "client built successfully".to_string());
-    assert!(
-        err.contains("does not publish the Core4Mica domain separator"),
-        "unexpected outcome: {err}"
+    let client = Client::new(config).await?;
+    let signer = client.signer_address();
+
+    let auth = client
+        .withdraw
+        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .await?;
+
+    let digest = expected_request_digest(
+        expected_core_domain(CHAIN_ID, CONTRACT),
+        auth.user,
+        auth.asset,
+        auth.amount,
+        auth.validAfter,
+        auth.validBefore,
+        auth.nonce,
     );
+    let signature = Signature::try_from(auth.signature.as_ref())?;
+    assert_eq!(signature.recover_address_from_prehash(&digest)?, signer);
+    Ok(())
+}
+
+/// What core publishes wins, so a deployment whose domain has moved on from the derivation still
+/// signs correctly.
+#[tokio::test]
+async fn a_published_separator_takes_precedence_over_the_derivation() -> anyhow::Result<()> {
+    let (client, signer, _log) = client_with(None).await?;
+
+    let auth = client
+        .withdraw
+        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .await?;
+
+    assert_ne!(
+        CORE_DOMAIN,
+        expected_core_domain(CHAIN_ID, CONTRACT),
+        "the mock core must publish something the derivation would not produce"
+    );
+    let digest = expected_request_digest(
+        CORE_DOMAIN,
+        auth.user,
+        auth.asset,
+        auth.amount,
+        auth.validAfter,
+        auth.validBefore,
+        auth.nonce,
+    );
+    let signature = Signature::try_from(auth.signature.as_ref())?;
+    assert_eq!(signature.recover_address_from_prehash(&digest)?, signer);
     Ok(())
 }
 

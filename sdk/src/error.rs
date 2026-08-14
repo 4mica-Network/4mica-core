@@ -71,6 +71,15 @@ pub enum ClientError {
 
     #[error("client initialization error: {0}")]
     Initialization(String),
+
+    /// No Ethereum endpoint is available, so anything that reads chain state or sends a transaction
+    /// is out of reach. Sponsored deposits and withdrawals are unaffected — they never touch the
+    /// chain — so this is only ever raised by the paths that do.
+    #[error(
+        "no Ethereum RPC endpoint is available; set 4MICA_ETHEREUM_HTTP_RPC_URL or \
+         ConfigBuilder::ethereum_http_rpc_url"
+    )]
+    ChainRpcUnavailable,
 }
 
 #[derive(Debug, Error)]
@@ -367,6 +376,8 @@ pub enum GetUserError {
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
+    #[error(transparent)]
+    Client(#[from] ClientError),
 }
 
 #[derive(Debug, Error)]

@@ -13,6 +13,7 @@ use crate::sig::PaymentSigner;
 
 fn create_test_params() -> CorePublicParameters {
     CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![0u8; 48],
         contract_address: "0x0000000000000000000000000000000000000000".to_string(),
         ethereum_http_rpc_url: "http://localhost:8545".to_string(),
