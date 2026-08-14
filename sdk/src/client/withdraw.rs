@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     client::{
-        ClientCtx, await_receipt,
+        ClientCtx, await_receipt, confirm_echoed,
         facilitator::FacilitatorFailure,
         model::{Asset, WithdrawPath, WithdrawReceipt},
         sig,
@@ -385,7 +385,8 @@ struct WithdrawResponse {
 
 impl WithdrawResponse {
     /// `user` and `asset` fall back to what was asked for: they are echoed for reconciliation, and
-    /// a facilitator that omits them has not changed what the contract did.
+    /// a facilitator that omits them has not changed what the contract did. One that echoes
+    /// something else has, and the receipt is refused rather than made to describe it.
     fn into_receipt(
         self,
         user: Address,
@@ -408,15 +409,21 @@ impl WithdrawResponse {
         Ok(WithdrawReceipt {
             tx_hash,
             path: WithdrawPath::Sponsored,
-            user: parse_or(self.user.as_deref(), user),
-            asset: parse_or(self.asset.as_deref(), asset),
+            user: confirm_echoed(
+                "user",
+                self.user.as_deref(),
+                user,
+                SponsorshipError::OutcomeUnknown,
+            )?,
+            asset: confirm_echoed(
+                "asset",
+                self.asset.as_deref(),
+                asset,
+                SponsorshipError::OutcomeUnknown,
+            )?,
             network: self.network,
         })
     }
-}
-
-fn parse_or(raw: Option<&str>, fallback: Address) -> Address {
-    raw.and_then(|raw| raw.parse().ok()).unwrap_or(fallback)
 }
 
 #[derive(Debug, Deserialize)]
@@ -469,21 +476,26 @@ mod tests {
         assert!(rejected("SOMETHING_NEW").sponsorship_unavailable());
     }
 
-    /// The facilitator may have submitted it already; a second request would overwrite the first
-    /// and restart the grace period.
+    /// Every step has something to lose from a second transaction it did not need: a request would
+    /// overwrite the first and restart the grace period, while a cancel or a finalize would revert
+    /// and report failure for a step that worked.
     #[test]
     fn an_unknown_outcome_does_not_fall_back() {
-        let err: RequestWithdrawalError =
-            SponsorshipError::OutcomeUnknown("timed out".into()).into();
-        assert!(!err.sponsorship_unavailable());
+        let unknown = || SponsorshipError::OutcomeUnknown("timed out".into());
+
+        assert!(!RequestWithdrawalError::from(unknown()).sponsorship_unavailable());
+        assert!(!CancelWithdrawalError::from(unknown()).sponsorship_unavailable());
+        assert!(!FinalizeWithdrawalError::from(unknown()).sponsorship_unavailable());
     }
 
     /// A request that never reached the facilitator cannot have been submitted.
     #[test]
     fn an_undelivered_request_falls_back_to_self_funding() {
-        let err: RequestWithdrawalError =
-            SponsorshipError::Transport("connection refused".into()).into();
-        assert!(err.sponsorship_unavailable());
+        let undelivered = || SponsorshipError::Transport("connection refused".into());
+
+        assert!(RequestWithdrawalError::from(undelivered()).sponsorship_unavailable());
+        assert!(CancelWithdrawalError::from(undelivered()).sponsorship_unavailable());
+        assert!(FinalizeWithdrawalError::from(undelivered()).sponsorship_unavailable());
     }
 
     #[test]

@@ -253,8 +253,14 @@ pub enum DepositError {
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
+    /// The facilitator never received the deposit, so it cannot have acted on it.
     #[error("provider/transport error: {0}")]
     Transport(String),
+    /// The facilitator was asked but gave no usable answer, so whether it submitted a transaction
+    /// is unknown. Read the payer's balance before resending — a second authorization is a second
+    /// deposit, not a retry.
+    #[error("facilitator outcome unknown: {0}")]
+    OutcomeUnknown(String),
 }
 
 /// Deposits predate the shared sponsorship type and keep their own richer variants, so transport
@@ -264,9 +270,8 @@ impl From<SponsorshipError> for DepositError {
         match err {
             SponsorshipError::NotConfigured => Self::FacilitatorNotConfigured,
             SponsorshipError::InvalidParams(message) => Self::InvalidParams(message),
-            SponsorshipError::Transport(message) | SponsorshipError::OutcomeUnknown(message) => {
-                Self::Transport(message)
-            }
+            SponsorshipError::Transport(message) => Self::Transport(message),
+            SponsorshipError::OutcomeUnknown(message) => Self::OutcomeUnknown(message),
             SponsorshipError::Rejected {
                 code,
                 message,

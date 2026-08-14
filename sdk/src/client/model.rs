@@ -138,8 +138,7 @@ pub struct DepositReceipt {
     pub tx_hash: B256,
     /// Which route delivered the deposit — in particular, whether the payer paid gas.
     pub path: DepositPath,
-    /// The account credited — always the signer, never the facilitator. Zero when the facilitator
-    /// reported no `from`, which is worth treating as a failed check rather than a match.
+    /// The account credited — always whoever signed the authorization, never the facilitator.
     pub from: Address,
     pub asset: Address,
     pub amount: U256,
