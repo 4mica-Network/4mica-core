@@ -300,6 +300,7 @@ async fn spawn_facilitator(
                     let log = deposit_log.clone();
                     let response = deposit_response.clone();
                     async move {
+                        let response = echoing_payer(response, &body);
                         log.lock().unwrap().deposits.push(body);
                         Json(response)
                     }
@@ -332,12 +333,9 @@ async fn spawn_allowance_then_success_facilitator(
             let log = log.clone();
             let nonce = nonce.clone();
             async move {
-                let mut guard = log.lock().unwrap();
-                guard.deposits.push(body);
-                let first = guard.deposits.len() == 1;
-                drop(guard);
+                let first = log.lock().unwrap().deposits.is_empty();
 
-                if first {
+                let response = if first {
                     let mut allowance = json!({
                         "spender": "0x000000000022d473030f116ddee9f6b43ac78ba3",
                         "allowance": "0",
@@ -346,15 +344,19 @@ async fn spawn_allowance_then_success_facilitator(
                     if let Some(nonce) = nonce {
                         allowance["eip2612Nonce"] = json!(nonce);
                     }
-                    return Json(json!({
+                    json!({
                         "success": false,
                         "error": "approve permit2 first",
                         "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
                         "retryable": false,
                         "permit2Allowance": allowance,
-                    }));
-                }
-                Json(success_response())
+                    })
+                } else {
+                    echoing_payer(success_response(), &body)
+                };
+
+                log.lock().unwrap().deposits.push(body);
+                Json(response)
             }
         }),
     ))
@@ -366,10 +368,23 @@ fn success_response() -> Value {
         "success": true,
         "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
         "network": "eip155:1337",
-        "from": "0x00000000000000000000000000000000000000a1",
         "asset": TOKEN.to_string(),
         "amount": "1000000",
     })
+}
+
+/// Stamps `response` with the payer the request carried, as a real facilitator echoes the account
+/// it credited. The SDK refuses a receipt naming anyone else, and a canned address could never match
+/// the signer, which is random per test.
+fn echoing_payer(mut response: Value, request: &Value) -> Value {
+    let payer = request
+        .get("authorization")
+        .or_else(|| request.get("permit2Authorization"))
+        .and_then(|auth| auth.get("from"));
+    if let (Some(payer), Some(response)) = (payer, response.as_object_mut()) {
+        response.insert("from".into(), payer.clone());
+    }
+    response
 }
 
 /// Boots a mock chain + core and returns a `Client` wired to them, plus the signer and call log.
@@ -1053,7 +1068,7 @@ async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<(
         .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected a missing txHash to be rejected");
-    assert!(matches!(err, DepositError::Transport(_)), "got {err:?}");
+    assert!(matches!(err, DepositError::OutcomeUnknown(_)), "got {err:?}");
     Ok(())
 }
 

@@ -249,6 +249,7 @@ async fn spawn_facilitator(
             let log = log.clone();
             let response = response.clone();
             async move {
+                let response = echoing_user(response, &body);
                 log.lock().unwrap().withdrawals.push(body);
                 Json(response)
             }
@@ -262,9 +263,23 @@ fn success_response() -> Value {
         "success": true,
         "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
         "network": "eip155:1337",
-        "user": "0x00000000000000000000000000000000000000a1",
         "asset": TOKEN.to_string(),
     })
+}
+
+/// Stamps `response` with the user the request carried, as a real facilitator echoes the account it
+/// acted for. The SDK refuses a receipt naming anyone else, and a canned address could never match
+/// the signer, which is random per test.
+fn echoing_user(mut response: Value, request: &Value) -> Value {
+    // A finalize carries no authorization: it names the user directly.
+    let user = request
+        .get("authorization")
+        .and_then(|auth| auth.get("user"))
+        .or_else(|| request.get("user"));
+    if let (Some(user), Some(response)) = (user, response.as_object_mut()) {
+        response.insert("user".into(), user.clone());
+    }
+    response
 }
 
 fn rejection(code: &str) -> Value {
@@ -716,7 +731,7 @@ async fn a_facilitator_that_reports_success_without_a_tx_hash_is_not_believed() 
 
     assert!(matches!(
         err,
-        CancelWithdrawalError::Sponsorship(SponsorshipError::Transport(_))
+        CancelWithdrawalError::Sponsorship(SponsorshipError::OutcomeUnknown(_))
     ));
     Ok(())
 }
