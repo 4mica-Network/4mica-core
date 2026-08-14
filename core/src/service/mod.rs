@@ -17,8 +17,8 @@ use chrono::Utc;
 use crypto::bls::KeyMaterial;
 use log::{error, info, warn};
 use rpc::{
-    CorePublicParameters, GUARANTEE_CLAIMS_VERSION, SUPPORTED_GUARANTEE_VERSIONS,
-    SupportedTokensResponse, UserSuspensionStatus,
+    CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain,
+    SUPPORTED_GUARANTEE_VERSIONS, SupportedTokensResponse, UserSuspensionStatus,
 };
 use validators::ValidatorRegistry;
 
@@ -205,6 +205,15 @@ impl CoreService {
                 anyhow!("missing guarantee domain for version {GUARANTEE_CLAIMS_VERSION}")
             })?;
         let guarantee_domain_separator = crypto::hex::encode_hex(current_domain);
+        let mut published_guarantee_domains = deps
+            .guarantee_domains
+            .iter()
+            .map(|(&version, domain)| GuaranteeVersionDomain {
+                version,
+                domain_separator: crypto::hex::encode_hex(domain),
+            })
+            .collect::<Vec<_>>();
+        published_guarantee_domains.sort_by_key(|entry| entry.version);
         let core_domain_separator = deps
             .core_domain_separator
             .map(|separator| crypto::hex::encode_hex(&separator))
@@ -221,6 +230,7 @@ impl CoreService {
                 chain_id: deps.chain_id,
                 supported_guarantee_versions: SUPPORTED_GUARANTEE_VERSIONS.to_vec(),
                 guarantee_domain_separator,
+                guarantee_domains: published_guarantee_domains,
                 core_domain_separator,
                 validators: deps.validators.validators(),
             },

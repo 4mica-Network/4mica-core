@@ -42,6 +42,7 @@ fn v1_mut(claims: &mut PaymentGuaranteeRequestClaims) -> &mut PaymentGuaranteeRe
 #[serial_test::file_serial(db)]
 async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -66,6 +67,7 @@ async fn verify_eip712_signature_ok() -> anyhow::Result<()> {
 #[serial_test::file_serial(db)]
 async fn verify_eip712_signature_fails_if_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -108,6 +110,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
     }
 
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -162,6 +165,7 @@ async fn verify_eip191_signature_ok() -> anyhow::Result<()> {
 #[serial_test::file_serial(db)]
 async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -192,6 +196,7 @@ async fn verify_signature_fails_with_invalid_hex() -> anyhow::Result<()> {
 #[serial_test::file_serial(db)]
 async fn verify_validated_eip712_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -214,6 +219,7 @@ async fn verify_validated_eip712_signature_ok() -> anyhow::Result<()> {
 #[serial_test::file_serial(db)]
 async fn verify_validated_eip191_signature_ok() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -236,6 +242,7 @@ async fn verify_validated_eip191_signature_ok() -> anyhow::Result<()> {
 #[serial_test::file_serial(db)]
 async fn verify_validated_signature_fails_if_subject_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -264,6 +271,7 @@ async fn verify_validated_signature_fails_if_subject_tampered() -> anyhow::Resul
 #[serial_test::file_serial(db)]
 async fn verify_validated_signature_fails_if_validator_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -292,6 +300,7 @@ async fn verify_validated_signature_fails_if_validator_tampered() -> anyhow::Res
 #[serial_test::file_serial(db)]
 async fn verify_validated_signature_fails_if_deadline_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),
@@ -320,6 +329,7 @@ async fn verify_validated_signature_fails_if_deadline_tampered() -> anyhow::Resu
 #[serial_test::file_serial(db)]
 async fn verify_validated_signature_fails_if_params_tampered() -> anyhow::Result<()> {
     let params = CorePublicParameters {
+        guarantee_domains: Vec::new(),
         public_key: vec![],
         contract_address: "0x0000000000000000000000000000000000000001".to_string(),
         ethereum_http_rpc_url: "".to_string(),

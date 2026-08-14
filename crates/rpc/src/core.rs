@@ -86,6 +86,13 @@ fn default_supported_guarantee_versions() -> Vec<u64> {
     crate::guarantee::SUPPORTED_GUARANTEE_VERSIONS.to_vec()
 }
 
+/// One guarantee version's on-chain EIP-712 domain separator, hex-encoded with a `0x` prefix.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuaranteeVersionDomain {
+    pub version: u64,
+    pub domain_separator: String,
+}
+
 /// Static parameters exposed by the core service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorePublicParameters {
@@ -110,6 +117,9 @@ pub struct CorePublicParameters {
     /// Domain separator core uses for BLS guarantee signing at the current version.
     #[serde(default)]
     pub guarantee_domain_separator: String,
+    /// Domain separator per entry in `supported_guarantee_versions`.
+    #[serde(default)]
+    pub guarantee_domains: Vec<GuaranteeVersionDomain>,
     /// The Core4Mica contract's own EIP-712 `DOMAIN_SEPARATOR()`, read on-chain by core.
     #[serde(default)]
     pub core_domain_separator: String,
@@ -170,6 +180,7 @@ mod tests {
 
     fn public_params(ethereum_http_rpc_url: &str) -> CorePublicParameters {
         CorePublicParameters {
+            guarantee_domains: Vec::new(),
             public_key: vec![1, 2, 3],
             contract_address: "0x0000000000000000000000000000000000000001".to_string(),
             ethereum_http_rpc_url: ethereum_http_rpc_url.to_string(),

@@ -116,6 +116,25 @@ contract Core4MicaGaslessWithdrawalTest is Core4MicaTestBase {
         return amount;
     }
 
+    // ========= Domain =========
+
+    /// Off-chain signers derive this domain from the chain id and the contract address rather than
+    /// reading it, which only holds while the name and version stay `("Core4Mica", "1")`. Changing
+    /// either is a breaking change for every client that has not been rebuilt.
+    function test_DomainSeparatorUsesTheDeclaredNameAndVersion() public view {
+        bytes32 expected = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("Core4Mica"),
+                keccak256("1"),
+                block.chainid,
+                address(core4Mica)
+            )
+        );
+
+        assertEq(core4Mica.DOMAIN_SEPARATOR(), expected);
+    }
+
     // ========= Request =========
 
     function test_RequestWithAuthorizationRecordsAgainstSignerNotSubmitter() public {
