@@ -29,6 +29,10 @@ impl CoreContractApi for UnusedContractApi {
         unimplemented!("chain access is not expected in this test")
     }
 
+    async fn get_core_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
+        unimplemented!("chain access is not expected in this test")
+    }
+
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {
         unimplemented!("chain access is not expected in this test")
     }

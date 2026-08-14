@@ -186,6 +186,9 @@ pub mod contract_abi {
                     bool enabled
                 );
 
+            /// View: the contract's EIP-712 domain separator, for authorizations it verifies itself.
+            function DOMAIN_SEPARATOR() external view returns (bytes32);
+
             /// View: delayed-withdrawal grace period (seconds).
             function withdrawalGracePeriod() external view returns (uint256);
 

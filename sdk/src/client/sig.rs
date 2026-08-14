@@ -13,14 +13,18 @@ use alloy::{
 use crate::{
     client::ClientCtx,
     contract::{
-        Core4Mica::{Permit2Authorization, ReceiveAuthorization},
+        Core4Mica::{
+            Permit2Authorization, ReceiveAuthorization, WithdrawalCancelAuthorization,
+            WithdrawalRequestAuthorization,
+        },
         PERMIT2_ADDRESS,
     },
     digest::{
-        eip712_digest_for_permit, eip712_digest_for_permit2_transfer,
-        eip712_digest_for_receive_authorization,
+        eip712_digest_for_cancel_withdrawal, eip712_digest_for_permit,
+        eip712_digest_for_permit2_transfer, eip712_digest_for_receive_authorization,
+        eip712_digest_for_request_withdrawal,
     },
-    error::DepositError,
+    error::{DepositError, SponsorshipError},
 };
 
 /// How long a signed authorization stays redeemable.
@@ -147,6 +151,87 @@ where
         r,
         s,
     })
+}
+
+/// Signs a `RequestWithdrawal` authorization for `amount` of `asset` (`Address::ZERO` for ETH).
+///
+/// The digest binds the asset, the amount and the window, so whoever submits it can change none of
+/// them — the worst they can do is not submit.
+pub(super) async fn request_withdrawal_authorization<S>(
+    ctx: &ClientCtx<S>,
+    asset: Address,
+    amount: U256,
+) -> Result<WithdrawalRequestAuthorization, SponsorshipError>
+where
+    S: Signer + Send + Sync,
+{
+    let user = ctx.signer_address();
+    let valid_before = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
+    let nonce = B256::from(rand::random::<[u8; 32]>());
+
+    let digest = eip712_digest_for_request_withdrawal(
+        ctx.core_domain_separator(),
+        user,
+        asset,
+        amount,
+        U256::ZERO,
+        valid_before,
+        nonce,
+    );
+
+    Ok(WithdrawalRequestAuthorization {
+        user,
+        asset,
+        amount,
+        validAfter: U256::ZERO,
+        validBefore: valid_before,
+        nonce,
+        signature: sign_bytes(ctx, &digest).await?,
+    })
+}
+
+/// Signs a `CancelWithdrawal` authorization for the pending request on `asset`.
+pub(super) async fn cancel_withdrawal_authorization<S>(
+    ctx: &ClientCtx<S>,
+    asset: Address,
+) -> Result<WithdrawalCancelAuthorization, SponsorshipError>
+where
+    S: Signer + Send + Sync,
+{
+    let user = ctx.signer_address();
+    let valid_before = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
+    let nonce = B256::from(rand::random::<[u8; 32]>());
+
+    let digest = eip712_digest_for_cancel_withdrawal(
+        ctx.core_domain_separator(),
+        user,
+        asset,
+        U256::ZERO,
+        valid_before,
+        nonce,
+    );
+
+    Ok(WithdrawalCancelAuthorization {
+        user,
+        asset,
+        validAfter: U256::ZERO,
+        validBefore: valid_before,
+        nonce,
+        signature: sign_bytes(ctx, &digest).await?,
+    })
+}
+
+/// Signs `digest` into the packed 65-byte form Core4Mica's `SignatureChecker` expects.
+async fn sign_bytes<S>(ctx: &ClientCtx<S>, digest: &B256) -> Result<Bytes, SponsorshipError>
+where
+    S: Signer + Send + Sync,
+{
+    let signature = ctx
+        .signer()
+        .sign_hash(digest)
+        .await
+        .map_err(|e| SponsorshipError::Transport(e.to_string()))?;
+    Ok(Bytes::from(signature.as_bytes().to_vec()))
 }
 
 /// Current UNIX time in seconds, saturating to 0 if the clock is before the epoch.

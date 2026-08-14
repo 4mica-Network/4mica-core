@@ -1,4 +1,9 @@
-use alloy::{primitives::Address, signers::Signer};
+use std::{fmt::Display, str::FromStr};
+
+use alloy::{
+    network::Ethereum, primitives::Address, providers::PendingTransactionBuilder,
+    rpc::types::TransactionReceipt, signers::Signer,
+};
 use rpc::{ApiClientError, SupportedTokensResponse};
 
 use crate::{
@@ -24,6 +29,41 @@ pub mod settlement;
 pub mod withdraw;
 
 pub(crate) use ctx::ClientCtx;
+
+/// Waits for a sent transaction to be mined.
+///
+/// Broadcasting and waiting fail with different error types; folding them into the contract error
+/// leaves callers a single `?` that decodes the revert into their own error.
+pub(crate) async fn await_receipt(
+    sent: Result<PendingTransactionBuilder<Ethereum>, alloy::contract::Error>,
+) -> Result<TransactionReceipt, alloy::contract::Error> {
+    sent?.get_receipt().await.map_err(Into::into)
+}
+
+/// Checks a value the facilitator echoed back against what was asked for, taking the request's own
+/// value when the facilitator omits it.
+///
+/// Echoed fields exist for reconciliation, so one that disagrees — or that cannot be read — means
+/// the receipt would describe a transaction nobody asked for. `mismatch` builds the error for that.
+pub(crate) fn confirm_echoed<T, E>(
+    field: &str,
+    raw: Option<&str>,
+    expected: T,
+    mismatch: impl FnOnce(String) -> E,
+) -> Result<T, E>
+where
+    T: FromStr + PartialEq + Display,
+{
+    let Some(raw) = raw else {
+        return Ok(expected);
+    };
+    match raw.parse::<T>() {
+        Ok(echoed) if echoed == expected => Ok(expected),
+        _ => Err(mismatch(format!(
+            "facilitator echoed {field} {raw}, expected {expected}"
+        ))),
+    }
+}
 
 /// Entry point to the SDK
 pub struct Client<S> {
@@ -91,4 +131,54 @@ impl<S> Client<S> {
     pub async fn supported_tokens(&self) -> Result<SupportedTokensResponse, ApiClientError> {
         self.ctx.supported_tokens().await
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::primitives::U256;
+
+    use super::*;
+
+    /// The one echo that is not a disagreement: the facilitator said nothing about the field, which
+    /// cannot contradict what was asked for.
+    #[test]
+    fn an_omitted_echo_takes_the_value_that_was_asked_for() {
+        let expected = Address::repeat_byte(0x11);
+        assert_eq!(
+            confirm_echoed("user", None, expected, Mismatch).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_matching_echo_is_accepted_whatever_its_casing() {
+        let expected = Address::repeat_byte(0x11);
+        let lowercase = format!("{expected:?}").to_lowercase();
+
+        assert_eq!(
+            confirm_echoed("user", Some(&lowercase), expected, Mismatch).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_echo_that_disagrees_is_a_mismatch() {
+        let other = format!("{:?}", Address::repeat_byte(0x22));
+
+        let reported =
+            confirm_echoed("user", Some(&other), Address::repeat_byte(0x11), Mismatch).unwrap_err();
+        assert!(reported.0.contains(&other), "{}", reported.0);
+
+        confirm_echoed("amount", Some("41"), U256::from(42), Mismatch).unwrap_err();
+    }
+
+    /// An echo that cannot be read is no confirmation that it matched.
+    #[test]
+    fn an_unparseable_echo_is_a_mismatch() {
+        confirm_echoed("asset", Some("not-an-address"), Address::ZERO, Mismatch).unwrap_err();
+        confirm_echoed("amount", Some("forty-two"), U256::from(42), Mismatch).unwrap_err();
+    }
+
+    #[derive(Debug)]
+    struct Mismatch(String);
 }

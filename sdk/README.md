@@ -369,9 +369,18 @@ Notes:
 
 #### `client.withdraw`
 
-- `request(asset: Asset, amount: U256) -> Result<TransactionReceipt, RequestWithdrawalError>`: Request a withdrawal, starting its waiting period
-- `cancel(asset: Asset) -> Result<TransactionReceipt, CancelWithdrawalError>`: Cancel a pending withdrawal request
-- `finalize(asset: Asset) -> Result<TransactionReceipt, FinalizeWithdrawalError>`: Pay out a request whose waiting period has elapsed
+- `request(asset: Asset, amount: U256) -> Result<WithdrawReceipt, RequestWithdrawalError>`: Request a withdrawal, sponsored where possible, falling back to a self-funded transaction
+- `cancel(asset: Asset) -> Result<WithdrawReceipt, CancelWithdrawalError>`: Cancel a pending withdrawal request, with the same fallback
+- `finalize(asset: Asset) -> Result<WithdrawReceipt, FinalizeWithdrawalError>`: Pay out a request whose waiting period has elapsed, with the same fallback
+- `request_gasless` / `cancel_gasless` / `finalize_gasless`: The sponsored route only, failing rather than falling back. Works for ETH too — the contract verifies the signature itself
+- `request_self_funded` / `cancel_self_funded` / `finalize_self_funded`: The user's own transaction only
+- `sign_request(asset: Asset, amount: U256) -> Result<WithdrawalRequestAuthorization, RequestWithdrawalError>`: Sign a request for someone else to submit
+- `sign_cancel(asset: Asset) -> Result<WithdrawalCancelAuthorization, CancelWithdrawalError>`: Sign a cancellation for someone else to submit
+- `submit_request(authorization)` / `submit_cancel(authorization)`: Submit an authorization signed elsewhere
+- `verify_request(authorization)` / `verify_cancel(authorization)` / `verify_finalize(asset)`: Preflight a step without spending gas
+- `is_gasless_available() -> bool`: Whether a facilitator is configured at all
+
+Finalization takes no signature: `finalizeWithdrawalFor` pays the user whoever submits it, which matters when the waiting period is weeks long.
 
 #### `client.payment`
 
@@ -483,13 +492,18 @@ use sdk_4mica::{Address, Asset, U256};
 // Request to withdraw 0.5 ETH
 let amount = U256::from(500_000_000_000_000_000u128);
 let receipt = client.withdraw.request(Asset::Native, amount).await?;
-println!("Withdrawal requested: {:?}", receipt.transaction_hash);
+println!("Withdrawal requested: {:?}", receipt.tx_hash);
 
 // Or request to withdraw 500 USDC
 let token_address: Address = "0x1234567890123456789012345678901234567890".parse()?;
 let amount_usdc = U256::from(500_000_000u128);
 let receipt = client.withdraw.request(Asset::Erc20(token_address), amount_usdc).await?;
-println!("USDC withdrawal requested: {:?}", receipt.transaction_hash);
+println!("USDC withdrawal requested: {:?}", receipt.tx_hash);
+
+// Whoever paid for it is on the receipt.
+if receipt.path.costs_the_user_gas() {
+    println!("no facilitator sponsored this one");
+}
 ```
 
 #### Cancel Withdrawal
@@ -497,11 +511,11 @@ println!("USDC withdrawal requested: {:?}", receipt.transaction_hash);
 ```rust
 // Cancel a pending ETH withdrawal request
 let receipt = client.withdraw.cancel(Asset::Native).await?;
-println!("Withdrawal cancelled: {:?}", receipt.transaction_hash);
+println!("Withdrawal cancelled: {:?}", receipt.tx_hash);
 
 // Cancel a pending USDC withdrawal request
 let receipt = client.withdraw.cancel(Asset::Erc20(token_address)).await?;
-println!("USDC withdrawal cancelled: {:?}", receipt.transaction_hash);
+println!("USDC withdrawal cancelled: {:?}", receipt.tx_hash);
 ```
 
 #### Finalize Withdrawal
@@ -509,11 +523,11 @@ println!("USDC withdrawal cancelled: {:?}", receipt.transaction_hash);
 ```rust
 // Finalize ETH withdrawal (after the waiting period)
 let receipt = client.withdraw.finalize(Asset::Native).await?;
-println!("Withdrawal finalized: {:?}", receipt.transaction_hash);
+println!("Withdrawal finalized: {:?}", receipt.tx_hash);
 
 // Finalize USDC withdrawal (after the waiting period)
 let receipt = client.withdraw.finalize(Asset::Erc20(token_address)).await?;
-println!("USDC withdrawal finalized: {:?}", receipt.transaction_hash);
+println!("USDC withdrawal finalized: {:?}", receipt.tx_hash);
 ```
 
 ### Payment Guarantees

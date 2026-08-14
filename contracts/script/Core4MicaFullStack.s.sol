@@ -75,6 +75,16 @@ contract Core4MicaFullStackScript is Script {
     uint32 public constant DEFAULT_ADMIN_EXECUTION_DELAY = 72 hours;
     uint32 public constant DEFAULT_ROLE_GRANT_DELAY = 72 hours;
 
+    // Development defaults. Every governance delay collapses to zero and the withdrawal wait to a
+    // minute, so a full deposit -> request -> finalize cycle is exercisable in one sitting rather
+    // than 22 days. Production never sees these; setting the matching env var overrides either way.
+    uint32 public constant DEV_EXECUTION_DELAY = 0;
+    uint256 public constant DEV_MIN_WITHDRAWAL_GRACE_PERIOD = 60;
+    uint256 public constant DEV_WITHDRAWAL_GRACE_PERIOD = 60;
+
+    // What Core4Mica starts with, so a production deploy that does not override it makes no call.
+    uint256 public constant CONTRACT_DEFAULT_WITHDRAWAL_GRACE_PERIOD = 22 days;
+
     /// Aave's ray, i.e. a liquidity index of exactly 1.0.
     uint256 internal constant MOCK_AAVE_RAY = 1e27;
 
@@ -96,6 +106,7 @@ contract Core4MicaFullStackScript is Script {
         bytes32 baseSalt;
         BLS.G1Point guaranteeVerificationKey;
         uint256 minWithdrawalGracePeriod;
+        uint256 withdrawalGracePeriod;
         bool hardenedGovernance;
         uint32 adminExecutionDelay;
         uint32 roleGrantDelay;
@@ -134,6 +145,8 @@ contract Core4MicaFullStackScript is Script {
         console.log("ClearingHouse:", address(deployment.clearingHouse));
         console.log("AccessManager admin:", config.managerAdmin);
         console.log("Hardened governance:", config.hardenedGovernance);
+        console.log("Withdrawal grace period:", deployment.core4Mica.withdrawalGracePeriod());
+        console.log("Min withdrawal grace period:", config.minWithdrawalGracePeriod);
         console.log("CREATE2 base salt:");
         console.logBytes32(config.baseSalt);
     }
@@ -159,8 +172,21 @@ contract Core4MicaFullStackScript is Script {
         // On-chain floor for withdrawalGracePeriod, set at construction so it can never be left
         // at 0. Must exceed worst-case cycle time-to-finality + seizure margin to preserve the
         // delayed-withdrawal solvency invariant; default 7 days (vs the 22-day default grace).
-        config.minWithdrawalGracePeriod = vm.envOr("MIN_WITHDRAWAL_GRACE_PERIOD", uint256(7 days));
+        config.minWithdrawalGracePeriod =
+            vm.envOr("MIN_WITHDRAWAL_GRACE_PERIOD", _isDevelopment() ? DEV_MIN_WITHDRAWAL_GRACE_PERIOD : 7 days);
         require(config.minWithdrawalGracePeriod > 0, "MIN_WITHDRAWAL_GRACE_PERIOD must be > 0");
+
+        // The period the contract actually enforces. Distinct from the floor above, and absent from
+        // the constructor: Core4Mica starts at its own 22-day default and only a governance call
+        // moves it, so without this a "short grace period" deploy silently still waits 22 days.
+        config.withdrawalGracePeriod = vm.envOr(
+            "WITHDRAWAL_GRACE_PERIOD",
+            _isDevelopment() ? DEV_WITHDRAWAL_GRACE_PERIOD : CONTRACT_DEFAULT_WITHDRAWAL_GRACE_PERIOD
+        );
+        require(
+            config.withdrawalGracePeriod >= config.minWithdrawalGracePeriod,
+            "WITHDRAWAL_GRACE_PERIOD is below MIN_WITHDRAWAL_GRACE_PERIOD"
+        );
 
         // Mirror core-service's SERVER_ENVIRONMENT model: default to production (fail-safe), and gate
         // the production-only governance hardening on it. Production enforces the full hardened
@@ -168,8 +194,9 @@ contract Core4MicaFullStackScript is Script {
         // holders, contract operator); development skips it so local/CI anvil deploys work as a
         // single-key deployer without extra config.
         config.hardenedGovernance = _loadEnvironment() == Environment.Production;
-        config.adminExecutionDelay = uint32(vm.envOr("ADMIN_EXECUTION_DELAY", uint256(DEFAULT_ADMIN_EXECUTION_DELAY)));
-        config.roleGrantDelay = uint32(vm.envOr("ROLE_GRANT_DELAY", uint256(DEFAULT_ROLE_GRANT_DELAY)));
+        config.adminExecutionDelay =
+            uint32(vm.envOr("ADMIN_EXECUTION_DELAY", uint256(_defaultDelay(DEFAULT_ADMIN_EXECUTION_DELAY))));
+        config.roleGrantDelay = uint32(vm.envOr("ROLE_GRANT_DELAY", uint256(_defaultDelay(DEFAULT_ROLE_GRANT_DELAY))));
         if (config.hardenedGovernance) {
             _validateHardenedGovernance(config, deployer);
         }
@@ -304,6 +331,24 @@ contract Core4MicaFullStackScript is Script {
 
         _configureCoreRoles(deployment.manager, deployment.core4Mica, config.deployer);
         _configureClearingHouseRoles(deployment.manager, deployment.clearingHouse, deployment.core4Mica);
+        // After the role grant above, so the deployer is holding GOVERNANCE_ROLE by the time it calls.
+        _configureWithdrawalGracePeriod(deployment.core4Mica, config);
+    }
+
+    /// Applies `WITHDRAWAL_GRACE_PERIOD` when it differs from what the contract starts with.
+    ///
+    /// Needs a zero governance delay, which is development's default. Under hardened governance the
+    /// role is held behind a timelock, so the call would have to be scheduled rather than sent — and
+    /// choosing the initial period is a governance decision there, not a deploy-time one.
+    function _configureWithdrawalGracePeriod(Core4Mica core4Mica, DeploymentConfig memory config) internal {
+        if (config.withdrawalGracePeriod == core4Mica.withdrawalGracePeriod()) {
+            return;
+        }
+        if (_governanceDelay() != 0) {
+            console.log("Withdrawal grace period left at default: governance delay is non-zero");
+            return;
+        }
+        core4Mica.setWithdrawalGracePeriod(config.withdrawalGracePeriod);
     }
 
     function _deployFullStack(
@@ -564,19 +609,35 @@ contract Core4MicaFullStackScript is Script {
         return vm.envOr(envKey, fallbackAddress);
     }
 
+    function _isDevelopment() internal view returns (bool) {
+        return _loadEnvironment() == Environment.Development;
+    }
+
+    /// A governance delay's default: production's hardened value, zero in development. Timelocked
+    /// governance is the point in production and pure friction locally, where every role holder is
+    /// the same anvil key.
+    function _defaultDelay(uint32 productionDefault) internal view returns (uint32) {
+        return _isDevelopment() ? DEV_EXECUTION_DELAY : productionDefault;
+    }
+
     function _governanceDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("GOVERNANCE_EXECUTION_DELAY", uint256(DEFAULT_GOVERNANCE_EXECUTION_DELAY)));
+        return
+            uint32(vm.envOr("GOVERNANCE_EXECUTION_DELAY", uint256(_defaultDelay(DEFAULT_GOVERNANCE_EXECUTION_DELAY))));
     }
 
     function _treasuryDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("TREASURY_EXECUTION_DELAY", uint256(DEFAULT_TREASURY_EXECUTION_DELAY)));
+        return uint32(vm.envOr("TREASURY_EXECUTION_DELAY", uint256(_defaultDelay(DEFAULT_TREASURY_EXECUTION_DELAY))));
     }
 
     function _guardianDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("GUARDIAN_EXECUTION_DELAY", uint256(DEFAULT_GUARDIAN_EXECUTION_DELAY)));
+        return uint32(vm.envOr("GUARDIAN_EXECUTION_DELAY", uint256(_defaultDelay(DEFAULT_GUARDIAN_EXECUTION_DELAY))));
     }
 
     function _fourmicaOperatorDelay() internal view returns (uint32) {
-        return uint32(vm.envOr("FOURMICA_OPERATOR_EXECUTION_DELAY", uint256(DEFAULT_FOURMICA_OPERATOR_EXECUTION_DELAY)));
+        return uint32(
+            vm.envOr(
+                "FOURMICA_OPERATOR_EXECUTION_DELAY", uint256(_defaultDelay(DEFAULT_FOURMICA_OPERATOR_EXECUTION_DELAY))
+            )
+        );
     }
 }

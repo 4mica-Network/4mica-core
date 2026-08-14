@@ -191,6 +191,8 @@ pub trait CoreContractApi: Send + Sync {
 
     async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError>;
 
+    async fn get_core_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError>;
+
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError>;
 
     async fn commit_clearing_cycle(
@@ -319,6 +321,16 @@ impl CoreContractApi for CoreContractProxy {
             .await
             .observe("withdrawalGracePeriod")?;
         Ok(grace_period.to())
+    }
+
+    async fn get_core_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
+        let contract = self.build_contract();
+        let separator = contract
+            .DOMAIN_SEPARATOR()
+            .call()
+            .await
+            .observe("DOMAIN_SEPARATOR")?;
+        Ok(separator.into())
     }
 
     async fn get_supported_tokens(&self) -> Result<Vec<SupportedTokenInfo>, CoreContractApiError> {

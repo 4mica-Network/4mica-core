@@ -38,6 +38,7 @@ where
         let assets = self
             .ctx
             .get_contract()
+            .await?
             .getUserAllAssets(self.ctx.signer_address())
             .call()
             .await
@@ -52,6 +53,7 @@ where
 
         self.ctx
             .get_contract()
+            .await?
             .principalBalance(self.ctx.signer_address(), asset)
             .call()
             .await
@@ -64,6 +66,7 @@ where
 
         self.ctx
             .get_contract()
+            .await?
             .withdrawableBalance(self.ctx.signer_address(), asset)
             .call()
             .await
@@ -78,7 +81,7 @@ where
     ) -> Result<StablecoinPosition, GetUserError> {
         let asset_address = self.parse_asset(&asset)?;
         let signer_address = self.ctx.signer_address();
-        let contract = self.ctx.get_contract();
+        let contract = self.ctx.get_contract().await?;
 
         let principal = contract
             .principalBalance(signer_address, asset_address)

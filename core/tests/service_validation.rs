@@ -72,6 +72,7 @@ fn build_service(
         guarantee_domains: HashMap::from([(1u64, [0u8; 32])]),
         validators,
         withdrawal_grace_period: 22 * 24 * 3600,
+        core_domain_separator: None,
     };
     CoreService::new_with_dependencies(config, deps).expect("chain-free service builds")
 }

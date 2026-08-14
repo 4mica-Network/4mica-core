@@ -1,14 +1,15 @@
 //! Transport for the service that submits signed authorizations and pays the gas for them.
 
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::error::DepositError;
+use crate::error::{DepositError, SponsorshipError};
 
 pub(super) struct Facilitator {
     http: reqwest::Client,
     /// `None` when none was configured; every call then fails with
-    /// [`DepositError::FacilitatorNotConfigured`] rather than silently doing nothing.
+    /// [`SponsorshipError::NotConfigured`] rather than silently doing nothing.
     base_url: Option<Url>,
 }
 
@@ -33,43 +34,58 @@ impl Facilitator {
         self.base_url.is_some()
     }
 
-    pub(super) async fn post<Req, Resp>(&self, path: &str, body: &Req) -> Result<Resp, DepositError>
+    pub(super) async fn post<Req, Resp>(
+        &self,
+        path: &str,
+        body: &Req,
+    ) -> Result<Resp, SponsorshipError>
     where
         Req: Serialize + ?Sized,
         Resp: serde::de::DeserializeOwned,
     {
         let url = self.endpoint(path)?;
-        let response =
-            self.http.post(url).json(body).send().await.map_err(|err| {
-                DepositError::Transport(format!("facilitator request failed: {err}"))
-            })?;
+        let response = self.http.post(url).json(body).send().await.map_err(|err| {
+            let message = format!("facilitator request failed: {err}");
+            if err.is_connect() || err.is_builder() {
+                SponsorshipError::Transport(message)
+            } else {
+                SponsorshipError::OutcomeUnknown(message)
+            }
+        })?;
 
         let status = response.status();
         let bytes = response.bytes().await.map_err(|err| {
-            DepositError::Transport(format!("failed to read facilitator response: {err}"))
+            SponsorshipError::OutcomeUnknown(format!("failed to read facilitator response: {err}"))
         })?;
 
         // Rejections are reported in the body with a 200, so a non-success status is a transport or
         // routing problem rather than a refused request.
         if !status.is_success() {
-            return Err(DepositError::Transport(format!(
+            let message = format!(
                 "facilitator returned {status}: {}",
                 String::from_utf8_lossy(&bytes)
-            )));
+            );
+            return Err(
+                if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
+                    SponsorshipError::Transport(message)
+                } else {
+                    SponsorshipError::OutcomeUnknown(message)
+                },
+            );
         }
 
         serde_json::from_slice(&bytes).map_err(|err| {
-            DepositError::Transport(format!("malformed facilitator response: {err}"))
+            SponsorshipError::OutcomeUnknown(format!("malformed facilitator response: {err}"))
         })
     }
 
-    fn endpoint(&self, path: &str) -> Result<Url, DepositError> {
+    fn endpoint(&self, path: &str) -> Result<Url, SponsorshipError> {
         let base = self
             .base_url
             .as_ref()
-            .ok_or(DepositError::FacilitatorNotConfigured)?;
+            .ok_or(SponsorshipError::NotConfigured)?;
         base.join(path).map_err(|err| {
-            DepositError::InvalidParams(format!("invalid facilitator URL for {path}: {err}"))
+            SponsorshipError::InvalidParams(format!("invalid facilitator URL for {path}: {err}"))
         })
     }
 }
@@ -84,6 +100,16 @@ pub(super) struct FacilitatorFailure {
 }
 
 impl FacilitatorFailure {
+    /// The generic rejection, for sponsored actions with no scheme-specific detail to unpack.
+    pub(super) fn into_sponsorship_error(self, message: Option<String>) -> SponsorshipError {
+        SponsorshipError::Rejected {
+            code: self.error_code.unwrap_or_else(|| "UNKNOWN".into()),
+            message: message.unwrap_or_else(|| "facilitator gave no reason".into()),
+            // Absent means "not retryable": a facilitator that omits it is not promising anything.
+            retryable: self.retryable.unwrap_or(false),
+        }
+    }
+
     pub(super) fn into_error(self, message: Option<String>) -> DepositError {
         let eip2612_nonce = self
             .permit2_allowance

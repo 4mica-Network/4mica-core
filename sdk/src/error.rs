@@ -71,6 +71,15 @@ pub enum ClientError {
 
     #[error("client initialization error: {0}")]
     Initialization(String),
+
+    /// No Ethereum endpoint is available, so anything that reads chain state or sends a transaction
+    /// is out of reach. Sponsored deposits and withdrawals are unaffected — they never touch the
+    /// chain — so this is only ever raised by the paths that do.
+    #[error(
+        "no Ethereum RPC endpoint is available; set 4MICA_ETHEREUM_HTTP_RPC_URL or \
+         ConfigBuilder::ethereum_http_rpc_url"
+    )]
+    ChainRpcUnavailable,
 }
 
 #[derive(Debug, Error)]
@@ -88,6 +97,38 @@ pub enum SignPaymentError {
 
     #[error(transparent)]
     Rpc(#[from] ApiClientError),
+}
+
+/// A sponsored action the facilitator declined, or could not be asked to perform at all.
+///
+/// Shared by every gasless route: the rejection envelope is the same whatever is being sponsored,
+/// so a caller branches on `code` identically no matter which client produced the error.
+#[derive(Debug, Error)]
+pub enum SponsorshipError {
+    /// No facilitator URL was configured, so there is nobody to pay the gas. Every client falls
+    /// back to the caller's own transaction on this, rather than surfacing it.
+    #[error(
+        "no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url"
+    )]
+    NotConfigured,
+    /// The facilitator refused. `code` is carried verbatim so a caller can still branch on a code
+    /// this SDK predates.
+    #[error("facilitator rejected the request ({code}): {message}")]
+    Rejected {
+        code: String,
+        message: String,
+        /// Whether retrying the identical request may succeed.
+        retryable: bool,
+    },
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+    /// The facilitator never received the request, so it cannot have acted on it.
+    #[error("provider/transport error: {0}")]
+    Transport(String),
+    /// The request reached the facilitator but no usable answer came back, so whether it submitted a
+    /// transaction is unknown.
+    #[error("facilitator outcome unknown: {0}")]
+    OutcomeUnknown(String),
 }
 
 #[derive(Debug, Error)]
@@ -110,6 +151,9 @@ pub enum FinalizeWithdrawalError {
     },
 
     #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
+
+    #[error(transparent)]
     Client(#[from] ClientError),
 
     #[error("unknown revert (selector {selector:#x})")]
@@ -130,6 +174,9 @@ pub enum RequestWithdrawalError {
     UnsupportedAsset(Address),
 
     #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
+
+    #[error(transparent)]
     Client(#[from] ClientError),
 
     #[error("unknown revert (selector {selector:#x})")]
@@ -144,6 +191,9 @@ pub enum CancelWithdrawalError {
     InvalidParams(String),
     #[error("no withdrawal requested")]
     NoWithdrawalRequested,
+
+    #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -212,8 +262,32 @@ pub enum DepositError {
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
+    /// The facilitator never received the deposit, so it cannot have acted on it.
     #[error("provider/transport error: {0}")]
     Transport(String),
+    /// The facilitator was asked but gave no usable answer, so whether it submitted a transaction
+    /// is unknown. Read the payer's balance before resending — a second authorization is a second
+    /// deposit, not a retry.
+    #[error("facilitator outcome unknown: {0}")]
+    OutcomeUnknown(String),
+}
+
+/// Deposits predate the shared sponsorship type and keep their own richer variants, so transport
+/// failures are folded into those rather than carried as a nested error.
+impl From<SponsorshipError> for DepositError {
+    fn from(err: SponsorshipError) -> Self {
+        match err {
+            SponsorshipError::NotConfigured => Self::FacilitatorNotConfigured,
+            SponsorshipError::InvalidParams(message) => Self::InvalidParams(message),
+            SponsorshipError::Transport(message) => Self::Transport(message),
+            SponsorshipError::OutcomeUnknown(message) => Self::OutcomeUnknown(message),
+            SponsorshipError::Rejected {
+                code,
+                message,
+                retryable,
+            } => Self::from_facilitator(Some(code), Some(message), retryable, None),
+        }
+    }
 }
 
 impl DepositError {
@@ -302,6 +376,8 @@ pub enum GetUserError {
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
+    #[error(transparent)]
+    Client(#[from] ClientError),
 }
 
 #[derive(Debug, Error)]

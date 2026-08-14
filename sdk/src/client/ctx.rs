@@ -32,8 +32,10 @@ struct Inner<S> {
     cfg: Config<S>,
     rpc_proxy: RpcProxy,
     facilitator: Facilitator,
-    ethereum_http_rpc_url: Url,
-    provider: DynProvider,
+    /// `None` when neither config nor core names one. Only the paths that read chain state or
+    /// transact need it, so its absence is not fatal until one of them is called.
+    ethereum_http_rpc_url: Option<Url>,
+    provider: OnceCell<DynProvider>,
     wallet_provider: OnceCell<DynProvider>,
     contract_address: Address,
     operator_public_key: BlsPublicKey,
@@ -44,6 +46,9 @@ struct Inner<S> {
     /// Token EIP-712 domain separators, memoised. Immutable per token per chain, so a hit never
     /// goes stale; a miss refetches in case a new asset has been registered.
     token_domain_separators: RwLock<HashMap<Address, B256>>,
+    /// Core4Mica's own EIP-712 domain separator, resolved at startup. Fixed for the lifetime of a
+    /// deployment.
+    core_domain_separator: B256,
 }
 
 /// Everything the sub-clients share: configuration, connections, and the metadata resolved once at
@@ -76,19 +81,18 @@ impl<S> ClientCtx<S> {
             .await
             .map_err(|e| ClientError::Rpc(e.to_string()))?;
 
-        let ethereum_http_rpc_url = match &cfg.ethereum_http_rpc_url {
-            Some(url) => url.clone(),
-            None => validate_url(&public_params.ethereum_http_rpc_url)
-                .map_err(|e| ClientError::Initialization(e.to_string()))?,
-        };
-
-        let provider = Self::build_provider(&public_params, &ethereum_http_rpc_url).await?;
+        let ethereum_http_rpc_url = Self::resolve_chain_rpc_url(&cfg, &public_params)?;
         let operator_public_key = Self::parse_operator_public_key(&public_params.public_key)?;
         let contract_address = Self::resolve_contract_address(&cfg, &public_params)?;
 
-        let contract = Core4Mica::new(contract_address, provider.clone());
-        let (guarantee_domain, guarantee_domains) =
-            Self::fetch_guarantee_metadata(&public_params, &contract).await?;
+        let (guarantee_domain, guarantee_domains) = Self::fetch_guarantee_metadata(
+            &public_params,
+            contract_address,
+            ethereum_http_rpc_url.as_ref(),
+        )
+        .await?;
+        let core_domain_separator =
+            Self::resolve_core_domain_separator(&public_params, contract_address);
 
         let facilitator = Facilitator::new(cfg.facilitator_url.clone());
 
@@ -97,7 +101,7 @@ impl<S> ClientCtx<S> {
             rpc_proxy,
             facilitator,
             ethereum_http_rpc_url,
-            provider,
+            provider: OnceCell::new(),
             wallet_provider: OnceCell::new(),
             contract_address,
             operator_public_key,
@@ -106,6 +110,7 @@ impl<S> ClientCtx<S> {
             auth_session,
             chain_id: public_params.chain_id,
             token_domain_separators: RwLock::new(HashMap::new()),
+            core_domain_separator,
         })))
     }
 
@@ -118,29 +123,29 @@ impl<S> ClientCtx<S> {
         Ok(proxy)
     }
 
-    async fn build_provider(
+    /// The Ethereum endpoint to talk to, if there is one. An explicit config wins over what core
+    /// advertises, and neither is required.
+    fn resolve_chain_rpc_url(
+        cfg: &Config<S>,
         public_params: &CorePublicParameters,
-        ethereum_http_rpc_url: &Url,
-    ) -> Result<DynProvider, ClientError> {
-        let provider = ProviderBuilder::new()
-            .connect(ethereum_http_rpc_url.as_ref())
-            .await
-            .map_err(|e| ClientError::Provider(e.to_string()))?
-            .erased();
-
-        let provider_chain_id = provider
-            .get_chain_id()
-            .await
-            .map_err(|e| ClientError::Initialization(e.to_string()))?;
-
-        if provider_chain_id != public_params.chain_id {
-            return Err(ClientError::Initialization(format!(
-                "chain id mismatch between core service ({}) and Ethereum provider ({})",
-                public_params.chain_id, provider_chain_id
-            )));
+    ) -> Result<Option<Url>, ClientError> {
+        if let Some(url) = &cfg.ethereum_http_rpc_url {
+            return Ok(Some(url.clone()));
         }
+        if public_params.ethereum_http_rpc_url.is_empty() {
+            return Ok(None);
+        }
+        validate_url(&public_params.ethereum_http_rpc_url)
+            .map(Some)
+            .map_err(|e| ClientError::Initialization(e.to_string()))
+    }
 
-        Ok(provider)
+    async fn connect(url: &Url) -> Result<DynProvider, ClientError> {
+        ProviderBuilder::new()
+            .connect(url.as_ref())
+            .await
+            .map_err(|e| ClientError::Provider(e.to_string()))
+            .map(|provider| provider.erased())
     }
 
     fn parse_operator_public_key(bytes: &[u8]) -> Result<BlsPublicKey, ClientError> {
@@ -159,12 +164,17 @@ impl<S> ClientCtx<S> {
         }
     }
 
-    /// Loads the on-chain domain separator for every guarantee version this deployment supports, so
-    /// certs can be verified whichever version issued them. Requests are always signed at
+    /// The domain separator for every guarantee version this deployment supports, so certs can be
+    /// verified whichever version issued them. Requests are always signed at
     /// [`GUARANTEE_CLAIMS_VERSION`], so that one must be supported and enabled.
+    ///
+    /// Takes what core publishes and reads the contract only when core publishes nothing, which is
+    /// all a core too old to do so leaves. That fallback is the one thing here that needs an
+    /// Ethereum endpoint.
     async fn fetch_guarantee_metadata(
         public_params: &CorePublicParameters,
-        contract: &Core4MicaInstance<DynProvider>,
+        contract_address: Address,
+        chain_rpc_url: Option<&Url>,
     ) -> Result<([u8; 32], HashMap<u64, [u8; 32]>), ClientError> {
         if !public_params
             .supported_guarantee_versions
@@ -176,6 +186,58 @@ impl<S> ClientCtx<S> {
                 public_params.supported_guarantee_versions
             )));
         }
+
+        let guarantee_domains = match Self::published_guarantee_domains(public_params)? {
+            Some(domains) => domains,
+            None => {
+                Self::read_guarantee_domains(public_params, contract_address, chain_rpc_url).await?
+            }
+        };
+
+        let guarantee_domain = guarantee_domains
+            .get(&GUARANTEE_CLAIMS_VERSION)
+            .copied()
+            .ok_or_else(|| {
+                ClientError::Initialization(format!(
+                    "missing guarantee domain metadata for v{GUARANTEE_CLAIMS_VERSION}"
+                ))
+            })?;
+
+        Ok((guarantee_domain, guarantee_domains))
+    }
+
+    /// The domains core published, or `None` from a core that publishes none.
+    fn published_guarantee_domains(
+        public_params: &CorePublicParameters,
+    ) -> Result<Option<HashMap<u64, [u8; 32]>>, ClientError> {
+        if public_params.guarantee_domains.is_empty() {
+            return Ok(None);
+        }
+
+        public_params
+            .guarantee_domains
+            .iter()
+            .map(|entry| {
+                let separator = entry.domain_separator.parse::<B256>().map_err(|e| {
+                    ClientError::Initialization(format!(
+                        "invalid guarantee domain separator for v{} from core: {e}",
+                        entry.version
+                    ))
+                })?;
+                Ok((entry.version, separator.into()))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map(Some)
+    }
+
+    /// Reads each supported version's domain off the contract, one call apiece.
+    async fn read_guarantee_domains(
+        public_params: &CorePublicParameters,
+        contract_address: Address,
+        chain_rpc_url: Option<&Url>,
+    ) -> Result<HashMap<u64, [u8; 32]>, ClientError> {
+        let url = chain_rpc_url.ok_or(ClientError::ChainRpcUnavailable)?;
+        let contract = Core4Mica::new(contract_address, Self::connect(url).await?);
 
         let mut guarantee_domains = HashMap::new();
         for &version in &public_params.supported_guarantee_versions {
@@ -216,24 +278,70 @@ impl<S> ClientCtx<S> {
             }
         }
 
-        let guarantee_domain = guarantee_domains
-            .get(&GUARANTEE_CLAIMS_VERSION)
-            .copied()
-            .ok_or_else(|| {
-                ClientError::Initialization(format!(
-                    "missing guarantee domain metadata for v{GUARANTEE_CLAIMS_VERSION}"
-                ))
-            })?;
+        Ok(guarantee_domains)
+    }
 
-        Ok((guarantee_domain, guarantee_domains))
+    /// Core4Mica's EIP-712 domain separator.
+    ///
+    /// Prefers what core publishes, since core reads it from the contract and so stays right across
+    /// a domain change. Falls back to deriving it, which is sound because the contract fixes its
+    /// domain as `EIP712("Core4Mica", "1")` — so a core too old to publish one costs nothing beyond
+    /// that guarantee.
+    fn resolve_core_domain_separator(
+        public_params: &CorePublicParameters,
+        contract_address: Address,
+    ) -> B256 {
+        public_params
+            .core_domain_separator
+            .parse::<B256>()
+            .unwrap_or_else(|_| {
+                crate::digest::core_domain_separator(public_params.chain_id, contract_address)
+            })
     }
 
     pub(crate) fn contract_address(&self) -> Address {
         self.0.contract_address
     }
 
-    pub(crate) fn get_contract(&self) -> Core4MicaInstance<DynProvider> {
-        Core4Mica::new(self.0.contract_address, self.0.provider.clone())
+    fn chain_rpc_url(&self) -> Result<&Url, ClientError> {
+        self.0
+            .ethereum_http_rpc_url
+            .as_ref()
+            .ok_or(ClientError::ChainRpcUnavailable)
+    }
+
+    /// The read provider, connected on first use.
+    ///
+    /// Deferred so a client that only ever takes sponsored paths never needs an Ethereum endpoint —
+    /// everything resolved at construction comes from core. The chain id is checked here rather than
+    /// at construction, which keeps the check without paying for it up front.
+    async fn provider(&self) -> Result<&DynProvider, ClientError> {
+        self.0
+            .provider
+            .get_or_try_init(|| async {
+                let provider = Self::connect(self.chain_rpc_url()?).await?;
+                let chain_id = provider
+                    .get_chain_id()
+                    .await
+                    .map_err(|e| ClientError::Provider(e.to_string()))?;
+
+                if chain_id != self.0.chain_id {
+                    return Err(ClientError::Initialization(format!(
+                        "chain id mismatch between core service ({}) and Ethereum provider \
+                         ({chain_id})",
+                        self.0.chain_id
+                    )));
+                }
+                Ok(provider)
+            })
+            .await
+    }
+
+    pub(crate) async fn get_contract(&self) -> Result<Core4MicaInstance<DynProvider>, ClientError> {
+        Ok(Core4Mica::new(
+            self.0.contract_address,
+            self.provider().await?.clone(),
+        ))
     }
 
     /// A token's EIP-712 domain separator.
@@ -276,6 +384,11 @@ impl<S> ClientCtx<S> {
                  unsupported or does not implement EIP-3009"
             ))
         })
+    }
+
+    /// Core4Mica's EIP-712 domain separator, resolved at startup.
+    pub(crate) fn core_domain_separator(&self) -> B256 {
+        self.0.core_domain_separator
     }
 
     /// Permit2's domain separator, derived locally from the chain id.
@@ -355,7 +468,7 @@ impl<S> ClientCtx<S> {
                 let wallet = EthereumWallet::new(self.0.cfg.signer.clone());
                 ProviderBuilder::new()
                     .wallet(wallet)
-                    .connect(self.0.ethereum_http_rpc_url.as_ref())
+                    .connect(self.chain_rpc_url()?.as_ref())
                     .await
                     .map_err(|e| ClientError::Provider(e.to_string()))
                     .map(|p| p.erased())

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     client::{
-        ClientCtx,
+        ClientCtx, await_receipt, confirm_echoed,
         facilitator::FacilitatorFailure,
         model::{Asset, DepositPath, DepositReceipt},
         sig::{self, Eip2612Permit},
@@ -118,6 +118,11 @@ where
         };
 
         let permit = sig::eip2612_permit(&self.ctx, token, *nonce).await?;
+        let deposited = Deposited {
+            payer: authorization.from,
+            asset: token,
+            amount,
+        };
         self.submit(
             DepositRequest::new(
                 token,
@@ -128,6 +133,7 @@ where
                 },
             ),
             DepositPath::SponsoredPermit2,
+            deposited,
         )
         .await
     }
@@ -159,6 +165,11 @@ where
         amount: U256,
         authorization: ReceiveAuthorization,
     ) -> Result<DepositReceipt, DepositError> {
+        let deposited = Deposited {
+            payer: authorization.from,
+            asset: token,
+            amount,
+        };
         self.submit(
             DepositRequest::new(
                 token,
@@ -166,6 +177,7 @@ where
                 DepositAuthorization::Eip3009 { authorization },
             ),
             DepositPath::Eip3009,
+            deposited,
         )
         .await
     }
@@ -177,6 +189,11 @@ where
         amount: U256,
         authorization: Permit2Authorization,
     ) -> Result<DepositReceipt, DepositError> {
+        let deposited = Deposited {
+            payer: authorization.from,
+            asset: token,
+            amount,
+        };
         self.submit(
             DepositRequest::new(
                 token,
@@ -187,6 +204,7 @@ where
                 },
             ),
             DepositPath::Permit2,
+            deposited,
         )
         .await
     }
@@ -217,48 +235,27 @@ where
         Err(response.failure.into_error(response.invalid_reason))
     }
 
+    /// `deposited` is what the receipt is checked against; it must describe the same deposit the
+    /// request does.
     async fn submit(
         &self,
         request: DepositRequest,
         path: DepositPath,
+        deposited: Deposited,
     ) -> Result<DepositReceipt, DepositError> {
         let response: DepositResponse = self.ctx.facilitator().post("deposit", &request).await?;
-
-        if !response.success {
-            return Err(response.failure.into_error(response.error));
-        }
-
-        let tx_hash = response
-            .tx_hash
-            .as_deref()
-            .and_then(|raw| raw.parse::<B256>().ok())
-            .ok_or_else(|| {
-                DepositError::Transport("facilitator reported success without a txHash".into())
-            })?;
-
-        Ok(DepositReceipt {
-            tx_hash,
-            path,
-            from: response
-                .from
-                .as_deref()
-                .and_then(|raw| raw.parse().ok())
-                .unwrap_or_default(),
-            // Echoed back on success; fall back to what we asked for.
-            asset: response
-                .asset
-                .as_deref()
-                .and_then(|raw| raw.parse().ok())
-                .or_else(|| request.asset.parse().ok())
-                .unwrap_or_default(),
-            amount: response
-                .amount
-                .as_deref()
-                .and_then(|raw| raw.parse::<U256>().ok())
-                .unwrap_or_default(),
-            network: response.network,
-        })
+        response.into_receipt(path, deposited)
     }
+}
+
+/// What a deposit was asked to do, to hold the facilitator's answer against.
+#[derive(Clone, Copy)]
+struct Deposited {
+    /// Whoever signed the authorization — the account the contract credits, which need not be this
+    /// client's signer when the authorization was signed elsewhere.
+    payer: Address,
+    asset: Address,
+    amount: U256,
 }
 
 impl<S> DepositClient<S>
@@ -342,17 +339,7 @@ where
         let spender = self.ctx.contract_address();
         let contract = self.ctx.get_erc20_write_contract(token).await?;
 
-        let send_result = contract
-            .approve(spender, amount)
-            .send()
-            .await
-            .map_err(ApproveErc20Error::from)?;
-
-        send_result
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(ApproveErc20Error::from)
+        Ok(await_receipt(contract.approve(spender, amount).send().await).await?)
     }
 
     /// The payer's own transaction, reported in the same shape as a sponsored one.
@@ -365,26 +352,17 @@ where
         amount: U256,
     ) -> Result<DepositReceipt, DepositError> {
         let contract = self.ctx.get_write_contract().await?;
-        let send_result = match asset {
+        let sent = match asset {
             Asset::Erc20(token) => contract.depositStablecoin(token, amount).send().await,
             Asset::Native => contract.deposit().value(amount).send().await,
         };
-
-        let receipt = send_result
-            .map_err(DepositError::from)?
-            .get_receipt()
-            .await
-            .map_err(alloy::contract::Error::from)
-            .map_err(DepositError::from)?;
+        let receipt = await_receipt(sent).await?;
 
         Ok(DepositReceipt {
             tx_hash: receipt.transaction_hash,
             path: DepositPath::SelfFunded,
             from: self.ctx.signer_address(),
-            asset: match asset {
-                Asset::Erc20(token) => token,
-                Asset::Native => Address::ZERO,
-            },
+            asset: asset.address(),
             amount,
             network: None,
         })
@@ -470,6 +448,54 @@ struct DepositResponse {
     error: Option<String>,
     #[serde(flatten)]
     failure: FacilitatorFailure,
+}
+
+impl DepositResponse {
+    /// `from`, `asset` and `amount` fall back to what was asked for: they are echoed for
+    /// reconciliation, and a facilitator that omits them has not changed what the contract did. One
+    /// that echoes a different deposit has, and the receipt is refused rather than made to describe
+    /// it.
+    fn into_receipt(
+        self,
+        path: DepositPath,
+        deposited: Deposited,
+    ) -> Result<DepositReceipt, DepositError> {
+        if !self.success {
+            return Err(self.failure.into_error(self.error));
+        }
+
+        let tx_hash = self
+            .tx_hash
+            .as_deref()
+            .and_then(|raw| raw.parse::<B256>().ok())
+            .ok_or_else(|| {
+                DepositError::OutcomeUnknown("facilitator reported success without a txHash".into())
+            })?;
+
+        Ok(DepositReceipt {
+            tx_hash,
+            path,
+            from: confirm_echoed(
+                "from",
+                self.from.as_deref(),
+                deposited.payer,
+                DepositError::OutcomeUnknown,
+            )?,
+            asset: confirm_echoed(
+                "asset",
+                self.asset.as_deref(),
+                deposited.asset,
+                DepositError::OutcomeUnknown,
+            )?,
+            amount: confirm_echoed(
+                "amount",
+                self.amount.as_deref(),
+                deposited.amount,
+                DepositError::OutcomeUnknown,
+            )?,
+            network: self.network,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]

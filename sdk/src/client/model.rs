@@ -88,12 +88,25 @@ impl From<RpcUserTransactionInfo> for RecipientPaymentInfo {
     }
 }
 
-/// What to deposit. Native ETH has no gasless path — no authorization scheme covers it — so it is
-/// always self-funded.
+/// Which asset an operation moves.
+///
+/// Native ETH has no gasless *deposit* path — no authorization scheme covers it — so a deposit of
+/// it is always self-funded. Withdrawals are unaffected: Core4Mica verifies those signatures
+/// itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Asset {
     Native,
     Erc20(Address),
+}
+
+impl Asset {
+    /// How the contract names the asset: the token address, or `Address::ZERO` for ETH.
+    pub fn address(self) -> Address {
+        match self {
+            Self::Erc20(token) => token,
+            Self::Native => Address::ZERO,
+        }
+    }
 }
 
 /// How a deposit reached the contract. Carried on [`DepositReceipt`] because "it worked" hides the
@@ -125,10 +138,41 @@ pub struct DepositReceipt {
     pub tx_hash: B256,
     /// Which route delivered the deposit — in particular, whether the payer paid gas.
     pub path: DepositPath,
-    /// The account credited — always the signer, never the facilitator. Zero when the facilitator
-    /// reported no `from`, which is worth treating as a failed check rather than a match.
+    /// The account credited — always whoever signed the authorization, never the facilitator.
     pub from: Address,
     pub asset: Address,
     pub amount: U256,
+    pub network: Option<String>,
+}
+
+/// How a withdrawal step reached the contract.
+///
+/// Unlike deposits there is one sponsored route rather than three: the contract verifies the
+/// signature itself, so nothing depends on what the asset implements — ETH included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawPath {
+    /// Signed by the user, submitted and paid for by the facilitator.
+    Sponsored,
+    /// The user's own transaction, paying their own gas.
+    SelfFunded,
+}
+
+impl WithdrawPath {
+    /// Whether the user's own funds paid for the transaction.
+    pub fn costs_the_user_gas(&self) -> bool {
+        matches!(self, Self::SelfFunded)
+    }
+}
+
+/// Outcome of a withdrawal request, cancellation or finalization.
+#[derive(Debug, Clone)]
+pub struct WithdrawReceipt {
+    pub tx_hash: B256,
+    /// Which route delivered it — in particular, whether the user paid gas.
+    pub path: WithdrawPath,
+    /// The account the action applied to — always the signer, never the facilitator.
+    pub user: Address,
+    /// `Address::ZERO` for ETH.
+    pub asset: Address,
     pub network: Option<String>,
 }

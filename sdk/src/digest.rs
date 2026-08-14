@@ -49,6 +49,27 @@ sol! {
         uint256 nonce;
         uint256 deadline;
     }
+
+    /// Core4Mica's signed struct for opening a withdrawal request without transacting. The asset,
+    /// the amount and the window are all bound, so a submitter can change none of them.
+    struct RequestWithdrawal {
+        address user;
+        address asset;
+        uint256 amount;
+        uint256 validAfter;
+        uint256 validBefore;
+        bytes32 nonce;
+    }
+
+    /// Core4Mica's signed struct for cancelling a pending withdrawal request. No amount: a
+    /// cancellation clears whatever request is outstanding for `asset`.
+    struct CancelWithdrawal {
+        address user;
+        address asset;
+        uint256 validAfter;
+        uint256 validBefore;
+        bytes32 nonce;
+    }
 }
 
 fn sol_validation(validation: &ValidationRequirement) -> SolValidation {
@@ -122,6 +143,24 @@ pub fn permit2_domain_separator(chain_id: u64) -> B256 {
     eip712_domain_separator("Permit2", None, chain_id, crate::contract::PERMIT2_ADDRESS)
 }
 
+/// Core4Mica's own domain separator for the deployment at `contract` on `chain_id`.
+///
+/// The contract fixes its domain as `EIP712("Core4Mica", "1")`, so the address and chain id
+/// determine it — no chain read, and no metadata anyone has to publish.
+pub fn core_domain_separator(chain_id: u64, contract: Address) -> B256 {
+    eip712_domain_separator(
+        CORE_EIP712_NAME,
+        Some(CORE_EIP712_VERSION),
+        chain_id,
+        contract,
+    )
+}
+
+/// Core4Mica's EIP-712 domain, as the contract declares it. Distinct from the operator's own
+/// request-signing domain, which core publishes in its public parameters.
+const CORE_EIP712_NAME: &str = "Core4Mica";
+const CORE_EIP712_VERSION: &str = "1";
+
 /// EIP-712 signing hash for an EIP-3009 `receiveWithAuthorization` gasless deposit.
 /// `domain_separator` is the deposited token's own `DOMAIN_SEPARATOR()`.
 #[allow(clippy::too_many_arguments)]
@@ -184,6 +223,47 @@ pub fn eip712_digest_for_permit(
         value,
         nonce,
         deadline,
+    };
+    eip712_digest(domain_separator, message.eip712_hash_struct())
+}
+
+/// EIP-712 signing hash for a sponsored `requestWithdrawalWithAuthorization`.
+/// `domain_separator` is Core4Mica's own `DOMAIN_SEPARATOR()`. Pass `Address::ZERO` for ETH.
+pub fn eip712_digest_for_request_withdrawal(
+    domain_separator: B256,
+    user: Address,
+    asset: Address,
+    amount: U256,
+    valid_after: U256,
+    valid_before: U256,
+    nonce: B256,
+) -> B256 {
+    let message = RequestWithdrawal {
+        user,
+        asset,
+        amount,
+        validAfter: valid_after,
+        validBefore: valid_before,
+        nonce,
+    };
+    eip712_digest(domain_separator, message.eip712_hash_struct())
+}
+
+/// EIP-712 signing hash for a sponsored `cancelWithdrawalWithAuthorization`.
+pub fn eip712_digest_for_cancel_withdrawal(
+    domain_separator: B256,
+    user: Address,
+    asset: Address,
+    valid_after: U256,
+    valid_before: U256,
+    nonce: B256,
+) -> B256 {
+    let message = CancelWithdrawal {
+        user,
+        asset,
+        validAfter: valid_after,
+        validBefore: valid_before,
+        nonce,
     };
     eip712_digest(domain_separator, message.eip712_hash_struct())
 }
@@ -274,6 +354,9 @@ mod deposit_tests {
     // these, the produced signature will not verify on-chain — so pin them exactly.
     const ERC3009_TYPE: &str = "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
     const PERMIT2_TYPE: &str = "PermitTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline)TokenPermissions(address token,uint256 amount)";
+    // Must match Core4Mica's REQUEST_WITHDRAWAL_TYPEHASH / CANCEL_WITHDRAWAL_TYPEHASH exactly.
+    const REQUEST_WITHDRAWAL_TYPE: &str = "RequestWithdrawal(address user,address asset,uint256 amount,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
+    const CANCEL_WITHDRAWAL_TYPE: &str = "CancelWithdrawal(address user,address asset,uint256 validAfter,uint256 validBefore,bytes32 nonce)";
 
     #[test]
     fn receive_authorization_type_hash_matches_erc3009() {
@@ -373,6 +456,117 @@ mod deposit_tests {
     #[test]
     fn permit2_domain_separator_is_chain_specific() {
         assert_ne!(permit2_domain_separator(84532), permit2_domain_separator(1));
+    }
+
+    /// Pins the literals Core4Mica declares in `EIP712("Core4Mica", "1")`. Deriving the separator
+    /// rather than reading it is only sound while these hold; a contract that changes either signs
+    /// under a domain nothing produced here would verify against.
+    #[test]
+    fn core_domain_separator_matches_the_contracts_declared_domain() {
+        let contract = address!("00000000000000000000000000000000c04e4a1c");
+        assert_eq!(
+            core_domain_separator(84532, contract),
+            eip712_domain_separator("Core4Mica", Some("1"), 84532, contract)
+        );
+    }
+
+    /// Core signs requests under its own operator domain. Reusing that name here would produce a
+    /// well-formed separator that Core4Mica rejects.
+    #[test]
+    fn core_domain_separator_is_not_the_operator_signing_domain() {
+        let contract = address!("00000000000000000000000000000000c04e4a1c");
+        assert_ne!(
+            core_domain_separator(84532, contract),
+            eip712_domain_separator("4mica", Some("1"), 84532, contract)
+        );
+    }
+
+    #[test]
+    fn core_domain_separator_is_deployment_specific() {
+        let contract = address!("00000000000000000000000000000000c04e4a1c");
+        let other = address!("00000000000000000000000000000000c04e4a1d");
+        assert_ne!(
+            core_domain_separator(84532, contract),
+            core_domain_separator(1, contract)
+        );
+        assert_ne!(
+            core_domain_separator(84532, contract),
+            core_domain_separator(84532, other)
+        );
+    }
+
+    #[test]
+    fn request_withdrawal_type_hash_matches_the_contract() {
+        let msg = RequestWithdrawal {
+            user: Address::ZERO,
+            asset: Address::ZERO,
+            amount: U256::ZERO,
+            validAfter: U256::ZERO,
+            validBefore: U256::ZERO,
+            nonce: B256::ZERO,
+        };
+        assert_eq!(msg.eip712_type_hash(), keccak256(REQUEST_WITHDRAWAL_TYPE));
+    }
+
+    #[test]
+    fn cancel_withdrawal_type_hash_matches_the_contract() {
+        let msg = CancelWithdrawal {
+            user: Address::ZERO,
+            asset: Address::ZERO,
+            validAfter: U256::ZERO,
+            validBefore: U256::ZERO,
+            nonce: B256::ZERO,
+        };
+        assert_eq!(msg.eip712_type_hash(), keccak256(CANCEL_WITHDRAWAL_TYPE));
+    }
+
+    /// The two withdrawal actions share a nonce namespace on-chain, so their digests must differ
+    /// even when every shared field agrees — otherwise one signature would authorize both.
+    #[test]
+    fn request_and_cancel_digests_differ_for_the_same_inputs() {
+        let domain = b256!("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+        let user = address!("00000000000000000000000000000000000000a1");
+        let asset = address!("000000000000000000000000000000000000da0c");
+        let nonce = b256!("dead00000000000000000000000000000000000000000000000000000000beef");
+
+        let request = eip712_digest_for_request_withdrawal(
+            domain,
+            user,
+            asset,
+            U256::ZERO,
+            U256::ZERO,
+            U256::from(2_000_000_000u64),
+            nonce,
+        );
+        let cancel = eip712_digest_for_cancel_withdrawal(
+            domain,
+            user,
+            asset,
+            U256::ZERO,
+            U256::from(2_000_000_000u64),
+            nonce,
+        );
+        assert_ne!(request, cancel);
+    }
+
+    #[test]
+    fn request_withdrawal_digest_signature_recovers_to_signer() {
+        let signer = PrivateKeySigner::random();
+        let domain = b256!("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+        let digest = eip712_digest_for_request_withdrawal(
+            domain,
+            signer.address(),
+            address!("000000000000000000000000000000000000da0c"),
+            U256::from(1_000_000u64),
+            U256::ZERO,
+            U256::from(2_000_000_000u64),
+            b256!("dead00000000000000000000000000000000000000000000000000000000beef"),
+        );
+        let sig = signer.sign_hash_sync(&digest).expect("sign");
+        assert_eq!(
+            sig.recover_address_from_prehash(&digest).unwrap(),
+            signer.address()
+        );
     }
 
     #[test]

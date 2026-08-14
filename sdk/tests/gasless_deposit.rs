@@ -12,7 +12,7 @@ use alloy::primitives::{Address, B256, Signature, U256, address, b256, keccak256
 use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
-use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION};
+use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
 use sdk_4mica::error::DepositError;
 use sdk_4mica::{Client, ConfigBuilder};
 use serde_json::{Value, json};
@@ -41,6 +41,8 @@ const PERMIT2_DOMAIN: B256 =
     b256!("1f520b5ee38ad937955892c3dfc7055e8eeb515d905781b6951e4c687917c530");
 const GUARANTEE_DOMAIN: B256 =
     b256!("3333333333333333333333333333333333333333333333333333333333333333");
+/// Core4Mica's own domain. No deposit signs under it, so any appearance here is a bug.
+const CORE_DOMAIN: B256 = b256!("4444444444444444444444444444444444444444444444444444444444444444");
 
 /// Matches `DEPOSIT_AUTHORIZATION_TTL_SECS` in `sdk/src/client/user.rs`.
 const EXPECTED_TTL_SECS: u64 = 3600;
@@ -265,6 +267,11 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
         chain_id: CHAIN_ID,
         supported_guarantee_versions: vec![GUARANTEE_CLAIMS_VERSION],
         guarantee_domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        guarantee_domains: vec![GuaranteeVersionDomain {
+            version: GUARANTEE_CLAIMS_VERSION,
+            domain_separator: format!("0x{}", alloy::hex::encode(GUARANTEE_DOMAIN)),
+        }],
+        core_domain_separator: format!("0x{}", alloy::hex::encode(CORE_DOMAIN)),
         validators: vec![],
     }
 }
@@ -297,6 +304,7 @@ async fn spawn_facilitator(
                     let log = deposit_log.clone();
                     let response = deposit_response.clone();
                     async move {
+                        let response = echoing_payer(response, &body);
                         log.lock().unwrap().deposits.push(body);
                         Json(response)
                     }
@@ -329,12 +337,9 @@ async fn spawn_allowance_then_success_facilitator(
             let log = log.clone();
             let nonce = nonce.clone();
             async move {
-                let mut guard = log.lock().unwrap();
-                guard.deposits.push(body);
-                let first = guard.deposits.len() == 1;
-                drop(guard);
+                let first = log.lock().unwrap().deposits.is_empty();
 
-                if first {
+                let response = if first {
                     let mut allowance = json!({
                         "spender": "0x000000000022d473030f116ddee9f6b43ac78ba3",
                         "allowance": "0",
@@ -343,15 +348,19 @@ async fn spawn_allowance_then_success_facilitator(
                     if let Some(nonce) = nonce {
                         allowance["eip2612Nonce"] = json!(nonce);
                     }
-                    return Json(json!({
+                    json!({
                         "success": false,
                         "error": "approve permit2 first",
                         "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
                         "retryable": false,
                         "permit2Allowance": allowance,
-                    }));
-                }
-                Json(success_response())
+                    })
+                } else {
+                    echoing_payer(success_response(), &body)
+                };
+
+                log.lock().unwrap().deposits.push(body);
+                Json(response)
             }
         }),
     ))
@@ -363,10 +372,23 @@ fn success_response() -> Value {
         "success": true,
         "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
         "network": "eip155:1337",
-        "from": "0x00000000000000000000000000000000000000a1",
         "asset": TOKEN.to_string(),
         "amount": "1000000",
     })
+}
+
+/// Stamps `response` with the payer the request carried, as a real facilitator echoes the account
+/// it credited. The SDK refuses a receipt naming anyone else, and a canned address could never match
+/// the signer, which is random per test.
+fn echoing_payer(mut response: Value, request: &Value) -> Value {
+    let payer = request
+        .get("authorization")
+        .or_else(|| request.get("permit2Authorization"))
+        .and_then(|auth| auth.get("from"));
+    if let (Some(payer), Some(response)) = (payer, response.as_object_mut()) {
+        response.insert("from".into(), payer.clone());
+    }
+    response
 }
 
 /// Boots a mock chain + core and returns a `Client` wired to them, plus the signer and call log.
@@ -1050,7 +1072,24 @@ async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<(
         .send_eip3009(TOKEN, U256::from(1_000_000u64))
         .await
         .expect_err("expected a missing txHash to be rejected");
-    assert!(matches!(err, DepositError::Transport(_)), "got {err:?}");
+    assert!(
+        matches!(err, DepositError::OutcomeUnknown(_)),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// Everything construction needs comes from core, so a client that only ever takes sponsored paths
+/// never has to reach an Ethereum node — not even to be built.
+#[tokio::test]
+async fn building_a_client_touches_no_ethereum_rpc() -> anyhow::Result<()> {
+    let (_client, _signer, log) = test_client().await?;
+
+    let methods = log.lock().unwrap().methods.clone();
+    assert!(
+        methods.is_empty(),
+        "construction reached the chain: {methods:?}"
+    );
     Ok(())
 }
 

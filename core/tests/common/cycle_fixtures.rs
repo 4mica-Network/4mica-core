@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, U256};
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use chrono::{Duration, Utc};
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS,
@@ -7,7 +7,7 @@ use core_service::{
     persist::{CycleGuaranteeData, PersistCtx, repo},
     service::CoreService,
 };
-use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
+use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementCycleStatus};
 
 use super::db::{clear_all_tables, setup_db_test_env};
 use super::fixtures::{
@@ -38,7 +38,19 @@ pub async fn create_frozen_cycle(ctx: &PersistCtx, id: &str) -> Result<String> {
         },
     )
     .await?;
-    assert!(repo::freeze_cycle_on(ctx.db.as_ref(), id, now).await?);
+    // Assert the state, not the transition: `freeze_cycle_on` reports whether *this* call did the
+    // freezing, and the fixture only owes its caller a frozen cycle.
+    repo::freeze_cycle_on(ctx.db.as_ref(), id, now).await?;
+    let cycle = repo::get_cycle_by_id(ctx, id)
+        .await?
+        .ok_or_else(|| anyhow!("cycle {id} vanished between creation and freezing"))?;
+    if cycle.status != SettlementCycleStatus::Frozen {
+        bail!(
+            "cycle {id} is {:?}, not Frozen — another writer is driving this database; core tests \
+             need the core-service stopped",
+            cycle.status
+        );
+    }
     Ok(id.to_string())
 }
 
