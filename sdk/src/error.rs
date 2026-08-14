@@ -113,8 +113,13 @@ pub enum SponsorshipError {
     },
     #[error("invalid params: {0}")]
     InvalidParams(String),
+    /// The facilitator never received the request, so it cannot have acted on it.
     #[error("provider/transport error: {0}")]
     Transport(String),
+    /// The request reached the facilitator but no usable answer came back, so whether it submitted a
+    /// transaction is unknown.
+    #[error("facilitator outcome unknown: {0}")]
+    OutcomeUnknown(String),
 }
 
 #[derive(Debug, Error)]
@@ -259,7 +264,9 @@ impl From<SponsorshipError> for DepositError {
         match err {
             SponsorshipError::NotConfigured => Self::FacilitatorNotConfigured,
             SponsorshipError::InvalidParams(message) => Self::InvalidParams(message),
-            SponsorshipError::Transport(message) => Self::Transport(message),
+            SponsorshipError::Transport(message) | SponsorshipError::OutcomeUnknown(message) => {
+                Self::Transport(message)
+            }
             SponsorshipError::Rejected {
                 code,
                 message,

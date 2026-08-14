@@ -207,6 +207,10 @@ where
     /// the available balance, say — is returned rather than retried, since the user's own
     /// transaction would revert for the same reason after paying for the privilege.
     ///
+    /// [`SponsorshipError::OutcomeUnknown`] is also returned rather than retried: the facilitator
+    /// may have submitted the request already, and requesting again would overwrite it and restart
+    /// the grace period. Read the pending request off the chain before deciding.
+    ///
     /// Read [`WithdrawReceipt::path`] to see which route ran.
     pub async fn request(
         &self,
@@ -301,10 +305,13 @@ where
     }
 }
 
-/// Whether an error means "nobody sponsored this", as opposed to "this request is bad".
+/// Whether an error means "nobody sponsored this", as opposed to "this request is bad" or "we do
+/// not know what happened".
 ///
-/// Only the first is worth paying for a retry: a rejection that names the request itself would
-/// revert the user's own transaction too, after they had already paid for it.
+/// Only the first is worth paying for a retry. A rejection that names the request itself would
+/// revert the user's own transaction too, after they had already paid for it; an unknown outcome
+/// might mean the facilitator already submitted, and a second `requestWithdrawal` would overwrite
+/// the first and restart the grace period without anyone noticing.
 trait SponsorshipUnavailable {
     fn sponsorship_unavailable(&self) -> bool;
 }
@@ -332,6 +339,7 @@ macro_rules! impl_sponsorship_unavailable {
                     Self::Sponsorship(SponsorshipError::Rejected { code, .. }) => {
                         !names_the_request(code)
                     }
+                    Self::Sponsorship(SponsorshipError::OutcomeUnknown(_)) => false,
                     Self::Sponsorship(_) => true,
                     _ => false,
                 }
@@ -392,7 +400,9 @@ impl WithdrawResponse {
             .as_deref()
             .and_then(|raw| raw.parse::<B256>().ok())
             .ok_or_else(|| {
-                SponsorshipError::Transport("facilitator reported success without a txHash".into())
+                SponsorshipError::OutcomeUnknown(
+                    "facilitator reported success without a txHash".into(),
+                )
             })?;
 
         Ok(WithdrawReceipt {
@@ -457,6 +467,23 @@ mod tests {
     #[test]
     fn an_unknown_code_falls_back_to_self_funding() {
         assert!(rejected("SOMETHING_NEW").sponsorship_unavailable());
+    }
+
+    /// The facilitator may have submitted it already; a second request would overwrite the first
+    /// and restart the grace period.
+    #[test]
+    fn an_unknown_outcome_does_not_fall_back() {
+        let err: RequestWithdrawalError =
+            SponsorshipError::OutcomeUnknown("timed out".into()).into();
+        assert!(!err.sponsorship_unavailable());
+    }
+
+    /// A request that never reached the facilitator cannot have been submitted.
+    #[test]
+    fn an_undelivered_request_falls_back_to_self_funding() {
+        let err: RequestWithdrawalError =
+            SponsorshipError::Transport("connection refused".into()).into();
+        assert!(err.sponsorship_unavailable());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Transport for the service that submits signed authorizations and pays the gas for them.
 
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -44,25 +45,37 @@ impl Facilitator {
     {
         let url = self.endpoint(path)?;
         let response = self.http.post(url).json(body).send().await.map_err(|err| {
-            SponsorshipError::Transport(format!("facilitator request failed: {err}"))
+            let message = format!("facilitator request failed: {err}");
+            if err.is_connect() || err.is_builder() {
+                SponsorshipError::Transport(message)
+            } else {
+                SponsorshipError::OutcomeUnknown(message)
+            }
         })?;
 
         let status = response.status();
         let bytes = response.bytes().await.map_err(|err| {
-            SponsorshipError::Transport(format!("failed to read facilitator response: {err}"))
+            SponsorshipError::OutcomeUnknown(format!("failed to read facilitator response: {err}"))
         })?;
 
         // Rejections are reported in the body with a 200, so a non-success status is a transport or
         // routing problem rather than a refused request.
         if !status.is_success() {
-            return Err(SponsorshipError::Transport(format!(
+            let message = format!(
                 "facilitator returned {status}: {}",
                 String::from_utf8_lossy(&bytes)
-            )));
+            );
+            return Err(
+                if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
+                    SponsorshipError::Transport(message)
+                } else {
+                    SponsorshipError::OutcomeUnknown(message)
+                },
+            );
         }
 
         serde_json::from_slice(&bytes).map_err(|err| {
-            SponsorshipError::Transport(format!("malformed facilitator response: {err}"))
+            SponsorshipError::OutcomeUnknown(format!("malformed facilitator response: {err}"))
         })
     }
 
