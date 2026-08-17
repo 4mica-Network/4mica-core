@@ -224,21 +224,39 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     }
 
     function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external nonReentrant {
+        _claimNetCredit(msg.sender, cycleId, netCredit, proof);
+    }
+
+    /// @notice Pay out `creditor`'s committed net credit for `cycleId`, whoever submits it.
+    /// @dev Permissionless by design, for the same reason as Core4Mica's `finalizeWithdrawalFor`:
+    /// the payout goes to `creditor` and the amount is fixed by the committed Merkle leaf, so a
+    /// submitter can neither redirect it nor inflate it — the worst it can do is not submit. That
+    /// lets a relayer sponsor the gas without the creditor holding native balance or signing
+    /// anything, which matters because a claim can only happen once the cycle is funded, long after
+    /// the creditor committed to it.
+    function claimNetCreditFor(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof)
+        external
+        nonReentrant
+    {
+        _claimNetCredit(creditor, cycleId, netCredit, proof);
+    }
+
+    function _claimNetCredit(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) private {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
         if (netCredit == 0) revert AmountZero();
-        if (participantStates[cycleId][msg.sender].claimed) {
-            revert AlreadyClaimed(cycleId, msg.sender);
+        if (participantStates[cycleId][creditor].claimed) {
+            revert AlreadyClaimed(cycleId, creditor);
         }
-        _verifyParticipant(cycle, cycleId, msg.sender, netCredit, ParticipantRole.NetCreditor, proof);
+        _verifyParticipant(cycle, cycleId, creditor, netCredit, ParticipantRole.NetCreditor, proof);
 
         // Full amount when fully funded; pro-rata share of the pool in a Shortfall cycle.
         uint256 payout = _creditorPayout(cycle, netCredit);
-        ParticipantState storage participant = participantStates[cycleId][msg.sender];
+        ParticipantState storage participant = participantStates[cycleId][creditor];
         if (payout == 0) {
             participant.netCredit = netCredit;
             participant.claimed = true;
-            emit CreditorClaimed(cycleId, msg.sender, cycle.asset, 0);
+            emit CreditorClaimed(cycleId, creditor, cycle.asset, 0);
             return;
         }
         if (cycle.totalClaimedOut + payout > cycle.totalNetCredit) {
@@ -254,13 +272,13 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         cycle.totalClaimedOut += payout;
 
         if (cycle.asset == address(0)) {
-            _pay(cycle.asset, msg.sender, payout);
+            _pay(cycle.asset, creditor, payout);
         } else {
-            uint256 got = core4Mica.withdrawFromEscrow(cycle.asset, payout, msg.sender);
+            uint256 got = core4Mica.withdrawFromEscrow(cycle.asset, payout, creditor);
             if (got < payout) revert ClaimConversionShortfall(payout, got);
         }
 
-        emit CreditorClaimed(cycleId, msg.sender, cycle.asset, payout);
+        emit CreditorClaimed(cycleId, creditor, cycle.asset, payout);
     }
 
     /// Operator batch: seize collateral for unpaid debtors after finality.

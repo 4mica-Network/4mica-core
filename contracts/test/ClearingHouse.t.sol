@@ -498,6 +498,100 @@ contract ClearingHouseTest is Test {
         assertEq(cycle.totalDefaultCovered, NET_AMOUNT);
     }
 
+    // ========= Sponsored claims =========
+
+    /// The point of the sponsored path: a relayer pays the gas and the creditor still gets the
+    /// funds, without holding native balance or signing anything.
+    function test_ClaimNetCreditForPaysTheCreditorNotTheSubmitter() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+        address relayer = address(0xFACADE);
+        vm.deal(relayer, 1 ether);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        uint256 creditorBefore = CREDITOR.balance;
+        uint256 relayerBefore = relayer.balance;
+
+        vm.expectEmit(true, true, true, true);
+        emit ClearingHouse.CreditorClaimed(CYCLE_ID, CREDITOR, ETH_ASSET, NET_AMOUNT);
+
+        vm.prank(relayer);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+
+        assertEq(CREDITOR.balance, creditorBefore + NET_AMOUNT, "creditor must be paid");
+        assertLe(relayer.balance, relayerBefore, "submitter must gain nothing");
+        assertTrue(clearingHouse.getParticipantState(CYCLE_ID, CREDITOR).claimed);
+        assertFalse(clearingHouse.getParticipantState(CYCLE_ID, relayer).claimed, "no state against the submitter");
+    }
+
+    function test_ClaimNetCreditForPaysTheCreditorInErc20() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) =
+            _commitTokenCycle(address(usdc), NET_AMOUNT, NET_AMOUNT);
+
+        vm.startPrank(DEBTOR);
+        usdc.approve(address(clearingHouse), NET_AMOUNT);
+        clearingHouse.payNetDebit(CYCLE_ID, NET_AMOUNT, debtorProof);
+        vm.stopPrank();
+
+        uint256 creditorBefore = usdc.balanceOf(CREDITOR);
+
+        vm.prank(address(0xFACADE));
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+
+        assertEq(usdc.balanceOf(CREDITOR), creditorBefore + NET_AMOUNT);
+    }
+
+    /// The proof binds the creditor, so a submitter cannot name itself and be paid.
+    function test_ClaimNetCreditForRejectsAMismatchedCreditor() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+        address thief = address(0xBAD);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        vm.prank(thief);
+        vm.expectRevert(ClearingHouse.InvalidProof.selector);
+        clearingHouse.claimNetCreditFor(thief, CYCLE_ID, NET_AMOUNT, creditorProof);
+    }
+
+    /// The amount is fixed by the committed leaf, so a submitter cannot inflate the payout either.
+    function test_ClaimNetCreditForRejectsATamperedAmount() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        vm.prank(address(0xFACADE));
+        vm.expectRevert(ClearingHouse.InvalidProof.selector);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT + 1, creditorProof);
+    }
+
+    /// Sponsored and self-service claims share one nonce of truth, so a sponsor cannot double-pay a
+    /// creditor who already claimed.
+    function test_ClaimNetCreditForCannotReplayASettledClaim() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        vm.prank(CREDITOR);
+        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+
+        vm.prank(address(0xFACADE));
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.AlreadyClaimed.selector, CYCLE_ID, CREDITOR));
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+    }
+
+    /// Sponsorship grants no exemption from the funding and status rules a self-service claim obeys.
+    function test_ClaimNetCreditForRejectsAnUnfundedClaim() public {
+        (,, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        vm.prank(address(0xFACADE));
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleUnderfunded.selector, 0, NET_AMOUNT));
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+    }
+
     function test_ERC20DebtorPaymentAndCreditorClaim() public {
         (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) =
             _commitTokenCycle(address(usdc), NET_AMOUNT, NET_AMOUNT);
