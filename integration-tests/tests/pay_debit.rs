@@ -74,16 +74,14 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
     assert_eq!(claim_action.function_name, "claimNetCredit");
     assert_eq!(U256::from_str(&claim_action.amount)?, amount);
 
-    // Creditor claims the net credit on-chain.
+    // Creditor claims the net credit on-chain. A successful return is the proof the ClearingHouse
+    // paid out: a mined revert surfaces as `RevertedOnChain`. No facilitator is configured here,
+    // so the claim must have gone out as the creditor's own transaction.
     let claim_receipt = creditor
         .settlement
         .claim_net_credit(cycle_id.clone())
         .await?;
-    assert!(
-        claim_receipt.status(),
-        "claimNetCredit transaction reverted: {:?}",
-        claim_receipt.transaction_hash
-    );
+    assert!(claim_receipt.path.costs_the_caller_gas());
 
     Ok(())
 }
