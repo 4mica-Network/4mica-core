@@ -1,6 +1,6 @@
 use crate::contract::Core4Mica;
 use alloy::contract as alloy_contract;
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, B256, Bytes, U256};
 use anyhow::Error;
 use reqwest::StatusCode;
 use rpc::ApiClientError;
@@ -359,6 +359,13 @@ pub enum ClearingSettlementError {
 
     #[error(transparent)]
     Client(#[from] ClientError),
+
+    #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
+
+    /// Mined and reverted, so gas *was* spent — as opposed to a refusal before broadcasting.
+    #[error("claim {tx_hash} reverted on-chain")]
+    RevertedOnChain { tx_hash: B256 },
 
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },

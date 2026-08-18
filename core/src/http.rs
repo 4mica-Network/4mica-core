@@ -286,7 +286,12 @@ async fn get_clearing_participant_action(
     Query(query): Query<ClearingActionQuery>,
 ) -> Result<Json<ClearingSettlementActionResponse>, ApiError> {
     access::require_scope(&auth, SCOPE_PAYMENT_READ)?;
-    if !access::addresses_match(&auth.wallet_address, &participant)
+    let is_self = access::addresses_match(&auth.wallet_address, &participant);
+    // Claim actions are served to any authenticated caller: `claimNetCreditFor` pays the address
+    // the committed leaf names for the amount it fixes, so holding the proof only lets a sponsor
+    // pay the creditor's gas. Debit actions stay restricted — paying pulls funds from the caller.
+    if !is_self
+        && query.action == ClearingSettlementAction::PayNetDebit
         && access::require_admin_role(&auth).is_err()
         && access::require_facilitator_role(&auth).is_err()
     {
@@ -303,6 +308,7 @@ async fn get_clearing_participant_action(
         contract_address,
         query.action,
         proof,
+        is_self,
     )?))
 }
 
@@ -329,11 +335,16 @@ fn clearing_action_response(
     contract_address: String,
     action: ClearingSettlementAction,
     proof: crate::service::netting::ClearingParticipantProof,
+    is_self: bool,
 ) -> Result<ClearingSettlementActionResponse, ApiError> {
     let role = participant_role_to_response(proof.role)?;
     let (required_role, function_name) = match action {
         ClearingSettlementAction::PayNetDebit => {
             (ClearingParticipantRole::NetDebtor, "payNetDebit")
+        }
+        // A third party submits the sponsored entrypoint, which takes the creditor explicitly.
+        ClearingSettlementAction::ClaimNetCredit if !is_self => {
+            (ClearingParticipantRole::NetCreditor, "claimNetCreditFor")
         }
         ClearingSettlementAction::ClaimNetCredit => {
             (ClearingParticipantRole::NetCreditor, "claimNetCredit")

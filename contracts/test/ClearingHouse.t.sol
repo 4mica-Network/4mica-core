@@ -567,7 +567,7 @@ contract ClearingHouseTest is Test {
         clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT + 1, creditorProof);
     }
 
-    /// Sponsored and self-service claims share one nonce of truth, so a sponsor cannot double-pay a
+    /// Sponsored and self-service claims share one `claimed` flag, so a sponsor cannot double-pay a
     /// creditor who already claimed.
     function test_ClaimNetCreditForCannotReplayASettledClaim() public {
         (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);

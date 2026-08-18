@@ -176,3 +176,30 @@ pub struct WithdrawReceipt {
     pub asset: Address,
     pub network: Option<String>,
 }
+
+/// How a net-credit claim reached the contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimPath {
+    /// Submitted and paid for by the facilitator.
+    Sponsored,
+    /// The caller's own transaction, paying their own gas.
+    SelfFunded,
+}
+
+impl ClaimPath {
+    /// Whether the caller's own funds paid for the transaction.
+    pub fn costs_the_caller_gas(&self) -> bool {
+        matches!(self, Self::SelfFunded)
+    }
+}
+
+/// Outcome of a net-credit claim.
+#[derive(Debug, Clone)]
+pub struct ClaimReceipt {
+    pub tx_hash: B256,
+    /// Which route delivered it — in particular, whether the caller paid gas.
+    pub path: ClaimPath,
+    /// The account the payout went to — fixed by the committed Merkle leaf, never the submitter.
+    pub creditor: Address,
+    pub network: Option<String>,
+}

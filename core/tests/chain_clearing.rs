@@ -235,8 +235,8 @@ async fn poll_guarantee_status(
     anyhow::bail!("guarantee {guarantee_id} never reached {expected:?}");
 }
 
-/// Happy path: debtor pays, creditor claims, and the cycle finalizes — each
-/// on-chain event mirrored into participant, guarantee, and cycle state.
+/// Happy path: debtor pays, the creditor's claim is sponsored by a third party, and the cycle
+/// finalizes — each on-chain event mirrored into participant, guarantee, and cycle state.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
 #[serial_test::file_serial(db)]
 async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
@@ -249,7 +249,7 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     let http = env.cfg.ethereum_config.http_rpc_url.clone();
 
     let (debtor, debtor_provider) = common::chain::wallet_provider(&http, DEBTOR_KEY)?;
-    let (creditor, creditor_provider) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
+    let (creditor, _) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
 
     let cycle_id = "clearing-e2e-roundtrip";
     let guarantee_id = commit_two_party_cycle(&svc, cycle_id, &debtor, &creditor).await?;
@@ -259,7 +259,7 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     let debtor_proof = svc
         .get_participant_clearing_proof(cycle_id, &lower(&debtor))
         .await?;
-    ClearingHouse::new(*env.clearing_house.address(), debtor_provider)
+    ClearingHouse::new(*env.clearing_house.address(), debtor_provider.clone())
         .payNetDebit(
             debtor_proof.cycle_id,
             debtor_proof.amount,
@@ -276,22 +276,24 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     poll_position_status(ctx, cycle_id, &lower(&debtor), ParticipantCycleStatus::Paid).await?;
     poll_guarantee_status(ctx, &guarantee_id, GuaranteeSettlementStatus::Settled).await?;
 
-    // Creditor claims its net credit.
+    // A third party (here the debtor's wallet) sponsors the creditor's claim. Core must mirror
+    // the CreditorClaimed event to the creditor the leaf names, not to the transaction sender.
     let creditor_proof = svc
         .get_participant_clearing_proof(cycle_id, &lower(&creditor))
         .await?;
-    ClearingHouse::new(*env.clearing_house.address(), creditor_provider)
-        .claimNetCredit(
+    ClearingHouse::new(*env.clearing_house.address(), debtor_provider)
+        .claimNetCreditFor(
+            creditor,
             creditor_proof.cycle_id,
             creditor_proof.amount,
             creditor_proof.proof,
         )
         .send()
         .await
-        .context("claimNetCredit send")?
+        .context("claimNetCreditFor send")?
         .watch()
         .await
-        .context("claimNetCredit confirm")?;
+        .context("claimNetCreditFor confirm")?;
     mine(&provider, 2).await?;
     poll_position_status(
         ctx,

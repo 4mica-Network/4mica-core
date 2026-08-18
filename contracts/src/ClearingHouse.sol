@@ -228,12 +228,12 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     }
 
     /// @notice Pay out `creditor`'s committed net credit for `cycleId`, whoever submits it.
-    /// @dev Permissionless by design, for the same reason as Core4Mica's `finalizeWithdrawalFor`:
-    /// the payout goes to `creditor` and the amount is fixed by the committed Merkle leaf, so a
-    /// submitter can neither redirect it nor inflate it — the worst it can do is not submit. That
-    /// lets a relayer sponsor the gas without the creditor holding native balance or signing
-    /// anything, which matters because a claim can only happen once the cycle is funded, long after
-    /// the creditor committed to it.
+    /// @dev Permissionless by design: the payout goes to `creditor` and the amount is fixed by the
+    /// committed Merkle leaf, so a submitter can neither redirect it nor inflate it — the worst it
+    /// can do is not submit. That lets a relayer sponsor the gas without the creditor holding
+    /// native balance or signing anything. A successful claim also marks the creditor resolved, so
+    /// a later `fundCreditorsFromPoolBatch` skips them: whoever submits first decides whether the
+    /// payout lands in the creditor's wallet or back in their Core4Mica collateral.
     function claimNetCreditFor(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof)
         external
         nonReentrant
@@ -245,14 +245,14 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
         if (netCredit == 0) revert AmountZero();
-        if (participantStates[cycleId][creditor].claimed) {
+        ParticipantState storage participant = participantStates[cycleId][creditor];
+        if (participant.claimed) {
             revert AlreadyClaimed(cycleId, creditor);
         }
         _verifyParticipant(cycle, cycleId, creditor, netCredit, ParticipantRole.NetCreditor, proof);
 
         // Full amount when fully funded; pro-rata share of the pool in a Shortfall cycle.
         uint256 payout = _creditorPayout(cycle, netCredit);
-        ParticipantState storage participant = participantStates[cycleId][creditor];
         if (payout == 0) {
             participant.netCredit = netCredit;
             participant.claimed = true;
