@@ -393,10 +393,17 @@ Finalization takes no signature: `finalizeWithdrawalFor` pays the user whoever s
 #### `client.settlement`
 
 - `pay_net_debit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Pay the caller's committed net debit for a cycle
-- `claim_net_credit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Claim the caller's committed net credit for a cycle
+- `claim_net_credit(cycle_id: String) -> Result<ClaimReceipt, ClearingSettlementError>`: Claim the caller's committed net credit for a cycle, sponsored via the facilitator where possible
+- `claim_net_credit_for(cycle_id: String, creditor: Address) -> Result<ClaimReceipt, ClearingSettlementError>`: Claim `creditor`'s committed net credit, sponsored where possible
+- `claim_net_credit_gasless(cycle_id: String)` / `claim_net_credit_gasless_for(cycle_id: String, creditor: Address) -> Result<ClaimReceipt, ClearingSettlementError>`: Claim strictly through the facilitator, whose relayer pays the gas — no fallback
+- `claim_net_credit_self_funded(cycle_id: String)` / `claim_net_credit_self_funded_for(cycle_id: String, creditor: Address) -> Result<ClaimReceipt, ClearingSettlementError>`: Claim with the caller's own transaction
+- `is_gasless_available() -> bool`: Whether a facilitator is configured at all
 - `pay_net_debit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: The prepared `payNetDebit` call (amount, proof, contract)
-- `claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: The prepared `claimNetCredit` call
+- `claim_net_credit_action(cycle_id: String) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: The prepared claim call for the caller's own credit
+- `claim_net_credit_action_for(cycle_id: String, creditor: Address) -> Result<ClearingSettlementActionResponse, ClearingSettlementError>`: The prepared claim call for `creditor`'s credit
 - `approve_erc20(cycle_id: String, token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the contract that settles this cycle, which is not the 4Mica contract
+
+A claim needs no signature from the creditor: the on-chain payout goes to the address the committed Merkle leaf names, for the amount it fixes, so a submitter can neither redirect nor inflate it. That is also what makes it sponsorable — with a `facilitator_url` configured, `claim_net_credit` POSTs the cycle and creditor to the facilitator's `/clearing/claim`, whose relayer resolves the terms from core and pays the gas, and falls back to the caller's own transaction when the facilitator would not sponsor (never when its refusal names the claim itself — that would revert self-funded too). `ClaimReceipt::path` reports which route ran. Every route ends in the contract's single claim entrypoint, `claimNetCreditFor` — a self-claim just names the caller's own address.
 
 #### `client.account`
 
@@ -648,9 +655,22 @@ let action = client
     .await?;
 println!("claiming {} via {}", action.amount, action.contract_address);
 
-// Or just execute it
+// Or just execute it. With a facilitator configured this goes out gaslessly through its
+// relayer; otherwise it is the caller's own transaction. `path` reports which route ran.
 let receipt = client.settlement.claim_net_credit(cycle_id).await?;
-println!("Net credit claimed: {:?}", receipt.transaction_hash);
+println!("Net credit claimed via {:?}: {:?}", receipt.path, receipt.tx_hash);
+```
+
+A third party can also claim on a creditor's behalf, paying the gas so the creditor needs no
+native balance. The payout still goes to the creditor — the committed leaf fixes both the payee
+and the amount:
+
+```rust
+let receipt = client
+    .settlement
+    .claim_net_credit_for(cycle_id, creditor_address)
+    .await?;
+println!("Sponsored claim: {:?}", receipt.tx_hash);
 ```
 
 ## Complete Example

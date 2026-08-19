@@ -269,16 +269,6 @@ contract ClearingHouseTest is Test {
         assertEq(cycle.totalResolvedDebit, NET_AMOUNT);
     }
 
-    function test_ClaimNetCreditRejectsUnfundedClaim() public {
-        (,, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
-
-        // Nothing paid in yet: the pool is empty, so the claim is rejected as
-        // underfunded regardless of timing.
-        vm.prank(CREDITOR);
-        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleUnderfunded.selector, 0, NET_AMOUNT));
-        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
-    }
-
     function test_ClaimNetCreditRejectedWhenPartiallyFunded() public {
         // Two debtors each owe half; a single creditor is owed the whole sum.
         address d1 = address(0xD1);
@@ -319,9 +309,8 @@ contract ClearingHouseTest is Test {
         vm.prank(d1);
         clearingHouse.payNetDebit{value: half}(CYCLE_ID, half, p1);
 
-        vm.prank(creditor);
         vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleUnderfunded.selector, half, total));
-        clearingHouse.claimNetCredit(CYCLE_ID, total, pc);
+        clearingHouse.claimNetCreditFor(creditor, CYCLE_ID, total, pc);
     }
 
     function test_PayClaimAndFinalizeNativeCycle() public {
@@ -337,8 +326,7 @@ contract ClearingHouseTest is Test {
         vm.expectEmit(true, true, true, true);
         emit ClearingHouse.CreditorClaimed(CYCLE_ID, CREDITOR, ETH_ASSET, NET_AMOUNT);
 
-        vm.prank(CREDITOR);
-        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
 
         assertEq(CREDITOR.balance, creditorBalanceBefore + NET_AMOUNT);
 
@@ -388,10 +376,8 @@ contract ClearingHouseTest is Test {
         vm.prank(DEBTOR);
         clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, pd);
 
-        vm.prank(c1);
-        clearingHouse.claimNetCredit(CYCLE_ID, half, pc1);
-        vm.prank(c2);
-        clearingHouse.claimNetCredit(CYCLE_ID, half, pc2);
+        clearingHouse.claimNetCreditFor(c1, CYCLE_ID, half, pc1);
+        clearingHouse.claimNetCreditFor(c2, CYCLE_ID, half, pc2);
 
         assertEq(c1.balance, half);
         assertEq(c2.balance, half);
@@ -498,6 +484,100 @@ contract ClearingHouseTest is Test {
         assertEq(cycle.totalDefaultCovered, NET_AMOUNT);
     }
 
+    // ========= Sponsored claims =========
+
+    /// The point of the sponsored path: a relayer pays the gas and the creditor still gets the
+    /// funds, without holding native balance or signing anything.
+    function test_ClaimNetCreditForPaysTheCreditorNotTheSubmitter() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+        address relayer = address(0xFACADE);
+        vm.deal(relayer, 1 ether);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        uint256 creditorBefore = CREDITOR.balance;
+        uint256 relayerBefore = relayer.balance;
+
+        vm.expectEmit(true, true, true, true);
+        emit ClearingHouse.CreditorClaimed(CYCLE_ID, CREDITOR, ETH_ASSET, NET_AMOUNT);
+
+        vm.prank(relayer);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+
+        assertEq(CREDITOR.balance, creditorBefore + NET_AMOUNT, "creditor must be paid");
+        assertLe(relayer.balance, relayerBefore, "submitter must gain nothing");
+        assertTrue(clearingHouse.getParticipantState(CYCLE_ID, CREDITOR).claimed);
+        assertFalse(clearingHouse.getParticipantState(CYCLE_ID, relayer).claimed, "no state against the submitter");
+    }
+
+    function test_ClaimNetCreditForPaysTheCreditorInErc20() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) =
+            _commitTokenCycle(address(usdc), NET_AMOUNT, NET_AMOUNT);
+
+        vm.startPrank(DEBTOR);
+        usdc.approve(address(clearingHouse), NET_AMOUNT);
+        clearingHouse.payNetDebit(CYCLE_ID, NET_AMOUNT, debtorProof);
+        vm.stopPrank();
+
+        uint256 creditorBefore = usdc.balanceOf(CREDITOR);
+
+        vm.prank(address(0xFACADE));
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+
+        assertEq(usdc.balanceOf(CREDITOR), creditorBefore + NET_AMOUNT);
+    }
+
+    /// The proof binds the creditor, so a submitter cannot name itself and be paid.
+    function test_ClaimNetCreditForRejectsAMismatchedCreditor() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+        address thief = address(0xBAD);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        vm.prank(thief);
+        vm.expectRevert(ClearingHouse.InvalidProof.selector);
+        clearingHouse.claimNetCreditFor(thief, CYCLE_ID, NET_AMOUNT, creditorProof);
+    }
+
+    /// The amount is fixed by the committed leaf, so a submitter cannot inflate the payout either.
+    function test_ClaimNetCreditForRejectsATamperedAmount() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        vm.prank(address(0xFACADE));
+        vm.expectRevert(ClearingHouse.InvalidProof.selector);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT + 1, creditorProof);
+    }
+
+    /// One `claimed` flag per creditor, whoever submits — a sponsor cannot double-pay a creditor
+    /// who already claimed.
+    function test_ClaimNetCreditForCannotReplayASettledClaim() public {
+        (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        vm.prank(DEBTOR);
+        clearingHouse.payNetDebit{value: NET_AMOUNT}(CYCLE_ID, NET_AMOUNT, debtorProof);
+
+        vm.prank(CREDITOR);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+
+        vm.prank(address(0xFACADE));
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.AlreadyClaimed.selector, CYCLE_ID, CREDITOR));
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+    }
+
+    /// Sponsorship grants no exemption from the funding and status rules a self-service claim obeys.
+    function test_ClaimNetCreditForRejectsAnUnfundedClaim() public {
+        (,, bytes32[] memory creditorProof) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        vm.prank(address(0xFACADE));
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.CycleUnderfunded.selector, 0, NET_AMOUNT));
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
+    }
+
     function test_ERC20DebtorPaymentAndCreditorClaim() public {
         (, bytes32[] memory debtorProof, bytes32[] memory creditorProof) =
             _commitTokenCycle(address(usdc), NET_AMOUNT, NET_AMOUNT);
@@ -509,8 +589,7 @@ contract ClearingHouseTest is Test {
 
         uint256 creditorBalanceBefore = usdc.balanceOf(CREDITOR);
 
-        vm.prank(CREDITOR);
-        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
 
         assertEq(usdc.balanceOf(CREDITOR), creditorBalanceBefore + NET_AMOUNT);
     }
@@ -572,8 +651,7 @@ contract ClearingHouseTest is Test {
         ClearingHouse.OnchainCycle memory afterDefault = clearingHouse.getCycle(CYCLE_ID);
         assertEq(afterDefault.totalResolvedDebit, total, "all debit resolved");
 
-        vm.prank(creditor);
-        clearingHouse.claimNetCredit(CYCLE_ID, total, pc);
+        clearingHouse.claimNetCreditFor(creditor, CYCLE_ID, total, pc);
 
         clearingHouse.finalizeCycle(CYCLE_ID);
 
@@ -773,17 +851,15 @@ contract ClearingHouseTest is Test {
 
         // Aave can't fully convert: the cash-out reverts atomically (no partial claim recorded).
         core4Mica.setWithdrawShortfall(address(usdc), 1);
-        vm.prank(CREDITOR);
         vm.expectRevert(
             abi.encodeWithSelector(ClearingHouse.ClaimConversionShortfall.selector, NET_AMOUNT, NET_AMOUNT - 1)
         );
-        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
 
         // Liquidity returns; the same creditor retries successfully.
         core4Mica.setWithdrawShortfall(address(usdc), 0);
         uint256 before = usdc.balanceOf(CREDITOR);
-        vm.prank(CREDITOR);
-        clearingHouse.claimNetCredit(CYCLE_ID, NET_AMOUNT, creditorProof);
+        clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
         assertEq(usdc.balanceOf(CREDITOR), before + NET_AMOUNT);
     }
 
@@ -844,10 +920,8 @@ contract ClearingHouseTest is Test {
         assertEq(uint8(clearingHouse.getCycle(CYCLE_ID).status), uint8(ClearingHouse.CycleStatus.Shortfall));
 
         // Each creditor receives a pro-rata share: 100 * 140/200 = 70.
-        vm.prank(c1);
-        clearingHouse.claimNetCredit(CYCLE_ID, amt, pc1);
-        vm.prank(c2);
-        clearingHouse.claimNetCredit(CYCLE_ID, amt, pc2);
+        clearingHouse.claimNetCreditFor(c1, CYCLE_ID, amt, pc1);
+        clearingHouse.claimNetCreditFor(c2, CYCLE_ID, amt, pc2);
 
         assertEq(c1.balance, 70 ether);
         assertEq(c2.balance, 70 ether);
