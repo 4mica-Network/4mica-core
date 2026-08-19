@@ -13,20 +13,29 @@ pub async fn get_user<S: AsRef<str> + Send + Sync>(
     ctx: &PersistCtx,
     user_address: S,
 ) -> Result<user::Model, PersistDbError> {
+    get_user_on(ctx.db.as_ref(), user_address).await
+}
+
+#[measure(record_db_time)]
+pub async fn get_user_on<C: ConnectionTrait, S: AsRef<str> + Send + Sync>(
+    conn: &C,
+    user_address: S,
+) -> Result<user::Model, PersistDbError> {
     let addr = parse_address(user_address)?;
     user::Entity::find_by_id(addr.as_str())
-        .one(ctx.db.as_ref())
+        .one(conn)
         .await?
         .ok_or_else(|| PersistDbError::UserNotFound(addr.into_inner()))
 }
 
+/// Errors if the user is unknown or suspended.
 #[measure(record_db_time)]
-pub async fn ensure_user_is_active<S: AsRef<str> + Send + Sync>(
-    ctx: &PersistCtx,
+pub async fn ensure_user_is_active_on<C: ConnectionTrait, S: AsRef<str> + Send + Sync>(
+    conn: &C,
     user_address: S,
 ) -> Result<(), PersistDbError> {
     let addr = parse_address(&user_address)?;
-    let user = get_user(ctx, addr.as_str()).await?;
+    let user = get_user_on(conn, addr.as_str()).await?;
     if user.is_suspended {
         Err(PersistDbError::UserSuspended(addr.into_inner()))
     } else {
@@ -34,13 +43,14 @@ pub async fn ensure_user_is_active<S: AsRef<str> + Send + Sync>(
     }
 }
 
+/// Errors only if the user is known *and* suspended; an unknown user is fine.
 #[measure(record_db_time)]
-pub async fn ensure_user_is_active_if_exists<S: AsRef<str> + Send + Sync>(
-    ctx: &PersistCtx,
+pub async fn ensure_user_is_active_if_exists_on<C: ConnectionTrait, S: AsRef<str> + Send + Sync>(
+    conn: &C,
     user_address: S,
 ) -> Result<(), PersistDbError> {
     let addr = parse_address(&user_address)?;
-    let user = match get_user(ctx, addr.as_str()).await {
+    let user = match get_user_on(conn, addr.as_str()).await {
         Ok(user) => user,
         Err(PersistDbError::UserNotFound(_)) => return Ok(()),
         Err(e) => return Err(e),

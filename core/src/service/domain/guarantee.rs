@@ -14,7 +14,7 @@ use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
     ValidationRequirement,
 };
-use sea_orm::{ConnectionTrait, TransactionTrait};
+use sea_orm::TransactionTrait;
 
 use crate::auth::access::{self, AccessContext};
 use crate::auth::constants::SCOPE_GUARANTEE_ISSUE;
@@ -124,16 +124,6 @@ impl GuaranteeService {
             .map_err(|err| ServiceError::Other(anyhow!(err)))
     }
 
-    async fn process_guarantee_request_claims_on<C: ConnectionTrait>(
-        &self,
-        conn: &C,
-        claims: &PaymentGuaranteeRequestClaims,
-    ) -> ServiceResult<()> {
-        repo::lock_user_balance_for_guarantee_on(conn, claims)
-            .await
-            .map_err(Into::into)
-    }
-
     pub async fn issue_payment_guarantee(
         &self,
         auth: &AccessContext,
@@ -156,9 +146,6 @@ impl GuaranteeService {
             .check_settlement_timing_invariant()
             .map_err(|e| ServiceError::SettlementTimingHalted(format!("{e:#}")))?;
 
-        repo::ensure_user_is_active(&self.ctx.persist, req.claims.user_address()).await?;
-        repo::ensure_user_is_active_if_exists(&self.ctx.persist, req.claims.recipient_address())
-            .await?;
         let active_cycle = self
             .cycle_ops
             .get_or_create_active_cycle(req.claims.asset_address(), Utc::now())
@@ -195,6 +182,8 @@ impl GuaranteeService {
         let claims =
             PaymentGuaranteeClaims::from_request(&req.claims, guarantee_domain, cycle_id_hash);
 
+        let cert = self.create_bls_cert(claims.clone()).await?;
+
         let max_attempts = self
             .ctx
             .config
@@ -210,11 +199,12 @@ impl GuaranteeService {
                     &active_cycle.id,
                     &guarantee_id,
                     &claims,
+                    &cert,
                     validation_deadline,
                 )
                 .await
             {
-                Ok(cert) => return Ok(cert),
+                Ok(()) => return Ok(cert),
                 Err(ServiceError::OptimisticLockConflict) if attempt < max_attempts => {
                     warn!(
                         "guarantee issuance hit balance lock conflict (attempt {attempt}/{max_attempts}); retrying"
@@ -231,23 +221,26 @@ impl GuaranteeService {
         cycle_id: &str,
         guarantee_id: &str,
         claims: &PaymentGuaranteeClaims,
+        cert: &BLSCert,
         validation_deadline: Option<chrono::NaiveDateTime>,
-    ) -> ServiceResult<BLSCert> {
+    ) -> ServiceResult<()> {
         self.ctx
             .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
-                let self_clone = self.clone();
                 let req = req.clone();
                 let cycle_id = cycle_id.to_string();
                 let guarantee_id = guarantee_id.to_string();
                 let claims = claims.clone();
+                let cert = cert.clone();
                 Box::pin(async move {
-                    self_clone
-                        .process_guarantee_request_claims_on(txn, &req.claims)
+                    repo::ensure_user_is_active_on(txn, req.claims.user_address()).await?;
+                    repo::ensure_user_is_active_if_exists_on(txn, req.claims.recipient_address())
                         .await?;
+                    repo::ensure_user_exists_on(txn, req.claims.recipient_address()).await?;
 
-                    let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;
+                    repo::lock_user_balance_for_guarantee_on(txn, &req.claims).await?;
+
                     repo::prepare_and_store_cycle_guarantee_on(
                         txn,
                         repo::PrepareCycleGuaranteeInput {
@@ -280,7 +273,7 @@ impl GuaranteeService {
                         .await?;
                     }
 
-                    Ok(cert)
+                    Ok(())
                 })
             })
             .await

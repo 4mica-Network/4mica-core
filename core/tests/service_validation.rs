@@ -22,7 +22,7 @@ use core_service::service::{CoreService, CoreServiceDeps};
 mod common;
 use common::cycle_fixtures::{create_frozen_cycle, lock_collateral};
 use common::db::{clear_all_tables, setup_db_test_env};
-use common::fixtures::{normalize_address, random_address, read_locked_collateral};
+use common::fixtures::{ensure_user, normalize_address, random_address, read_locked_collateral};
 
 const VALIDATOR_URI: &str = "mock:validator";
 
@@ -96,6 +96,7 @@ async fn seed_pending_validation(
     let from = normalize_address(&random_address())?;
     let to = normalize_address(&random_address())?;
     lock_collateral(ctx, &from, amount).await?;
+    ensure_user(ctx, &to).await?;
 
     let subject = B256::from(rand::random::<[u8; 32]>());
     let claims = PaymentGuaranteeRequestClaims::new(

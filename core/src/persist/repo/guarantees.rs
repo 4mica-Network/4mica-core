@@ -16,7 +16,6 @@ use sea_orm::{
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{is_unique_violation, parse_address};
-use super::users::ensure_user_exists_on;
 use super::withdrawals::get_pending_withdrawal_on;
 use crate::metrics::misc::record_db_time;
 
@@ -36,11 +35,7 @@ pub async fn lock_user_balance_for_guarantee_on<C: ConnectionTrait>(
     claims: &PaymentGuaranteeRequestClaims,
 ) -> Result<(), PersistDbError> {
     let user_address = parse_address(claims.user_address())?.into_inner();
-    let recipient_address = parse_address(claims.recipient_address())?.into_inner();
     let asset_address = parse_address(claims.asset_address())?.into_inner();
-
-    ensure_user_exists_on(conn, &user_address).await?;
-    ensure_user_exists_on(conn, &recipient_address).await?;
 
     let asset_balance = get_user_balance_on(conn, &user_address, &asset_address).await?;
     let total = U256::from_str(&asset_balance.total)
@@ -122,9 +117,6 @@ pub async fn store_cycle_guarantee_on<C: ConnectionTrait>(
     data: CycleGuaranteeData,
 ) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
-
-    ensure_user_exists_on(conn, &data.from).await?;
-    ensure_user_exists_on(conn, &data.to).await?;
 
     let active_model = guarantee::ActiveModel {
         guarantee_id: Set(data.guarantee_id.clone()),
