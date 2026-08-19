@@ -1,6 +1,7 @@
 //! Service-layer netting: bilateral exposure offsetting, clearing-batch
 //! construction, asset scoping, and guarantee identity/exclusion. No chain.
 
+use core_service::persist::canonical::ReqId;
 use core_service::persist::rows::StoreCycleGuaranteeInput;
 use std::collections::BTreeMap;
 
@@ -139,7 +140,7 @@ async fn netting_cycles_are_scoped_by_asset_address() -> anyhow::Result<()> {
         StoreCycleGuaranteeInput {
             guarantee_id: "stable-guarantee".to_string(),
             cycle_id: cycle_id.to_string(),
-            req_id: U256::ZERO,
+            req_id: ReqId(U256::ZERO),
             version: 2,
             from: payer.parse()?,
             to: payee.parse()?,
@@ -190,7 +191,7 @@ async fn cycle_guarantees_are_identified_by_guarantee_id() -> anyhow::Result<()>
 
     assert_eq!(stored.guarantee_id, guarantee_id);
     assert_eq!(stored.cycle_id, cycle_id);
-    assert_eq!(stored.req_id, U256::from(11u64));
+    assert_eq!(stored.req_id, ReqId(U256::from(11u64)));
     assert_eq!(stored.value, U256::from(7u64));
     assert_eq!(
         stored.settlement_status,

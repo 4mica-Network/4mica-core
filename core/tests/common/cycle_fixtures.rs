@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, U256};
 use anyhow::{Result, anyhow, bail};
 use chrono::{Duration, Utc};
+use core_service::persist::canonical::ReqId;
 use core_service::persist::rows::StoreCycleGuaranteeInput;
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS,
@@ -74,7 +75,7 @@ pub async fn store_payable_guarantee(
         StoreCycleGuaranteeInput {
             guarantee_id: guarantee_id.clone(),
             cycle_id: cycle_id.to_string(),
-            req_id: U256::from(req_id),
+            req_id: ReqId(U256::from(req_id)),
             version: 2,
             from: parse_addr(&from)?,
             to: parse_addr(&to)?,
@@ -109,7 +110,7 @@ pub async fn store_pending_guarantee(
         StoreCycleGuaranteeInput {
             guarantee_id: guarantee_id.clone(),
             cycle_id: cycle_id.to_string(),
-            req_id: U256::from(req_id),
+            req_id: ReqId(U256::from(req_id)),
             version: 2,
             from: parse_addr(&from)?,
             to: parse_addr(&to)?,

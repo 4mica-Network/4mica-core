@@ -311,15 +311,14 @@ impl NettingService {
         }
 
         let merkle_root = build_participant_merkle_tree(&participant_leaves)?.root();
-        let batch_hash = evm::bytes32_hex(evm::length_prefixed_keccak(&[
+        let batch_hash = evm::length_prefixed_keccak(&[
             cycle.id.as_bytes(),
             cycle.asset_address.as_bytes(),
             total_net_debit.to_string().as_bytes(),
             total_net_credit.to_string().as_bytes(),
             merkle_root.as_slice(),
             b"batch".as_slice(),
-        ]));
-        let merkle_root = evm::bytes32_hex(merkle_root);
+        ]);
 
         repo::create_clearing_batch_on(
             self.ctx.db(),
@@ -328,8 +327,8 @@ impl NettingService {
                 asset_address: Address::from_canonical(&cycle.asset_address)?,
                 batch_hash,
                 merkle_root,
-                total_net_debit: total_net_debit.to_string(),
-                total_net_credit: total_net_credit.to_string(),
+                total_net_debit,
+                total_net_credit,
                 debtor_count,
                 creditor_count,
                 committed_at: Utc::now().naive_utc(),

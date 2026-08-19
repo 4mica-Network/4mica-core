@@ -8,10 +8,11 @@ use alloy::primitives::{Address, U256};
 use anyhow::{Context, Result, bail};
 use chrono::{Duration, Utc};
 use core_service::config::DEFAULT_ASSET_ADDRESS;
+use core_service::persist::canonical::ReqId;
 use core_service::persist::rows::StoreCycleGuaranteeInput;
 use core_service::persist::{PersistCtx, repo};
 use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementCycleStatus};
-use std::str::FromStr;
+
 use std::time::{Duration as StdDuration, Instant};
 
 fn normalize(addr: Address) -> String {
@@ -73,7 +74,7 @@ pub async fn inject_frozen_two_party_cycle(
         StoreCycleGuaranteeInput {
             guarantee_id,
             cycle_id: cycle_id.to_string(),
-            req_id: U256::from(0u64),
+            req_id: ReqId(U256::from(0u64)),
             version: 2,
             from: debtor.parse()?,
             to: creditor.parse()?,
@@ -104,14 +105,12 @@ pub async fn inject_frozen_two_party_cycle(
         DEFAULT_ASSET_ADDRESS.parse()?,
     )
     .await?;
-    let total = U256::from_str(&balance.total)
-        .map_err(|e| anyhow::anyhow!("invalid debtor collateral {}: {e}", balance.total))?;
     repo::update_user_balance_and_version_on(
         ctx.db.as_ref(),
         debtor.parse()?,
         DEFAULT_ASSET_ADDRESS.parse()?,
         balance.version,
-        total,
+        balance.total,
         amount,
     )
     .await

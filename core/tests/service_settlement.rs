@@ -22,7 +22,8 @@ use common::cycle_fixtures::{
     setup_cycle_service, store_payable_guarantee,
 };
 use common::fixtures::{
-    ensure_user_with_collateral, normalize_address, random_address, read_locked_collateral,
+    ensure_user_with_collateral, normalize_address, parse_addr, random_address,
+    read_locked_collateral,
 };
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS, ethereum::event_data::EventMeta, evm, persist::PersistCtx,
@@ -488,8 +489,8 @@ async fn recipient_payments_are_queryable_by_recipient() -> anyhow::Result<()> {
 
     let rows = repo::get_recipient_transactions(ctx, recipient.parse()?).await?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].user_address, user);
-    assert_eq!(rows[0].amount, "9");
+    assert_eq!(rows[0].user_address, parse_addr(&user)?);
+    assert_eq!(rows[0].amount, U256::from(9u64));
     Ok(())
 }
 

@@ -122,8 +122,7 @@ pub async fn set_locked_collateral(
         parse_addr(asset_address)?,
     )
     .await?;
-    let total = U256::from_str(&balance.total)
-        .map_err(|e| anyhow!("invalid collateral {}: {}", balance.total, e))?;
+    let total = balance.total;
     if amount > total {
         return Err(anyhow!(
             "locked collateral {} exceeds total {}",

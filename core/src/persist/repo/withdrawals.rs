@@ -13,7 +13,6 @@ use sea_orm::{
     QueryOrder, Set, TransactionTrait,
     sea_query::{Expr, OnConflict},
 };
-use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{map_pending_withdrawal_err, new_uuid};
@@ -47,10 +46,8 @@ pub async fn request_withdrawal_with_event(
             Box::pin(async move {
                 let asset_balance = get_user_balance_on(txn, user_address, asset_address).await?;
 
-                let total = U256::from_str(&asset_balance.total)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let locked = U256::from_str(&asset_balance.locked)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let total = asset_balance.total;
+                let locked = asset_balance.locked;
 
                 let free = total.saturating_sub(locked);
                 if amount > free {
@@ -223,8 +220,7 @@ pub async fn finalize_withdrawal_with_event(
                     .next()
                     .expect("invariant: exactly one pending withdrawal after length checks");
 
-                let requested = U256::from_str(&withdrawal.requested_amount)
-                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+                let requested = U256::from_canonical(&withdrawal.requested_amount)?;
 
                 // `executed_amount` and `requested` should be the same, but if not, we take the minimum as a best effort.
                 //  We can't throw here because it's been already executed on the chain.
@@ -236,10 +232,8 @@ pub async fn finalize_withdrawal_with_event(
                     Address::from_canonical(&withdrawal.asset_address)?,
                 )
                 .await?;
-                let current_total = U256::from_str(&asset_balance.total)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let locked = U256::from_str(&asset_balance.locked)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let current_total = asset_balance.total;
+                let locked = asset_balance.locked;
 
                 let new_total = current_total
                     .checked_sub(executed_amount)
@@ -257,7 +251,7 @@ pub async fn finalize_withdrawal_with_event(
 
                 let mut am_w = withdrawal.into_active_model();
                 am_w.status = Set(WithdrawalStatus::Executed);
-                am_w.executed_amount = Set(executed_amount.to_string());
+                am_w.executed_amount = Set(executed_amount.canonical());
                 am_w.execute_event_chain_id = Set(event.as_ref().map(|e| e.chain_id as i64));
                 am_w.execute_event_block_hash = Set(event.as_ref().map(|e| e.block_hash.clone()));
                 am_w.execute_event_tx_hash = Set(event.as_ref().map(|e| e.tx_hash.clone()));
@@ -314,13 +308,12 @@ pub async fn mark_withdrawal_executed_with_event(
                     .into_iter()
                     .next()
                     .expect("invariant: exactly one pending withdrawal after length checks");
-                let requested = U256::from_str(&withdrawal.requested_amount)
-                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+                let requested = U256::from_canonical(&withdrawal.requested_amount)?;
                 let executed_amount = std::cmp::min(executed_amount, requested);
 
                 let mut am_w = withdrawal.into_active_model();
                 am_w.status = Set(WithdrawalStatus::Executed);
-                am_w.executed_amount = Set(executed_amount.to_string());
+                am_w.executed_amount = Set(executed_amount.canonical());
                 am_w.execute_event_chain_id = Set(event.as_ref().map(|e| e.chain_id as i64));
                 am_w.execute_event_block_hash = Set(event.as_ref().map(|e| e.block_hash.clone()));
                 am_w.execute_event_tx_hash = Set(event.as_ref().map(|e| e.tx_hash.clone()));
@@ -406,10 +399,8 @@ pub async fn revert_withdrawal_execution(
         .transaction(|txn| {
             Box::pin(async move {
                 let asset_balance = get_user_balance_on(txn, user_address, asset_address).await?;
-                let current_total = U256::from_str(&asset_balance.total)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let locked = U256::from_str(&asset_balance.locked)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let current_total = asset_balance.total;
+                let locked = asset_balance.locked;
                 let new_total = current_total.checked_add(executed_amount).ok_or_else(|| {
                     PersistDbError::InvariantViolation("revert execute overflow".into())
                 })?;

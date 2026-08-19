@@ -6,7 +6,7 @@ use alloy::primitives::{Address, U256};
 use chrono::Utc;
 use core_service::auth::constants::SCOPE_GUARANTEE_ISSUE;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
-use core_service::util::u256_to_string;
+use core_service::persist::canonical::{Canonical, ReqId};
 use crypto::bls::BlsPublicKey;
 use entities::guarantee as guarantee_entity;
 use rpc::{ApiClientError, PaymentGuaranteeClaims};
@@ -75,8 +75,8 @@ async fn issue_guarantee_accepts_sequential_req_ids() -> anyhow::Result<()> {
 
     let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 2);
-    assert_eq!(guarantees[0].req_id, u256_to_string(U256::ZERO));
-    assert_eq!(guarantees[1].req_id, u256_to_string(U256::from(1u64)));
+    assert_eq!(guarantees[0].req_id, ReqId(U256::ZERO).canonical());
+    assert_eq!(guarantees[1].req_id, ReqId(U256::from(1u64)).canonical());
 
     Ok(())
 }
@@ -182,7 +182,7 @@ async fn core_api_guarantee_queries() -> anyhow::Result<()> {
     let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 1);
     let guarantee = &guarantees[0];
-    assert_eq!(guarantee.req_id, u256_to_string(U256::ZERO));
+    assert_eq!(guarantee.req_id, ReqId(U256::ZERO).canonical());
     assert_eq!(guarantee.value, U256::from(5u64).to_string());
     assert!(!guarantee.cycle_id.is_empty());
     assert!(!guarantee.guarantee_id.is_empty());
@@ -237,8 +237,8 @@ async fn core_api_guarantee_history_ordering() -> anyhow::Result<()> {
 
     let guarantees = list_cycle_guarantees_for_recipient(&ctx, &recipient_addr).await?;
     assert_eq!(guarantees.len(), 2);
-    assert_eq!(guarantees[0].req_id, u256_to_string(U256::ZERO));
-    assert_eq!(guarantees[1].req_id, u256_to_string(U256::from(1u64)));
+    assert_eq!(guarantees[0].req_id, ReqId(U256::ZERO).canonical());
+    assert_eq!(guarantees[1].req_id, ReqId(U256::from(1u64)).canonical());
     assert_eq!(guarantees[1].value, U256::from(7u64).to_string());
 
     Ok(())

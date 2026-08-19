@@ -10,7 +10,6 @@ use metrics_4mica::measure;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ConnectionTrait, EntityTrait};
-use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
 use super::common::{new_uuid, now};
@@ -31,7 +30,7 @@ async fn upsert_collateral_event_on<C: ConnectionTrait>(
         id: Set(new_uuid()),
         user_address: Set(user_address.canonical()),
         asset_address: Set(asset_address.canonical()),
-        amount: Set(amount.to_string()),
+        amount: Set(amount.canonical()),
         event_type: Set(event_type),
         req_id: Set(None),
         tx_id: Set(None),
@@ -120,14 +119,12 @@ pub async fn credit_collateral_with_event_on<C: ConnectionTrait>(
 
     let asset_balance = get_user_balance_on(conn, user_address, asset_address).await?;
 
-    let total = U256::from_str(&asset_balance.total)
-        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let total = asset_balance.total;
     let new_total = total.checked_add(amount).ok_or_else(|| {
         PersistDbError::DatabaseFailure(sea_orm::DbErr::Custom("overflow".to_string()))
     })?;
 
-    let locked = U256::from_str(&asset_balance.locked)
-        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let locked = asset_balance.locked;
 
     update_user_balance_and_version_on(
         conn,
@@ -172,10 +169,8 @@ pub async fn debit_collateral_with_event_on<C: ConnectionTrait>(
     }
 
     let asset_balance = get_user_balance_on(conn, user_address, asset_address).await?;
-    let total = U256::from_str(&asset_balance.total)
-        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-    let locked = U256::from_str(&asset_balance.locked)
-        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let total = asset_balance.total;
+    let locked = asset_balance.locked;
     let new_total = total
         .checked_sub(amount)
         .ok_or_else(|| PersistDbError::InvariantViolation("revert deposit underflow".into()))?;

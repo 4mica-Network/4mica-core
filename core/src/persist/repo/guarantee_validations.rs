@@ -12,6 +12,7 @@ use crate::metrics::misc::record_db_time;
 
 use super::common::map_guarantee_validation_err;
 
+#[derive(Debug, Clone)]
 pub struct StoreGuaranteeValidationInput {
     pub guarantee_id: String,
     pub validator: String,

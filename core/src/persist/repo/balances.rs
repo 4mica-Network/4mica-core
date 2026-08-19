@@ -1,6 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
 use crate::persist::canonical::Canonical;
+use crate::persist::rows::AssetBalance;
 use alloy::primitives::Address;
 use alloy::primitives::U256;
 use entities::user_asset_balance;
@@ -19,7 +20,7 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
     conn: &C,
     user_address: Address,
     asset_address: Address,
-) -> Result<user_asset_balance::Model, PersistDbError> {
+) -> Result<AssetBalance, PersistDbError> {
     let user_str = user_address.canonical().to_owned();
     let asset_str = asset_address.canonical().to_owned();
 
@@ -30,15 +31,15 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
         .await?;
 
     if let Some(b) = balance {
-        return Ok(b);
+        return AssetBalance::try_from(b);
     }
 
     let now = now();
     let new_balance = user_asset_balance::ActiveModel {
         user_address: sea_orm::ActiveValue::Set(user_str.clone()),
         asset_address: sea_orm::ActiveValue::Set(asset_str.clone()),
-        total: sea_orm::ActiveValue::Set("0".to_string()),
-        locked: sea_orm::ActiveValue::Set("0".to_string()),
+        total: sea_orm::ActiveValue::Set(U256::ZERO.canonical()),
+        locked: sea_orm::ActiveValue::Set(U256::ZERO.canonical()),
         version: sea_orm::ActiveValue::Set(0),
         created_at: sea_orm::ActiveValue::Set(now),
         updated_at: sea_orm::ActiveValue::Set(now),
@@ -73,6 +74,7 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
                 "Failed to create or fetch balance".to_string(),
             ))
         })
+        .and_then(AssetBalance::try_from)
 }
 
 #[measure(record_db_time)]
@@ -126,13 +128,13 @@ pub async fn get_user_asset_balance(
     ctx: &PersistCtx,
     user_address: Address,
     asset_address: Address,
-) -> Result<Option<user_asset_balance::Model>, PersistDbError> {
+) -> Result<Option<AssetBalance>, PersistDbError> {
     let row = user_asset_balance::Entity::find()
         .filter(user_asset_balance::Column::UserAddress.eq(user_address.canonical()))
         .filter(user_asset_balance::Column::AssetAddress.eq(asset_address.canonical()))
         .one(ctx.db.as_ref())
         .await?;
-    Ok(row)
+    row.map(AssetBalance::try_from).transpose()
 }
 
 #[measure(record_db_time)]
@@ -146,10 +148,7 @@ pub async fn sync_user_asset_total(
         .transaction(|txn| {
             Box::pin(async move {
                 let balance = get_user_balance_on(txn, user_address, asset_address).await?;
-                let locked = balance
-                    .locked
-                    .parse::<U256>()
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let locked = balance.locked;
 
                 // Never let a chain reconciliation drive `total` below `locked`:
                 let effective_total = new_total.max(locked);

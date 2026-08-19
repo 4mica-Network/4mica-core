@@ -191,8 +191,8 @@ async fn withdrawal_request_bumps_balance_version_to_serialise_with_locks() -> a
         after.version > before.version,
         "withdrawal request must bump the balance version to serialise with concurrent locks"
     );
-    assert_eq!(after.total, U256::from(100u64).to_string());
-    assert_eq!(after.locked, U256::from(30u64).to_string());
+    assert_eq!(after.total, U256::from(100u64));
+    assert_eq!(after.locked, U256::from(30u64));
 
     Ok(())
 }

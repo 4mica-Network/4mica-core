@@ -1,6 +1,7 @@
 //! DB-level tests for the validation lifecycle driver, covering the persistence and collateral
 //! effects that the pure-logic unit tests in `service::validation` cannot reach.
 
+use core_service::persist::canonical::ReqId;
 use core_service::persist::rows::StoreCycleGuaranteeInput;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -126,7 +127,7 @@ async fn seed_pending_validation(
         StoreCycleGuaranteeInput {
             guarantee_id: guarantee_id.clone(),
             cycle_id: cycle_id.to_string(),
-            req_id: U256::from(req_id),
+            req_id: ReqId(U256::from(req_id)),
             version: 1,
             from: from.parse()?,
             to: to.parse()?,

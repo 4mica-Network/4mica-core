@@ -2,34 +2,24 @@
 
 use alloy::primitives::{Address, B256, U256};
 use chrono::NaiveDateTime;
+use entities::sea_orm_active_enums::UserTransactionStatus;
 use entities::sea_orm_active_enums::{
     GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus,
 };
-use entities::{clearing_batch, cycle_exposure_edge, cycle_participant_position, guarantee};
+use entities::{
+    clearing_batch, cycle_exposure_edge, cycle_participant_position, guarantee, user_asset_balance,
+    user_transaction,
+};
 
 use crate::error::PersistDbError;
-use crate::persist::canonical::Canonical;
-
-/// Decode a stored 32-byte hash, which is held as `0x`-prefixed hex.
-fn decode_b256(field: &str, raw: &str) -> Result<B256, PersistDbError> {
-    raw.trim().parse::<B256>().map_err(|e| {
-        PersistDbError::InvariantViolation(format!("stored {field} {raw} is not a hash: {e}"))
-    })
-}
-
-/// Decode a stored `U256`.
-fn decode_u256(field: &str, raw: &str) -> Result<U256, PersistDbError> {
-    raw.parse::<U256>().map_err(|e| {
-        PersistDbError::InvariantViolation(format!("stored {field} {raw} is not a u256: {e}"))
-    })
-}
+use crate::persist::canonical::{Canonical, ReqId};
 
 /// The values needed to write a new guarantee row, for `store_cycle_guarantee_on`.
 #[derive(Debug, Clone)]
 pub struct StoreCycleGuaranteeInput {
     pub guarantee_id: String,
     pub cycle_id: String,
-    pub req_id: U256,
+    pub req_id: ReqId,
     pub version: u64,
     pub from: Address,
     pub to: Address,
@@ -46,7 +36,7 @@ pub struct StoreCycleGuaranteeInput {
 pub struct CycleGuarantee {
     pub guarantee_id: String,
     pub cycle_id: String,
-    pub req_id: U256,
+    pub req_id: ReqId,
     /// The `from` side, who owes the value and whose collateral is locked.
     pub payer: Address,
     /// The `to` side, who is owed the value.
@@ -69,11 +59,11 @@ impl TryFrom<guarantee::Model> for CycleGuarantee {
 
     fn try_from(m: guarantee::Model) -> Result<Self, Self::Error> {
         Ok(Self {
-            req_id: decode_u256("guarantee req_id", &m.req_id)?,
+            req_id: ReqId::from_canonical(&m.req_id)?,
             payer: Address::from_canonical(&m.from_address)?,
             payee: Address::from_canonical(&m.to_address)?,
             asset: Address::from_canonical(&m.asset_address)?,
-            value: decode_u256("guarantee value", &m.value)?,
+            value: U256::from_canonical(&m.value)?,
             guarantee_id: m.guarantee_id,
             cycle_id: m.cycle_id,
             version: m.version,
@@ -111,10 +101,10 @@ impl TryFrom<cycle_participant_position::Model> for ParticipantPosition {
         Ok(Self {
             participant: Address::from_canonical(&m.participant)?,
             asset_address: Address::from_canonical(&m.asset_address)?,
-            gross_outgoing: decode_u256("position gross_outgoing", &m.gross_outgoing)?,
-            gross_incoming: decode_u256("position gross_incoming", &m.gross_incoming)?,
-            net_debit: decode_u256("position net_debit", &m.net_debit)?,
-            net_credit: decode_u256("position net_credit", &m.net_credit)?,
+            gross_outgoing: U256::from_canonical(&m.gross_outgoing)?,
+            gross_incoming: U256::from_canonical(&m.gross_incoming)?,
+            net_debit: U256::from_canonical(&m.net_debit)?,
+            net_credit: U256::from_canonical(&m.net_credit)?,
             cycle_id: m.cycle_id,
             role: m.role,
             status: m.status,
@@ -145,13 +135,10 @@ impl TryFrom<cycle_exposure_edge::Model> for ExposureEdge {
             payer: Address::from_canonical(&m.payer)?,
             payee: Address::from_canonical(&m.payee)?,
             asset_address: Address::from_canonical(&m.asset_address)?,
-            gross_amount: decode_u256("edge gross_amount", &m.gross_amount)?,
-            finalized_payable_amount: decode_u256(
-                "edge finalized_payable_amount",
-                &m.finalized_payable_amount,
-            )?,
-            disputed_amount: decode_u256("edge disputed_amount", &m.disputed_amount)?,
-            cancelled_amount: decode_u256("edge cancelled_amount", &m.cancelled_amount)?,
+            gross_amount: U256::from_canonical(&m.gross_amount)?,
+            finalized_payable_amount: U256::from_canonical(&m.finalized_payable_amount)?,
+            disputed_amount: U256::from_canonical(&m.disputed_amount)?,
+            cancelled_amount: U256::from_canonical(&m.cancelled_amount)?,
             cycle_id: m.cycle_id,
             guarantee_count: m.guarantee_count,
         })
@@ -179,15 +166,89 @@ impl TryFrom<clearing_batch::Model> for ClearingBatch {
     fn try_from(m: clearing_batch::Model) -> Result<Self, Self::Error> {
         Ok(Self {
             asset_address: Address::from_canonical(&m.asset_address)?,
-            batch_hash: decode_b256("batch hash", &m.batch_hash)?,
-            merkle_root: decode_b256("batch merkle_root", &m.merkle_root)?,
-            total_net_debit: decode_u256("batch total_net_debit", &m.total_net_debit)?,
-            total_net_credit: decode_u256("batch total_net_credit", &m.total_net_credit)?,
+            batch_hash: B256::from_canonical(&m.batch_hash)?,
+            merkle_root: B256::from_canonical(&m.merkle_root)?,
+            total_net_debit: U256::from_canonical(&m.total_net_debit)?,
+            total_net_credit: U256::from_canonical(&m.total_net_credit)?,
             cycle_id: m.cycle_id,
             debtor_count: m.debtor_count,
             creditor_count: m.creditor_count,
             committed_at: m.committed_at,
             commit_tx_hash: m.commit_tx_hash,
+        })
+    }
+}
+
+/// A user's collateral position in one asset, with its amounts decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetBalance {
+    pub user_address: Address,
+    pub asset_address: Address,
+    /// Everything deposited, including whatever `locked` covers.
+    pub total: U256,
+    /// The part of `total` committed to open guarantees and so unavailable.
+    pub locked: U256,
+    /// Guards writes: a caller passes the version it read back to the update.
+    pub version: i32,
+    pub updated_at: NaiveDateTime,
+}
+
+impl AssetBalance {
+    /// What the user can still spend: `total` minus what is already committed.
+    pub fn free(&self) -> U256 {
+        self.total.saturating_sub(self.locked)
+    }
+}
+
+impl TryFrom<user_asset_balance::Model> for AssetBalance {
+    type Error = PersistDbError;
+
+    fn try_from(m: user_asset_balance::Model) -> Result<Self, Self::Error> {
+        Ok(Self {
+            user_address: Address::from_canonical(&m.user_address)?,
+            asset_address: Address::from_canonical(&m.asset_address)?,
+            total: U256::from_canonical(&m.total)?,
+            locked: U256::from_canonical(&m.locked)?,
+            version: m.version,
+            updated_at: m.updated_at,
+        })
+    }
+}
+
+/// A payment transaction row, with its addresses and amount decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserTransaction {
+    pub tx_id: String,
+    pub user_address: Address,
+    pub recipient_address: Address,
+    pub asset_address: Address,
+    pub amount: U256,
+    pub block_number: Option<i64>,
+    pub block_hash: Option<String>,
+    pub status: UserTransactionStatus,
+    pub verified: bool,
+    pub finalized: bool,
+    pub failed: bool,
+    pub created_at: NaiveDateTime,
+}
+
+impl TryFrom<user_transaction::Model> for UserTransaction {
+    type Error = PersistDbError;
+
+    fn try_from(m: user_transaction::Model) -> Result<Self, Self::Error> {
+        Ok(Self {
+            user_address: Address::from_canonical(&m.user_address)?,
+            recipient_address: Address::from_canonical(&m.recipient_address)?,
+            asset_address: Address::from_canonical(&m.asset_address)?,
+            amount: U256::from_canonical(&m.amount)?,
+            tx_id: m.tx_id,
+            block_number: m.block_number,
+            block_hash: m.block_hash,
+            status: m.status,
+            verified: m.verified,
+            finalized: m.finalized,
+            failed: m.failed,
+            created_at: m.created_at,
         })
     }
 }

@@ -1,6 +1,8 @@
 //! Guarantee issuance: validate the request, assign it to the active cycle, lock the payer's
 //! collateral, and return the signed BLS certificate.
 
+use crate::persist::canonical::ReqId;
+use crate::persist::rows::StoreCycleGuaranteeInput;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -163,11 +165,11 @@ impl GuaranteeService {
             });
         }
 
-        let validation_deadline = match req.claims.validation() {
-            Some(validation) => Some(enforced_validation_deadline(
-                validation,
-                active_cycle.resolution_cutoff,
-            )?),
+        let validation = match req.claims.validation() {
+            Some(requirement) => Some((
+                requirement,
+                enforced_validation_deadline(requirement, active_cycle.resolution_cutoff)?,
+            )),
             None => None,
         };
 
@@ -189,6 +191,33 @@ impl GuaranteeService {
 
         let cert = self.create_bls_cert(claims.clone()).await?;
 
+        let guarantee = StoreCycleGuaranteeInput {
+            guarantee_id: guarantee_id.clone(),
+            cycle_id: active_cycle.id.clone(),
+            req_id: ReqId(claims.req_id),
+            version: claims.version,
+            from: payer,
+            to: recipient,
+            asset,
+            value: claims.amount,
+            start_ts: unix_seconds_to_naive(claims.timestamp)?,
+            cert: serde_json::to_string(&cert).map_err(|e| ServiceError::Other(anyhow!(e)))?,
+            request: Some(
+                serde_json::to_string(&req).map_err(|e| ServiceError::Other(anyhow!(e)))?,
+            ),
+            settlement_status: settlement_status_for_request(&req.claims),
+        };
+        let validation =
+            validation.map(
+                |(requirement, deadline)| repo::StoreGuaranteeValidationInput {
+                    guarantee_id: guarantee_id.clone(),
+                    validator: requirement.validator.clone(),
+                    subject: requirement.subject.to_string(),
+                    deadline,
+                    params: requirement.params.to_vec(),
+                },
+            );
+
         let max_attempts = self
             .ctx
             .config
@@ -199,17 +228,7 @@ impl GuaranteeService {
         loop {
             attempt += 1;
             match self
-                .issue_payment_guarantee_in_txn(&IssueGuaranteeInput {
-                    req: &req,
-                    cycle_id: &active_cycle.id,
-                    guarantee_id: &guarantee_id,
-                    claims: &claims,
-                    cert: &cert,
-                    validation_deadline,
-                    payer,
-                    recipient,
-                    asset,
-                })
+                .issue_payment_guarantee_in_txn(&guarantee, validation.as_ref())
                 .await
             {
                 Ok(()) => return Ok(cert),
@@ -223,73 +242,40 @@ impl GuaranteeService {
         }
     }
 
+    /// Lock the payer's collateral and write the guarantee, plus its validation when one is
+    /// required, as one unit. Retried by the caller on optimistic-lock conflicts, so it must stay
+    /// free of side effects outside the transaction.
     async fn issue_payment_guarantee_in_txn(
         &self,
-        input: &IssueGuaranteeInput<'_>,
+        guarantee: &StoreCycleGuaranteeInput,
+        validation: Option<&repo::StoreGuaranteeValidationInput>,
     ) -> ServiceResult<()> {
         // Owned up-front: the transaction closure must not borrow from the caller's frame.
-        let req = input.req.clone();
-        let cycle_id = input.cycle_id.to_string();
-        let guarantee_id = input.guarantee_id.to_string();
-        let claims = input.claims.clone();
-        let cert = input.cert.clone();
-        let validation_deadline = input.validation_deadline;
-        let (payer, recipient, asset) = (input.payer, input.recipient, input.asset);
+        let guarantee = guarantee.clone();
+        let validation = validation.cloned();
         self.ctx
             .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
-                let req = req.clone();
-                let cycle_id = cycle_id.to_string();
-                let guarantee_id = guarantee_id.to_string();
-                let claims = claims.clone();
-                let cert = cert.clone();
+                let guarantee = guarantee.clone();
+                let validation = validation.clone();
                 Box::pin(async move {
-                    repo::ensure_user_is_active_on(txn, payer).await?;
-                    repo::ensure_user_is_active_if_exists_on(txn, recipient).await?;
-                    repo::ensure_user_exists_on(txn, recipient).await?;
+                    repo::ensure_user_is_active_on(txn, guarantee.from).await?;
+                    repo::ensure_user_is_active_if_exists_on(txn, guarantee.to).await?;
+                    repo::ensure_user_exists_on(txn, guarantee.to).await?;
 
                     repo::lock_user_balance_for_guarantee_on(
                         txn,
-                        payer,
-                        asset,
-                        req.claims.amount(),
+                        guarantee.from,
+                        guarantee.asset,
+                        guarantee.value,
                     )
                     .await?;
 
-                    repo::prepare_and_store_cycle_guarantee_on(
-                        txn,
-                        repo::PrepareCycleGuaranteeInput {
-                            payer,
-                            recipient,
-                            asset,
-                            claims: &claims,
-                            cert: &cert,
-                            request: &req,
-                            cycle_id,
-                            guarantee_id: guarantee_id.clone(),
-                            settlement_status: settlement_status_for_request(&req.claims),
-                        },
-                    )
-                    .await?;
+                    repo::store_cycle_guarantee_on(txn, guarantee).await?;
 
-                    if let Some(validation) = req.claims.validation() {
-                        let deadline = validation_deadline.ok_or_else(|| {
-                            ServiceError::Other(anyhow!(
-                                "validated guarantee {guarantee_id} has no enforced deadline"
-                            ))
-                        })?;
-                        repo::store_guarantee_validation_on(
-                            txn,
-                            repo::StoreGuaranteeValidationInput {
-                                guarantee_id,
-                                validator: validation.validator.clone(),
-                                subject: validation.subject.to_string(),
-                                deadline,
-                                params: validation.params.to_vec(),
-                            },
-                        )
-                        .await?;
+                    if let Some(validation) = validation {
+                        repo::store_guarantee_validation_on(txn, validation).await?;
                     }
 
                     Ok(())
@@ -300,17 +286,15 @@ impl GuaranteeService {
     }
 }
 
-/// Everything the issuance transaction needs, resolved before it opens.
-struct IssueGuaranteeInput<'a> {
-    req: &'a PaymentGuaranteeRequest,
-    cycle_id: &'a str,
-    guarantee_id: &'a str,
-    claims: &'a PaymentGuaranteeClaims,
-    cert: &'a BLSCert,
-    validation_deadline: Option<chrono::NaiveDateTime>,
-    payer: Address,
-    recipient: Address,
-    asset: Address,
+/// Interpret a claims timestamp, which is unix seconds, as the naive UTC time the row stores.
+fn unix_seconds_to_naive(timestamp: u64) -> ServiceResult<chrono::NaiveDateTime> {
+    chrono::DateTime::from_timestamp(timestamp as i64, 0)
+        .ok_or_else(|| {
+            ServiceError::InvalidParams(format!(
+                "guarantee timestamp {timestamp} is not a valid time"
+            ))
+        })
+        .map(|dt| dt.naive_utc())
 }
 
 /// Refuses a deadline that leaves a validator less time to answer than `min_window` demands.

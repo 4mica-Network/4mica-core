@@ -932,8 +932,7 @@ impl ClearingService {
         // Indexed point lookup on the persisted on-chain cycle-id hash, replacing
         // a full-table scan (removing both the DoS surface and the silent-drop
         // risk when a cycle leaves a candidate window).
-        let hash = evm::bytes32_hex(onchain_cycle_id);
-        Ok(repo::get_cycle_id_by_onchain_hash_on(self.ctx.db(), &hash).await?)
+        Ok(repo::get_cycle_id_by_onchain_hash_on(self.ctx.db(), onchain_cycle_id).await?)
     }
 }
 

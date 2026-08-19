@@ -8,7 +8,7 @@ use crate::auth::access::{self, AccessContext};
 use crate::auth::constants::SCOPE_PAYMENT_READ;
 use crate::error::ServiceResult;
 use crate::persist::mapper;
-use crate::persist::{IntoUserTxInfo, repo};
+use crate::persist::repo;
 use crate::service::ctx::Ctx;
 
 pub struct QueryService {
@@ -33,9 +33,10 @@ impl QueryService {
             crate::evm::parse_address("recipient", &recipient_address)?,
         )
         .await?;
-        rows.into_iter()
-            .map(|row| row.into_user_tx_info())
-            .collect::<ServiceResult<Vec<_>>>()
+        Ok(rows
+            .into_iter()
+            .map(mapper::user_transaction_to_info)
+            .collect())
     }
 
     pub async fn get_user_asset_balance(
@@ -57,6 +58,6 @@ impl QueryService {
             return Ok(None);
         };
 
-        Some(mapper::asset_balance_model_to_info(balance)).transpose()
+        Ok(Some(mapper::asset_balance_to_info(balance)))
     }
 }

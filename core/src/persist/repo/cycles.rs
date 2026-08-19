@@ -3,8 +3,7 @@ use crate::metrics::misc::record_db_time;
 use crate::persist::PersistCtx;
 use crate::persist::canonical::Canonical;
 use crate::persist::rows::{ClearingBatch, ExposureEdge, ParticipantPosition, decode_all};
-use alloy::primitives::Address;
-use alloy::primitives::U256;
+use alloy::primitives::{Address, B256, U256};
 use chrono::NaiveDateTime;
 use entities::sea_orm_active_enums::{
     ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
@@ -31,10 +30,10 @@ pub struct CreateSettlementCycleInput {
 pub struct CreateClearingBatchInput {
     pub cycle_id: String,
     pub asset_address: Address,
-    pub batch_hash: String,
-    pub merkle_root: String,
-    pub total_net_debit: String,
-    pub total_net_credit: String,
+    pub batch_hash: B256,
+    pub merkle_root: B256,
+    pub total_net_debit: U256,
+    pub total_net_credit: U256,
     pub debtor_count: i64,
     pub creditor_count: i64,
     pub committed_at: NaiveDateTime,
@@ -113,7 +112,7 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
     input: CreateSettlementCycleInput,
 ) -> Result<settlement_cycle::Model, PersistDbError> {
     let now = chrono::Utc::now().naive_utc();
-    let onchain_cycle_id_hash = crate::evm::bytes32_hex(crate::evm::cycle_id_hash(&input.id));
+    let onchain_cycle_id_hash = crate::evm::cycle_id_hash(&input.id).canonical();
     let active_model = settlement_cycle::ActiveModel {
         id: Set(input.id.clone()),
         asset_address: Set(input.asset_address.canonical()),
@@ -125,9 +124,9 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
         payment_finality_deadline: Set(input.payment_finality_deadline),
         status: Set(SettlementCycleStatus::Open),
         status_confirmed: Set(true),
-        gross_payable_amount: Set("0".to_string()),
-        gross_receivable_amount: Set("0".to_string()),
-        net_settlement_amount: Set("0".to_string()),
+        gross_payable_amount: Set(U256::ZERO.canonical()),
+        gross_receivable_amount: Set(U256::ZERO.canonical()),
+        net_settlement_amount: Set(U256::ZERO.canonical()),
         clearing_batch_hash: Set(None),
         commit_tx_hash: Set(None),
         onchain_cycle_id_hash: Set(Some(onchain_cycle_id_hash)),
@@ -292,10 +291,10 @@ pub async fn list_claimable_creditors_for_cycle_on<C: ConnectionTrait>(
 #[measure(record_db_time)]
 pub async fn get_cycle_id_by_onchain_hash_on<C: ConnectionTrait>(
     conn: &C,
-    onchain_cycle_id_hash: &str,
+    onchain_cycle_id_hash: B256,
 ) -> Result<Option<String>, PersistDbError> {
     let model = settlement_cycle::Entity::find()
-        .filter(settlement_cycle::Column::OnchainCycleIdHash.eq(onchain_cycle_id_hash))
+        .filter(settlement_cycle::Column::OnchainCycleIdHash.eq(onchain_cycle_id_hash.canonical()))
         .one(conn)
         .await?;
     Ok(model.map(|cycle| cycle.id))
@@ -638,10 +637,10 @@ pub async fn create_clearing_batch_on<C: ConnectionTrait>(
     let model = clearing_batch::ActiveModel {
         cycle_id: Set(input.cycle_id.clone()),
         asset_address: Set(input.asset_address.canonical()),
-        batch_hash: Set(input.batch_hash.clone()),
-        merkle_root: Set(input.merkle_root),
-        total_net_debit: Set(input.total_net_debit),
-        total_net_credit: Set(input.total_net_credit),
+        batch_hash: Set(input.batch_hash.canonical()),
+        merkle_root: Set(input.merkle_root.canonical()),
+        total_net_debit: Set(input.total_net_debit.canonical()),
+        total_net_credit: Set(input.total_net_credit.canonical()),
         debtor_count: Set(input.debtor_count),
         creditor_count: Set(input.creditor_count),
         committed_at: Set(input.committed_at),
@@ -664,7 +663,7 @@ pub async fn create_clearing_batch_on<C: ConnectionTrait>(
             settlement_cycle::Entity::update_many()
                 .filter(settlement_cycle::Column::Id.eq(&input.cycle_id))
                 .set(settlement_cycle::ActiveModel {
-                    clearing_batch_hash: Set(Some(input.batch_hash)),
+                    clearing_batch_hash: Set(Some(input.batch_hash.canonical())),
                     updated_at: Set(now),
                     ..Default::default()
                 })
@@ -725,10 +724,10 @@ pub async fn replace_cycle_exposure_edges_on<C: ConnectionTrait>(
             payer: Set(edge.payer.canonical()),
             payee: Set(edge.payee.canonical()),
             asset_address: Set(edge.asset_address.canonical()),
-            gross_amount: Set(edge.gross_amount.to_string()),
-            finalized_payable_amount: Set(edge.finalized_payable_amount.to_string()),
-            disputed_amount: Set(edge.disputed_amount.to_string()),
-            cancelled_amount: Set(edge.cancelled_amount.to_string()),
+            gross_amount: Set(edge.gross_amount.canonical()),
+            finalized_payable_amount: Set(edge.finalized_payable_amount.canonical()),
+            disputed_amount: Set(edge.disputed_amount.canonical()),
+            cancelled_amount: Set(edge.cancelled_amount.canonical()),
             guarantee_count: Set(edge.guarantee_count),
             created_at: Set(now),
             updated_at: Set(now),
@@ -779,10 +778,10 @@ pub async fn replace_cycle_participant_positions_on<C: ConnectionTrait>(
             cycle_id: Set(position.cycle_id),
             participant: Set(position.participant.canonical()),
             asset_address: Set(position.asset_address.canonical()),
-            gross_outgoing: Set(position.gross_outgoing.to_string()),
-            gross_incoming: Set(position.gross_incoming.to_string()),
-            net_debit: Set(position.net_debit.to_string()),
-            net_credit: Set(position.net_credit.to_string()),
+            gross_outgoing: Set(position.gross_outgoing.canonical()),
+            gross_incoming: Set(position.gross_incoming.canonical()),
+            net_debit: Set(position.net_debit.canonical()),
+            net_credit: Set(position.net_credit.canonical()),
             role: Set(position.role),
             status: Set(position.status),
             settlement_tx_hash: Set(None),
@@ -809,9 +808,9 @@ pub async fn update_cycle_netting_totals_on<C: ConnectionTrait>(
     settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
         .set(settlement_cycle::ActiveModel {
-            gross_payable_amount: Set(gross_payable_amount.to_string()),
-            gross_receivable_amount: Set(gross_receivable_amount.to_string()),
-            net_settlement_amount: Set(net_settlement_amount.to_string()),
+            gross_payable_amount: Set(gross_payable_amount.canonical()),
+            gross_receivable_amount: Set(gross_receivable_amount.canonical()),
+            net_settlement_amount: Set(net_settlement_amount.canonical()),
             updated_at: Set(now),
             ..Default::default()
         })
@@ -830,7 +829,7 @@ pub async fn update_cycle_net_settlement_amount_on<C: ConnectionTrait>(
     settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
         .set(settlement_cycle::ActiveModel {
-            net_settlement_amount: Set(net_settlement_amount.to_string()),
+            net_settlement_amount: Set(net_settlement_amount.canonical()),
             updated_at: Set(now),
             ..Default::default()
         })
