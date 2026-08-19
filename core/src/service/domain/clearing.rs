@@ -1,26 +1,113 @@
+//! The settlement cycle from end to end: open and freeze cycles, commit a netted cycle
+//! on-chain, drive it through payment, seizure and shortfall, and mirror the resulting chain
+//! events back into the ledger.
+//!
+//! What gets cleared is [`NettingService`](super::netting::NettingService)'s job; moving a cycle
+//! along its timeline is this one's.
+
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
-use chrono::{Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use entities::cycle_participant_position;
 use entities::sea_orm_active_enums::{
     GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
 };
+use entities::settlement_cycle;
 use log::{error, info, warn};
 use sea_orm::TransactionTrait;
 
-use crate::{
-    error::{ServiceError, ServiceResult},
-    ethereum::{ClearingCommitInput, CreditorSettlement, DebtorSettlement, event_data::EventMeta},
-    evm,
-    persist::repo::{self, common::parse_address},
-    service::{CoreService, netting::ParticipantLeaf},
+use crate::error::{ServiceError, ServiceResult};
+use crate::ethereum::{
+    ClearingCommitInput, CreditorSettlement, DebtorSettlement, event_data::EventMeta,
 };
+use crate::evm;
+use crate::persist::repo::{self, common::parse_address};
+use crate::service::ctx::Ctx;
+use crate::service::shared::clearing_proofs::{ClearingProofOps, ParticipantLeaf};
+use crate::service::shared::cycle::CycleOps;
+use crate::service::shared::{map_transaction_error, settlement_ledger};
 
-impl CoreService {
+pub struct ClearingService {
+    ctx: Arc<Ctx>,
+    cycle_ops: Arc<CycleOps>,
+    proof_ops: Arc<ClearingProofOps>,
+}
+
+impl ClearingService {
+    pub fn new(ctx: Arc<Ctx>, cycle_ops: Arc<CycleOps>, proof_ops: Arc<ClearingProofOps>) -> Self {
+        Self {
+            ctx,
+            cycle_ops,
+            proof_ops,
+        }
+    }
+
+    /// The cycle an operation at `now` belongs to, opening one (and freezing the elapsed
+    /// predecessor) if needed.
+    pub async fn get_or_create_active_cycle(
+        &self,
+        asset_address: &str,
+        now: DateTime<Utc>,
+    ) -> ServiceResult<settlement_cycle::Model> {
+        self.cycle_ops
+            .get_or_create_active_cycle(asset_address, now)
+            .await
+    }
+
+    pub async fn ensure_active_cycles(&self) -> ServiceResult<Vec<String>> {
+        let now = Utc::now();
+        let assets = self.cycle_ops.supported_settlement_assets().await?;
+        let mut cycle_ids = Vec::with_capacity(assets.len());
+        for asset in assets {
+            match self.cycle_ops.get_or_create_active_cycle(&asset, now).await {
+                Ok(cycle) => cycle_ids.push(cycle.id),
+                Err(err) => warn!("failed to ensure active cycle for asset {asset}: {err:?}"),
+            }
+        }
+        Ok(cycle_ids)
+    }
+
+    pub async fn freeze_elapsed_cycles(&self) -> ServiceResult<Vec<String>> {
+        let now = Utc::now().naive_utc();
+        let due = repo::list_open_cycles_ending_before_on(self.ctx.db(), now).await?;
+        let mut frozen = Vec::new();
+        for cycle in due {
+            let cycle_id = cycle.id.clone();
+            if let Err(err) = self.cycle_ops.freeze_cycle(&cycle_id).await {
+                warn!("failed to freeze settlement cycle {cycle_id}: {err:?}");
+                continue;
+            }
+            frozen.push(cycle_id);
+        }
+        Ok(frozen)
+    }
+
+    pub async fn commit_due_clearing_batches(&self) -> ServiceResult<Vec<String>> {
+        let now = Utc::now().naive_utc();
+        let mut due = repo::list_netting_computed_cycles_commit_due_on(self.ctx.db(), now).await?;
+
+        // Also re-drive cycles committed optimistically whose CycleCommitted event never
+        // arrived within the retry window — the commit tx was likely reorged out.
+        let stale_before = self.settlement_stale_before(now)?;
+        due.extend(repo::list_commit_retry_due_on(self.ctx.db(), stale_before).await?);
+
+        let mut committed = Vec::new();
+        for cycle in due {
+            let cycle_id = cycle.id.clone();
+            if let Err(err) = self.commit_cycle_to_chain(&cycle_id).await {
+                warn!("failed to commit clearing batch for settlement cycle {cycle_id}: {err:?}");
+                continue;
+            }
+            committed.push(cycle_id);
+        }
+        Ok(committed)
+    }
+
     pub async fn commit_cycle_to_chain(&self, cycle_id: &str) -> ServiceResult<()> {
-        let cycle = repo::get_cycle_by_id(&self.inner.persist_ctx, cycle_id)
+        let cycle = repo::get_cycle_by_id(&self.ctx.persist, cycle_id)
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("Settlement cycle {cycle_id}")))?;
 
@@ -34,17 +121,16 @@ impl CoreService {
             )));
         }
 
-        let batch =
-            repo::get_clearing_batch_by_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
-                .await?
-                .ok_or_else(|| {
-                    ServiceError::InvalidParams(format!(
-                        "settlement cycle {cycle_id} has no clearing batch"
-                    ))
-                })?;
+        let batch = repo::get_clearing_batch_by_cycle_on(self.ctx.db(), cycle_id)
+            .await?
+            .ok_or_else(|| {
+                ServiceError::InvalidParams(format!(
+                    "settlement cycle {cycle_id} has no clearing batch"
+                ))
+            })?;
         let _clearing_house_address = evm::parse_address(
             "ETHEREUM_CLEARING_HOUSE_ADDRESS",
-            &self.inner.config.ethereum_config.clearing_house_address,
+            &self.ctx.config.ethereum_config.clearing_house_address,
         )
         .and_then(|address| {
             if address == Address::ZERO {
@@ -57,7 +143,7 @@ impl CoreService {
             }
         })?;
 
-        let cycle_config = &self.inner.config.settlement_cycle;
+        let cycle_config = &self.ctx.config.settlement_cycle;
         let submission_window = Duration::seconds(
             i64::try_from(cycle_config.payment_submission_window_secs)
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?,
@@ -93,15 +179,15 @@ impl CoreService {
         };
 
         let commit = self
-            .inner
-            .contract_api
+            .ctx
+            .chain
             .commit_clearing_cycle(input)
             .await
             .map_err(|err| ServiceError::Other(anyhow!(err)))?;
         let tx_hash = commit.tx_hash.to_string();
         let now = Utc::now().naive_utc();
         let changed = repo::mark_cycle_payment_window_open_on(
-            self.inner.persist_ctx.db.as_ref(),
+            self.ctx.db(),
             cycle_id,
             Some(tx_hash.clone()),
             payment_submission_deadline,
@@ -109,13 +195,8 @@ impl CoreService {
             now,
         )
         .await?;
-        repo::set_clearing_batch_commit_tx_on(
-            self.inner.persist_ctx.db.as_ref(),
-            cycle_id,
-            tx_hash.clone(),
-            now,
-        )
-        .await?;
+        repo::set_clearing_batch_commit_tx_on(self.ctx.db(), cycle_id, tx_hash.clone(), now)
+            .await?;
         if changed {
             info!(
                 "committed settlement cycle {} to ClearingHouse in tx {}",
@@ -139,15 +220,8 @@ impl CoreService {
 
         // Fresh confirmed cycles at finality, plus unconfirmed Settling cycles whose seize/fund
         // never resolved within the retry window — both re-driven through open_cycle_settlement.
-        let mut due = repo::list_payment_window_cycles_finality_due_on(
-            self.inner.persist_ctx.db.as_ref(),
-            now,
-        )
-        .await?;
-        due.extend(
-            repo::list_settling_retry_due_on(self.inner.persist_ctx.db.as_ref(), stale_before)
-                .await?,
-        );
+        let mut due = repo::list_payment_window_cycles_finality_due_on(self.ctx.db(), now).await?;
+        due.extend(repo::list_settling_retry_due_on(self.ctx.db(), stale_before).await?);
         for cycle in due {
             let cycle_id = cycle.id.clone();
             match self
@@ -176,9 +250,7 @@ impl CoreService {
         let stale_before = self.settlement_stale_before(now)?;
         let mut acted = Vec::new();
 
-        let retry =
-            repo::list_shortfall_retry_due_on(self.inner.persist_ctx.db.as_ref(), stale_before)
-                .await?;
+        let retry = repo::list_shortfall_retry_due_on(self.ctx.db(), stale_before).await?;
         for cycle in retry {
             let cycle_id = cycle.id.clone();
             match self.drive_cycle_shortfall(&cycle_id, now).await {
@@ -205,8 +277,7 @@ impl CoreService {
         let stale_before = self.settlement_stale_before(now)?;
         let mut acted = Vec::new();
 
-        let settling =
-            repo::list_confirmed_settling_cycles_on(self.inner.persist_ctx.db.as_ref()).await?;
+        let settling = repo::list_confirmed_settling_cycles_on(self.ctx.db()).await?;
         for cycle in settling {
             let cycle_id = cycle.id.clone();
             match self.finalize_settling_cycle(&cycle_id, now).await {
@@ -218,9 +289,7 @@ impl CoreService {
             }
         }
 
-        let finalize_retry =
-            repo::list_finalize_retry_due_on(self.inner.persist_ctx.db.as_ref(), stale_before)
-                .await?;
+        let finalize_retry = repo::list_finalize_retry_due_on(self.ctx.db(), stale_before).await?;
         for cycle in finalize_retry {
             let cycle_id = cycle.id.clone();
             match self.retry_unconfirmed_finalize(&cycle_id, now).await {
@@ -235,18 +304,10 @@ impl CoreService {
         Ok(acted)
     }
 
-    pub(crate) fn settlement_stale_before(
-        &self,
-        now: NaiveDateTime,
-    ) -> ServiceResult<NaiveDateTime> {
+    pub fn settlement_stale_before(&self, now: NaiveDateTime) -> ServiceResult<NaiveDateTime> {
         let retry_delay = Duration::seconds(
-            i64::try_from(
-                self.inner
-                    .config
-                    .settlement_cycle
-                    .settlement_retry_delay_secs,
-            )
-            .map_err(|e| ServiceError::Other(anyhow!(e)))?,
+            i64::try_from(self.ctx.config.settlement_cycle.settlement_retry_delay_secs)
+                .map_err(|e| ServiceError::Other(anyhow!(e)))?,
         );
         Ok(now - retry_delay)
     }
@@ -258,7 +319,7 @@ impl CoreService {
         use sea_orm::ActiveEnum;
 
         let now = Utc::now().naive_utc();
-        let cfg = &self.inner.config.settlement_cycle;
+        let cfg = &self.ctx.config.settlement_cycle;
         let secs = |n: u64| -> ServiceResult<Duration> {
             Ok(Duration::seconds(
                 i64::try_from(n).map_err(|e| ServiceError::Other(anyhow!(e)))?,
@@ -297,7 +358,7 @@ impl CoreService {
         ];
         for (status, anchor, slack) in buckets {
             let count = repo::count_unconfirmed_cycles_before_on(
-                self.inner.persist_ctx.db.as_ref(),
+                self.ctx.db(),
                 status.clone(),
                 anchor,
                 now - slack,
@@ -314,7 +375,7 @@ impl CoreService {
     /// on-chain contract is idempotent, so the risk is wasted gas and spurious revert logs, not
     /// double settlement.) `None` means a tick is already in flight and the caller should skip.
     fn acquire_settlement_tick(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
-        match self.inner.settlement_tick.try_lock() {
+        match self.ctx.settlement_tick.try_lock() {
             Ok(guard) => Some(guard),
             Err(_) => {
                 warn!("settlement tick still running; skipping this fire to avoid overlap");
@@ -333,20 +394,15 @@ impl CoreService {
         finality_deadline: NaiveDateTime,
         now: NaiveDateTime,
     ) -> ServiceResult<bool> {
-        let unpaid =
-            repo::list_unpaid_debtors_for_cycle_on(self.inner.persist_ctx.db.as_ref(), cycle_id)
-                .await?;
-        let claimable = repo::list_claimable_creditors_for_cycle_on(
-            self.inner.persist_ctx.db.as_ref(),
-            cycle_id,
-        )
-        .await?;
+        let unpaid = repo::list_unpaid_debtors_for_cycle_on(self.ctx.db(), cycle_id).await?;
+        let claimable =
+            repo::list_claimable_creditors_for_cycle_on(self.ctx.db(), cycle_id).await?;
         if unpaid.is_empty() && claimable.is_empty() {
             // Nothing to submit — every participant resolved on-chain already. Mark Settling and
             // confirm inline, since no further events will arrive to trigger confirmation.
             return self
-                .inner
-                .persist_ctx
+                .ctx
+                .persist
                 .db
                 .transaction::<_, _, ServiceError>(|txn| {
                     let cycle_id = cycle_id.to_owned();
@@ -363,12 +419,15 @@ impl CoreService {
                 .map_err(map_transaction_error);
         }
 
-        let batch_size = self.inner.config.settlement_cycle.default_batch_size.max(1) as usize;
+        let batch_size = self.ctx.config.settlement_cycle.default_batch_size.max(1) as usize;
         let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
 
         // Fetch the Merkle proofs once and join both sides through the shared helper so the
         // open-settlement and shortfall paths apply the same missing-proof policy.
-        let proofs = self.get_cycle_participant_proofs(cycle_id).await?;
+        let proofs = self
+            .proof_ops
+            .get_cycle_participant_proofs(cycle_id)
+            .await?;
         let debtor_entries = Self::join_role_settlements(
             cycle_id,
             &unpaid,
@@ -407,11 +466,11 @@ impl CoreService {
             return Ok(false);
         }
 
-        repo::mark_cycle_settling_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now).await?;
+        repo::mark_cycle_settling_on(self.ctx.db(), cycle_id, now).await?;
 
         for chunk in debtor_entries.chunks(batch_size) {
-            self.inner
-                .contract_api
+            self.ctx
+                .chain
                 .settle_defaults_from_collateral_batch(onchain_cycle_id, chunk.to_vec())
                 .await
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?;
@@ -419,8 +478,8 @@ impl CoreService {
 
         for chunk in creditor_entries.chunks(batch_size) {
             match self
-                .inner
-                .contract_api
+                .ctx
+                .chain
                 .fund_creditors_from_pool_batch(onchain_cycle_id, chunk.to_vec())
                 .await
             {
@@ -448,7 +507,7 @@ impl CoreService {
     }
 
     fn past_shortfall_grace(&self, finality_deadline: NaiveDateTime, now: NaiveDateTime) -> bool {
-        let grace = self.inner.config.settlement_cycle.shortfall_grace_secs;
+        let grace = self.ctx.config.settlement_cycle.shortfall_grace_secs;
         let grace_deadline = (finality_deadline.and_utc().timestamp() as u64).saturating_add(grace);
         (now.and_utc().timestamp() as u64) > grace_deadline
     }
@@ -464,18 +523,14 @@ impl CoreService {
     ) -> ServiceResult<bool> {
         let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
         match self
-            .inner
-            .contract_api
+            .ctx
+            .chain
             .finalize_clearing_cycle(onchain_cycle_id)
             .await
         {
             Ok(tx) => {
-                let marked = repo::mark_cycle_finalized_optimistic_on(
-                    self.inner.persist_ctx.db.as_ref(),
-                    cycle_id,
-                    now,
-                )
-                .await?;
+                let marked =
+                    repo::mark_cycle_finalized_optimistic_on(self.ctx.db(), cycle_id, now).await?;
                 if marked {
                     info!(
                         "submitted finalizeCycle for settlement cycle {cycle_id} in tx {:?}; awaiting confirmation",
@@ -502,17 +557,14 @@ impl CoreService {
     ) -> ServiceResult<bool> {
         let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
         if let Err(err) = self
-            .inner
-            .contract_api
+            .ctx
+            .chain
             .finalize_clearing_cycle(onchain_cycle_id)
             .await
         {
             warn!("finalizeCycle re-submit for settlement cycle {cycle_id} did not apply: {err}");
         }
-        Ok(
-            repo::touch_cycle_finalize_retry_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now)
-                .await?,
-        )
+        Ok(repo::touch_cycle_finalize_retry_on(self.ctx.db(), cycle_id, now).await?)
     }
 
     /// Join the still-actionable `positions` (all expected to be of `role`) with their Merkle
@@ -557,16 +609,16 @@ impl CoreService {
         &self,
         cycle_id: &str,
     ) -> ServiceResult<(Vec<CreditorSettlement>, usize)> {
-        let claimable = repo::list_claimable_creditors_for_cycle_on(
-            self.inner.persist_ctx.db.as_ref(),
-            cycle_id,
-        )
-        .await?;
+        let claimable =
+            repo::list_claimable_creditors_for_cycle_on(self.ctx.db(), cycle_id).await?;
         if claimable.is_empty() {
             return Ok((Vec::new(), 0));
         }
 
-        let proofs = self.get_cycle_participant_proofs(cycle_id).await?;
+        let proofs = self
+            .proof_ops
+            .get_cycle_participant_proofs(cycle_id)
+            .await?;
         let entries = Self::join_role_settlements(
             cycle_id,
             &claimable,
@@ -592,19 +644,12 @@ impl CoreService {
     ) -> ServiceResult<bool> {
         let onchain_cycle_id = evm::cycle_id_hash(cycle_id);
 
-        let marked =
-            repo::mark_cycle_shortfall_on(self.inner.persist_ctx.db.as_ref(), cycle_id, now)
-                .await?;
+        let marked = repo::mark_cycle_shortfall_on(self.ctx.db(), cycle_id, now).await?;
         if marked {
             info!("settlement cycle {cycle_id} entered Shortfall; pro-rata distribution submitted");
         }
 
-        if let Err(err) = self
-            .inner
-            .contract_api
-            .mark_cycle_shortfall(onchain_cycle_id)
-            .await
-        {
+        if let Err(err) = self.ctx.chain.mark_cycle_shortfall(onchain_cycle_id).await {
             warn!(
                 "markCycleShortfall for settlement cycle {cycle_id} did not apply (may already be in shortfall): {err}"
             );
@@ -618,10 +663,10 @@ impl CoreService {
                 creditor_expected
             );
         }
-        let batch_size = self.inner.config.settlement_cycle.default_batch_size.max(1) as usize;
+        let batch_size = self.ctx.config.settlement_cycle.default_batch_size.max(1) as usize;
         for chunk in creditor_entries.chunks(batch_size) {
-            self.inner
-                .contract_api
+            self.ctx
+                .chain
                 .fund_creditors_from_pool_batch(onchain_cycle_id, chunk.to_vec())
                 .await
                 .map_err(|e| ServiceError::Other(anyhow!(e)))?;
@@ -629,6 +674,8 @@ impl CoreService {
 
         Ok(marked)
     }
+
+    // --- chain event mirroring --------------------------------------------------------------
 
     pub async fn process_cycle_committed(
         &self,
@@ -641,19 +688,14 @@ impl CoreService {
         };
         let now = Utc::now().naive_utc();
         let changed = repo::confirm_cycle_committed_on(
-            self.inner.persist_ctx.db.as_ref(),
+            self.ctx.db(),
             &cycle_id,
             Some(tx_hash.to_string()),
             now,
         )
         .await?;
-        repo::set_clearing_batch_commit_tx_on(
-            self.inner.persist_ctx.db.as_ref(),
-            &cycle_id,
-            tx_hash.to_string(),
-            now,
-        )
-        .await?;
+        repo::set_clearing_batch_commit_tx_on(self.ctx.db(), &cycle_id, tx_hash.to_string(), now)
+            .await?;
         if changed {
             info!("confirmed ClearingHouse CycleCommitted for cycle {cycle_id}");
         }
@@ -666,9 +708,7 @@ impl CoreService {
             return Ok(());
         };
         let now = Utc::now().naive_utc();
-        let changed =
-            repo::ensure_cycle_shortfall_on(self.inner.persist_ctx.db.as_ref(), &cycle_id, now)
-                .await?;
+        let changed = repo::ensure_cycle_shortfall_on(self.ctx.db(), &cycle_id, now).await?;
         if changed {
             info!("mirrored ClearingHouse CycleShortfall for cycle {cycle_id}");
         }
@@ -688,8 +728,8 @@ impl CoreService {
         let now = Utc::now().naive_utc();
         let debtor = parse_address(debtor)?.into_inner();
         let changed = self
-            .inner
-            .persist_ctx
+            .ctx
+            .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
@@ -707,7 +747,7 @@ impl CoreService {
                     )
                     .await?;
                     if changed {
-                        settle_netted_guarantees_for_payer(
+                        settlement_ledger::settle_netted_guarantees_for_payer(
                             txn,
                             &cycle_id,
                             &debtor,
@@ -715,7 +755,8 @@ impl CoreService {
                             now,
                         )
                         .await?;
-                        maybe_confirm_resolved_cycle(txn, &cycle_id, now).await?;
+                        settlement_ledger::maybe_confirm_resolved_cycle(txn, &cycle_id, now)
+                            .await?;
                     }
                     Ok(changed)
                 })
@@ -743,8 +784,8 @@ impl CoreService {
         let tx_hash = tx_meta.tx_hash.clone();
 
         let changed = self
-            .inner
-            .persist_ctx
+            .ctx
+            .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
@@ -765,7 +806,7 @@ impl CoreService {
                         // A net creditor's own outgoing guarantees were fully
                         // offset by its incoming exposure, so settling its claim
                         // also discharges those obligations.
-                        settle_netted_guarantees_for_payer(
+                        settlement_ledger::settle_netted_guarantees_for_payer(
                             txn,
                             &cycle_id,
                             &creditor,
@@ -773,7 +814,8 @@ impl CoreService {
                             now,
                         )
                         .await?;
-                        maybe_confirm_resolved_cycle(txn, &cycle_id, now).await?;
+                        settlement_ledger::maybe_confirm_resolved_cycle(txn, &cycle_id, now)
+                            .await?;
                     }
                     Ok(changed)
                 })
@@ -802,8 +844,8 @@ impl CoreService {
         let now = Utc::now().naive_utc();
 
         let guarantees = self
-            .inner
-            .persist_ctx
+            .ctx
+            .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
@@ -825,7 +867,7 @@ impl CoreService {
                         return Ok(0);
                     }
 
-                    let guarantees = settle_netted_guarantees_for_payer(
+                    let guarantees = settlement_ledger::settle_netted_guarantees_for_payer(
                         txn,
                         &cycle_id,
                         &debtor,
@@ -834,7 +876,7 @@ impl CoreService {
                     )
                     .await?;
 
-                    maybe_confirm_resolved_cycle(txn, &cycle_id, now).await?;
+                    settlement_ledger::maybe_confirm_resolved_cycle(txn, &cycle_id, now).await?;
 
                     Ok(guarantees)
                 })
@@ -863,15 +905,18 @@ impl CoreService {
         let now = Utc::now().naive_utc();
         let cycle_id_owned = cycle_id.to_string();
         let (changed, settled) = self
-            .inner
-            .persist_ctx
+            .ctx
+            .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id_owned.clone();
                 Box::pin(async move {
                     let changed = repo::confirm_cycle_finalized_on(txn, &cycle_id, now).await?;
                     let settled = if changed {
-                        settle_remaining_netted_guarantees_for_cycle(txn, &cycle_id, now).await?
+                        settlement_ledger::settle_remaining_netted_guarantees_for_cycle(
+                            txn, &cycle_id, now,
+                        )
+                        .await?
                     } else {
                         0
                     };
@@ -889,41 +934,6 @@ impl CoreService {
         Ok(())
     }
 
-    /// Finalize a fully-offsetting cycle without an on-chain commit: settle its
-    /// netted guarantees and release the collateral they locked. Returns whether
-    /// the cycle transitioned to `Finalized`.
-    pub async fn short_circuit_offsetting_cycle(&self, cycle_id: &str) -> ServiceResult<bool> {
-        let now = Utc::now().naive_utc();
-        let cycle_id_owned = cycle_id.to_string();
-        let (finalized, settled) = self
-            .inner
-            .persist_ctx
-            .db
-            .transaction::<_, _, ServiceError>(|txn| {
-                let cycle_id = cycle_id_owned.clone();
-                Box::pin(async move {
-                    let finalized =
-                        repo::short_circuit_frozen_cycle_on(txn, &cycle_id, now).await?;
-                    let settled = if finalized {
-                        repo::mark_cycle_guarantees_netted_on(txn, &cycle_id, now).await?;
-                        settle_remaining_netted_guarantees_for_cycle(txn, &cycle_id, now).await?
-                    } else {
-                        0
-                    };
-                    Ok((finalized, settled))
-                })
-            })
-            .await
-            .map_err(map_transaction_error)?;
-        if finalized {
-            info!(
-                "short-circuited fully-offsetting settlement cycle {} (settled {} netted guarantee(s), no on-chain commit)",
-                cycle_id, settled
-            );
-        }
-        Ok(finalized)
-    }
-
     async fn resolve_onchain_cycle_id(
         &self,
         onchain_cycle_id: B256,
@@ -932,10 +942,7 @@ impl CoreService {
         // a full-table scan (removing both the DoS surface and the silent-drop
         // risk when a cycle leaves a candidate window).
         let hash = evm::bytes32_hex(onchain_cycle_id);
-        Ok(
-            repo::get_cycle_id_by_onchain_hash_on(self.inner.persist_ctx.db.as_ref(), &hash)
-                .await?,
-        )
+        Ok(repo::get_cycle_id_by_onchain_hash_on(self.ctx.db(), &hash).await?)
     }
 }
 
@@ -950,90 +957,4 @@ fn is_cycle_underfunded(err: &crate::error::CoreContractApiError) -> bool {
         CoreContractApiError::ContractRevert(revert)
             if revert.selector.0 == ClearingHouse::CycleUnderfunded::SELECTOR
     )
-}
-
-/// Confirm a `Settling`/`Shortfall` cycle if its ledger is now fully resolved. A no-op for cycles
-/// in any other state, so it is safe to call after every resolving event.
-async fn maybe_confirm_resolved_cycle<C: sea_orm::ConnectionTrait>(
-    conn: &C,
-    cycle_id: &str,
-    now: NaiveDateTime,
-) -> ServiceResult<()> {
-    if !repo::is_cycle_ledger_resolved_on(conn, cycle_id).await? {
-        return Ok(());
-    }
-    if !repo::confirm_cycle_resolved_on(conn, cycle_id, now).await? {
-        return Ok(());
-    }
-
-    // Shortfall is terminal and never reaches finalize, so sweep any residual Netted guarantees
-    // (e.g. flat participants that emit no role event) here to release their locked collateral.
-    // Settling cycles get this sweep when they finalize instead.
-    let is_shortfall = repo::get_cycle_by_id_on(conn, cycle_id)
-        .await?
-        .is_some_and(|cycle| cycle.status == SettlementCycleStatus::Shortfall);
-    if is_shortfall {
-        settle_remaining_netted_guarantees_for_cycle(conn, cycle_id, now).await?;
-    }
-    Ok(())
-}
-
-async fn settle_netted_guarantees_for_payer<C: sea_orm::ConnectionTrait>(
-    conn: &C,
-    cycle_id: &str,
-    payer: &str,
-    target: GuaranteeSettlementStatus,
-    now: NaiveDateTime,
-) -> ServiceResult<u64> {
-    let guarantees = repo::list_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer).await?;
-    let changed =
-        repo::transition_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer, target, now)
-            .await?;
-
-    if changed > 0 {
-        for guarantee in guarantees {
-            repo::release_locked_collateral_for_guarantee_on(conn, &guarantee).await?;
-        }
-    }
-
-    Ok(changed)
-}
-
-/// Settle every guarantee still in `Netted` for a cycle and release the
-/// collateral each one locked, keyed on the payer (`from`) side.
-///
-/// This is the finalization backstop for guarantees that no role event reached:
-/// flat participants (whose exposure netted to zero and who therefore emit no
-/// on-chain event), creditors that never claimed, and creditor->debtor edges.
-async fn settle_remaining_netted_guarantees_for_cycle<C: sea_orm::ConnectionTrait>(
-    conn: &C,
-    cycle_id: &str,
-    now: NaiveDateTime,
-) -> ServiceResult<u64> {
-    let guarantees = repo::list_netted_guarantees_for_cycle_on(conn, cycle_id).await?;
-    if guarantees.is_empty() {
-        return Ok(0);
-    }
-    let changed = repo::transition_all_netted_guarantees_for_cycle_on(
-        conn,
-        cycle_id,
-        GuaranteeSettlementStatus::Settled,
-        now,
-    )
-    .await?;
-    if changed > 0 {
-        for guarantee in &guarantees {
-            repo::release_locked_collateral_for_guarantee_on(conn, guarantee).await?;
-        }
-    }
-    Ok(changed)
-}
-
-fn map_transaction_error(err: sea_orm::TransactionError<ServiceError>) -> ServiceError {
-    match err {
-        sea_orm::TransactionError::Transaction(inner) => inner,
-        sea_orm::TransactionError::Connection(err) => {
-            crate::error::PersistDbError::DatabaseFailure(err).into()
-        }
-    }
 }

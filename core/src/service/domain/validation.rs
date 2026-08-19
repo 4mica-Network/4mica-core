@@ -3,11 +3,11 @@
 //! A validation-gated guarantee is stored `PendingValidation` at issuance. This driver moves it
 //! out of that state by asking the guarantee's validator adapter for a verdict:
 //!
-//! - approved before the deadline  -> `finalize_guarantee_payable_on` (nets and settles normally)
-//! - rejected                      -> `dispute_guarantee_on`          (releases the payer's collateral)
-//! - still pending at the deadline -> `cancel_guarantee_on`           (releases the payer's collateral)
+//! - approved before the deadline  -> `GuaranteeOps::finalize_payable_on` (nets and settles normally)
+//! - rejected                      -> `GuaranteeOps::dispute_on`          (releases the payer's collateral)
+//! - still pending at the deadline -> `GuaranteeOps::cancel_on`           (releases the payer's collateral)
 //! - still pending before it       -> left `PendingValidation`        (re-checked next sweep)
-//! - validator de-whitelisted      -> `finalize_guarantee_payable_on` (nothing gates it any more)
+//! - validator de-whitelisted      -> `GuaranteeOps::finalize_payable_on` (nothing gates it any more)
 //!
 //! Whether a validator's answer means approved or rejected is the adapter's decision, not this
 //! module's. The transition and the validation record are written in a single transaction.
@@ -22,10 +22,12 @@ use rpc::ValidationRequirement;
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use validators::{Verdict, VerdictStatus};
 
+use std::sync::Arc;
+
 use crate::error::ServiceError;
 use crate::persist::repo;
-use crate::scheduler::{Task, async_trait};
-use crate::service::CoreService;
+use crate::service::ctx::Ctx;
+use crate::service::shared::guarantee::GuaranteeOps;
 
 /// What the driver should do with a single `PendingValidation` guarantee this sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,14 +88,22 @@ pub struct ValidationSweepSummary {
     pub errored: usize,
 }
 
-impl CoreService {
+pub struct ValidationService {
+    ctx: Arc<Ctx>,
+    guarantee_ops: Arc<GuaranteeOps>,
+}
+
+impl ValidationService {
+    pub fn new(ctx: Arc<Ctx>, guarantee_ops: Arc<GuaranteeOps>) -> Self {
+        Self { ctx, guarantee_ops }
+    }
+
     /// One pass of the validation lifecycle: resolve every pending validation against its
     /// validator and transition the guarantee accordingly. A per-guarantee failure is logged and
     /// skipped so one bad validator cannot stall the sweep.
     pub async fn drive_pending_validations(&self) -> anyhow::Result<ValidationSweepSummary> {
         let now = Utc::now().naive_utc();
-        let pending =
-            repo::list_pending_guarantee_validations_on(self.inner.persist_ctx.db.as_ref()).await?;
+        let pending = repo::list_pending_guarantee_validations_on(self.ctx.db()).await?;
 
         let mut summary = ValidationSweepSummary::default();
         for validation in pending {
@@ -124,33 +134,33 @@ impl CoreService {
         let evidence = verdict.map(|v| v.evidence.to_vec());
         let guarantee_id = validation.guarantee_id.clone();
 
-        self.inner
-            .persist_ctx
+        self.ctx
+            .persist
             .db
             .transaction::<_, (), ServiceError>(|txn| {
-                let service = self.clone();
+                let guarantee_ops = self.guarantee_ops.clone();
                 let guarantee_id = guarantee_id.clone();
                 let evidence = evidence.clone();
                 Box::pin(async move {
                     let decision = match action {
                         ValidationAction::Finalize => {
-                            service
-                                .finalize_guarantee_payable_on(txn, &guarantee_id)
+                            guarantee_ops
+                                .finalize_payable_on(txn, &guarantee_id)
                                 .await?;
                             GuaranteeValidationStatus::Approved
                         }
                         ValidationAction::Dispute(_) => {
-                            service.dispute_guarantee_on(txn, &guarantee_id).await?;
+                            guarantee_ops.dispute_on(txn, &guarantee_id).await?;
                             GuaranteeValidationStatus::Rejected
                         }
                         ValidationAction::Cancel(_) => {
-                            service.cancel_guarantee_on(txn, &guarantee_id).await?;
+                            guarantee_ops.cancel_on(txn, &guarantee_id).await?;
                             GuaranteeValidationStatus::Expired
                         }
                         ValidationAction::Skip => {
                             // No validator gates it any more, so make it payable for its cycle.
-                            service
-                                .finalize_guarantee_payable_on(txn, &guarantee_id)
+                            guarantee_ops
+                                .finalize_payable_on(txn, &guarantee_id)
                                 .await?;
                             GuaranteeValidationStatus::Skipped
                         }
@@ -199,7 +209,7 @@ impl CoreService {
         validation: &guarantee_validation::Model,
         now: NaiveDateTime,
     ) -> anyhow::Result<(ValidationAction, Option<Verdict>)> {
-        let Some(adapter) = self.inner.validators.get(&validation.validator) else {
+        let Some(adapter) = self.ctx.validators.get(&validation.validator) else {
             warn!(
                 "validator {} is no longer whitelisted; skipping validation for guarantee {}",
                 validation.validator, validation.guarantee_id
@@ -221,11 +231,8 @@ impl CoreService {
         // so a cancel that releases it is the only thing left to do.
         let action = match action {
             ValidationAction::Finalize
-                if !guarantee_cycle_still_nettable(
-                    self.persist_ctx().db.as_ref(),
-                    &validation.guarantee_id,
-                )
-                .await? =>
+                if !guarantee_cycle_still_nettable(self.ctx.db(), &validation.guarantee_id)
+                    .await? =>
             {
                 ValidationAction::Cancel(
                     "settlement cycle already resolved before validation landed",
@@ -252,38 +259,6 @@ async fn guarantee_cycle_still_nettable<C: ConnectionTrait>(
     Ok(cycle
         .map(|c| cycle_still_nettable(&c.status))
         .unwrap_or(false))
-}
-
-/// Scheduled task that periodically runs the validation lifecycle sweep.
-pub struct ValidationLifecycleTask(CoreService);
-
-impl ValidationLifecycleTask {
-    pub fn new(service: CoreService) -> Self {
-        Self(service)
-    }
-}
-
-#[async_trait]
-impl Task for ValidationLifecycleTask {
-    fn cron_pattern(&self) -> String {
-        self.0.inner.config.guarantee.validation_poll_cron.clone()
-    }
-
-    async fn run(&self) -> anyhow::Result<()> {
-        let summary = self.0.drive_pending_validations().await?;
-        if summary != ValidationSweepSummary::default() {
-            info!(
-                "validation lifecycle sweep: finalized={}, disputed={}, cancelled={}, skipped={}, waiting={}, errored={}",
-                summary.finalized,
-                summary.disputed,
-                summary.cancelled,
-                summary.skipped,
-                summary.waiting,
-                summary.errored
-            );
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]

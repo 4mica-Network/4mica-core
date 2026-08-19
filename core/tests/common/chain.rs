@@ -18,7 +18,7 @@ use core_service::{
     ethereum::EthereumEventScanner,
     persist::PersistCtx,
     scheduler::TaskScheduler,
-    service::CoreService,
+    service::{CoreService, EventHandlerService},
 };
 use log::debug;
 
@@ -389,7 +389,10 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
         cfg.ethereum_config.clone(),
         core_service.persist_ctx().clone(),
         core_service.read_provider().clone(),
-        Arc::new(core_service.clone()),
+        Arc::new(EventHandlerService::new(
+            core_service.ctx().clone(),
+            core_service.clearing().clone(),
+        )),
     ));
 
     let mut scheduler = TaskScheduler::new().await?;
@@ -420,7 +423,10 @@ pub async fn spawn_core_service_in_existing_environment(
         env.cfg.ethereum_config.clone(),
         core_service.persist_ctx().clone(),
         core_service.read_provider().clone(),
-        Arc::new(core_service.clone()),
+        Arc::new(EventHandlerService::new(
+            core_service.ctx().clone(),
+            core_service.clearing().clone(),
+        )),
     ));
 
     env.scheduler.add_task(ethereum_scanner).await?;

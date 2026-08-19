@@ -8,7 +8,7 @@ use alloy::primitives::{Address, U256};
 use crypto::merkle::LeafHash;
 
 use crate::evm::{address_word, cycle_id_hash};
-use crate::service::netting::ClearingParticipantRole;
+use crate::service::shared::clearing_proofs::ClearingParticipantRole;
 
 pub fn claim_cycle_id(cycle_id: &str) -> U256 {
     U256::from_be_bytes(crate::evm::cycle_id_hash(cycle_id).into())

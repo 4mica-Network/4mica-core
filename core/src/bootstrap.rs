@@ -6,7 +6,7 @@ use core_service::{
     http,
     metrics::{HealthCheckTask, MetricsUpkeepTask, setup_metrics_recorder},
     scheduler::TaskScheduler,
-    service::{CoreService, cycle::SettlementCycleTask, validation::ValidationLifecycleTask},
+    service::{CoreService, EventHandlerService, SettlementCycleTask, ValidationLifecycleTask},
 };
 use env_logger::Env;
 use log::info;
@@ -47,7 +47,10 @@ pub async fn bootstrap() -> anyhow::Result<()> {
         app_config.ethereum_config.clone(),
         service.persist_ctx().clone(),
         service.read_provider().clone(),
-        Arc::new(service.clone()),
+        Arc::new(EventHandlerService::new(
+            service.ctx().clone(),
+            service.clearing().clone(),
+        )),
     ));
 
     let metrics_recorder = setup_metrics_recorder(&app_config)?;
@@ -56,10 +59,17 @@ pub async fn bootstrap() -> anyhow::Result<()> {
 
     scheduler.add_task(ethereum_scanner).await?;
     scheduler
-        .add_task(Arc::new(SettlementCycleTask::new(service.clone())))
+        .add_task(Arc::new(SettlementCycleTask::new(
+            service.ctx().clone(),
+            service.netting().clone(),
+            service.clearing().clone(),
+        )))
         .await?;
     scheduler
-        .add_task(Arc::new(ValidationLifecycleTask::new(service.clone())))
+        .add_task(Arc::new(ValidationLifecycleTask::new(
+            service.ctx().clone(),
+            service.validation().clone(),
+        )))
         .await?;
     scheduler
         .add_task(Arc::new(MetricsUpkeepTask::new(

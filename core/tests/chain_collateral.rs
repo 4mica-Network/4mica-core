@@ -13,6 +13,7 @@ use core_service::ethereum::contract::CollateralDeposited;
 use core_service::ethereum::event_data::EventMeta;
 use core_service::persist::{PersistCtx, repo};
 use core_service::scheduler::Task;
+use core_service::service::EventHandlerService;
 use entities::sea_orm_active_enums::*;
 use entities::*;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -378,7 +379,10 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
         env.cfg.ethereum_config.clone(),
         persist_ctx.clone(),
         env.core_service.read_provider().clone(),
-        Arc::new(env.core_service.clone()),
+        Arc::new(EventHandlerService::new(
+            env.core_service.ctx().clone(),
+            env.core_service.clearing().clone(),
+        )),
     );
 
     if let Err(err) = scanner.run().await {

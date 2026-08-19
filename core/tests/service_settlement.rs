@@ -53,6 +53,7 @@ async fn claim(
     tx: &str,
 ) -> anyhow::Result<()> {
     service
+        .clearing()
         .process_credit_claim(
             evm::cycle_id_hash(cycle_id),
             creditor.to_string(),
@@ -91,6 +92,7 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
     // alice pays and each creditor claims; each participant's lock is released by settling its
     // own guarantee. (Collateral `total` is reconciled from chain, covered in chain_clearing.)
     service
+        .clearing()
         .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice, "0xpay")
         .await?;
     claim(&service, cycle_id, bob, "0xclaim-bob").await?;
@@ -101,6 +103,7 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
     // event, so the residual-netted sweep is a no-op — that path is covered by the shortfall test.)
     settle_confirmed(ctx, cycle_id).await?;
     service
+        .clearing()
         .process_cycle_finalized(evm::cycle_id_hash(cycle_id))
         .await?;
 
@@ -147,6 +150,7 @@ async fn defaulted_debtor_is_seized_and_creditors_are_funded() -> anyhow::Result
     assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
     let onchain = evm::cycle_id_hash(cycle_id);
     service
+        .clearing()
         .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xdefault-alice"))
         .await?;
     claim(&service, cycle_id, bob, "0xclaim-bob").await?;
@@ -195,6 +199,7 @@ async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
     // First delivery: flips alice to Defaulted, releases her lock, settles her
     // netted guarantees.
     service
+        .clearing()
         .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xdefault-alice"))
         .await?;
     let after_first = cycle(ctx, cycle_id).await?;
@@ -206,6 +211,7 @@ async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
     // Re-delivery under a *different* tx/block hash bypasses the event dedup and
     // re-runs the handler. It must change nothing.
     service
+        .clearing()
         .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xreorg-alice"))
         .await?;
 
@@ -268,6 +274,7 @@ async fn shortfall_resolution_releases_flat_participant_collateral() -> anyhow::
     // resolving event, so it confirms the shortfall and sweeps the flat pair's guarantees.
     let onchain = evm::cycle_id_hash(cycle_id);
     service
+        .clearing()
         .process_defaulted_debtor(onchain, debtor.clone(), event_meta("0xseize"))
         .await?;
     claim(&service, cycle_id, &creditor, "0xclaim").await?;
@@ -322,6 +329,7 @@ async fn payment_window_is_unconfirmed_until_commit_event() -> anyhow::Result<()
     assert!(!optimistic.status_confirmed);
 
     service
+        .clearing()
         .process_cycle_committed(evm::cycle_id_hash(cycle_id), "0xcommit")
         .await?;
     assert!(cycle(ctx, cycle_id).await?.status_confirmed);
@@ -346,6 +354,7 @@ async fn settling_confirms_only_when_ledger_fully_resolved() -> anyhow::Result<(
 
     // Debtor paid and only one creditor claimed: the other is still Claimable → unconfirmed.
     service
+        .clearing()
         .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice, "0xpay")
         .await?;
     claim(&service, cycle_id, bob, "0xclaim-bob").await?;
@@ -383,6 +392,7 @@ async fn finalize_is_optimistic_until_finalized_event() -> anyhow::Result<()> {
     assert!(!optimistic.status_confirmed);
 
     service
+        .clearing()
         .process_cycle_finalized(evm::cycle_id_hash(cycle_id))
         .await?;
     assert!(cycle(ctx, cycle_id).await?.status_confirmed);
@@ -402,6 +412,7 @@ async fn shortfall_event_mirrors_settling_status() -> anyhow::Result<()> {
     assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
 
     service
+        .clearing()
         .process_cycle_shortfall(evm::cycle_id_hash(cycle_id))
         .await?;
     let mirrored = cycle(ctx, cycle_id).await?;

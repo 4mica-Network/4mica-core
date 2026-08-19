@@ -191,7 +191,7 @@ async fn auth_middleware(
     let token = bearer_token(req.headers())?;
     let method = req.method().clone();
     let path = req.uri().path().to_string();
-    let claims = service.validate_access_token(token).map_err(|err| {
+    let claims = service.auth().validate_access_token(token).map_err(|err| {
         warn!(
             "auth token denied: method={}, path={}, error={}",
             method, path, err
@@ -248,13 +248,13 @@ async fn get_metrics(State(metrics): State<PrometheusHandle>) -> Result<String, 
 async fn get_public_params(
     State(service): State<CoreService>,
 ) -> Result<Json<CorePublicParameters>, ApiError> {
-    Ok(Json(service.public_params()))
+    Ok(Json(service.system().public_params()))
 }
 
 async fn get_supported_tokens(
     State(service): State<CoreService>,
 ) -> Result<Json<SupportedTokensResponse>, ApiError> {
-    let tokens = service.get_supported_tokens().await?;
+    let tokens = service.system().get_supported_tokens().await?;
     Ok(Json(tokens))
 }
 
@@ -274,6 +274,7 @@ async fn get_clearing_participant_proof(
     }
 
     let proof = service
+        .netting()
         .get_participant_clearing_proof(&cycle_id, &participant)
         .await?;
     Ok(Json(clearing_proof_response(proof)?))
@@ -296,9 +297,10 @@ async fn get_clearing_participant_action(
     }
 
     let proof = service
+        .netting()
         .get_participant_clearing_proof(&cycle_id, &participant)
         .await?;
-    let contract_address = service.clearing_house_address();
+    let contract_address = service.system().clearing_house_address();
     Ok(Json(clearing_action_response(
         contract_address,
         query.action,
@@ -307,7 +309,7 @@ async fn get_clearing_participant_action(
 }
 
 fn clearing_proof_response(
-    proof: crate::service::netting::ClearingParticipantProof,
+    proof: crate::service::shared::clearing_proofs::ClearingParticipantProof,
 ) -> Result<ClearingParticipantProofResponse, ApiError> {
     let role = participant_role_to_response(proof.role.clone())?;
     Ok(ClearingParticipantProofResponse {
@@ -328,7 +330,7 @@ fn clearing_proof_response(
 fn clearing_action_response(
     contract_address: String,
     action: ClearingSettlementAction,
-    proof: crate::service::netting::ClearingParticipantProof,
+    proof: crate::service::shared::clearing_proofs::ClearingParticipantProof,
 ) -> Result<ClearingSettlementActionResponse, ApiError> {
     let role = participant_role_to_response(proof.role)?;
     let (required_role, function_name) = match action {
@@ -372,7 +374,7 @@ async fn post_auth_nonce(
     State(service): State<CoreService>,
     Json(req): Json<AuthNonceRequest>,
 ) -> Result<Json<AuthNonceResponse>, ApiError> {
-    let res = service.create_auth_nonce(req).await?;
+    let res = service.auth().create_auth_nonce(req).await?;
     Ok(Json(res))
 }
 
@@ -380,7 +382,7 @@ async fn post_auth_verify(
     State(service): State<CoreService>,
     Json(req): Json<AuthVerifyRequest>,
 ) -> Result<Json<AuthVerifyResponse>, ApiError> {
-    let res = service.verify_auth(req).await?;
+    let res = service.auth().verify_auth(req).await?;
     Ok(Json(res))
 }
 
@@ -388,7 +390,7 @@ async fn post_auth_refresh(
     State(service): State<CoreService>,
     Json(req): Json<AuthRefreshRequest>,
 ) -> Result<Json<AuthRefreshResponse>, ApiError> {
-    let res = service.refresh_auth(req).await?;
+    let res = service.auth().refresh_auth(req).await?;
     Ok(Json(res))
 }
 
@@ -396,12 +398,12 @@ async fn post_auth_logout(
     State(service): State<CoreService>,
     Json(req): Json<AuthLogoutRequest>,
 ) -> Result<Json<AuthLogoutResponse>, ApiError> {
-    let res = service.logout_auth(req).await?;
+    let res = service.auth().logout_auth(req).await?;
     Ok(Json(res))
 }
 
 async fn get_health(State(service): State<CoreService>) -> Result<impl IntoResponse, ApiError> {
-    let report = service.run_health_checks().await;
+    let report = service.health().run_health_checks().await;
     let status = if report.is_healthy() {
         StatusCode::OK
     } else {
@@ -428,6 +430,7 @@ async fn issue_guarantee(
     );
 
     let cert = service
+        .guarantees()
         .issue_payment_guarantee(&auth, req)
         .await
         .map_err(|err| {
@@ -446,6 +449,7 @@ async fn list_recipient_payments(
     Path(recipient): Path<String>,
 ) -> Result<Json<Vec<UserTransactionInfo>>, ApiError> {
     let payments = service
+        .query()
         .list_recipient_payments(&auth, recipient)
         .await
         .map_err(ApiError::from)?;
@@ -458,6 +462,7 @@ async fn get_user_asset_balance(
     Path((user, asset)): Path<(String, String)>,
 ) -> Result<Json<Option<AssetBalanceInfo>>, ApiError> {
     let balance = service
+        .query()
         .get_user_asset_balance(&auth, user, asset)
         .await
         .map_err(ApiError::from)?;
@@ -472,6 +477,7 @@ async fn update_user_suspension(
 ) -> Result<Json<UserSuspensionStatus>, ApiError> {
     access::require_admin_role(&auth)?;
     let status = service
+        .auth()
         .set_user_suspension(user, req.suspended)
         .await
         .map_err(ApiError::from)?;

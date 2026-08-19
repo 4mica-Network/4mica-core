@@ -1,22 +1,35 @@
-use alloy::eips::BlockId;
+//! Chain event handler: decodes scanner logs and dispatches them to the domain services.
+
+use std::sync::Arc;
+
 use alloy::rpc::types::Log;
 use alloy_primitives::Address;
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use metrics_4mica::measure;
 
+use crate::error::BlockchainListenerError;
+use crate::ethereum::{contract::*, event_data::EventMeta, event_handler::EthereumEventHandler};
 use crate::metrics::misc::record_event_handler_time;
-use crate::{
-    error::BlockchainListenerError,
-    ethereum::{contract::*, event_data::EventMeta, event_handler::EthereumEventHandler},
-    persist::repo,
-    service::CoreService,
-};
+use crate::persist::repo;
+use crate::service::ctx::Ctx;
+use crate::service::domain::clearing::ClearingService;
+
+pub struct EventHandlerService {
+    ctx: Arc<Ctx>,
+    clearing: Arc<ClearingService>,
+}
+
+impl EventHandlerService {
+    pub fn new(ctx: Arc<Ctx>, clearing: Arc<ClearingService>) -> Self {
+        Self { ctx, clearing }
+    }
+}
 
 #[async_trait]
-impl EthereumEventHandler for CoreService {
+impl EthereumEventHandler for EventHandlerService {
     fn note_scan_progress(&self) {
-        self.record_scan_progress();
+        self.ctx.record_scan_progress();
     }
 
     #[measure(record_event_handler_time, name = "collateral_deposited")]
@@ -47,9 +60,9 @@ impl EthereumEventHandler for CoreService {
 
         let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
-        if self.stablecoin_a_token(asset).await?.is_some() {
+        if self.ctx.chain.stablecoin_a_token(asset).await?.is_some() {
             repo::mark_withdrawal_executed_with_event(
-                &self.inner.persist_ctx,
+                &self.ctx.persist,
                 user.to_string(),
                 asset.to_string(),
                 amount,
@@ -60,7 +73,7 @@ impl EthereumEventHandler for CoreService {
                 .await?;
         } else {
             repo::finalize_withdrawal_with_event(
-                &self.inner.persist_ctx,
+                &self.ctx.persist,
                 user.to_string(),
                 asset.to_string(),
                 amount,
@@ -86,7 +99,7 @@ impl EthereumEventHandler for CoreService {
 
         let meta = self.event_meta_from_log(&log)?;
         repo::request_withdrawal_with_event(
-            &self.inner.persist_ctx,
+            &self.ctx.persist,
             user.to_string(),
             asset.to_string(),
             when.to(),
@@ -104,7 +117,7 @@ impl EthereumEventHandler for CoreService {
 
         let meta = self.event_meta_from_log(&log)?;
         repo::cancel_withdrawal_with_event(
-            &self.inner.persist_ctx,
+            &self.ctx.persist,
             user.to_string(),
             asset.to_string(),
             Some(&meta),
@@ -117,7 +130,8 @@ impl EthereumEventHandler for CoreService {
     async fn handle_cycle_committed(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CycleCommitted { cycleId, .. } = *log.log_decode()?.data();
         let tx_hash = tx_hash_from_log(&log)?;
-        self.process_cycle_committed(cycleId, &tx_hash)
+        self.clearing
+            .process_cycle_committed(cycleId, &tx_hash)
             .await
             .map_err(BlockchainListenerError::from)
     }
@@ -128,7 +142,8 @@ impl EthereumEventHandler for CoreService {
             cycleId, debtor, ..
         } = *log.log_decode()?.data();
         let tx_hash = tx_hash_from_log(&log)?;
-        self.process_paid_debtor(cycleId, &debtor.to_string(), &tx_hash)
+        self.clearing
+            .process_paid_debtor(cycleId, &debtor.to_string(), &tx_hash)
             .await
             .map_err(BlockchainListenerError::from)
     }
@@ -144,7 +159,8 @@ impl EthereumEventHandler for CoreService {
 
         let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
-        self.process_credit_claim(cycleId, creditor.to_string(), meta)
+        self.clearing
+            .process_credit_claim(cycleId, creditor.to_string(), meta)
             .await
             .map_err(BlockchainListenerError::from)?;
         // Reconcile the creditor's total from chain
@@ -165,7 +181,8 @@ impl EthereumEventHandler for CoreService {
 
         let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
-        self.process_defaulted_debtor(cycleId, debtor.to_string(), meta)
+        self.clearing
+            .process_defaulted_debtor(cycleId, debtor.to_string(), meta)
             .await
             .map_err(BlockchainListenerError::from)?;
         // Reconcile the debtor's total from chain
@@ -178,7 +195,8 @@ impl EthereumEventHandler for CoreService {
     #[measure(record_event_handler_time, name = "cycle_finalized")]
     async fn handle_cycle_finalized(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CycleFinalized { cycleId, .. } = *log.log_decode()?.data();
-        self.process_cycle_finalized(cycleId)
+        self.clearing
+            .process_cycle_finalized(cycleId)
             .await
             .map_err(BlockchainListenerError::from)
     }
@@ -186,7 +204,8 @@ impl EthereumEventHandler for CoreService {
     #[measure(record_event_handler_time, name = "cycle_shortfall")]
     async fn handle_cycle_shortfall(&self, log: Log) -> Result<(), BlockchainListenerError> {
         let CycleShortfall { cycleId, .. } = *log.log_decode()?.data();
-        self.process_cycle_shortfall(cycleId)
+        self.clearing
+            .process_cycle_shortfall(cycleId)
             .await
             .map_err(|e| BlockchainListenerError::EventHandlerError(e.to_string()))
     }
@@ -255,11 +274,11 @@ impl EthereumEventHandler for CoreService {
                 } = *log.log_decode()?.data();
                 let new_grace_period = new_grace_period.to();
                 info!("WithdrawalGracePeriodUpdated: {}s", new_grace_period);
-                self.set_withdrawal_grace_period(new_grace_period);
+                self.ctx.set_withdrawal_grace_period(new_grace_period);
 
                 // Surface a governance change that breaks the
                 // delayed-withdrawal solvency invariant; health checks will report it.
-                if let Err(err) = self.check_settlement_timing_invariant() {
+                if let Err(err) = self.ctx.check_settlement_timing_invariant() {
                     warn!(
                         "settlement timing invariant violated after grace-period update: {err:#}"
                     );
@@ -301,43 +320,29 @@ fn block_number_from_log(log: &Log) -> Result<u64, BlockchainListenerError> {
     })
 }
 
-impl CoreService {
+impl EventHandlerService {
     async fn sync_balance_from_chain(
         &self,
         user: Address,
         asset: Address,
         block_number: u64,
     ) -> Result<(), BlockchainListenerError> {
-        let contract = self.read_contract()?;
-        let block = BlockId::from(block_number);
-
-        let on_chain_total = if asset == Address::ZERO {
-            // ETH collateral is custodied directly by Core4Mica.
-            contract.collateral(user, asset).block(block).call().await
-        } else if self.stablecoin_a_token(asset).await?.is_some() {
-            // Stablecoin collateral is supplied to Aave; its guaranteeable
-            // capacity (principal, excluding yield) is what backs the off-chain total.
-            contract
-                .guaranteeCapacity(user, asset)
-                .block(block)
-                .call()
-                .await
-        } else {
+        let Some(on_chain_total) = self
+            .ctx
+            .chain
+            .guaranteeable_collateral(user, asset, block_number)
+            .await?
+        else {
             // Not a supported collateral asset; nothing to reconcile.
             return Ok(());
-        }
-        .map_err(|err| {
-            BlockchainListenerError::RpcFailure(format!(
-                "failed to load on-chain collateral for user {user} asset {asset}: {err}"
-            ))
-        })?;
+        };
 
         // A deposit may be a user's first interaction, so ensure the user row exists before writing
         // its balance (sync is the sole balance writer on the deposit path now).
-        repo::ensure_user_exists_on(self.inner.persist_ctx.db.as_ref(), &user.to_string()).await?;
+        repo::ensure_user_exists_on(self.ctx.db(), &user.to_string()).await?;
 
         repo::sync_user_asset_total(
-            &self.inner.persist_ctx,
+            &self.ctx.persist,
             &user.to_string(),
             &asset.to_string(),
             on_chain_total,
@@ -347,63 +352,8 @@ impl CoreService {
         Ok(())
     }
 
-    fn read_contract(
-        &self,
-    ) -> Result<
-        crate::ethereum::contract::contract_abi::Core4Mica::Core4MicaInstance<
-            alloy::providers::DynProvider,
-        >,
-        BlockchainListenerError,
-    > {
-        use crate::ethereum::contract::contract_abi::Core4Mica;
-
-        let contract_address = self
-            .inner
-            .config
-            .ethereum_config
-            .contract_address
-            .parse::<Address>()
-            .map_err(|err| {
-                BlockchainListenerError::EventHandlerError(format!(
-                    "failed to parse contract address {}: {err}",
-                    self.inner.config.ethereum_config.contract_address
-                ))
-            })?;
-
-        Ok(Core4Mica::new(
-            contract_address,
-            self.inner.read_provider.clone(),
-        ))
-    }
-
-    async fn stablecoin_a_token(
-        &self,
-        asset: Address,
-    ) -> Result<Option<Address>, BlockchainListenerError> {
-        if asset == Address::ZERO {
-            return Ok(None);
-        }
-
-        let contract = self.read_contract()?;
-        let a_token = contract
-            .stablecoinAToken(asset)
-            .call()
-            .await
-            .map_err(|err| {
-                BlockchainListenerError::RpcFailure(format!(
-                    "failed to load stablecoin aToken for asset {asset}: {err}"
-                ))
-            })?;
-
-        if a_token == Address::ZERO {
-            Ok(None)
-        } else {
-            Ok(Some(a_token))
-        }
-    }
-
     fn event_meta_from_log(&self, log: &Log) -> Result<EventMeta, BlockchainListenerError> {
-        let chain_id = self.inner.config.ethereum_config.chain_id;
+        let chain_id = self.ctx.config.ethereum_config.chain_id;
         let Some(block_hash) = log.block_hash else {
             return Err(BlockchainListenerError::EventHandlerError(
                 "log missing block_hash".to_owned(),

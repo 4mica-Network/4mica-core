@@ -192,7 +192,7 @@ async fn approved_validation_finalizes_and_keeps_collateral_locked() -> anyhow::
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.finalized, 1, "one guarantee should be finalized");
     assert_eq!(
@@ -222,7 +222,7 @@ async fn rejected_validation_disputes_and_releases_collateral() -> anyhow::Resul
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Rejected));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.disputed, 1, "one guarantee should be disputed");
     assert_eq!(
@@ -252,7 +252,7 @@ async fn pending_past_deadline_cancels_and_releases_collateral() -> anyhow::Resu
         seed_pending_validation(&ctx, cycle_id, 10, 1, past_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Pending));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.cancelled, 1, "one guarantee should be cancelled");
     assert_eq!(
@@ -281,7 +281,7 @@ async fn pending_before_deadline_waits() -> anyhow::Result<()> {
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Pending));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.waiting, 1, "the guarantee should still be waiting");
     assert_eq!(
@@ -321,7 +321,7 @@ async fn approved_validation_into_already_resolved_cycle_cancels_and_releases_co
     // Even though the validation now passes, finalizing would strand the payer's collateral in a
     // dead cycle, so the driver cancels and releases.
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(
         summary.cancelled, 1,
@@ -356,15 +356,19 @@ async fn finalized_validated_guarantee_is_netted_like_a_plain_one() -> anyhow::R
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
     assert_eq!(summary.finalized, 1);
     assert_eq!(
         guarantee_status(&ctx, &guarantee_id).await?,
         GuaranteeSettlementStatus::FinalizedPayable
     );
 
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
 
@@ -406,7 +410,7 @@ async fn de_whitelisted_validator_skips_and_finalizes() -> anyhow::Result<()> {
         }) as Arc<dyn ValidatorAdapter>,
     )]);
     let service = build_service(&ctx, config, other_validator);
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.skipped, 1, "one guarantee should be skipped");
     assert_eq!(

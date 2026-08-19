@@ -18,6 +18,7 @@ async fn active_cycle_creation_reuses_open_cycle_for_same_asset() -> anyhow::Res
     let service = setup_cycle_service().await?;
 
     let first = service
+        .clearing()
         .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, Utc::now())
         .await?;
     // Take the second instant from the window the service just opened, not from the configured
@@ -25,6 +26,7 @@ async fn active_cycle_creation_reuses_open_cycle_for_same_asset() -> anyhow::Res
     // how long a window is, and a guess that is one second long opens a second cycle instead.
     let midpoint = first.period_start + (first.period_end - first.period_start) / 2;
     let second = service
+        .clearing()
         .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, midpoint.and_utc())
         .await?;
 
@@ -56,7 +58,7 @@ async fn elapsed_open_cycle_is_frozen_before_new_cycle_is_created() -> anyhow::R
     )
     .await?;
 
-    let frozen = service.freeze_elapsed_cycles().await?;
+    let frozen = service.clearing().freeze_elapsed_cycles().await?;
     let old_after = repo::get_cycle_by_id(ctx, old_id)
         .await?
         .expect("old cycle");
@@ -89,8 +91,8 @@ async fn freeze_elapsed_cycles_is_idempotent() -> anyhow::Result<()> {
     )
     .await?;
 
-    let first = service.freeze_elapsed_cycles().await?;
-    let second = service.freeze_elapsed_cycles().await?;
+    let first = service.clearing().freeze_elapsed_cycles().await?;
+    let second = service.clearing().freeze_elapsed_cycles().await?;
 
     assert!(
         first.contains(&cycle_id.to_string()),
@@ -115,11 +117,15 @@ async fn computing_netting_does_not_mutate_user_collateral_balances() -> anyhow:
 
     let cycle_id = "collateral-independent-netting-cycle";
     build_three_party_cycle(&service, cycle_id).await?;
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
-    service.build_clearing_batch(cycle_id).await?;
+    service.netting().build_clearing_batch(cycle_id).await?;
 
     let locked_after = read_locked_collateral(ctx, &user, DEFAULT_ASSET_ADDRESS).await?;
     assert_eq!(locked_before, locked_after);

@@ -19,7 +19,7 @@ use std::str::FromStr;
 use alloy::primitives::{Address, U256};
 use core_service::evm::clearing::hash_participant_leaf;
 use core_service::evm::{bytes32_hex, cycle_id_hash};
-use core_service::service::netting::ClearingParticipantRole;
+use core_service::service::shared::clearing_proofs::ClearingParticipantRole;
 use crypto::merkle::{LeafHash, MerkleTree};
 use serde_json::{Map, Value, json};
 

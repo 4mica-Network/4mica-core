@@ -1,15 +1,25 @@
-use crate::auth::access::{self, AccessContext};
-use crate::auth::constants::SCOPE_PAYMENT_READ;
-use crate::persist::mapper;
-use crate::{
-    error::ServiceResult,
-    persist::{IntoUserTxInfo, repo},
-};
+//! Read-only lookups served straight from the ledger.
+
+use std::sync::Arc;
+
 use rpc::{AssetBalanceInfo, UserTransactionInfo};
 
-use super::CoreService;
+use crate::auth::access::{self, AccessContext};
+use crate::auth::constants::SCOPE_PAYMENT_READ;
+use crate::error::ServiceResult;
+use crate::persist::mapper;
+use crate::persist::{IntoUserTxInfo, repo};
+use crate::service::ctx::Ctx;
 
-impl CoreService {
+pub struct QueryService {
+    ctx: Arc<Ctx>,
+}
+
+impl QueryService {
+    pub fn new(ctx: Arc<Ctx>) -> Self {
+        Self { ctx }
+    }
+
     pub async fn list_recipient_payments(
         &self,
         auth: &AccessContext,
@@ -18,8 +28,7 @@ impl CoreService {
         access::require_scope(auth, SCOPE_PAYMENT_READ)?;
         access::require_recipient_match(auth, &recipient_address)?;
 
-        let rows =
-            repo::get_recipient_transactions(&self.inner.persist_ctx, &recipient_address).await?;
+        let rows = repo::get_recipient_transactions(&self.ctx.persist, &recipient_address).await?;
         rows.into_iter()
             .map(|row| row.into_user_tx_info())
             .collect::<ServiceResult<Vec<_>>>()
@@ -35,8 +44,7 @@ impl CoreService {
         access::require_user_match_or_privileged(auth, &user_address)?;
 
         let Some(balance) =
-            repo::get_user_asset_balance(&self.inner.persist_ctx, &user_address, &asset_address)
-                .await?
+            repo::get_user_asset_balance(&self.ctx.persist, &user_address, &asset_address).await?
         else {
             return Ok(None);
         };

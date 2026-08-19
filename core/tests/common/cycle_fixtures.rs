@@ -135,12 +135,21 @@ pub async fn lock_collateral(ctx: &PersistCtx, who: &str, amount: u64) -> Result
 /// Run the netting pipeline for a frozen cycle, leaving it `NettingComputed` with its
 /// guarantees netted and participant positions materialised.
 pub async fn net_cycle(service: &CoreService, cycle_id: &str) -> Result<()> {
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
-    service.build_clearing_batch(cycle_id).await?;
-    assert!(service.mark_cycle_netting_computed(cycle_id).await?);
+    service.netting().build_clearing_batch(cycle_id).await?;
+    assert!(
+        service
+            .netting()
+            .mark_cycle_netting_computed(cycle_id)
+            .await?
+    );
     Ok(())
 }
 
@@ -163,6 +172,7 @@ pub async fn open_payment_window(service: &CoreService, cycle_id: &str) -> Resul
         .await?
     );
     service
+        .clearing()
         .process_cycle_committed(evm::cycle_id_hash(cycle_id), "0xcommit")
         .await?;
     Ok(())
