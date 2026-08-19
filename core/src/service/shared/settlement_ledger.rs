@@ -2,6 +2,7 @@
 //!
 //! Everything takes a connection so callers compose it into their own transaction.
 
+use alloy::primitives::Address;
 use chrono::NaiveDateTime;
 use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementCycleStatus};
 use log::info;
@@ -39,7 +40,7 @@ pub async fn maybe_confirm_resolved_cycle<C: ConnectionTrait>(
 pub async fn settle_netted_guarantees_for_payer<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-    payer: &str,
+    payer: Address,
     target: GuaranteeSettlementStatus,
     now: NaiveDateTime,
 ) -> ServiceResult<u64> {

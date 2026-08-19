@@ -172,7 +172,14 @@ pub async fn login_with_siwe_as_address(
         .iter()
         .map(|scope| (*scope).to_string())
         .collect::<Vec<_>>();
-    repo::upsert_wallet_role(ctx, address, role, &scopes, DEFAULT_WALLET_STATUS).await?;
+    repo::upsert_wallet_role(
+        ctx,
+        super::fixtures::parse_addr(address)?,
+        role,
+        &scopes,
+        DEFAULT_WALLET_STATUS,
+    )
+    .await?;
 
     let client = reqwest::Client::new();
     let nonce_res = client
@@ -250,7 +257,13 @@ pub async fn insert_user_with_asset_collateral(
     amount: U256,
 ) -> anyhow::Result<()> {
     super::fixtures::ensure_user(ctx, addr).await?;
-    repo::deposit(ctx, norm_addr(addr), norm_addr(asset), amount).await?;
+    repo::deposit(
+        ctx,
+        super::fixtures::parse_addr(addr)?,
+        super::fixtures::parse_addr(asset)?,
+        amount,
+    )
+    .await?;
     Ok(())
 }
 

@@ -1,10 +1,11 @@
 //! DB-level tests for the validation lifecycle driver, covering the persistence and collateral
 //! effects that the pure-logic unit tests in `service::validation` cannot reach.
 
+use core_service::persist::rows::StoreCycleGuaranteeInput;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDateTime, Utc};
@@ -15,7 +16,7 @@ use rpc::{
 use validators::{ValidatorAdapter, ValidatorRegistry, Verdict, VerdictStatus};
 
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS, Environment};
-use core_service::persist::{CycleGuaranteeData, PersistCtx, repo};
+use core_service::persist::{PersistCtx, repo};
 use core_service::service::{CoreService, CoreServiceDeps};
 
 #[path = "common/mod.rs"]
@@ -122,14 +123,14 @@ async fn seed_pending_validation(
     let guarantee_id = format!("{cycle_id}:{from}:{to}:{req_id}");
     repo::store_cycle_guarantee_on(
         ctx.db.as_ref(),
-        CycleGuaranteeData {
+        StoreCycleGuaranteeInput {
             guarantee_id: guarantee_id.clone(),
             cycle_id: cycle_id.to_string(),
             req_id: U256::from(req_id),
             version: 1,
-            from: from.clone(),
-            to,
-            asset: DEFAULT_ASSET_ADDRESS.to_string(),
+            from: from.parse()?,
+            to: to.parse()?,
+            asset: DEFAULT_ASSET_ADDRESS.parse()?,
             value: U256::from(amount),
             start_ts: Utc::now().naive_utc(),
             cert: "{}".to_string(),
@@ -382,11 +383,12 @@ async fn finalized_validated_guarantee_is_netted_like_a_plain_one() -> anyhow::R
 
     let positions =
         repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    let payer_addr: Address = payer.parse()?;
     let payer_position = positions
         .iter()
-        .find(|p| p.participant == payer)
+        .find(|p| p.participant == payer_addr)
         .expect("payer must have a net position");
-    assert_eq!(payer_position.net_debit, "10");
+    assert_eq!(payer_position.net_debit, U256::from(10u64));
     Ok(())
 }
 

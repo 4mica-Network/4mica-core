@@ -1,5 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use crate::persist::canonical::Canonical;
+use alloy::primitives::Address;
 use entities::sea_orm_active_enums::BlockchainEventStatus;
 use entities::{blockchain_block, blockchain_event, blockchain_event_cursor};
 use metrics_4mica::measure;
@@ -32,7 +34,7 @@ pub async fn store_blockchain_event(
     block_hash: &str,
     tx_hash: &str,
     log_index: u64,
-    address: &str,
+    address: Address,
     data: &str,
 ) -> Result<bool, PersistDbError> {
     let event = blockchain_event::ActiveModel {
@@ -42,7 +44,7 @@ pub async fn store_blockchain_event(
         tx_hash: Set(tx_hash.to_string()),
         log_index: Set(log_index as i64),
         signature: Set(signature.to_string()),
-        address: Set(address.to_string()),
+        address: Set(address.canonical()),
         data: Set(data.to_string()),
         status: Set(Some(BlockchainEventStatus::Pending)),
         created_at: Set(now()),

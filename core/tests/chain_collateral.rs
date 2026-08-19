@@ -115,8 +115,8 @@ async fn eth_balance_self_heals_from_reorg_double_credit() -> anyhow::Result<()>
     // fresh event identity, as a re-mined block hash would bypass the dedup.
     repo::credit_collateral_with_event_on(
         persist_ctx.db.as_ref(),
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         first,
         CollateralEventType::Deposit,
         Some(EventMeta {
@@ -198,7 +198,7 @@ async fn stored_but_unhandled_event_is_reprocessed_not_skipped() -> anyhow::Resu
         &format!("{:#x}", block_hash),
         &format!("{:#x}", tx_hash),
         log_index,
-        &format!("{:#x}", log.address()),
+        log.address(),
         "{}",
     )
     .await?;

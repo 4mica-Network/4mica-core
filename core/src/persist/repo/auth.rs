@@ -1,24 +1,25 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use crate::persist::canonical::Canonical;
+use alloy::primitives::Address;
 use chrono::NaiveDateTime;
 use entities::{auth_nonce, auth_refresh_token, wallet_role};
 use metrics_4mica::measure;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 
-use super::common::{now, parse_address};
+use super::common::now;
 use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn insert_auth_nonce(
     ctx: &PersistCtx,
-    address: &str,
+    address: Address,
     nonce: &str,
     expires_at: NaiveDateTime,
 ) -> Result<auth_nonce::Model, PersistDbError> {
-    let address = parse_address(address)?;
     let model = auth_nonce::ActiveModel {
-        address: Set(address.into_inner()),
+        address: Set(address.canonical()),
         nonce: Set(nonce.to_string()),
         expires_at: Set(expires_at),
         used_at: Set(None),
@@ -33,12 +34,11 @@ pub async fn insert_auth_nonce(
 #[measure(record_db_time)]
 pub async fn get_auth_nonce(
     ctx: &PersistCtx,
-    address: &str,
+    address: Address,
     nonce: &str,
 ) -> Result<Option<auth_nonce::Model>, PersistDbError> {
-    let address = parse_address(address)?;
     let row = auth_nonce::Entity::find()
-        .filter(auth_nonce::Column::Address.eq(address.as_str()))
+        .filter(auth_nonce::Column::Address.eq(address.canonical()))
         .filter(auth_nonce::Column::Nonce.eq(nonce))
         .one(ctx.db.as_ref())
         .await?;
@@ -49,12 +49,11 @@ pub async fn get_auth_nonce(
 #[measure(record_db_time)]
 pub async fn mark_auth_nonce_used(
     ctx: &PersistCtx,
-    address: &str,
+    address: Address,
     nonce: &str,
 ) -> Result<bool, PersistDbError> {
-    let address = parse_address(address)?;
     let res = auth_nonce::Entity::update_many()
-        .filter(auth_nonce::Column::Address.eq(address.as_str()))
+        .filter(auth_nonce::Column::Address.eq(address.canonical()))
         .filter(auth_nonce::Column::Nonce.eq(nonce))
         .filter(auth_nonce::Column::UsedAt.is_null())
         .col_expr(auth_nonce::Column::UsedAt, Expr::value(now()))
@@ -68,14 +67,13 @@ pub async fn mark_auth_nonce_used(
 pub async fn insert_refresh_token(
     ctx: &PersistCtx,
     token_hash: &str,
-    address: &str,
+    address: Address,
     issued_at: NaiveDateTime,
     expires_at: NaiveDateTime,
 ) -> Result<auth_refresh_token::Model, PersistDbError> {
-    let address = parse_address(address)?;
     let model = auth_refresh_token::ActiveModel {
         token_hash: Set(token_hash.to_string()),
-        address: Set(address.into_inner()),
+        address: Set(address.canonical()),
         issued_at: Set(issued_at),
         expires_at: Set(expires_at),
         revoked_at: Set(None),
@@ -189,18 +187,17 @@ pub async fn rotate_refresh_token(
 #[measure(record_db_time)]
 pub async fn upsert_wallet_role(
     ctx: &PersistCtx,
-    address: &str,
+    address: Address,
     role: &str,
     scopes: &[String],
     status: &str,
 ) -> Result<wallet_role::Model, PersistDbError> {
-    let address = parse_address(address)?;
     let scopes_value = serde_json::to_value(scopes).map_err(|e| {
         PersistDbError::InvariantViolation(format!("invalid wallet role scopes: {e}"))
     })?;
 
     let model = wallet_role::ActiveModel {
-        address: Set(address.into_inner()),
+        address: Set(address.canonical()),
         role: Set(role.to_string()),
         scopes: Set(scopes_value),
         status: Set(status.to_string()),
@@ -224,10 +221,9 @@ pub async fn upsert_wallet_role(
 #[measure(record_db_time)]
 pub async fn get_wallet_role(
     ctx: &PersistCtx,
-    address: &str,
+    address: Address,
 ) -> Result<Option<wallet_role::Model>, PersistDbError> {
-    let address = parse_address(address)?;
-    let row = wallet_role::Entity::find_by_id(address.as_str())
+    let row = wallet_role::Entity::find_by_id(address.canonical())
         .one(ctx.db.as_ref())
         .await?;
     Ok(row)

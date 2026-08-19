@@ -11,7 +11,6 @@ use std::sync::Arc;
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
-use entities::cycle_participant_position;
 use entities::sea_orm_active_enums::{
     GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
 };
@@ -24,7 +23,8 @@ use crate::ethereum::{
     ClearingCommitInput, CreditorSettlement, DebtorSettlement, event_data::EventMeta,
 };
 use crate::evm;
-use crate::persist::repo::{self, common::parse_address};
+use crate::persist::repo;
+use crate::persist::rows::ParticipantPosition;
 use crate::service::ctx::Ctx;
 use crate::service::shared::clearing_proofs::{ClearingProofOps, ParticipantLeaf};
 use crate::service::shared::cycle::CycleOps;
@@ -49,7 +49,7 @@ impl ClearingService {
     /// predecessor) if needed.
     pub async fn get_or_create_active_cycle(
         &self,
-        asset_address: &str,
+        asset_address: Address,
         now: DateTime<Utc>,
     ) -> ServiceResult<settlement_cycle::Model> {
         self.cycle_ops
@@ -62,7 +62,7 @@ impl ClearingService {
         let assets = self.cycle_ops.supported_settlement_assets().await?;
         let mut cycle_ids = Vec::with_capacity(assets.len());
         for asset in assets {
-            match self.cycle_ops.get_or_create_active_cycle(&asset, now).await {
+            match self.cycle_ops.get_or_create_active_cycle(asset, now).await {
                 Ok(cycle) => cycle_ids.push(cycle.id),
                 Err(err) => warn!("failed to ensure active cycle for asset {asset}: {err:?}"),
             }
@@ -158,16 +158,10 @@ impl ClearingService {
 
         let input = ClearingCommitInput {
             cycle_id: evm::cycle_id_hash(&cycle.id),
-            asset: evm::parse_address("cycle asset", &batch.asset_address)?,
-            merkle_root: evm::parse_bytes32("clearing batch Merkle root", &batch.merkle_root)?,
-            total_net_debit: evm::parse_u256(
-                "clearing batch total net debit",
-                &batch.total_net_debit,
-            )?,
-            total_net_credit: evm::parse_u256(
-                "clearing batch total net credit",
-                &batch.total_net_credit,
-            )?,
+            asset: batch.asset_address,
+            merkle_root: batch.merkle_root,
+            total_net_debit: batch.total_net_debit,
+            total_net_credit: batch.total_net_credit,
             payment_submission_deadline: crate::util::timestamp_to_u64(
                 "payment submission deadline",
                 payment_submission_deadline,
@@ -574,7 +568,7 @@ impl ClearingService {
     /// open-settlement and shortfall paths so both apply the same missing-proof policy.
     fn join_role_settlements<T>(
         cycle_id: &str,
-        positions: &[cycle_participant_position::Model],
+        positions: &[ParticipantPosition],
         proofs: &[(ParticipantLeaf, Vec<B256>)],
         role: ParticipantCycleRole,
         role_label: &str,
@@ -589,7 +583,7 @@ impl ClearingService {
 
         let mut entries = Vec::with_capacity(positions.len());
         for pos in positions {
-            let participant = evm::parse_optional_address("cycle participant", &pos.participant)?;
+            let participant = pos.participant;
             match by_addr.get(&participant) {
                 Some((amount, proof)) => {
                     entries.push(build(participant, *amount, (*proof).clone()))
@@ -718,7 +712,7 @@ impl ClearingService {
     pub async fn process_paid_debtor(
         &self,
         onchain_cycle_id: B256,
-        debtor: &str,
+        debtor: Address,
         tx_hash: &str,
     ) -> ServiceResult<()> {
         let Some(cycle_id) = self.resolve_onchain_cycle_id(onchain_cycle_id).await? else {
@@ -726,20 +720,19 @@ impl ClearingService {
             return Ok(());
         };
         let now = Utc::now().naive_utc();
-        let debtor = parse_address(debtor)?.into_inner();
         let changed = self
             .ctx
             .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
-                let debtor = debtor.clone();
+
                 let tx_hash = tx_hash.to_string();
                 Box::pin(async move {
                     let changed = repo::mark_participant_position_status_on(
                         txn,
                         &cycle_id,
-                        &debtor,
+                        debtor,
                         ParticipantCycleStatus::Unpaid,
                         ParticipantCycleStatus::Paid,
                         Some(tx_hash),
@@ -750,7 +743,7 @@ impl ClearingService {
                         settlement_ledger::settle_netted_guarantees_for_payer(
                             txn,
                             &cycle_id,
-                            &debtor,
+                            debtor,
                             GuaranteeSettlementStatus::Settled,
                             now,
                         )
@@ -772,7 +765,7 @@ impl ClearingService {
     pub async fn process_credit_claim(
         &self,
         onchain_cycle_id: B256,
-        creditor: String,
+        creditor: Address,
         tx_meta: EventMeta,
     ) -> ServiceResult<()> {
         let Some(cycle_id) = self.resolve_onchain_cycle_id(onchain_cycle_id).await? else {
@@ -780,7 +773,6 @@ impl ClearingService {
             return Ok(());
         };
         let now = Utc::now().naive_utc();
-        let creditor = parse_address(creditor)?.into_inner();
         let tx_hash = tx_meta.tx_hash.clone();
 
         let changed = self
@@ -789,13 +781,13 @@ impl ClearingService {
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
-                let creditor = creditor.clone();
+
                 let tx_hash = tx_meta.tx_hash.clone();
                 Box::pin(async move {
                     let changed = repo::mark_participant_position_status_on(
                         txn,
                         &cycle_id,
-                        &creditor,
+                        creditor,
                         ParticipantCycleStatus::Claimable,
                         ParticipantCycleStatus::Claimed,
                         Some(tx_hash),
@@ -809,7 +801,7 @@ impl ClearingService {
                         settlement_ledger::settle_netted_guarantees_for_payer(
                             txn,
                             &cycle_id,
-                            &creditor,
+                            creditor,
                             GuaranteeSettlementStatus::Settled,
                             now,
                         )
@@ -831,10 +823,9 @@ impl ClearingService {
     pub async fn process_defaulted_debtor(
         &self,
         onchain_cycle_id: B256,
-        debtor: String,
+        debtor: Address,
         tx_meta: EventMeta,
     ) -> ServiceResult<()> {
-        let debtor = parse_address(debtor)?.into_inner();
         let tx_hash = tx_meta.tx_hash.clone();
 
         let Some(cycle_id) = self.resolve_onchain_cycle_id(onchain_cycle_id).await? else {
@@ -849,13 +840,13 @@ impl ClearingService {
             .db
             .transaction::<_, _, ServiceError>(|txn| {
                 let cycle_id = cycle_id.clone();
-                let debtor = debtor.clone();
+
                 let tx_hash = tx_meta.tx_hash.clone();
                 Box::pin(async move {
                     let changed = repo::mark_participant_position_status_on(
                         txn,
                         &cycle_id,
-                        &debtor,
+                        debtor,
                         ParticipantCycleStatus::Unpaid,
                         ParticipantCycleStatus::Defaulted,
                         Some(tx_hash),
@@ -870,7 +861,7 @@ impl ClearingService {
                     let guarantees = settlement_ledger::settle_netted_guarantees_for_payer(
                         txn,
                         &cycle_id,
-                        &debtor,
+                        debtor,
                         GuaranteeSettlementStatus::DefaultRemunerated,
                         now,
                     )

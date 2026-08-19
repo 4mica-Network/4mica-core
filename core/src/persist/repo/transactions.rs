@@ -1,5 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use crate::persist::canonical::Canonical;
+use alloy::primitives::Address;
 use alloy::primitives::U256;
 use entities::sea_orm_active_enums::UserTransactionStatus;
 use entities::user_transaction;
@@ -12,7 +14,7 @@ use sea_orm::{
 use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::{now, parse_address};
+use super::common::now;
 use super::users::ensure_user_exists_on;
 use crate::metrics::misc::record_db_time;
 
@@ -38,22 +40,19 @@ fn claimable_condition() -> Condition {
 #[measure(record_db_time)]
 pub async fn submit_payment_transaction(
     ctx: &PersistCtx,
-    user_address: String,
-    recipient_address: String,
-    asset_address: String,
+    user_address: Address,
+    recipient_address: Address,
+    asset_address: Address,
     transaction_id: String,
     amount: U256,
 ) -> Result<u64, PersistDbError> {
-    let user_address = parse_address(&user_address)?.into_inner();
-    let recipient_address = parse_address(&recipient_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
-    ensure_user_exists_on(ctx.db.as_ref(), &user_address).await?;
+    ensure_user_exists_on(ctx.db.as_ref(), user_address).await?;
 
     let tx = user_transaction::ActiveModel {
         tx_id: Set(transaction_id),
-        user_address: Set(user_address),
-        recipient_address: Set(recipient_address),
-        asset_address: Set(asset_address),
+        user_address: Set(user_address.canonical()),
+        recipient_address: Set(recipient_address.canonical()),
+        asset_address: Set(asset_address.canonical()),
         amount: Set(amount.to_string()),
         block_number: Set(None),
         block_hash: Set(None),
@@ -84,9 +83,9 @@ pub async fn submit_payment_transaction(
 
 #[allow(clippy::too_many_arguments)]
 pub struct PendingPaymentInput {
-    pub user_address: String,
-    pub recipient_address: String,
-    pub asset_address: String,
+    pub user_address: Address,
+    pub recipient_address: Address,
+    pub asset_address: Address,
     pub transaction_id: String,
     pub amount: U256,
     pub block_number: u64,
@@ -98,16 +97,13 @@ pub async fn submit_pending_payment_transaction(
     ctx: &PersistCtx,
     pending: PendingPaymentInput,
 ) -> Result<u64, PersistDbError> {
-    let user_address = parse_address(&pending.user_address)?.into_inner();
-    let recipient_address = parse_address(&pending.recipient_address)?.into_inner();
-    let asset_address = parse_address(&pending.asset_address)?.into_inner();
-    ensure_user_exists_on(ctx.db.as_ref(), &user_address).await?;
+    ensure_user_exists_on(ctx.db.as_ref(), pending.user_address).await?;
 
     let tx = user_transaction::ActiveModel {
         tx_id: Set(pending.transaction_id),
-        user_address: Set(user_address),
-        recipient_address: Set(recipient_address),
-        asset_address: Set(asset_address),
+        user_address: Set(pending.user_address.canonical()),
+        recipient_address: Set(pending.recipient_address.canonical()),
+        asset_address: Set(pending.asset_address.canonical()),
         amount: Set(pending.amount.to_string()),
         block_number: Set(Some(pending.block_number as i64)),
         block_hash: Set(pending.block_hash),
@@ -483,11 +479,9 @@ pub async fn mark_payment_transaction_finalized(
 #[measure(record_db_time)]
 pub async fn fail_transaction(
     ctx: &PersistCtx,
-    user_address: String,
+    user_address: Address,
     transaction_id: String,
 ) -> Result<(), PersistDbError> {
-    let user_address = parse_address(&user_address)?.into_inner();
-
     ctx.db
         .transaction(|txn| {
             Box::pin(async move {
@@ -498,8 +492,8 @@ pub async fn fail_transaction(
                     return Err(PersistDbError::TransactionNotFound(transaction_id));
                 };
 
-                if tx_row.user_address != user_address {
-                    return Err(PersistDbError::UserNotFound(user_address));
+                if tx_row.user_address != user_address.canonical() {
+                    return Err(PersistDbError::UserNotFound(user_address.canonical()));
                 }
 
                 if tx_row.failed {
@@ -513,8 +507,12 @@ pub async fn fail_transaction(
                 active_model.updated_at = Set(now());
                 active_model.update(txn).await?;
 
-                let asset_balance =
-                    get_user_balance_on(txn, &user_address, &tx_row.asset_address).await?;
+                let asset_balance = get_user_balance_on(
+                    txn,
+                    user_address,
+                    Address::from_canonical(&tx_row.asset_address)?,
+                )
+                .await?;
 
                 let current_collateral = U256::from_str(&asset_balance.total)
                     .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
@@ -530,8 +528,8 @@ pub async fn fail_transaction(
 
                 update_user_balance_and_version_on(
                     txn,
-                    &user_address,
-                    &tx_row.asset_address,
+                    user_address,
+                    Address::from_canonical(&tx_row.asset_address)?,
                     asset_balance.version,
                     new_collateral,
                     locked,
@@ -572,12 +570,10 @@ pub async fn get_unfinalized_transactions(
 #[measure(record_db_time)]
 pub async fn get_user_transactions(
     ctx: &PersistCtx,
-    user_address: &str,
+    user_address: Address,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
-    let user_address = parse_address(user_address)?;
-
     let rows = user_transaction::Entity::find()
-        .filter(user_transaction::Column::UserAddress.eq(user_address.as_str()))
+        .filter(user_transaction::Column::UserAddress.eq(user_address.canonical()))
         .all(ctx.db.as_ref())
         .await?;
     Ok(rows)
@@ -586,12 +582,10 @@ pub async fn get_user_transactions(
 #[measure(record_db_time)]
 pub async fn get_recipient_transactions(
     ctx: &PersistCtx,
-    recipient_address: &str,
+    recipient_address: Address,
 ) -> Result<Vec<user_transaction::Model>, PersistDbError> {
-    let recipient_address = parse_address(recipient_address)?;
-
     let rows = user_transaction::Entity::find()
-        .filter(user_transaction::Column::RecipientAddress.eq(recipient_address.as_str()))
+        .filter(user_transaction::Column::RecipientAddress.eq(recipient_address.canonical()))
         .order_by_desc(user_transaction::Column::CreatedAt)
         .all(ctx.db.as_ref())
         .await?;

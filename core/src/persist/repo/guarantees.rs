@@ -1,25 +1,31 @@
 use std::str::FromStr;
 
 use crate::error::PersistDbError;
-use crate::persist::CycleGuaranteeData;
+use crate::persist::canonical::Canonical;
+use crate::persist::rows::StoreCycleGuaranteeInput;
+use crate::persist::rows::{CycleGuarantee, decode_all};
 use crate::util::u256_to_string;
+use alloy::primitives::Address;
 use alloy::primitives::U256;
 use chrono::{NaiveDateTime, TimeZone, Utc};
 use crypto::bls::BLSCert;
 use entities::guarantee;
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use metrics_4mica::measure;
-use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims};
+use rpc::{PaymentGuaranteeClaims, PaymentGuaranteeRequest};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::{is_unique_violation, parse_address};
+use super::common::is_unique_violation;
 use super::withdrawals::get_pending_withdrawal_on;
 use crate::metrics::misc::record_db_time;
 
 pub struct PrepareCycleGuaranteeInput<'a> {
+    pub payer: Address,
+    pub recipient: Address,
+    pub asset: Address,
     pub claims: &'a PaymentGuaranteeClaims,
     pub cert: &'a BLSCert,
     pub request: &'a PaymentGuaranteeRequest,
@@ -32,37 +38,35 @@ pub struct PrepareCycleGuaranteeInput<'a> {
 #[measure(record_db_time)]
 pub async fn lock_user_balance_for_guarantee_on<C: ConnectionTrait>(
     conn: &C,
-    claims: &PaymentGuaranteeRequestClaims,
+    user_address: Address,
+    asset_address: Address,
+    amount: U256,
 ) -> Result<(), PersistDbError> {
-    let user_address = parse_address(claims.user_address())?.into_inner();
-    let asset_address = parse_address(claims.asset_address())?.into_inner();
-
-    let asset_balance = get_user_balance_on(conn, &user_address, &asset_address).await?;
+    let asset_balance = get_user_balance_on(conn, user_address, asset_address).await?;
     let total = U256::from_str(&asset_balance.total)
         .map_err(|_| PersistDbError::InvalidCollateral("invalid collateral".into()))?;
     let locked = U256::from_str(&asset_balance.locked)
         .map_err(|_| PersistDbError::InvalidCollateral("invalid locked collateral".into()))?;
 
-    let pending_amount =
-        match get_pending_withdrawal_on(conn, &user_address, &asset_address).await? {
-            Some(withdrawal) => U256::from_str(&withdrawal.requested_amount)
-                .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?,
-            None => U256::ZERO,
-        };
+    let pending_amount = match get_pending_withdrawal_on(conn, user_address, asset_address).await? {
+        Some(withdrawal) => U256::from_str(&withdrawal.requested_amount)
+            .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?,
+        None => U256::ZERO,
+    };
 
     let free = total.saturating_sub(locked).saturating_sub(pending_amount);
-    if free < claims.amount() {
+    if free < amount {
         return Err(PersistDbError::InsufficientCollateral);
     }
 
     let new_locked = locked
-        .checked_add(claims.amount())
+        .checked_add(amount)
         .ok_or_else(|| PersistDbError::InvariantViolation("locked overflow".into()))?;
 
     update_user_balance_and_version_on(
         conn,
-        &user_address,
-        &asset_address,
+        user_address,
+        asset_address,
         asset_balance.version,
         total,
         new_locked,
@@ -88,18 +92,14 @@ pub async fn prepare_and_store_cycle_guarantee_on<C: ConnectionTrait>(
         .single()
         .ok_or_else(|| PersistDbError::InvalidTimestamp(input.claims.timestamp as i64))?
         .naive_utc();
-    let from = parse_address(&input.claims.user_address)?.into_inner();
-    let to = parse_address(&input.claims.recipient_address)?.into_inner();
-    let asset = parse_address(&input.claims.asset_address)?.into_inner();
-
-    let data = CycleGuaranteeData {
+    let data = StoreCycleGuaranteeInput {
         guarantee_id: input.guarantee_id,
         cycle_id: input.cycle_id,
         req_id: input.claims.req_id,
         version: input.claims.version,
-        from,
-        to,
-        asset,
+        from: input.payer,
+        to: input.recipient,
+        asset: input.asset,
         value: input.claims.amount,
         start_ts: start_dt,
         cert: cert_str,
@@ -114,7 +114,7 @@ pub async fn prepare_and_store_cycle_guarantee_on<C: ConnectionTrait>(
 #[measure(record_db_time)]
 pub async fn store_cycle_guarantee_on<C: ConnectionTrait>(
     conn: &C,
-    data: CycleGuaranteeData,
+    data: StoreCycleGuaranteeInput,
 ) -> Result<(), PersistDbError> {
     let now = Utc::now().naive_utc();
 
@@ -128,9 +128,9 @@ pub async fn store_cycle_guarantee_on<C: ConnectionTrait>(
                 data.version
             ))
         })?),
-        from_address: Set(data.from),
-        to_address: Set(data.to),
-        asset_address: Set(data.asset),
+        from_address: Set(data.from.canonical()),
+        to_address: Set(data.to.canonical()),
+        asset_address: Set(data.asset.canonical()),
         value: Set(data.value.to_string()),
         start_ts: Set(data.start_ts),
         cert: Set(data.cert),
@@ -164,12 +164,12 @@ pub async fn store_cycle_guarantee_on<C: ConnectionTrait>(
 pub async fn get_guarantee_by_id_on<C: ConnectionTrait>(
     conn: &C,
     guarantee_id: &str,
-) -> Result<Option<guarantee::Model>, PersistDbError> {
+) -> Result<Option<CycleGuarantee>, PersistDbError> {
     let row = guarantee::Entity::find()
         .filter(guarantee::Column::GuaranteeId.eq(guarantee_id))
         .one(conn)
         .await?;
-    Ok(row)
+    row.map(CycleGuarantee::try_from).transpose()
 }
 
 #[measure(record_db_time)]
@@ -223,13 +223,13 @@ pub async fn mark_cycle_guarantees_netted_on<C: ConnectionTrait>(
 pub async fn list_netted_guarantees_for_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-) -> Result<Vec<guarantee::Model>, PersistDbError> {
+) -> Result<Vec<CycleGuarantee>, PersistDbError> {
     let rows = guarantee::Entity::find()
         .filter(guarantee::Column::CycleId.eq(cycle_id))
         .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
         .all(conn)
         .await?;
-    Ok(rows)
+    decode_all(rows)
 }
 
 #[measure(record_db_time)]
@@ -264,22 +264,22 @@ pub async fn transition_all_netted_guarantees_for_cycle_on<C: ConnectionTrait>(
 pub async fn list_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-    payer: &str,
-) -> Result<Vec<guarantee::Model>, PersistDbError> {
+    payer: Address,
+) -> Result<Vec<CycleGuarantee>, PersistDbError> {
     let rows = guarantee::Entity::find()
         .filter(guarantee::Column::CycleId.eq(cycle_id))
-        .filter(guarantee::Column::FromAddress.eq(payer))
+        .filter(guarantee::Column::FromAddress.eq(payer.canonical()))
         .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
         .all(conn)
         .await?;
-    Ok(rows)
+    decode_all(rows)
 }
 
 #[measure(record_db_time)]
 pub async fn transition_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-    payer: &str,
+    payer: Address,
     target: GuaranteeSettlementStatus,
     now: NaiveDateTime,
 ) -> Result<u64, PersistDbError> {
@@ -297,7 +297,7 @@ pub async fn transition_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>
 
     let result = guarantee::Entity::update_many()
         .filter(guarantee::Column::CycleId.eq(cycle_id))
-        .filter(guarantee::Column::FromAddress.eq(payer))
+        .filter(guarantee::Column::FromAddress.eq(payer.canonical()))
         .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
         .set(update)
         .exec(conn)
@@ -308,16 +308,14 @@ pub async fn transition_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>
 #[measure(record_db_time)]
 pub async fn release_locked_collateral_for_guarantee_on<C: ConnectionTrait>(
     conn: &C,
-    guarantee: &guarantee::Model,
+    guarantee: &CycleGuarantee,
 ) -> Result<(), PersistDbError> {
-    let amount = U256::from_str(&guarantee.value)
-        .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+    let amount = guarantee.value;
     if amount == U256::ZERO {
         return Ok(());
     }
 
-    let asset_balance =
-        get_user_balance_on(conn, &guarantee.from_address, &guarantee.asset_address).await?;
+    let asset_balance = get_user_balance_on(conn, guarantee.payer, guarantee.asset).await?;
     let total = U256::from_str(&asset_balance.total)
         .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
     let locked = U256::from_str(&asset_balance.locked)
@@ -331,8 +329,8 @@ pub async fn release_locked_collateral_for_guarantee_on<C: ConnectionTrait>(
 
     update_user_balance_and_version_on(
         conn,
-        &guarantee.from_address,
-        &guarantee.asset_address,
+        guarantee.payer,
+        guarantee.asset,
         asset_balance.version,
         total,
         locked - amount,
@@ -344,7 +342,7 @@ pub async fn release_locked_collateral_for_guarantee_on<C: ConnectionTrait>(
 pub async fn list_finalized_payable_guarantees_for_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-) -> Result<Vec<guarantee::Model>, PersistDbError> {
+) -> Result<Vec<CycleGuarantee>, PersistDbError> {
     let rows = guarantee::Entity::find()
         .filter(guarantee::Column::CycleId.eq(cycle_id))
         .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::FinalizedPayable))
@@ -354,7 +352,7 @@ pub async fn list_finalized_payable_guarantees_for_cycle_on<C: ConnectionTrait>(
         .order_by_asc(guarantee::Column::ReqId)
         .all(conn)
         .await?;
-    Ok(rows)
+    decode_all(rows)
 }
 
 /// Count the `FinalizedPayable` guarantees in a cycle. Used to detect cycles

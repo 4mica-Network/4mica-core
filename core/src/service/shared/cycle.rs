@@ -11,8 +11,10 @@ use log::info;
 
 use crate::config::{DEFAULT_ASSET_ADDRESS, SettlementCycleConfig};
 use crate::error::{ServiceError, ServiceResult};
+use crate::persist::canonical::Canonical;
 use crate::persist::repo;
 use crate::service::ctx::Ctx;
+use alloy::primitives::Address;
 
 pub struct CycleOps {
     ctx: Arc<Ctx>,
@@ -25,7 +27,7 @@ impl CycleOps {
 
     pub async fn get_or_create_active_cycle(
         &self,
-        asset_address: &str,
+        asset_address: Address,
         now: DateTime<Utc>,
     ) -> ServiceResult<settlement_cycle::Model> {
         if let Some(existing) =
@@ -42,7 +44,7 @@ impl CycleOps {
         let cycle_id = cycle_id_for(asset_address, window.period_start);
         let input = repo::CreateSettlementCycleInput {
             id: cycle_id.clone(),
-            asset_address: asset_address.to_string(),
+            asset_address,
             period_start: window.period_start.naive_utc(),
             period_end: window.period_end.naive_utc(),
             resolution_cutoff: window.resolution_cutoff.naive_utc(),
@@ -91,9 +93,12 @@ impl CycleOps {
     }
 
     /// Every asset that needs an open cycle: the native asset plus whatever the contract supports.
-    pub async fn supported_settlement_assets(&self) -> ServiceResult<Vec<String>> {
+    pub async fn supported_settlement_assets(&self) -> ServiceResult<Vec<Address>> {
         let mut assets = BTreeSet::new();
-        assets.insert(DEFAULT_ASSET_ADDRESS.to_string());
+        assets.insert(crate::evm::parse_address(
+            "default asset",
+            DEFAULT_ASSET_ADDRESS,
+        )?);
         for token in self
             .ctx
             .chain
@@ -101,7 +106,10 @@ impl CycleOps {
             .await
             .map_err(|e| ServiceError::Other(anyhow!(e)))?
         {
-            assets.insert(token.address);
+            assets.insert(crate::evm::parse_address(
+                "supported token",
+                &token.address,
+            )?);
         }
         Ok(assets.into_iter().collect())
     }
@@ -151,12 +159,8 @@ impl SettlementCycleWindow {
     }
 }
 
-fn cycle_id_for(asset_address: &str, period_start: DateTime<Utc>) -> String {
-    format!(
-        "{}:{}",
-        asset_address.to_ascii_lowercase(),
-        period_start.timestamp()
-    )
+fn cycle_id_for(asset_address: Address, period_start: DateTime<Utc>) -> String {
+    format!("{}:{}", asset_address.canonical(), period_start.timestamp())
 }
 
 #[cfg(test)]
@@ -211,6 +215,14 @@ mod tests {
     #[test]
     fn cycle_id_is_deterministic_and_lowercased() {
         let start = Utc.with_ymd_and_hms(2026, 4, 27, 0, 0, 0).unwrap();
-        assert_eq!(cycle_id_for("0xABCD", start), "0xabcd:1777248000");
+        // Checksummed in, lowercase out: the id must not vary with how the caller spelled it.
+        let asset: Address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+            .parse()
+            .expect("valid address");
+
+        assert_eq!(
+            cycle_id_for(asset, start),
+            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266:1777248000"
+        );
     }
 }

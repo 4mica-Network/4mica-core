@@ -2,6 +2,7 @@ use crate::auth;
 use crate::auth::constants::{DEFAULT_ROLE, DEFAULT_SCOPES};
 use crate::auth::jwt::AccessTokenClaims;
 use crate::error::{ServiceError, ServiceResult};
+use crate::persist::canonical::Canonical;
 use crate::persist::{mapper, repo};
 use crate::service::ctx::Ctx;
 use chrono::{DateTime, Duration, Utc};
@@ -111,8 +112,13 @@ impl AuthService {
         )
     }
 
-    async fn load_wallet_claims(&self, address: &str) -> ServiceResult<(String, Vec<String>)> {
+    async fn load_wallet_claims(
+        &self,
+        address: alloy::primitives::Address,
+    ) -> ServiceResult<(String, Vec<String>)> {
         let row = repo::get_wallet_role(&self.ctx.persist, address).await?;
+        let address = address.canonical();
+        let address = address.as_str();
         match row {
             Some(model) => {
                 auth::utils::validate_wallet_status(&model.status)?;
@@ -146,8 +152,13 @@ impl AuthService {
         let expires_at = now + Duration::seconds(auth_cfg.nonce_ttl_secs);
         let nonce = repo::common::new_uuid();
 
-        repo::insert_auth_nonce(&self.ctx.persist, &address, &nonce, expires_at.naive_utc())
-            .await?;
+        repo::insert_auth_nonce(
+            &self.ctx.persist,
+            crate::evm::parse_address("wallet", &address)?,
+            &nonce,
+            expires_at.naive_utc(),
+        )
+        .await?;
 
         let (domain, uri, statement) = self.build_siwe_context();
 
@@ -214,7 +225,8 @@ impl AuthService {
         validate_optional_expiration(parsed.expiration_time.as_deref(), now)?;
         validate_optional_not_before(parsed.not_before.as_deref(), now)?;
 
-        let nonce_row = repo::get_auth_nonce(&self.ctx.persist, &address, &parsed.nonce).await?;
+        let nonce_row =
+            repo::get_auth_nonce(&self.ctx.persist, expected_address, &parsed.nonce).await?;
         let nonce_row = nonce_row
             .ok_or_else(|| ServiceError::Unauthorized("nonce not found or expired".into()))?;
         if nonce_row.used_at.is_some() || nonce_row.expires_at < now.naive_utc() {
@@ -226,12 +238,12 @@ impl AuthService {
             .verify_siwe_message(&address, &req.message, &req.signature)
             .await?;
 
-        if !repo::mark_auth_nonce_used(&self.ctx.persist, &address, &parsed.nonce).await? {
+        if !repo::mark_auth_nonce_used(&self.ctx.persist, expected_address, &parsed.nonce).await? {
             return Err(ServiceError::Unauthorized("nonce already used".into()));
         }
 
         let subject = address;
-        let (role, scopes) = self.load_wallet_claims(&subject).await?;
+        let (role, scopes) = self.load_wallet_claims(expected_address).await?;
         let access_token = auth::jwt::issue_access_token(
             auth_cfg,
             &self.ctx.config.secrets.jwt_enc_key,
@@ -249,7 +261,7 @@ impl AuthService {
         repo::insert_refresh_token(
             &self.ctx.persist,
             &refresh_hash,
-            &subject,
+            expected_address,
             now.naive_utc(),
             expires_at.naive_utc(),
         )
@@ -282,7 +294,9 @@ impl AuthService {
         )
         .await?;
 
-        let (role, scopes) = self.load_wallet_claims(&address).await?;
+        let (role, scopes) = self
+            .load_wallet_claims(crate::evm::parse_address("wallet", &address)?)
+            .await?;
         let access_token = auth::jwt::issue_access_token(
             auth_cfg,
             &self.ctx.config.secrets.jwt_enc_key,
@@ -311,8 +325,9 @@ impl AuthService {
         user_address: String,
         suspended: bool,
     ) -> ServiceResult<UserSuspensionStatus> {
+        let user_address = crate::evm::parse_address("user", &user_address)?;
         let updated =
-            repo::update_user_suspension(&self.ctx.persist, &user_address, suspended).await?;
+            repo::update_user_suspension(&self.ctx.persist, user_address, suspended).await?;
         Ok(mapper::user_model_to_suspension_status(updated))
     }
 }

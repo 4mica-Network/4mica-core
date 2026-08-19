@@ -19,7 +19,7 @@ async fn active_cycle_creation_reuses_open_cycle_for_same_asset() -> anyhow::Res
 
     let first = service
         .clearing()
-        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, Utc::now())
+        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS.parse()?, Utc::now())
         .await?;
     // Take the second instant from the window the service just opened, not from the configured
     // cycle length. Reuse turns on `period_end > now`, so any interval picked here is a guess about
@@ -27,7 +27,7 @@ async fn active_cycle_creation_reuses_open_cycle_for_same_asset() -> anyhow::Res
     let midpoint = first.period_start + (first.period_end - first.period_start) / 2;
     let second = service
         .clearing()
-        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, midpoint.and_utc())
+        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS.parse()?, midpoint.and_utc())
         .await?;
 
     assert_eq!(first.id, second.id);
@@ -47,7 +47,7 @@ async fn elapsed_open_cycle_is_frozen_before_new_cycle_is_created() -> anyhow::R
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: old_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             period_start: now - Duration::hours(3),
             period_end: now - Duration::hours(2),
             resolution_cutoff: now - Duration::hours(1),
@@ -80,7 +80,7 @@ async fn freeze_elapsed_cycles_is_idempotent() -> anyhow::Result<()> {
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             period_start: now - Duration::hours(3),
             period_end: now - Duration::hours(2),
             resolution_cutoff: now - Duration::hours(1),

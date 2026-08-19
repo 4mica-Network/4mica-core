@@ -28,7 +28,11 @@ impl QueryService {
         access::require_scope(auth, SCOPE_PAYMENT_READ)?;
         access::require_recipient_match(auth, &recipient_address)?;
 
-        let rows = repo::get_recipient_transactions(&self.ctx.persist, &recipient_address).await?;
+        let rows = repo::get_recipient_transactions(
+            &self.ctx.persist,
+            crate::evm::parse_address("recipient", &recipient_address)?,
+        )
+        .await?;
         rows.into_iter()
             .map(|row| row.into_user_tx_info())
             .collect::<ServiceResult<Vec<_>>>()
@@ -43,8 +47,12 @@ impl QueryService {
         access::require_scope(auth, SCOPE_PAYMENT_READ)?;
         access::require_user_match_or_privileged(auth, &user_address)?;
 
-        let Some(balance) =
-            repo::get_user_asset_balance(&self.ctx.persist, &user_address, &asset_address).await?
+        let Some(balance) = repo::get_user_asset_balance(
+            &self.ctx.persist,
+            crate::evm::parse_address("user", &user_address)?,
+            crate::evm::parse_address("asset", &asset_address)?,
+        )
+        .await?
         else {
             return Ok(None);
         };

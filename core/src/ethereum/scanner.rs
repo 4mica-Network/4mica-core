@@ -336,7 +336,6 @@ impl EthereumEventScanner {
 
             let block_hash_str = format!("{:#x}", block_hash);
             let tx_hash_str = format!("{:#x}", tx_hash);
-            let address_str = format!("{:#x}", log.address());
 
             info!(
                 "Storing blockchain event: {signature} at block {block_number} with log index {log_index}"
@@ -353,7 +352,7 @@ impl EthereumEventScanner {
                 &block_hash_str,
                 &tx_hash_str,
                 log_index,
-                &address_str,
+                log.address(),
                 &data_json,
             )
             .await

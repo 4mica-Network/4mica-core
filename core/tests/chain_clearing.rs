@@ -168,12 +168,13 @@ async fn poll_position_status(
     participant: &str,
     expected: ParticipantCycleStatus,
 ) -> anyhow::Result<()> {
+    let participant_addr: Address = participant.parse()?;
     for _ in 0..POLL_ATTEMPTS {
         let positions =
             repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
         if positions
             .iter()
-            .any(|p| p.participant == participant && p.status == expected)
+            .any(|p| p.participant == participant_addr && p.status == expected)
         {
             return Ok(());
         }
@@ -480,7 +481,7 @@ async fn commit_two_party_cycle_finality_soon(
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             period_start: now - ChronoDuration::hours(3),
             period_end: now - ChronoDuration::hours(2),
             resolution_cutoff: now - ChronoDuration::hours(1),

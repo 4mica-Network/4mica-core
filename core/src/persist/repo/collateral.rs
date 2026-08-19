@@ -1,5 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use crate::persist::canonical::Canonical;
+use alloy::primitives::Address;
 use alloy::primitives::U256;
 use chrono::NaiveDateTime;
 use entities::collateral_event;
@@ -11,15 +13,15 @@ use sea_orm::{ConnectionTrait, EntityTrait};
 use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::{new_uuid, now, parse_address};
+use super::common::{new_uuid, now};
 use super::users::ensure_user_exists_on;
 use crate::ethereum::event_data::EventMeta;
 use crate::metrics::misc::record_db_time;
 
 async fn upsert_collateral_event_on<C: ConnectionTrait>(
     conn: &C,
-    user_address: &str,
-    asset_address: &str,
+    user_address: Address,
+    asset_address: Address,
     amount: U256,
     event_type: CollateralEventType,
     tx_meta: Option<&EventMeta>,
@@ -27,8 +29,8 @@ async fn upsert_collateral_event_on<C: ConnectionTrait>(
 ) -> Result<u64, PersistDbError> {
     let ev = collateral_event::ActiveModel {
         id: Set(new_uuid()),
-        user_address: Set(user_address.to_owned()),
-        asset_address: Set(asset_address.to_owned()),
+        user_address: Set(user_address.canonical()),
+        asset_address: Set(asset_address.canonical()),
         amount: Set(amount.to_string()),
         event_type: Set(event_type),
         req_id: Set(None),
@@ -72,8 +74,8 @@ async fn upsert_collateral_event_on<C: ConnectionTrait>(
 #[measure(record_db_time)]
 pub async fn deposit(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     amount: U256,
 ) -> Result<(), PersistDbError> {
     credit_collateral_with_event_on(
@@ -90,23 +92,20 @@ pub async fn deposit(
 #[measure(record_db_time)]
 pub async fn credit_collateral_with_event_on<C: ConnectionTrait>(
     conn: &C,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     amount: U256,
     event_type: CollateralEventType,
     tx_meta: Option<EventMeta>,
 ) -> Result<(), PersistDbError> {
     let now = now();
-    let user_address = parse_address(&user_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
-
-    ensure_user_exists_on(conn, &user_address).await?;
+    ensure_user_exists_on(conn, user_address).await?;
 
     if amount > U256::ZERO {
         let rows_affected = upsert_collateral_event_on(
             conn,
-            &user_address,
-            &asset_address,
+            user_address,
+            asset_address,
             amount,
             event_type,
             tx_meta.as_ref(),
@@ -119,7 +118,7 @@ pub async fn credit_collateral_with_event_on<C: ConnectionTrait>(
         }
     }
 
-    let asset_balance = get_user_balance_on(conn, &user_address, &asset_address).await?;
+    let asset_balance = get_user_balance_on(conn, user_address, asset_address).await?;
 
     let total = U256::from_str(&asset_balance.total)
         .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
@@ -132,8 +131,8 @@ pub async fn credit_collateral_with_event_on<C: ConnectionTrait>(
 
     update_user_balance_and_version_on(
         conn,
-        &user_address,
-        &asset_address,
+        user_address,
+        asset_address,
         asset_balance.version,
         new_total,
         locked,
@@ -146,23 +145,20 @@ pub async fn credit_collateral_with_event_on<C: ConnectionTrait>(
 #[measure(record_db_time)]
 pub async fn debit_collateral_with_event_on<C: ConnectionTrait>(
     conn: &C,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     amount: U256,
     event_type: CollateralEventType,
     tx_meta: Option<EventMeta>,
 ) -> Result<(), PersistDbError> {
     let now = now();
-    let user_address = parse_address(&user_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
-
-    ensure_user_exists_on(conn, &user_address).await?;
+    ensure_user_exists_on(conn, user_address).await?;
 
     if amount > U256::ZERO {
         let rows_affected = upsert_collateral_event_on(
             conn,
-            &user_address,
-            &asset_address,
+            user_address,
+            asset_address,
             amount,
             event_type,
             tx_meta.as_ref(),
@@ -175,7 +171,7 @@ pub async fn debit_collateral_with_event_on<C: ConnectionTrait>(
         }
     }
 
-    let asset_balance = get_user_balance_on(conn, &user_address, &asset_address).await?;
+    let asset_balance = get_user_balance_on(conn, user_address, asset_address).await?;
     let total = U256::from_str(&asset_balance.total)
         .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
     let locked = U256::from_str(&asset_balance.locked)
@@ -186,8 +182,8 @@ pub async fn debit_collateral_with_event_on<C: ConnectionTrait>(
 
     update_user_balance_and_version_on(
         conn,
-        &user_address,
-        &asset_address,
+        user_address,
+        asset_address,
         asset_balance.version,
         new_total,
         locked,

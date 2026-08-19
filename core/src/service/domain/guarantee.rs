@@ -142,13 +142,18 @@ impl GuaranteeService {
 
         verify_guarantee_request_signature(&self.ctx.public_params, &req)?;
         self.verify_guarantee_request_claims(&req.claims)?;
+
+        let payer = crate::evm::parse_address("user", req.claims.user_address())?;
+        let recipient = crate::evm::parse_address("recipient", req.claims.recipient_address())?;
+        let asset = crate::evm::parse_address("asset", req.claims.asset_address())?;
+
         self.ctx
             .check_settlement_timing_invariant()
             .map_err(|e| ServiceError::SettlementTimingHalted(format!("{e:#}")))?;
 
         let active_cycle = self
             .cycle_ops
-            .get_or_create_active_cycle(req.claims.asset_address(), Utc::now())
+            .get_or_create_active_cycle(asset, Utc::now())
             .await?;
 
         if req.claims.timestamp() < (active_cycle.period_start.and_utc().timestamp() as u64) {
@@ -194,14 +199,17 @@ impl GuaranteeService {
         loop {
             attempt += 1;
             match self
-                .issue_payment_guarantee_in_txn(
-                    &req,
-                    &active_cycle.id,
-                    &guarantee_id,
-                    &claims,
-                    &cert,
+                .issue_payment_guarantee_in_txn(&IssueGuaranteeInput {
+                    req: &req,
+                    cycle_id: &active_cycle.id,
+                    guarantee_id: &guarantee_id,
+                    claims: &claims,
+                    cert: &cert,
                     validation_deadline,
-                )
+                    payer,
+                    recipient,
+                    asset,
+                })
                 .await
             {
                 Ok(()) => return Ok(cert),
@@ -217,13 +225,16 @@ impl GuaranteeService {
 
     async fn issue_payment_guarantee_in_txn(
         &self,
-        req: &PaymentGuaranteeRequest,
-        cycle_id: &str,
-        guarantee_id: &str,
-        claims: &PaymentGuaranteeClaims,
-        cert: &BLSCert,
-        validation_deadline: Option<chrono::NaiveDateTime>,
+        input: &IssueGuaranteeInput<'_>,
     ) -> ServiceResult<()> {
+        // Owned up-front: the transaction closure must not borrow from the caller's frame.
+        let req = input.req.clone();
+        let cycle_id = input.cycle_id.to_string();
+        let guarantee_id = input.guarantee_id.to_string();
+        let claims = input.claims.clone();
+        let cert = input.cert.clone();
+        let validation_deadline = input.validation_deadline;
+        let (payer, recipient, asset) = (input.payer, input.recipient, input.asset);
         self.ctx
             .persist
             .db
@@ -234,16 +245,24 @@ impl GuaranteeService {
                 let claims = claims.clone();
                 let cert = cert.clone();
                 Box::pin(async move {
-                    repo::ensure_user_is_active_on(txn, req.claims.user_address()).await?;
-                    repo::ensure_user_is_active_if_exists_on(txn, req.claims.recipient_address())
-                        .await?;
-                    repo::ensure_user_exists_on(txn, req.claims.recipient_address()).await?;
+                    repo::ensure_user_is_active_on(txn, payer).await?;
+                    repo::ensure_user_is_active_if_exists_on(txn, recipient).await?;
+                    repo::ensure_user_exists_on(txn, recipient).await?;
 
-                    repo::lock_user_balance_for_guarantee_on(txn, &req.claims).await?;
+                    repo::lock_user_balance_for_guarantee_on(
+                        txn,
+                        payer,
+                        asset,
+                        req.claims.amount(),
+                    )
+                    .await?;
 
                     repo::prepare_and_store_cycle_guarantee_on(
                         txn,
                         repo::PrepareCycleGuaranteeInput {
+                            payer,
+                            recipient,
+                            asset,
                             claims: &claims,
                             cert: &cert,
                             request: &req,
@@ -279,6 +298,19 @@ impl GuaranteeService {
             .await
             .map_err(map_transaction_error)
     }
+}
+
+/// Everything the issuance transaction needs, resolved before it opens.
+struct IssueGuaranteeInput<'a> {
+    req: &'a PaymentGuaranteeRequest,
+    cycle_id: &'a str,
+    guarantee_id: &'a str,
+    claims: &'a PaymentGuaranteeClaims,
+    cert: &'a BLSCert,
+    validation_deadline: Option<chrono::NaiveDateTime>,
+    payer: Address,
+    recipient: Address,
+    asset: Address,
 }
 
 /// Refuses a deadline that leaves a validator less time to answer than `min_window` demands.

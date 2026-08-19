@@ -4,10 +4,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::Utc;
-use entities::clearing_batch;
 use entities::sea_orm_active_enums::{
     ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
 };
@@ -16,7 +15,9 @@ use sea_orm::TransactionTrait;
 
 use crate::error::{ServiceError, ServiceResult};
 use crate::evm;
+use crate::persist::canonical::Canonical;
 use crate::persist::repo;
+use crate::persist::rows::ClearingBatch;
 use crate::service::ctx::Ctx;
 use crate::service::shared::clearing_proofs::{
     ClearingParticipantProof, ClearingProofOps, ParticipantLeaf, build_participant_merkle_tree,
@@ -135,15 +136,15 @@ impl NettingService {
         let mut gross_total = U256::ZERO;
 
         for guarantee in guarantees {
-            let amount = evm::parse_u256("cycle settlement amount", &guarantee.value)?;
+            let amount = guarantee.value;
             gross_total = gross_total
                 .checked_add(amount)
                 .ok_or_else(|| ServiceError::Other(anyhow!("cycle gross amount overflow")))?;
 
             let key = ExposureEdgeKey {
-                payer: guarantee.from_address,
-                payee: guarantee.to_address,
-                asset_address: guarantee.asset_address,
+                payer: guarantee.payer,
+                payee: guarantee.payee,
+                asset_address: guarantee.asset,
             };
             let entry = edges.entry(key).or_default();
             entry.gross_amount = entry
@@ -195,15 +196,15 @@ impl NettingService {
         let mut totals = BTreeMap::<ParticipantAssetKey, ParticipantTotals>::new();
 
         for edge in edges {
-            let amount =
-                evm::parse_u256("cycle settlement amount", &edge.finalized_payable_amount)?;
+            let amount = edge.finalized_payable_amount;
+            let asset_address = edge.asset_address;
             let payer_key = ParticipantAssetKey {
                 participant: edge.payer,
-                asset_address: edge.asset_address.clone(),
+                asset_address,
             };
             let payee_key = ParticipantAssetKey {
                 participant: edge.payee,
-                asset_address: edge.asset_address,
+                asset_address,
             };
 
             let payer = totals.entry(payer_key).or_default();
@@ -264,10 +265,7 @@ impl NettingService {
         Ok(())
     }
 
-    pub async fn build_clearing_batch(
-        &self,
-        cycle_id: &str,
-    ) -> ServiceResult<clearing_batch::Model> {
+    pub async fn build_clearing_batch(&self, cycle_id: &str) -> ServiceResult<ClearingBatch> {
         let cycle = self
             .cycle_ops
             .require_cycle_status(cycle_id, SettlementCycleStatus::Frozen)
@@ -327,7 +325,7 @@ impl NettingService {
             self.ctx.db(),
             repo::CreateClearingBatchInput {
                 cycle_id: cycle.id,
-                asset_address: cycle.asset_address,
+                asset_address: Address::from_canonical(&cycle.asset_address)?,
                 batch_hash,
                 merkle_root,
                 total_net_debit: total_net_debit.to_string(),
@@ -381,9 +379,9 @@ impl NettingService {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ExposureEdgeKey {
-    payer: String,
-    payee: String,
-    asset_address: String,
+    payer: Address,
+    payee: Address,
+    asset_address: Address,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -395,8 +393,8 @@ struct ExposureEdgeAccumulator {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ParticipantAssetKey {
-    participant: String,
-    asset_address: String,
+    participant: Address,
+    asset_address: Address,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -29,7 +29,14 @@ async fn auth_nonce_reuse_is_rejected() -> anyhow::Result<()> {
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
     let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
-    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+    repo::upsert_wallet_role(
+        &ctx,
+        address.parse()?,
+        "user",
+        &scopes,
+        DEFAULT_WALLET_STATUS,
+    )
+    .await?;
 
     let client = reqwest::Client::new();
     let nonce_res = client
@@ -83,7 +90,14 @@ async fn auth_verify_rejects_invalid_signature() -> anyhow::Result<()> {
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
     let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
-    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+    repo::upsert_wallet_role(
+        &ctx,
+        address.parse()?,
+        "user",
+        &scopes,
+        DEFAULT_WALLET_STATUS,
+    )
+    .await?;
 
     let client = reqwest::Client::new();
     let nonce_res = client
@@ -128,7 +142,14 @@ async fn auth_refresh_rotates_tokens() -> anyhow::Result<()> {
     let signer = PrivateKeySigner::random();
     let address = signer.address().to_string();
     let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
-    repo::upsert_wallet_role(&ctx, &address, "user", &scopes, DEFAULT_WALLET_STATUS).await?;
+    repo::upsert_wallet_role(
+        &ctx,
+        address.parse()?,
+        "user",
+        &scopes,
+        DEFAULT_WALLET_STATUS,
+    )
+    .await?;
 
     let client = reqwest::Client::new();
     let nonce_res = client
@@ -192,16 +213,16 @@ async fn core_api_recipient_payments_flags() -> anyhow::Result<()> {
 
     repo::submit_payment_transaction(
         &ctx,
-        user_addr.clone(),
-        recipient_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        recipient_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         "0xdeadbeef".into(),
         U256::from(10u64),
     )
     .await
     .expect("submit payment");
 
-    repo::fail_transaction(&ctx, user_addr.clone(), "0xdeadbeef".into())
+    repo::fail_transaction(&ctx, user_addr.parse()?, "0xdeadbeef".into())
         .await
         .expect("mark failed");
 

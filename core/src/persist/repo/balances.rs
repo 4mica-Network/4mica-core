@@ -1,5 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use crate::persist::canonical::Canonical;
+use alloy::primitives::Address;
 use alloy::primitives::U256;
 use entities::user_asset_balance;
 use log::warn;
@@ -9,19 +11,17 @@ use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, ExprTrait, QueryFilter, TransactionTrait,
 };
 
-use super::common::{now, parse_address};
+use super::common::now;
 use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn get_user_balance_on<C: ConnectionTrait>(
     conn: &C,
-    user_address: &str,
-    asset_address: &str,
+    user_address: Address,
+    asset_address: Address,
 ) -> Result<user_asset_balance::Model, PersistDbError> {
-    let user_address = parse_address(user_address)?;
-    let asset_address = parse_address(asset_address)?;
-    let user_str = user_address.as_str().to_owned();
-    let asset_str = asset_address.as_str().to_owned();
+    let user_str = user_address.canonical().to_owned();
+    let asset_str = asset_address.canonical().to_owned();
 
     let balance = user_asset_balance::Entity::find()
         .filter(user_asset_balance::Column::UserAddress.eq(&user_str))
@@ -78,18 +78,18 @@ pub async fn get_user_balance_on<C: ConnectionTrait>(
 #[measure(record_db_time)]
 pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
     conn: &C,
-    user_address: &str,
-    asset_address: &str,
+    user_address: Address,
+    asset_address: Address,
     current_version: i32,
     new_total: U256,
     new_locked: U256,
 ) -> Result<(), PersistDbError> {
-    let user_address = parse_address(user_address)?;
-    let asset_address = parse_address(asset_address)?;
+    let user_address = user_address.canonical();
+    let asset_address = asset_address.canonical();
 
     let res = user_asset_balance::Entity::update_many()
-        .filter(user_asset_balance::Column::UserAddress.eq(user_address.as_str()))
-        .filter(user_asset_balance::Column::AssetAddress.eq(asset_address.as_str()))
+        .filter(user_asset_balance::Column::UserAddress.eq(&user_address))
+        .filter(user_asset_balance::Column::AssetAddress.eq(&asset_address))
         .filter(user_asset_balance::Column::Version.eq(current_version))
         .col_expr(
             user_asset_balance::Column::Version,
@@ -110,14 +110,13 @@ pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
     match res.rows_affected {
         1 => Ok(()),
         0 => Err(PersistDbError::UserBalanceLockConflict {
-            user: user_address.into_inner(),
-            asset_address: asset_address.into_inner(),
+            user: user_address,
+            asset_address,
             expected_version: current_version,
         }),
         n => Err(PersistDbError::InvariantViolation(format!(
             "update_user_balance_and_version_on updated {} rows for address {}",
-            n,
-            user_address.as_str()
+            n, user_address
         ))),
     }
 }
@@ -125,15 +124,12 @@ pub async fn update_user_balance_and_version_on<C: ConnectionTrait>(
 #[measure(record_db_time)]
 pub async fn get_user_asset_balance(
     ctx: &PersistCtx,
-    user_address: &str,
-    asset_address: &str,
+    user_address: Address,
+    asset_address: Address,
 ) -> Result<Option<user_asset_balance::Model>, PersistDbError> {
-    let user_address = parse_address(user_address)?;
-    let asset_address = parse_address(asset_address)?;
-
     let row = user_asset_balance::Entity::find()
-        .filter(user_asset_balance::Column::UserAddress.eq(user_address.as_str()))
-        .filter(user_asset_balance::Column::AssetAddress.eq(asset_address.as_str()))
+        .filter(user_asset_balance::Column::UserAddress.eq(user_address.canonical()))
+        .filter(user_asset_balance::Column::AssetAddress.eq(asset_address.canonical()))
         .one(ctx.db.as_ref())
         .await?;
     Ok(row)
@@ -142,19 +138,14 @@ pub async fn get_user_asset_balance(
 #[measure(record_db_time)]
 pub async fn sync_user_asset_total(
     ctx: &PersistCtx,
-    user_address: &str,
-    asset_address: &str,
+    user_address: Address,
+    asset_address: Address,
     new_total: U256,
 ) -> Result<(), PersistDbError> {
-    let user_address = parse_address(user_address)?.into_inner();
-    let asset_address = parse_address(asset_address)?.into_inner();
-
     ctx.db
         .transaction(|txn| {
-            let user_address = user_address.clone();
-            let asset_address = asset_address.clone();
             Box::pin(async move {
-                let balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
+                let balance = get_user_balance_on(txn, user_address, asset_address).await?;
                 let locked = balance
                     .locked
                     .parse::<U256>()
@@ -166,13 +157,13 @@ pub async fn sync_user_asset_total(
                     warn!(
                         "sync_user_asset_total: on-chain total {new_total} for user {user_address} asset {asset_address} is below locked {locked}; pinning total to locked (under-collateralised)"
                     );
-                    crate::metrics::record_undercollateralized_sync(&asset_address);
+                    crate::metrics::record_undercollateralized_sync(&asset_address.canonical());
                 }
 
                 update_user_balance_and_version_on(
                     txn,
-                    &user_address,
-                    &asset_address,
+                    user_address,
+                    asset_address,
                     balance.version,
                     effective_total,
                     locked,

@@ -1,33 +1,19 @@
 use crate::error::{ServiceError, ServiceResult};
 use alloy::primitives::U256;
 use anyhow::anyhow;
-use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use entities::user_transaction;
 use rpc::UserTransactionInfo;
 use sea_orm::{Database, DatabaseConnection};
 use std::sync::Arc;
 
+pub mod canonical;
 pub mod mapper;
 pub mod repo;
+pub mod rows;
 
 #[derive(Clone)]
 pub struct PersistCtx {
     pub db: Arc<DatabaseConnection>,
-}
-
-pub struct CycleGuaranteeData {
-    pub guarantee_id: String,
-    pub cycle_id: String,
-    pub req_id: U256,
-    pub version: u64,
-    pub from: String,
-    pub to: String,
-    pub asset: String,
-    pub value: U256,
-    pub start_ts: chrono::NaiveDateTime,
-    pub cert: String,
-    pub request: Option<String>,
-    pub settlement_status: GuaranteeSettlementStatus,
 }
 
 impl PersistCtx {

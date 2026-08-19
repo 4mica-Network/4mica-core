@@ -3,7 +3,7 @@
 //! adversarial inputs. These exercise `repo::` directly against the DB — no
 //! service logic, no chain, no HTTP.
 
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use chrono::Utc;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
 use core_service::error::PersistDbError;
@@ -23,7 +23,7 @@ mod common;
 use common::cycle_fixtures::{create_frozen_cycle, setup_cycle_service};
 use common::db::{clear_all_tables, setup_db_test_env};
 use common::fixtures::{
-    ensure_user, ensure_user_with_collateral, random_address, read_collateral,
+    ensure_user, ensure_user_with_collateral, normalize_address, random_address, read_collateral,
     set_locked_collateral,
 };
 use core_service::auth::constants::{SCOPE_GUARANTEE_ISSUE, SCOPE_PAYMENT_READ};
@@ -67,13 +67,13 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
     ];
     repo::upsert_wallet_role(
         &ctx,
-        &stored_address,
+        stored_address.parse()?,
         ADMIN_WALLET_ROLE,
         &scopes,
         DEFAULT_WALLET_STATUS,
     )
     .await?;
-    let row = repo::get_wallet_role(&ctx, &presented_address)
+    let row = repo::get_wallet_role(&ctx, presented_address.parse()?)
         .await?
         .expect("wallet role should be retrievable by mixed-case address");
     assert_eq!(row.role, ADMIN_WALLET_ROLE);
@@ -90,36 +90,35 @@ async fn wallet_role_lookup_accepts_mixed_case_wallet_address() -> anyhow::Resul
 async fn weird_identifiers_do_not_crash() -> anyhow::Result<()> {
     let (_cfg, ctx) = setup_db_test_env().await?;
 
-    let strange_user = "'; DROP TABLE users; --".to_string();
-    let strange_recipient = "0xdeadbeef::weird".to_string();
-
-    match repo::deposit(
-        &ctx,
-        strange_user.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
-        U256::from(1u64),
-    )
-    .await
-    {
-        Err(PersistDbError::InvariantViolation(_)) => {}
-        Ok(_) => panic!("deposit unexpectedly succeeded for non-existent user"),
-        Err(e) => panic!("unexpected error from deposit: {e}"),
+    // Address validation lives at the boundary now: the repo layer takes `Address`, so a
+    // malformed identifier is refused here and can never reach a query.
+    for weird in ["'; DROP TABLE users; --", "0xdeadbeef::weird", "", "0xABCD"] {
+        assert!(
+            weird.parse::<Address>().is_err(),
+            "{weird:?} must not parse as an address"
+        );
     }
 
-    match repo::submit_payment_transaction(
+    // Free-text columns still take arbitrary strings, so an odd transaction id must round-trip
+    // safely rather than break the statement.
+    let user = random_address();
+    ensure_user_with_collateral(&ctx, &user, U256::from(5u64)).await?;
+    repo::submit_payment_transaction(
         &ctx,
-        strange_user.clone(),
-        strange_recipient.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
-        "tx::id::odd".into(),
+        user.parse()?,
+        random_address().parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
+        "'; DROP TABLE users; --".into(),
         U256::from(1u64),
     )
-    .await
-    {
-        Err(PersistDbError::InvariantViolation(_)) => {}
-        Ok(_) => panic!("submit_payment_transaction unexpectedly succeeded for non-existent user"),
-        Err(e) => panic!("unexpected error from submit_payment_transaction: {e}"),
-    }
+    .await?;
+
+    let stored = user_transaction::Entity::find()
+        .filter(user_transaction::Column::TxId.eq("'; DROP TABLE users; --"))
+        .one(ctx.db.as_ref())
+        .await?
+        .expect("the odd transaction id is stored verbatim");
+    assert_eq!(stored.user_address, normalize_address(&user)?);
 
     Ok(())
 }
@@ -134,8 +133,8 @@ async fn withdrawal_exceeding_free_is_recorded_not_rejected() -> anyhow::Result<
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         1,
         U256::from(10u64),
     )
@@ -168,23 +167,25 @@ async fn withdrawal_request_bumps_balance_version_to_serialise_with_locks() -> a
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(100u64)).await?;
     set_locked_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS, U256::from(30u64)).await?;
 
-    let before = repo::get_user_asset_balance(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS)
-        .await?
-        .expect("balance exists");
+    let before =
+        repo::get_user_asset_balance(&ctx, user_addr.parse()?, DEFAULT_ASSET_ADDRESS.parse()?)
+            .await?
+            .expect("balance exists");
 
     // free = 100 - 30 = 70; a 50 request is within free.
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         1,
         U256::from(50u64),
     )
     .await?;
 
-    let after = repo::get_user_asset_balance(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS)
-        .await?
-        .expect("balance exists");
+    let after =
+        repo::get_user_asset_balance(&ctx, user_addr.parse()?, DEFAULT_ASSET_ADDRESS.parse()?)
+            .await?
+            .expect("balance exists");
 
     assert!(
         after.version > before.version,
@@ -205,8 +206,8 @@ async fn duplicate_withdrawal_request_updates_existing_pending() -> anyhow::Resu
 
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         1,
         U256::from(10u64),
     )
@@ -227,8 +228,8 @@ async fn duplicate_withdrawal_request_updates_existing_pending() -> anyhow::Resu
 
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         2,
         U256::from(5u64),
     )
@@ -270,8 +271,8 @@ async fn request_withdrawal_after_cancelled_creates_new_pending() -> anyhow::Res
 
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         1,
         U256::from(10u64),
     )
@@ -285,12 +286,12 @@ async fn request_withdrawal_after_cancelled_creates_new_pending() -> anyhow::Res
         .expect("First withdrawal should exist")
         .id;
 
-    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.parse()?, DEFAULT_ASSET_ADDRESS.parse()?).await?;
 
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         2,
         U256::from(5u64),
     )
@@ -330,8 +331,8 @@ async fn request_withdrawal_after_executed_creates_new_pending() -> anyhow::Resu
 
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         1,
         U256::from(8u64),
     )
@@ -347,16 +348,16 @@ async fn request_withdrawal_after_executed_creates_new_pending() -> anyhow::Resu
 
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(8u64),
     )
     .await?;
 
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         2,
         U256::from(5u64),
     )
@@ -400,8 +401,8 @@ async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(5u64)).await?;
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         1,
         U256::from(5u64),
     )
@@ -410,8 +411,8 @@ async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     // First finalize succeeds
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(5u64),
     )
     .await?;
@@ -419,8 +420,8 @@ async fn finalize_withdrawal_twice_second_call_errors() -> anyhow::Result<()> {
     // Second finalize should now ERROR (no pending withdrawal left)
     let res = repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(5u64),
     )
     .await;
@@ -450,8 +451,8 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
     // Create and verify it's Pending
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         12345,
         U256::from(2u64),
     )
@@ -464,7 +465,7 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
     assert_eq!(w1.status, WithdrawalStatus::Pending);
 
     // Cancel it
-    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.parse()?, DEFAULT_ASSET_ADDRESS.parse()?).await?;
     let w2 = withdrawal::Entity::find_by_id(w1.id.clone())
         .one(ctx.db.as_ref())
         .await?
@@ -474,8 +475,8 @@ async fn withdrawal_request_cancel_then_finalize_errors() -> anyhow::Result<()> 
     // Finalize after cancel should now ERROR
     let res = repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(2u64),
     )
     .await;
@@ -506,16 +507,16 @@ async fn finalize_withdrawal_reduces_collateral() -> anyhow::Result<()> {
 
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         123,
         U256::from(5u64),
     )
     .await?;
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(3u64),
     )
     .await?;
@@ -538,8 +539,8 @@ async fn finalize_without_any_request_errors_and_preserves_collateral() -> anyho
     // No request exists; finalize must ERROR now
     let res = repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(3u64),
     )
     .await;
@@ -567,22 +568,22 @@ async fn cancel_after_finalize_does_not_change_executed() -> anyhow::Result<()> 
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(6u64)).await?;
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         111,
         U256::from(5u64),
     )
     .await?;
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(5u64),
     )
     .await?;
 
     // Calling cancel afterward should be a no-op on Executed withdrawals
-    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.parse()?, DEFAULT_ASSET_ADDRESS.parse()?).await?;
 
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr))
@@ -604,15 +605,15 @@ async fn double_cancel_is_idempotent() -> anyhow::Result<()> {
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(8u64)).await?;
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         222,
         U256::from(3u64),
     )
     .await?;
 
-    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
-    repo::cancel_withdrawal(&ctx, user_addr.clone(), DEFAULT_ASSET_ADDRESS.to_string()).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.parse()?, DEFAULT_ASSET_ADDRESS.parse()?).await?;
+    repo::cancel_withdrawal(&ctx, user_addr.parse()?, DEFAULT_ASSET_ADDRESS.parse()?).await?;
 
     let w = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(user_addr))
@@ -632,8 +633,8 @@ async fn finalize_withdrawal_exceeding_requested_amount_takes_minimum() -> anyho
     ensure_user_with_collateral(&ctx, &user_addr, U256::from(10u64)).await?;
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         333,
         U256::from(2u64),
     )
@@ -641,8 +642,8 @@ async fn finalize_withdrawal_exceeding_requested_amount_takes_minimum() -> anyho
 
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(5u64),
     )
     .await?;
@@ -689,8 +690,8 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
     // user requests 8
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         42,
         U256::from(8u64),
     )
@@ -699,8 +700,8 @@ async fn finalize_withdrawal_records_executed_amount_and_updates_collateral() ->
     // but chain only executes 5
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(5u64),
     )
     .await?;
@@ -746,16 +747,16 @@ async fn finalize_withdrawal_with_full_execution_still_sets_executed_amount() ->
     // request 4, chain executes full 4
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         99,
         U256::from(4u64),
     )
     .await?;
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         U256::from(4u64),
     )
     .await?;
@@ -953,8 +954,8 @@ async fn deposit_and_withdraw_multiple_assets_updates_collateral_correctly() -> 
     ensure_user(&ctx, &user_addr).await?;
     repo::deposit(
         &ctx,
-        user_addr.clone(),
-        eth_asset.clone(),
+        user_addr.parse()?,
+        eth_asset.parse()?,
         U256::from(100u64),
     )
     .await?;
@@ -962,8 +963,8 @@ async fn deposit_and_withdraw_multiple_assets_updates_collateral_correctly() -> 
     // Deposit stablecoin: 200 units
     repo::deposit(
         &ctx,
-        user_addr.clone(),
-        stablecoin_asset.clone(),
+        user_addr.parse()?,
+        stablecoin_asset.parse()?,
         U256::from(200u64),
     )
     .await?;
@@ -983,8 +984,8 @@ async fn deposit_and_withdraw_multiple_assets_updates_collateral_correctly() -> 
     // Request withdrawal for ETH: 30 units
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        eth_asset.clone(),
+        user_addr.parse()?,
+        eth_asset.parse()?,
         1,
         U256::from(30u64),
     )
@@ -993,8 +994,8 @@ async fn deposit_and_withdraw_multiple_assets_updates_collateral_correctly() -> 
     // Request withdrawal for stablecoin: 50 units
     repo::request_withdrawal(
         &ctx,
-        user_addr.clone(),
-        stablecoin_asset.clone(),
+        user_addr.parse()?,
+        stablecoin_asset.parse()?,
         2,
         U256::from(50u64),
     )
@@ -1028,8 +1029,8 @@ async fn deposit_and_withdraw_multiple_assets_updates_collateral_correctly() -> 
     // Finalize ETH withdrawal: execute 25 units (less than requested 30)
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        eth_asset.clone(),
+        user_addr.parse()?,
+        eth_asset.parse()?,
         U256::from(25u64),
     )
     .await?;
@@ -1037,8 +1038,8 @@ async fn deposit_and_withdraw_multiple_assets_updates_collateral_correctly() -> 
     // Finalize stablecoin withdrawal: execute full 50 units
     repo::finalize_withdrawal(
         &ctx,
-        user_addr.clone(),
-        stablecoin_asset.clone(),
+        user_addr.parse()?,
+        stablecoin_asset.parse()?,
         U256::from(50u64),
     )
     .await?;
@@ -1104,18 +1105,18 @@ async fn duplicate_transaction_id_is_noop() -> anyhow::Result<()> {
 
     repo::submit_payment_transaction(
         &ctx,
-        user_addr.clone(),
-        recipient.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        recipient.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         tx_id.clone(),
         U256::from(2u64),
     )
     .await?;
     repo::submit_payment_transaction(
         &ctx,
-        user_addr.clone(),
-        recipient,
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        recipient.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         tx_id.clone(),
         U256::from(2u64),
     )
@@ -1141,16 +1142,16 @@ async fn fail_transaction_twice_is_idempotent() -> anyhow::Result<()> {
     let tx_id = Uuid::new_v4().to_string();
     repo::submit_payment_transaction(
         &ctx,
-        user_addr.clone(),
-        recipient,
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        recipient.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         tx_id.clone(),
         U256::from(3u64),
     )
     .await?;
 
-    repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
-    repo::fail_transaction(&ctx, user_addr.clone(), tx_id.clone()).await?;
+    repo::fail_transaction(&ctx, user_addr.parse()?, tx_id.clone()).await?;
+    repo::fail_transaction(&ctx, user_addr.parse()?, tx_id.clone()).await?;
 
     assert_eq!(
         read_collateral(&ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?,
@@ -1172,7 +1173,7 @@ async fn fail_transaction_missing_tx_returns_err() -> anyhow::Result<()> {
     ensure_user(&ctx, &user_addr).await?;
 
     let missing_tx_id = Uuid::new_v4().to_string();
-    let res = repo::fail_transaction(&ctx, user_addr.clone(), missing_tx_id.clone()).await;
+    let res = repo::fail_transaction(&ctx, user_addr.parse()?, missing_tx_id.clone()).await;
 
     match res {
         Err(PersistDbError::TransactionNotFound(id)) => assert_eq!(id, missing_tx_id),
@@ -1199,16 +1200,16 @@ async fn fail_transaction_wrong_user_returns_err_and_no_changes() -> anyhow::Res
     let tx_id = Uuid::new_v4().to_string();
     repo::submit_payment_transaction(
         &ctx,
-        owner_addr.clone(),
-        recipient,
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        owner_addr.parse()?,
+        recipient.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         tx_id.clone(),
         U256::from(3u64),
     )
     .await?;
 
     // Attempt to fail using the WRONG user address
-    let res = repo::fail_transaction(&ctx, other_addr.clone(), tx_id.clone()).await;
+    let res = repo::fail_transaction(&ctx, other_addr.parse()?, tx_id.clone()).await;
     assert!(
         res.is_err(),
         "expected error when failing tx for the wrong user"
@@ -1247,9 +1248,9 @@ async fn mark_recorded_accepts_confirmed_status() -> anyhow::Result<()> {
     let tx_id = Uuid::new_v4().to_string();
     repo::submit_payment_transaction(
         &ctx,
-        user_addr.clone(),
-        recipient,
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        recipient.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         tx_id.clone(),
         U256::from(3u64),
     )
@@ -1287,9 +1288,9 @@ async fn payment_recording_claim_is_atomic() -> anyhow::Result<()> {
     repo::submit_pending_payment_transaction(
         &ctx,
         repo::PendingPaymentInput {
-            user_address: user_addr,
-            recipient_address: recipient,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            user_address: user_addr.parse()?,
+            recipient_address: recipient.parse()?,
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             transaction_id: tx_id.clone(),
             amount: U256::from(3u64),
             block_number: 1,
@@ -1322,9 +1323,9 @@ async fn finalized_transaction_cannot_be_marked_reverted() -> anyhow::Result<()>
     repo::submit_pending_payment_transaction(
         &ctx,
         repo::PendingPaymentInput {
-            user_address: user_addr,
-            recipient_address: recipient,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            user_address: user_addr.parse()?,
+            recipient_address: recipient.parse()?,
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             transaction_id: tx_id.clone(),
             amount: U256::from(3u64),
             block_number: 1,
@@ -1362,9 +1363,9 @@ async fn replacing_cycle_exposure_edges_is_idempotent() -> anyhow::Result<()> {
 
     let edge = repo::CycleExposureEdgeInput {
         cycle_id: cycle_id.clone(),
-        payer: payer.clone(),
-        payee: payee.clone(),
-        asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+        payer: payer.parse()?,
+        payee: payee.parse()?,
+        asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
         gross_amount: U256::from(5u64),
         finalized_payable_amount: U256::from(5u64),
         disputed_amount: U256::ZERO,
@@ -1377,7 +1378,7 @@ async fn replacing_cycle_exposure_edges_is_idempotent() -> anyhow::Result<()> {
 
     let edges = repo::list_exposure_edges_for_cycle_on(ctx.db.as_ref(), &cycle_id).await?;
     assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0].gross_amount, "5");
+    assert_eq!(edges[0].gross_amount, U256::from(5u64));
 
     Ok(())
 }
@@ -1397,8 +1398,8 @@ async fn replacing_participant_positions_removes_stale_rows() -> anyhow::Result<
         vec![
             repo::CycleParticipantPositionInput {
                 cycle_id: cycle_id.clone(),
-                participant: first,
-                asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+                participant: first.parse()?,
+                asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
                 gross_outgoing: U256::from(2u64),
                 gross_incoming: U256::ZERO,
                 net_debit: U256::from(2u64),
@@ -1408,8 +1409,8 @@ async fn replacing_participant_positions_removes_stale_rows() -> anyhow::Result<
             },
             repo::CycleParticipantPositionInput {
                 cycle_id: cycle_id.clone(),
-                participant: second.clone(),
-                asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+                participant: second.parse()?,
+                asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
                 gross_outgoing: U256::ZERO,
                 gross_incoming: U256::from(2u64),
                 net_debit: U256::ZERO,
@@ -1426,8 +1427,8 @@ async fn replacing_participant_positions_removes_stale_rows() -> anyhow::Result<
         &cycle_id,
         vec![repo::CycleParticipantPositionInput {
             cycle_id: cycle_id.clone(),
-            participant: second,
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            participant: second.parse()?,
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             gross_outgoing: U256::ZERO,
             gross_incoming: U256::from(3u64),
             net_debit: U256::ZERO,
@@ -1441,7 +1442,7 @@ async fn replacing_participant_positions_removes_stale_rows() -> anyhow::Result<
     let positions =
         repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), &cycle_id).await?;
     assert_eq!(positions.len(), 1);
-    assert_eq!(positions[0].net_credit, "3");
+    assert_eq!(positions[0].net_credit, U256::from(3u64));
 
     Ok(())
 }
@@ -1452,9 +1453,13 @@ async fn get_user_balance_on_fails_for_nonexistent_user() -> anyhow::Result<()> 
     let (_cfg, ctx) = setup_db_test_env().await?;
     let addr = random_address();
 
-    let err = repo::get_user_balance_on(ctx.db.as_ref(), &addr, DEFAULT_ASSET_ADDRESS)
-        .await
-        .expect_err("must fail for unknown user");
+    let err = repo::get_user_balance_on(
+        ctx.db.as_ref(),
+        addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
+    )
+    .await
+    .expect_err("must fail for unknown user");
 
     assert!(
         matches!(err, PersistDbError::UserNotFound(_)),
@@ -1471,11 +1476,11 @@ async fn update_user_suspension_increments_version() -> anyhow::Result<()> {
     let addr = random_address();
     ensure_user(&ctx, &addr).await?;
 
-    let after_suspend = repo::update_user_suspension(&ctx, &addr, true).await?;
+    let after_suspend = repo::update_user_suspension(&ctx, addr.parse()?, true).await?;
     assert!(after_suspend.is_suspended);
     assert_eq!(after_suspend.version, 1);
 
-    let after_unsuspend = repo::update_user_suspension(&ctx, &addr, false).await?;
+    let after_unsuspend = repo::update_user_suspension(&ctx, addr.parse()?, false).await?;
     assert!(!after_unsuspend.is_suspended);
     assert_eq!(after_unsuspend.version, 2);
 
@@ -1495,7 +1500,7 @@ async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> 
         "0xblock",
         "0xtx",
         0,
-        "0x0000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000001".parse()?,
         "{}",
     )
     .await?;
@@ -1508,7 +1513,7 @@ async fn store_blockchain_event_duplicate_returns_false() -> anyhow::Result<()> 
         "0xblock",
         "0xtx",
         0,
-        "0x0000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000001".parse()?,
         "{}",
     )
     .await?;

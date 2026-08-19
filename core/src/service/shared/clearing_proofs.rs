@@ -5,12 +5,12 @@ use std::sync::Arc;
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use crypto::merkle::{LeafHash, MerkleTree};
-use entities::cycle_participant_position;
 use entities::sea_orm_active_enums::ParticipantCycleRole;
 
 use crate::error::{ServiceError, ServiceResult};
 use crate::evm::{self, clearing::hash_participant_leaf};
 use crate::persist::repo;
+use crate::persist::rows::{ClearingBatch, ParticipantPosition};
 use crate::service::ctx::Ctx;
 
 /// The clearing role encoded into a leaf, matching the ClearingHouse contract's
@@ -62,14 +62,17 @@ pub fn participant_leaves_for_positions(
     chain_id: u64,
     clearing_house_address: Address,
     cycle_id: &str,
-    positions: Vec<cycle_participant_position::Model>,
+    positions: Vec<ParticipantPosition>,
 ) -> ServiceResult<Vec<ParticipantLeaf>> {
     let mut leaves = Vec::new();
     for position in positions {
-        let asset_address = evm::parse_optional_address("cycle asset", &position.asset_address)?;
-        let participant = evm::parse_optional_address("cycle participant", &position.participant)?;
-        let net_debit = evm::parse_u256("cycle net debit", &position.net_debit)?;
-        let net_credit = evm::parse_u256("cycle net credit", &position.net_credit)?;
+        let ParticipantPosition {
+            participant,
+            asset_address,
+            net_debit,
+            net_credit,
+            ..
+        } = position;
         if net_debit > U256::ZERO {
             leaves.push(ParticipantLeaf {
                 participant,
@@ -171,7 +174,7 @@ impl ClearingProofOps {
         let batch = self.require_clearing_batch(cycle_id).await?;
 
         let participant_address = evm::parse_optional_address("cycle participant", participant)?;
-        let stored_root = evm::parse_bytes32("clearing batch Merkle root", &batch.merkle_root)?;
+        let stored_root = batch.merkle_root;
         let positions =
             repo::list_participant_positions_for_cycle_on(self.ctx.db(), cycle_id).await?;
         let participant_leaves = participant_leaves_for_positions(
@@ -246,10 +249,7 @@ impl ClearingProofOps {
         Ok(proofs)
     }
 
-    async fn require_clearing_batch(
-        &self,
-        cycle_id: &str,
-    ) -> ServiceResult<entities::clearing_batch::Model> {
+    async fn require_clearing_batch(&self, cycle_id: &str) -> ServiceResult<ClearingBatch> {
         repo::get_clearing_batch_by_cycle_on(self.ctx.db(), cycle_id)
             .await?
             .ok_or_else(|| {
@@ -261,7 +261,7 @@ impl ClearingProofOps {
 
     async fn stored_merkle_root(&self, cycle_id: &str) -> ServiceResult<B256> {
         let batch = self.require_clearing_batch(cycle_id).await?;
-        evm::parse_bytes32("clearing batch Merkle root", &batch.merkle_root)
+        Ok(batch.merkle_root)
     }
 
     fn require_matching_root(
@@ -282,7 +282,6 @@ impl ClearingProofOps {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use crypto::merkle::{MerkleTree, verify_proof};
     use entities::sea_orm_active_enums::ParticipantCycleStatus;
 
@@ -343,21 +342,18 @@ mod tests {
         net_credit: U256,
         role: ParticipantCycleRole,
         status: ParticipantCycleStatus,
-    ) -> cycle_participant_position::Model {
-        let now = Utc::now().naive_utc();
-        cycle_participant_position::Model {
+    ) -> ParticipantPosition {
+        ParticipantPosition {
             cycle_id: cycle_id.to_string(),
-            participant: participant.to_string(),
-            asset_address: asset.to_string(),
-            gross_outgoing: net_debit.to_string(),
-            gross_incoming: net_credit.to_string(),
-            net_debit: net_debit.to_string(),
-            net_credit: net_credit.to_string(),
+            participant: participant.parse().expect("valid participant"),
+            asset_address: asset.parse().expect("valid asset"),
+            gross_outgoing: net_debit,
+            gross_incoming: net_credit,
+            net_debit,
+            net_credit,
             role,
             status,
             settlement_tx_hash: None,
-            created_at: now,
-            updated_at: now,
         }
     }
 }

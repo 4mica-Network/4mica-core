@@ -63,8 +63,8 @@ impl EthereumEventHandler for EventHandlerService {
         if self.ctx.chain.stablecoin_a_token(asset).await?.is_some() {
             repo::mark_withdrawal_executed_with_event(
                 &self.ctx.persist,
-                user.to_string(),
-                asset.to_string(),
+                user,
+                asset,
                 amount,
                 Some(&meta),
             )
@@ -74,8 +74,8 @@ impl EthereumEventHandler for EventHandlerService {
         } else {
             repo::finalize_withdrawal_with_event(
                 &self.ctx.persist,
-                user.to_string(),
-                asset.to_string(),
+                user,
+                asset,
                 amount,
                 Some(&meta),
             )
@@ -100,8 +100,8 @@ impl EthereumEventHandler for EventHandlerService {
         let meta = self.event_meta_from_log(&log)?;
         repo::request_withdrawal_with_event(
             &self.ctx.persist,
-            user.to_string(),
-            asset.to_string(),
+            user,
+            asset,
             when.to(),
             amount,
             Some(&meta),
@@ -116,13 +116,7 @@ impl EthereumEventHandler for EventHandlerService {
         info!("Withdrawal canceled by {user:?}, asset={asset}");
 
         let meta = self.event_meta_from_log(&log)?;
-        repo::cancel_withdrawal_with_event(
-            &self.ctx.persist,
-            user.to_string(),
-            asset.to_string(),
-            Some(&meta),
-        )
-        .await?;
+        repo::cancel_withdrawal_with_event(&self.ctx.persist, user, asset, Some(&meta)).await?;
         Ok(())
     }
 
@@ -143,7 +137,7 @@ impl EthereumEventHandler for EventHandlerService {
         } = *log.log_decode()?.data();
         let tx_hash = tx_hash_from_log(&log)?;
         self.clearing
-            .process_paid_debtor(cycleId, &debtor.to_string(), &tx_hash)
+            .process_paid_debtor(cycleId, debtor, &tx_hash)
             .await
             .map_err(BlockchainListenerError::from)
     }
@@ -160,7 +154,7 @@ impl EthereumEventHandler for EventHandlerService {
         let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
         self.clearing
-            .process_credit_claim(cycleId, creditor.to_string(), meta)
+            .process_credit_claim(cycleId, creditor, meta)
             .await
             .map_err(BlockchainListenerError::from)?;
         // Reconcile the creditor's total from chain
@@ -182,7 +176,7 @@ impl EthereumEventHandler for EventHandlerService {
         let meta = self.event_meta_from_log(&log)?;
         let block_number = block_number_from_log(&log)?;
         self.clearing
-            .process_defaulted_debtor(cycleId, debtor.to_string(), meta)
+            .process_defaulted_debtor(cycleId, debtor, meta)
             .await
             .map_err(BlockchainListenerError::from)?;
         // Reconcile the debtor's total from chain
@@ -339,15 +333,9 @@ impl EventHandlerService {
 
         // A deposit may be a user's first interaction, so ensure the user row exists before writing
         // its balance (sync is the sole balance writer on the deposit path now).
-        repo::ensure_user_exists_on(self.ctx.db(), &user.to_string()).await?;
+        repo::ensure_user_exists_on(self.ctx.db(), user).await?;
 
-        repo::sync_user_asset_total(
-            &self.ctx.persist,
-            &user.to_string(),
-            &asset.to_string(),
-            on_chain_total,
-        )
-        .await?;
+        repo::sync_user_asset_total(&self.ctx.persist, user, asset, on_chain_total).await?;
 
         Ok(())
     }

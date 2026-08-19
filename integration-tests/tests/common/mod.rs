@@ -421,7 +421,7 @@ async fn ensure_wallet_role(address: &str, role: &str, scopes: &[String]) -> any
     let ctx = PersistCtx::new()
         .await
         .context("connect to core database")?;
-    repo::upsert_wallet_role(&ctx, address, role, scopes, WALLET_STATUS_ACTIVE)
+    repo::upsert_wallet_role(&ctx, address.parse()?, role, scopes, WALLET_STATUS_ACTIVE)
         .await
         .context("upsert wallet role")?;
     Ok(())
