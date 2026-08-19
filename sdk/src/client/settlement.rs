@@ -196,8 +196,7 @@ where
     }
 
     /// Claims `creditor`'s committed net credit with the caller's own transaction, paying the
-    /// creditor rather than the caller. When `creditor` is the caller themselves, the direct
-    /// `claimNetCredit` entrypoint is used instead of `claimNetCreditFor`.
+    /// creditor rather than the caller — who may of course be the same account.
     pub async fn claim_net_credit_self_funded_for(
         &self,
         cycle_id: String,
@@ -210,15 +209,9 @@ where
             creditor,
             ClearingSettlementError::InvalidParams,
         )?;
-        let sponsored = creditor != self.ctx.signer_address();
-        let function_name = if sponsored {
-            "claimNetCreditFor"
-        } else {
-            "claimNetCredit"
-        };
-        if action.function_name != function_name {
+        if action.function_name != "claimNetCreditFor" {
             return Err(ClearingSettlementError::InvalidParams(format!(
-                "core prepared {}, expected {function_name}",
+                "core prepared {}, expected claimNetCreditFor",
                 action.function_name
             )));
         }
@@ -228,17 +221,10 @@ where
             .get_clearing_house_write_contract(call.contract_address)
             .await?;
 
-        let sent = if sponsored {
-            contract
-                .claimNetCreditFor(creditor, call.cycle_id, call.amount, call.proof)
-                .send()
-                .await
-        } else {
-            contract
-                .claimNetCredit(call.cycle_id, call.amount, call.proof)
-                .send()
-                .await
-        };
+        let sent = contract
+            .claimNetCreditFor(creditor, call.cycle_id, call.amount, call.proof)
+            .send()
+            .await;
         let receipt = await_receipt(sent).await?;
         if !receipt.status() {
             return Err(ClearingSettlementError::RevertedOnChain {

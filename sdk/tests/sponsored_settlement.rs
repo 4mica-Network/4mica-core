@@ -1,11 +1,10 @@
-//! Tests for claiming a net credit on someone else's behalf.
+//! Tests for claiming a net credit — one's own or someone else's.
 //!
-//! `claimNetCreditFor` pays the address the committed Merkle leaf names, so a submitter can neither
-//! redirect the payout nor inflate it — which is what makes it sponsorable. The contract enforces
-//! that (see `contracts/test/ClearingHouse.t.sol`); what these cover is the *SDK* half, where the
-//! failure mode is quieter: sending the signer's own address where the caller named someone else,
-//! which on-chain just reverts as an unprovable claim. Self-claims stay on the direct
-//! `claimNetCredit` entrypoint, so these also pin which of the two selectors goes out when.
+//! `claimNetCreditFor` (the only claim entrypoint) pays the address the committed Merkle leaf
+//! names, so a submitter can neither redirect the payout nor inflate it — which is what makes it
+//! sponsorable. The contract enforces that (see `contracts/test/ClearingHouse.t.sol`); what these
+//! cover is the *SDK* half, where the failure mode is quieter: sending the signer's own address
+//! where the caller named someone else, which on-chain just reverts as an unprovable claim.
 //!
 //! With a facilitator configured the claim is routed there instead — the facilitator's relayer
 //! pays the gas — falling back to the caller's own transaction only when the facilitator would
@@ -20,7 +19,7 @@ use axum::{Json, Router, extract::Path, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
 use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
 use sdk_4mica::client::model::ClaimPath;
-use sdk_4mica::contract::ClearingHouse::{claimNetCreditCall, claimNetCreditForCall};
+use sdk_4mica::contract::ClearingHouse::claimNetCreditForCall;
 use sdk_4mica::error::{ClearingSettlementError, SponsorshipError};
 use sdk_4mica::{Client, ConfigBuilder};
 use serde_json::{Value, json};
@@ -180,19 +179,11 @@ async fn spawn(router: Router) -> anyhow::Result<String> {
 }
 
 /// A client against a mock chain and a mock core that answers the clearing-action route the way
-/// the real one does: the direct entrypoint for the signer's own claim, the sponsored one for
-/// anyone else's.
+/// the real one does: `claimNetCreditFor` for whichever participant was asked about.
 async fn test_client() -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc<Mutex<ChainLog>>)>
 {
-    let signer = PrivateKeySigner::random();
-    let me = signer.address().to_string();
-    test_client_responding(signer, move |participant: String| {
-        let function_name = if participant == me {
-            "claimNetCredit"
-        } else {
-            "claimNetCreditFor"
-        };
-        claim_action(&participant, function_name)
+    test_client_responding(PrivateKeySigner::random(), |participant: String| {
+        claim_action(&participant, "claimNetCreditFor")
     })
     .await
 }
@@ -227,20 +218,11 @@ async fn test_client_with_facilitator(
     Arc<Mutex<ChainLog>>,
     FacilitatorLog,
 )> {
-    let signer = PrivateKeySigner::random();
-    let me = signer.address().to_string();
     let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
     let facilitator_url = spawn_facilitator(response, facilitator_log.clone()).await?;
     let (client, signer_address, chain_log) = test_client_configured(
-        signer,
-        move |participant: String| {
-            let function_name = if participant == me {
-                "claimNetCredit"
-            } else {
-                "claimNetCreditFor"
-            };
-            claim_action(&participant, function_name)
-        },
+        PrivateKeySigner::random(),
+        |participant: String| claim_action(&participant, "claimNetCreditFor"),
         Some(facilitator_url),
     )
     .await?;
@@ -355,10 +337,9 @@ async fn a_sponsored_claim_names_the_creditor_not_the_signer() -> anyhow::Result
     Ok(())
 }
 
-/// Claiming for oneself stays on the direct `claimNetCredit` entrypoint, so both on-chain paths
-/// keep first-party coverage and a self-claim carries no redundant creditor argument.
+/// A self-claim is just `claimNetCreditFor` naming the signer — there is no separate entrypoint.
 #[tokio::test]
-async fn a_self_claim_uses_the_direct_entrypoint() -> anyhow::Result<()> {
+async fn a_self_claim_names_the_signer() -> anyhow::Result<()> {
     let (client, signer, log) = test_client().await?;
 
     client
@@ -370,8 +351,8 @@ async fn a_self_claim_uses_the_direct_entrypoint() -> anyhow::Result<()> {
     assert_eq!(log.action_requests, vec![signer.to_string()]);
     let sent = log.sole_broadcast();
     assert_eq!(sent.to(), Some(CLEARING_HOUSE));
-    let call =
-        claimNetCreditCall::abi_decode(sent.input()).expect("expected the direct entrypoint");
+    let call = claimNetCreditForCall::abi_decode(sent.input()).expect("expected claimNetCreditFor");
+    assert_eq!(call.creditor, signer);
     assert_eq!(call.cycleId, CYCLE_ID);
     assert_eq!(call.netCredit, U256::from(AMOUNT));
     Ok(())

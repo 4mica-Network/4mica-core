@@ -71,7 +71,7 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
         .settlement
         .claim_net_credit_action(cycle_id.clone())
         .await?;
-    assert_eq!(claim_action.function_name, "claimNetCredit");
+    assert_eq!(claim_action.function_name, "claimNetCreditFor");
     assert_eq!(U256::from_str(&claim_action.amount)?, amount);
 
     // Creditor claims the net credit on-chain. A successful return is the proof the ClearingHouse

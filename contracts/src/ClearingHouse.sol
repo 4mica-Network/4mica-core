@@ -223,25 +223,18 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         emit DebtorPaid(cycleId, msg.sender, netDebit);
     }
 
-    function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external nonReentrant {
-        _claimNetCredit(msg.sender, cycleId, netCredit, proof);
-    }
-
     /// @notice Pay out `creditor`'s committed net credit for `cycleId`, whoever submits it.
     /// @dev Permissionless by design: the payout goes to `creditor` and the amount is fixed by the
     /// committed Merkle leaf, so a submitter can neither redirect it nor inflate it — the worst it
     /// can do is not submit. That lets a relayer sponsor the gas without the creditor holding
-    /// native balance or signing anything. A successful claim also marks the creditor resolved, so
-    /// a later `fundCreditorsFromPoolBatch` skips them: whoever submits first decides whether the
-    /// payout lands in the creditor's wallet or back in their Core4Mica collateral.
+    /// native balance or signing anything (a creditor claiming for themselves just passes their
+    /// own address). A successful claim also marks the creditor resolved, so a later
+    /// `fundCreditorsFromPoolBatch` skips them: whoever submits first decides whether the payout
+    /// lands in the creditor's wallet or back in their Core4Mica collateral.
     function claimNetCreditFor(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof)
         external
         nonReentrant
     {
-        _claimNetCredit(creditor, cycleId, netCredit, proof);
-    }
-
-    function _claimNetCredit(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) private {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);
         if (netCredit == 0) revert AmountZero();

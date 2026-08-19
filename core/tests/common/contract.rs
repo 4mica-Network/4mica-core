@@ -298,7 +298,6 @@ sol! {
             uint64 paymentFinalityDeadline
         ) external;
         function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable;
-        function claimNetCredit(bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
         function claimNetCreditFor(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
         function settleDefaultsFromCollateralBatch(bytes32 cycleId, DebtorEntry[] entries) external;
         function fundCreditorsFromPoolBatch(bytes32 cycleId, CreditorEntry[] entries) external;

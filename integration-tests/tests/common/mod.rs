@@ -517,6 +517,28 @@ pub async fn authed_recipient_client(
     Ok((config, client))
 }
 
+/// Authenticated recipient-role client whose sponsored actions route through the facilitator at
+/// `facilitator_url`.
+pub async fn authed_recipient_client_with_facilitator(
+    private_key: &str,
+    facilitator_url: String,
+) -> anyhow::Result<(Config<PrivateKeySigner>, Client<PrivateKeySigner>)> {
+    let scopes = vec![
+        SCOPE_PAYMENT_READ.to_string(),
+        SCOPE_GUARANTEE_ISSUE.to_string(),
+    ];
+    let access_token =
+        login_with_siwe(LOCAL_CORE_URL, private_key, ROLE_RECIPIENT, &scopes).await?;
+    let config = ConfigBuilder::default()
+        .rpc_url(LOCAL_CORE_URL.to_string())
+        .signer(PrivateKeySigner::from_str(private_key)?)
+        .bearer_token(access_token)
+        .facilitator_url(facilitator_url)
+        .build()?;
+    let client = Client::new(config.clone()).await?;
+    Ok((config, client))
+}
+
 /// Core's recorded total collateral for `asset`, used as a deposit baseline.
 pub async fn core_total(client: &Client<PrivateKeySigner>, asset: Address) -> anyhow::Result<U256> {
     Ok(client

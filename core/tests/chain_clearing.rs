@@ -379,7 +379,7 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
         .await?;
     let (_, c_throwaway) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
     let premature = ClearingHouse::new(*env.clearing_house.address(), c_throwaway)
-        .claimNetCredit(c_proof.cycle_id, c_proof.amount, c_proof.proof.clone())
+        .claimNetCreditFor(c, c_proof.cycle_id, c_proof.amount, c_proof.proof.clone())
         .send()
         .await;
     assert!(
@@ -423,13 +423,13 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
 
     // Fully funded now, so the creditor's claim succeeds.
     ClearingHouse::new(*env.clearing_house.address(), c_provider)
-        .claimNetCredit(c_proof.cycle_id, c_proof.amount, c_proof.proof)
+        .claimNetCreditFor(c, c_proof.cycle_id, c_proof.amount, c_proof.proof)
         .send()
         .await
-        .context("c claimNetCredit send")?
+        .context("c claimNetCreditFor send")?
         .watch()
         .await
-        .context("c claimNetCredit confirm")?;
+        .context("c claimNetCreditFor confirm")?;
     mine(&provider, 2).await?;
     poll_position_status(ctx, cycle_id, &lower(&c), ParticipantCycleStatus::Claimed).await?;
 
