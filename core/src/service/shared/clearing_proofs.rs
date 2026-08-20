@@ -168,23 +168,8 @@ impl ClearingProofOps {
         cycle_id: &str,
         participant: &str,
     ) -> ServiceResult<ClearingParticipantProof> {
-        let cycle = repo::get_cycle_by_id(&self.ctx.persist, cycle_id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(format!("Settlement cycle {cycle_id}")))?;
-        let batch = self.require_clearing_batch(cycle_id).await?;
-
+        let (participant_leaves, tree) = self.verified_participant_tree(cycle_id).await?;
         let participant_address = evm::parse_optional_address("cycle participant", participant)?;
-        let stored_root = batch.merkle_root;
-        let positions =
-            repo::list_participant_positions_for_cycle_on(self.ctx.db(), cycle_id).await?;
-        let participant_leaves = participant_leaves_for_positions(
-            self.chain_id(),
-            self.clearing_house_address()?,
-            &cycle.id,
-            positions,
-        )?;
-        let tree = build_participant_merkle_tree(&participant_leaves)?;
-        Self::require_matching_root(&tree, stored_root, cycle_id)?;
 
         let target = participant_leaves
             .iter()
@@ -201,8 +186,8 @@ impl ClearingProofOps {
         })?;
 
         Ok(ClearingParticipantProof {
-            cycle_id: evm::cycle_id_hash(&cycle.id),
-            cycle_id_text: cycle.id,
+            cycle_id: evm::cycle_id_hash(cycle_id),
+            cycle_id_text: cycle_id.to_string(),
             asset_address: target.asset_address,
             participant: target.participant,
             role: target.role.clone(),
@@ -210,7 +195,7 @@ impl ClearingProofOps {
             net_debit: target.net_debit,
             net_credit: target.net_credit,
             leaf: target.leaf.hash(),
-            merkle_root: stored_root,
+            merkle_root: tree.root(),
             proof,
         })
     }
@@ -221,20 +206,7 @@ impl ClearingProofOps {
         &self,
         cycle_id: &str,
     ) -> ServiceResult<Vec<(ParticipantLeaf, Vec<B256>)>> {
-        let cycle = repo::get_cycle_by_id(&self.ctx.persist, cycle_id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(format!("Settlement cycle {cycle_id}")))?;
-        let stored_root = self.stored_merkle_root(cycle_id).await?;
-        let positions =
-            repo::list_participant_positions_for_cycle_on(self.ctx.db(), cycle_id).await?;
-        let participant_leaves = participant_leaves_for_positions(
-            self.chain_id(),
-            self.clearing_house_address()?,
-            &cycle.id,
-            positions,
-        )?;
-        let tree = build_participant_merkle_tree(&participant_leaves)?;
-        Self::require_matching_root(&tree, stored_root, cycle_id)?;
+        let (participant_leaves, tree) = self.verified_participant_tree(cycle_id).await?;
 
         let mut proofs = Vec::with_capacity(participant_leaves.len());
         for leaf in participant_leaves {
@@ -249,7 +221,28 @@ impl ClearingProofOps {
         Ok(proofs)
     }
 
-    async fn require_clearing_batch(&self, cycle_id: &str) -> ServiceResult<ClearingBatch> {
+    /// The cycle's participant leaves and the Merkle tree over them, rebuilt from the stored
+    /// positions and checked against the root its clearing batch committed to.
+    async fn verified_participant_tree(
+        &self,
+        cycle_id: &str,
+    ) -> ServiceResult<(Vec<ParticipantLeaf>, MerkleTree)> {
+        if repo::get_cycle_by_id(&self.ctx.persist, cycle_id)
+            .await?
+            .is_none()
+        {
+            return Err(ServiceError::NotFound(format!(
+                "Settlement cycle {cycle_id}"
+            )));
+        }
+        let stored_root = self.stored_merkle_root(cycle_id).await?;
+        let participant_leaves = self.participant_leaves(cycle_id).await?;
+        let tree = build_participant_merkle_tree(&participant_leaves)?;
+        Self::require_matching_root(&tree, stored_root, cycle_id)?;
+        Ok((participant_leaves, tree))
+    }
+
+    pub async fn require_clearing_batch(&self, cycle_id: &str) -> ServiceResult<ClearingBatch> {
         repo::get_clearing_batch_by_cycle_on(self.ctx.db(), cycle_id)
             .await?
             .ok_or_else(|| {

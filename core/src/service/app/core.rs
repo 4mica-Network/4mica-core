@@ -125,7 +125,7 @@ impl CoreService {
     fn from_ctx(ctx: Arc<Ctx>) -> Self {
         // Layer 3: shared primitives, depending only on the context.
         let cycle_ops = Arc::new(CycleOps::new(ctx.clone()));
-        let guarantee_ops = Arc::new(GuaranteeOps::new(ctx.clone()));
+        let guarantee_ops = Arc::new(GuaranteeOps::new());
         let proof_ops = Arc::new(ClearingProofOps::new(ctx.clone()));
 
         // Layer 2: domain services, which never depend on each other.

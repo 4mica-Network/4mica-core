@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, U256};
 use anyhow::anyhow;
 use chrono::Utc;
 use entities::sea_orm_active_enums::{
@@ -20,7 +20,7 @@ use crate::persist::repo;
 use crate::persist::rows::ClearingBatch;
 use crate::service::ctx::Ctx;
 use crate::service::shared::clearing_proofs::{
-    ClearingParticipantProof, ClearingProofOps, ParticipantLeaf, build_participant_merkle_tree,
+    ClearingParticipantProof, ClearingProofOps, build_participant_merkle_tree,
 };
 use crate::service::shared::cycle::CycleOps;
 use crate::service::shared::{map_transaction_error, settlement_ledger};
@@ -366,13 +366,6 @@ impl NettingService {
         self.proof_ops
             .get_participant_clearing_proof(cycle_id, participant)
             .await
-    }
-
-    pub async fn get_cycle_participant_proofs(
-        &self,
-        cycle_id: &str,
-    ) -> ServiceResult<Vec<(ParticipantLeaf, Vec<B256>)>> {
-        self.proof_ops.get_cycle_participant_proofs(cycle_id).await
     }
 }
 

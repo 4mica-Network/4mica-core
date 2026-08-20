@@ -10,11 +10,10 @@ use std::sync::Arc;
 
 use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
-use chrono::{DateTime, Duration, NaiveDateTime, Utc};
+use chrono::{Duration, NaiveDateTime, Utc};
 use entities::sea_orm_active_enums::{
     GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
 };
-use entities::settlement_cycle;
 use log::{error, info, warn};
 use sea_orm::TransactionTrait;
 
@@ -43,18 +42,6 @@ impl ClearingService {
             cycle_ops,
             proof_ops,
         }
-    }
-
-    /// The cycle an operation at `now` belongs to, opening one (and freezing the elapsed
-    /// predecessor) if needed.
-    pub async fn get_or_create_active_cycle(
-        &self,
-        asset_address: Address,
-        now: DateTime<Utc>,
-    ) -> ServiceResult<settlement_cycle::Model> {
-        self.cycle_ops
-            .get_or_create_active_cycle(asset_address, now)
-            .await
     }
 
     pub async fn ensure_active_cycles(&self) -> ServiceResult<Vec<String>> {
@@ -107,6 +94,15 @@ impl ClearingService {
     }
 
     pub async fn commit_cycle_to_chain(&self, cycle_id: &str) -> ServiceResult<()> {
+        // Refuse to commit against an unconfigured ClearingHouse; the leaves the batch was built
+        // from are bound to that address, so a zero one would produce proofs nothing can verify.
+        if self.proof_ops.clearing_house_address()? == Address::ZERO {
+            return Err(ServiceError::InvalidParams(
+                "ETHEREUM_CLEARING_HOUSE_ADDRESS must be configured before committing clearing batches"
+                    .to_string(),
+            ));
+        }
+
         let cycle = repo::get_cycle_by_id(&self.ctx.persist, cycle_id)
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("Settlement cycle {cycle_id}")))?;
@@ -121,27 +117,7 @@ impl ClearingService {
             )));
         }
 
-        let batch = repo::get_clearing_batch_by_cycle_on(self.ctx.db(), cycle_id)
-            .await?
-            .ok_or_else(|| {
-                ServiceError::InvalidParams(format!(
-                    "settlement cycle {cycle_id} has no clearing batch"
-                ))
-            })?;
-        let _clearing_house_address = evm::parse_address(
-            "ETHEREUM_CLEARING_HOUSE_ADDRESS",
-            &self.ctx.config.ethereum_config.clearing_house_address,
-        )
-        .and_then(|address| {
-            if address == Address::ZERO {
-                Err(ServiceError::InvalidParams(
-                    "ETHEREUM_CLEARING_HOUSE_ADDRESS must be configured before committing clearing batches"
-                        .to_string(),
-                ))
-            } else {
-                Ok(address)
-            }
-        })?;
+        let batch = self.proof_ops.require_clearing_batch(cycle_id).await?;
 
         let cycle_config = &self.ctx.config.settlement_cycle;
         let submission_window = Duration::seconds(

@@ -2,15 +2,12 @@
 //!
 //! Every method takes the connection so callers can compose them into a larger transaction.
 
-use std::sync::Arc;
-
 use chrono::Utc;
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use sea_orm::ConnectionTrait;
 
 use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
-use crate::service::ctx::Ctx;
 
 /// The statuses a guarantee may still leave; anything further along is terminal.
 const OPEN_STATUSES: &[GuaranteeSettlementStatus] = &[
@@ -18,13 +15,14 @@ const OPEN_STATUSES: &[GuaranteeSettlementStatus] = &[
     GuaranteeSettlementStatus::PendingValidation,
 ];
 
-pub struct GuaranteeOps {
-    _ctx: Arc<Ctx>,
-}
+/// Guarantee settlement-status transitions. Stateless: every method writes through the
+/// connection it is handed, so callers can compose them into their own transaction.
+#[derive(Default)]
+pub struct GuaranteeOps;
 
 impl GuaranteeOps {
-    pub fn new(ctx: Arc<Ctx>) -> Self {
-        Self { _ctx: ctx }
+    pub fn new() -> Self {
+        Self
     }
 
     pub async fn finalize_payable_on<C: ConnectionTrait>(

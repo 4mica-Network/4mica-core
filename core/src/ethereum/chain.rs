@@ -17,7 +17,6 @@ use crate::error::{BlockchainListenerError, CoreContractApiError, ServiceError, 
 use crate::ethereum::contract::contract_abi::Core4Mica;
 use crate::ethereum::{
     ClearingCommitInput, ClearingTxResult, CoreContractApi, CreditorSettlement, DebtorSettlement,
-    GuaranteeVersionConfig,
 };
 use rpc::SupportedTokenInfo;
 
@@ -84,27 +83,6 @@ impl ChainService {
     }
 
     // --- contract writes / reads delegated to the proxy ------------------------------------
-
-    pub async fn get_chain_id(&self) -> Result<u64, CoreContractApiError> {
-        self.contract_api.get_chain_id().await
-    }
-
-    pub async fn get_guarantee_version_config(
-        &self,
-        version: u64,
-    ) -> Result<GuaranteeVersionConfig, CoreContractApiError> {
-        self.contract_api
-            .get_guarantee_version_config(version)
-            .await
-    }
-
-    pub async fn get_withdrawal_grace_period(&self) -> Result<u64, CoreContractApiError> {
-        self.contract_api.get_withdrawal_grace_period().await
-    }
-
-    pub async fn get_core_domain_separator(&self) -> Result<[u8; 32], CoreContractApiError> {
-        self.contract_api.get_core_domain_separator().await
-    }
 
     pub async fn get_supported_tokens(
         &self,

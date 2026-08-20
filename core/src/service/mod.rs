@@ -13,6 +13,7 @@ pub mod domain;
 pub mod shared;
 
 pub use app::core::{CoreService, CoreServiceDeps};
+pub use app::event_scanner;
 pub use app::events::EventHandlerService;
 pub use app::tasks::{SettlementCycleTask, ValidationLifecycleTask};
 pub use ctx::Ctx;
