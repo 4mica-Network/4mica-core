@@ -1,8 +1,9 @@
 use crate::error::PersistDbError;
 use crate::metrics::misc::record_db_time;
 use crate::persist::PersistCtx;
-use crate::persist::repo::common::parse_address;
-use alloy::primitives::U256;
+use crate::persist::canonical::Canonical;
+use crate::persist::rows::{ClearingBatch, ExposureEdge, ParticipantPosition, decode_all};
+use alloy::primitives::{Address, B256, U256};
 use chrono::NaiveDateTime;
 use entities::sea_orm_active_enums::{
     ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
@@ -17,7 +18,7 @@ use sea_orm::{
 
 pub struct CreateSettlementCycleInput {
     pub id: String,
-    pub asset_address: String,
+    pub asset_address: Address,
     pub period_start: NaiveDateTime,
     pub period_end: NaiveDateTime,
     pub resolution_cutoff: NaiveDateTime,
@@ -28,11 +29,11 @@ pub struct CreateSettlementCycleInput {
 
 pub struct CreateClearingBatchInput {
     pub cycle_id: String,
-    pub asset_address: String,
-    pub batch_hash: String,
-    pub merkle_root: String,
-    pub total_net_debit: String,
-    pub total_net_credit: String,
+    pub asset_address: Address,
+    pub batch_hash: B256,
+    pub merkle_root: B256,
+    pub total_net_debit: U256,
+    pub total_net_credit: U256,
     pub debtor_count: i64,
     pub creditor_count: i64,
     pub committed_at: NaiveDateTime,
@@ -41,9 +42,9 @@ pub struct CreateClearingBatchInput {
 #[derive(Debug, Clone)]
 pub struct CycleExposureEdgeInput {
     pub cycle_id: String,
-    pub payer: String,
-    pub payee: String,
-    pub asset_address: String,
+    pub payer: Address,
+    pub payee: Address,
+    pub asset_address: Address,
     pub gross_amount: U256,
     pub finalized_payable_amount: U256,
     pub disputed_amount: U256,
@@ -54,8 +55,8 @@ pub struct CycleExposureEdgeInput {
 #[derive(Debug, Clone)]
 pub struct CycleParticipantPositionInput {
     pub cycle_id: String,
-    pub participant: String,
-    pub asset_address: String,
+    pub participant: Address,
+    pub asset_address: Address,
     pub gross_outgoing: U256,
     pub gross_incoming: U256,
     pub net_debit: U256,
@@ -67,7 +68,7 @@ pub struct CycleParticipantPositionInput {
 #[measure(record_db_time)]
 pub async fn get_open_cycle_by_asset(
     ctx: &PersistCtx,
-    asset_address: &str,
+    asset_address: Address,
 ) -> Result<Option<settlement_cycle::Model>, PersistDbError> {
     get_open_cycle_by_asset_on(ctx.db.as_ref(), asset_address).await
 }
@@ -75,11 +76,10 @@ pub async fn get_open_cycle_by_asset(
 #[measure(record_db_time)]
 pub async fn get_open_cycle_by_asset_on<C: ConnectionTrait>(
     conn: &C,
-    asset_address: &str,
+    asset_address: Address,
 ) -> Result<Option<settlement_cycle::Model>, PersistDbError> {
-    let asset_address = parse_address(asset_address)?.into_inner();
     let model = settlement_cycle::Entity::find()
-        .filter(settlement_cycle::Column::AssetAddress.eq(asset_address))
+        .filter(settlement_cycle::Column::AssetAddress.eq(asset_address.canonical()))
         .filter(settlement_cycle::Column::Status.eq(SettlementCycleStatus::Open))
         .order_by_desc(settlement_cycle::Column::PeriodStart)
         .one(conn)
@@ -112,11 +112,10 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
     input: CreateSettlementCycleInput,
 ) -> Result<settlement_cycle::Model, PersistDbError> {
     let now = chrono::Utc::now().naive_utc();
-    let asset_address = parse_address(&input.asset_address)?.into_inner();
-    let onchain_cycle_id_hash = crate::evm::bytes32_hex(crate::evm::cycle_id_hash(&input.id));
+    let onchain_cycle_id_hash = crate::evm::cycle_id_hash(&input.id).canonical();
     let active_model = settlement_cycle::ActiveModel {
         id: Set(input.id.clone()),
-        asset_address: Set(asset_address),
+        asset_address: Set(input.asset_address.canonical()),
         period_start: Set(input.period_start),
         period_end: Set(input.period_end),
         resolution_cutoff: Set(input.resolution_cutoff),
@@ -125,9 +124,9 @@ pub async fn create_settlement_cycle_on<C: ConnectionTrait>(
         payment_finality_deadline: Set(input.payment_finality_deadline),
         status: Set(SettlementCycleStatus::Open),
         status_confirmed: Set(true),
-        gross_payable_amount: Set("0".to_string()),
-        gross_receivable_amount: Set("0".to_string()),
-        net_settlement_amount: Set("0".to_string()),
+        gross_payable_amount: Set(U256::ZERO.canonical()),
+        gross_receivable_amount: Set(U256::ZERO.canonical()),
+        net_settlement_amount: Set(U256::ZERO.canonical()),
         clearing_batch_hash: Set(None),
         commit_tx_hash: Set(None),
         onchain_cycle_id_hash: Set(Some(onchain_cycle_id_hash)),
@@ -279,23 +278,23 @@ pub async fn list_confirmed_settling_cycles_on<C: ConnectionTrait>(
 pub async fn list_claimable_creditors_for_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-) -> Result<Vec<cycle_participant_position::Model>, PersistDbError> {
+) -> Result<Vec<ParticipantPosition>, PersistDbError> {
     let rows = cycle_participant_position::Entity::find()
         .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
         .filter(cycle_participant_position::Column::Status.eq(ParticipantCycleStatus::Claimable))
         .filter(cycle_participant_position::Column::Role.eq(ParticipantCycleRole::NetCreditor))
         .all(conn)
         .await?;
-    Ok(rows)
+    decode_all(rows)
 }
 
 #[measure(record_db_time)]
 pub async fn get_cycle_id_by_onchain_hash_on<C: ConnectionTrait>(
     conn: &C,
-    onchain_cycle_id_hash: &str,
+    onchain_cycle_id_hash: B256,
 ) -> Result<Option<String>, PersistDbError> {
     let model = settlement_cycle::Entity::find()
-        .filter(settlement_cycle::Column::OnchainCycleIdHash.eq(onchain_cycle_id_hash))
+        .filter(settlement_cycle::Column::OnchainCycleIdHash.eq(onchain_cycle_id_hash.canonical()))
         .one(conn)
         .await?;
     Ok(model.map(|cycle| cycle.id))
@@ -622,26 +621,26 @@ pub async fn confirm_cycle_finalized_on<C: ConnectionTrait>(
 pub async fn get_clearing_batch_by_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-) -> Result<Option<clearing_batch::Model>, PersistDbError> {
+) -> Result<Option<ClearingBatch>, PersistDbError> {
     let row = clearing_batch::Entity::find_by_id(cycle_id.to_string())
         .one(conn)
         .await?;
-    Ok(row)
+    row.map(ClearingBatch::try_from).transpose()
 }
 
 #[measure(record_db_time)]
 pub async fn create_clearing_batch_on<C: ConnectionTrait>(
     conn: &C,
     input: CreateClearingBatchInput,
-) -> Result<clearing_batch::Model, PersistDbError> {
+) -> Result<ClearingBatch, PersistDbError> {
     let now = chrono::Utc::now().naive_utc();
     let model = clearing_batch::ActiveModel {
         cycle_id: Set(input.cycle_id.clone()),
-        asset_address: Set(input.asset_address),
-        batch_hash: Set(input.batch_hash.clone()),
-        merkle_root: Set(input.merkle_root),
-        total_net_debit: Set(input.total_net_debit),
-        total_net_credit: Set(input.total_net_credit),
+        asset_address: Set(input.asset_address.canonical()),
+        batch_hash: Set(input.batch_hash.canonical()),
+        merkle_root: Set(input.merkle_root.canonical()),
+        total_net_debit: Set(input.total_net_debit.canonical()),
+        total_net_credit: Set(input.total_net_credit.canonical()),
         debtor_count: Set(input.debtor_count),
         creditor_count: Set(input.creditor_count),
         committed_at: Set(input.committed_at),
@@ -664,13 +663,13 @@ pub async fn create_clearing_batch_on<C: ConnectionTrait>(
             settlement_cycle::Entity::update_many()
                 .filter(settlement_cycle::Column::Id.eq(&input.cycle_id))
                 .set(settlement_cycle::ActiveModel {
-                    clearing_batch_hash: Set(Some(input.batch_hash)),
+                    clearing_batch_hash: Set(Some(input.batch_hash.canonical())),
                     updated_at: Set(now),
                     ..Default::default()
                 })
                 .exec(conn)
                 .await?;
-            Ok(row)
+            ClearingBatch::try_from(row)
         }
         Err(err) => {
             if let Some(existing) = get_clearing_batch_by_cycle_on(conn, &input.cycle_id).await? {
@@ -722,13 +721,13 @@ pub async fn replace_cycle_exposure_edges_on<C: ConnectionTrait>(
         .into_iter()
         .map(|edge| cycle_exposure_edge::ActiveModel {
             cycle_id: Set(edge.cycle_id),
-            payer: Set(edge.payer),
-            payee: Set(edge.payee),
-            asset_address: Set(edge.asset_address),
-            gross_amount: Set(edge.gross_amount.to_string()),
-            finalized_payable_amount: Set(edge.finalized_payable_amount.to_string()),
-            disputed_amount: Set(edge.disputed_amount.to_string()),
-            cancelled_amount: Set(edge.cancelled_amount.to_string()),
+            payer: Set(edge.payer.canonical()),
+            payee: Set(edge.payee.canonical()),
+            asset_address: Set(edge.asset_address.canonical()),
+            gross_amount: Set(edge.gross_amount.canonical()),
+            finalized_payable_amount: Set(edge.finalized_payable_amount.canonical()),
+            disputed_amount: Set(edge.disputed_amount.canonical()),
+            cancelled_amount: Set(edge.cancelled_amount.canonical()),
             guarantee_count: Set(edge.guarantee_count),
             created_at: Set(now),
             updated_at: Set(now),
@@ -745,7 +744,7 @@ pub async fn replace_cycle_exposure_edges_on<C: ConnectionTrait>(
 pub async fn list_exposure_edges_for_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-) -> Result<Vec<cycle_exposure_edge::Model>, PersistDbError> {
+) -> Result<Vec<ExposureEdge>, PersistDbError> {
     let rows = cycle_exposure_edge::Entity::find()
         .filter(cycle_exposure_edge::Column::CycleId.eq(cycle_id))
         .order_by_asc(cycle_exposure_edge::Column::AssetAddress)
@@ -753,7 +752,7 @@ pub async fn list_exposure_edges_for_cycle_on<C: ConnectionTrait>(
         .order_by_asc(cycle_exposure_edge::Column::Payee)
         .all(conn)
         .await?;
-    Ok(rows)
+    decode_all(rows)
 }
 
 #[measure(record_db_time)]
@@ -777,12 +776,12 @@ pub async fn replace_cycle_participant_positions_on<C: ConnectionTrait>(
         .into_iter()
         .map(|position| cycle_participant_position::ActiveModel {
             cycle_id: Set(position.cycle_id),
-            participant: Set(position.participant),
-            asset_address: Set(position.asset_address),
-            gross_outgoing: Set(position.gross_outgoing.to_string()),
-            gross_incoming: Set(position.gross_incoming.to_string()),
-            net_debit: Set(position.net_debit.to_string()),
-            net_credit: Set(position.net_credit.to_string()),
+            participant: Set(position.participant.canonical()),
+            asset_address: Set(position.asset_address.canonical()),
+            gross_outgoing: Set(position.gross_outgoing.canonical()),
+            gross_incoming: Set(position.gross_incoming.canonical()),
+            net_debit: Set(position.net_debit.canonical()),
+            net_credit: Set(position.net_credit.canonical()),
             role: Set(position.role),
             status: Set(position.status),
             settlement_tx_hash: Set(None),
@@ -809,9 +808,9 @@ pub async fn update_cycle_netting_totals_on<C: ConnectionTrait>(
     settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
         .set(settlement_cycle::ActiveModel {
-            gross_payable_amount: Set(gross_payable_amount.to_string()),
-            gross_receivable_amount: Set(gross_receivable_amount.to_string()),
-            net_settlement_amount: Set(net_settlement_amount.to_string()),
+            gross_payable_amount: Set(gross_payable_amount.canonical()),
+            gross_receivable_amount: Set(gross_receivable_amount.canonical()),
+            net_settlement_amount: Set(net_settlement_amount.canonical()),
             updated_at: Set(now),
             ..Default::default()
         })
@@ -830,7 +829,7 @@ pub async fn update_cycle_net_settlement_amount_on<C: ConnectionTrait>(
     settlement_cycle::Entity::update_many()
         .filter(settlement_cycle::Column::Id.eq(cycle_id))
         .set(settlement_cycle::ActiveModel {
-            net_settlement_amount: Set(net_settlement_amount.to_string()),
+            net_settlement_amount: Set(net_settlement_amount.canonical()),
             updated_at: Set(now),
             ..Default::default()
         })
@@ -843,13 +842,13 @@ pub async fn update_cycle_net_settlement_amount_on<C: ConnectionTrait>(
 pub async fn list_unpaid_debtors_for_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-) -> Result<Vec<cycle_participant_position::Model>, PersistDbError> {
+) -> Result<Vec<ParticipantPosition>, PersistDbError> {
     let rows = cycle_participant_position::Entity::find()
         .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
         .filter(cycle_participant_position::Column::Status.eq(ParticipantCycleStatus::Unpaid))
         .all(conn)
         .await?;
-    Ok(rows)
+    decode_all(rows)
 }
 
 /// Whether the cycle's ledger is fully resolved: no participant still `Unpaid` (debtor) or
@@ -874,19 +873,19 @@ pub async fn is_cycle_ledger_resolved_on<C: ConnectionTrait>(
 pub async fn list_participant_positions_for_cycle_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-) -> Result<Vec<cycle_participant_position::Model>, PersistDbError> {
+) -> Result<Vec<ParticipantPosition>, PersistDbError> {
     let rows = cycle_participant_position::Entity::find()
         .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
         .all(conn)
         .await?;
-    Ok(rows)
+    decode_all(rows)
 }
 
 #[measure(record_db_time)]
 pub async fn mark_participant_position_status_on<C: ConnectionTrait>(
     conn: &C,
     cycle_id: &str,
-    participant: &str,
+    participant: Address,
     from_status: ParticipantCycleStatus,
     to_status: ParticipantCycleStatus,
     settlement_tx_hash: Option<String>,
@@ -894,7 +893,7 @@ pub async fn mark_participant_position_status_on<C: ConnectionTrait>(
 ) -> Result<bool, PersistDbError> {
     let result = cycle_participant_position::Entity::update_many()
         .filter(cycle_participant_position::Column::CycleId.eq(cycle_id))
-        .filter(cycle_participant_position::Column::Participant.eq(participant))
+        .filter(cycle_participant_position::Column::Participant.eq(participant.canonical()))
         .filter(cycle_participant_position::Column::Status.eq(from_status))
         .set(cycle_participant_position::ActiveModel {
             status: Set(to_status),

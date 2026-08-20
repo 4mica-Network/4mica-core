@@ -63,7 +63,7 @@ async fn chain_funded_guarantee_increases_locked_collateral() -> anyhow::Result<
         role: "recipient".to_string(),
         scopes: vec![SCOPE_GUARANTEE_ISSUE.to_string()],
     };
-    let public_params = svc.public_params();
+    let public_params = svc.system().public_params();
 
     let locked_before =
         read_locked_collateral(persist_ctx, &user_addr, DEFAULT_ASSET_ADDRESS).await?;
@@ -78,7 +78,8 @@ async fn chain_funded_guarantee_increases_locked_collateral() -> anyhow::Result<
         DEFAULT_ASSET_ADDRESS,
     )
     .await;
-    svc.issue_payment_guarantee(&auth, req)
+    svc.guarantees()
+        .issue_payment_guarantee(&auth, req)
         .await
         .expect("chain-funded guarantee should issue");
 
@@ -103,7 +104,10 @@ async fn chain_funded_guarantee_increases_locked_collateral() -> anyhow::Result<
     )
     .await;
     assert!(
-        svc.issue_payment_guarantee(&auth, req_over).await.is_err(),
+        svc.guarantees()
+            .issue_payment_guarantee(&auth, req_over)
+            .await
+            .is_err(),
         "guarantee exceeding remaining collateral must be rejected"
     );
 

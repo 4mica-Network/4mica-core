@@ -1,10 +1,12 @@
 //! DB-level tests for the validation lifecycle driver, covering the persistence and collateral
 //! effects that the pure-logic unit tests in `service::validation` cannot reach.
 
+use core_service::persist::canonical::ReqId;
+use core_service::persist::rows::StoreCycleGuaranteeInput;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDateTime, Utc};
@@ -15,14 +17,14 @@ use rpc::{
 use validators::{ValidatorAdapter, ValidatorRegistry, Verdict, VerdictStatus};
 
 use core_service::config::{AppConfig, DEFAULT_ASSET_ADDRESS, Environment};
-use core_service::persist::{CycleGuaranteeData, PersistCtx, repo};
+use core_service::persist::{PersistCtx, repo};
 use core_service::service::{CoreService, CoreServiceDeps};
 
 #[path = "common/mod.rs"]
 mod common;
 use common::cycle_fixtures::{create_frozen_cycle, lock_collateral};
 use common::db::{clear_all_tables, setup_db_test_env};
-use common::fixtures::{normalize_address, random_address, read_locked_collateral};
+use common::fixtures::{ensure_user, normalize_address, random_address, read_locked_collateral};
 
 const VALIDATOR_URI: &str = "mock:validator";
 
@@ -96,6 +98,7 @@ async fn seed_pending_validation(
     let from = normalize_address(&random_address())?;
     let to = normalize_address(&random_address())?;
     lock_collateral(ctx, &from, amount).await?;
+    ensure_user(ctx, &to).await?;
 
     let subject = B256::from(rand::random::<[u8; 32]>());
     let claims = PaymentGuaranteeRequestClaims::new(
@@ -121,14 +124,14 @@ async fn seed_pending_validation(
     let guarantee_id = format!("{cycle_id}:{from}:{to}:{req_id}");
     repo::store_cycle_guarantee_on(
         ctx.db.as_ref(),
-        CycleGuaranteeData {
+        StoreCycleGuaranteeInput {
             guarantee_id: guarantee_id.clone(),
             cycle_id: cycle_id.to_string(),
-            req_id: U256::from(req_id),
+            req_id: ReqId(U256::from(req_id)),
             version: 1,
-            from: from.clone(),
-            to,
-            asset: DEFAULT_ASSET_ADDRESS.to_string(),
+            from: from.parse()?,
+            to: to.parse()?,
+            asset: DEFAULT_ASSET_ADDRESS.parse()?,
             value: U256::from(amount),
             start_ts: Utc::now().naive_utc(),
             cert: "{}".to_string(),
@@ -192,7 +195,7 @@ async fn approved_validation_finalizes_and_keeps_collateral_locked() -> anyhow::
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.finalized, 1, "one guarantee should be finalized");
     assert_eq!(
@@ -222,7 +225,7 @@ async fn rejected_validation_disputes_and_releases_collateral() -> anyhow::Resul
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Rejected));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.disputed, 1, "one guarantee should be disputed");
     assert_eq!(
@@ -252,7 +255,7 @@ async fn pending_past_deadline_cancels_and_releases_collateral() -> anyhow::Resu
         seed_pending_validation(&ctx, cycle_id, 10, 1, past_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Pending));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.cancelled, 1, "one guarantee should be cancelled");
     assert_eq!(
@@ -281,7 +284,7 @@ async fn pending_before_deadline_waits() -> anyhow::Result<()> {
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Pending));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.waiting, 1, "the guarantee should still be waiting");
     assert_eq!(
@@ -321,7 +324,7 @@ async fn approved_validation_into_already_resolved_cycle_cancels_and_releases_co
     // Even though the validation now passes, finalizing would strand the payer's collateral in a
     // dead cycle, so the driver cancels and releases.
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(
         summary.cancelled, 1,
@@ -356,15 +359,19 @@ async fn finalized_validated_guarantee_is_netted_like_a_plain_one() -> anyhow::R
         seed_pending_validation(&ctx, cycle_id, 10, 1, future_deadline()).await?;
 
     let service = build_service(&ctx, config, mock_registry(VerdictStatus::Approved));
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
     assert_eq!(summary.finalized, 1);
     assert_eq!(
         guarantee_status(&ctx, &guarantee_id).await?,
         GuaranteeSettlementStatus::FinalizedPayable
     );
 
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
 
@@ -377,11 +384,12 @@ async fn finalized_validated_guarantee_is_netted_like_a_plain_one() -> anyhow::R
 
     let positions =
         repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    let payer_addr: Address = payer.parse()?;
     let payer_position = positions
         .iter()
-        .find(|p| p.participant == payer)
+        .find(|p| p.participant == payer_addr)
         .expect("payer must have a net position");
-    assert_eq!(payer_position.net_debit, "10");
+    assert_eq!(payer_position.net_debit, U256::from(10u64));
     Ok(())
 }
 
@@ -406,7 +414,7 @@ async fn de_whitelisted_validator_skips_and_finalizes() -> anyhow::Result<()> {
         }) as Arc<dyn ValidatorAdapter>,
     )]);
     let service = build_service(&ctx, config, other_validator);
-    let summary = service.drive_pending_validations().await?;
+    let summary = service.validation().drive_pending_validations().await?;
 
     assert_eq!(summary.skipped, 1, "one guarantee should be skipped");
     assert_eq!(

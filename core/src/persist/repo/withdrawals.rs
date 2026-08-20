@@ -1,5 +1,7 @@
 use crate::error::PersistDbError;
 use crate::persist::PersistCtx;
+use crate::persist::canonical::Canonical;
+use alloy::primitives::Address;
 use alloy::primitives::U256;
 use chrono::{TimeZone, Utc};
 use entities::sea_orm_active_enums::WithdrawalStatus;
@@ -11,18 +13,17 @@ use sea_orm::{
     QueryOrder, Set, TransactionTrait,
     sea_query::{Expr, OnConflict},
 };
-use std::str::FromStr;
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
-use super::common::{map_pending_withdrawal_err, new_uuid, parse_address};
+use super::common::{map_pending_withdrawal_err, new_uuid};
 use crate::ethereum::event_data::EventMeta;
 use crate::metrics::misc::record_db_time;
 
 #[measure(record_db_time)]
 pub async fn request_withdrawal(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     when: i64,
     amount: U256,
 ) -> Result<(), PersistDbError> {
@@ -32,39 +33,33 @@ pub async fn request_withdrawal(
 #[measure(record_db_time)]
 pub async fn request_withdrawal_with_event(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     when: i64,
     amount: U256,
     event: Option<&EventMeta>,
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
-    let user_address = parse_address(&user_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
 
     ctx.db
         .transaction(|txn| {
-            let asset_address = asset_address.clone();
-            let user_address = user_address.clone();
             Box::pin(async move {
-                let asset_balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
+                let asset_balance = get_user_balance_on(txn, user_address, asset_address).await?;
 
-                let total = U256::from_str(&asset_balance.total)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let locked = U256::from_str(&asset_balance.locked)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let total = asset_balance.total;
+                let locked = asset_balance.locked;
 
                 let free = total.saturating_sub(locked);
                 if amount > free {
                     warn!(
                         "withdrawal request of {amount} for user {user_address} asset {asset_address} exceeds free collateral (total {total} - locked {locked}); recording anyway (already on-chain) — user is exiting guarantee-backing collateral"
                     );
-                    crate::metrics::record_withdrawal_exceeds_free(&asset_address);
+                    crate::metrics::record_withdrawal_exceeds_free(&asset_address.canonical());
                 }
                 update_user_balance_and_version_on(
                     txn,
-                    &user_address,
-                    &asset_address,
+                    user_address,
+                    asset_address,
                     asset_balance.version,
                     total,
                     locked,
@@ -80,8 +75,8 @@ pub async fn request_withdrawal_with_event(
 
                 let withdrawal_model = withdrawal::ActiveModel {
                     id: Set(new_uuid()),
-                    user_address: Set(user_address.clone()),
-                    asset_address: Set(asset_address.clone()),
+                    user_address: Set(user_address.canonical()),
+                    asset_address: Set(asset_address.canonical()),
                     requested_amount: Set(amount.to_string()),
                     executed_amount: Set("0".to_owned()),
                     request_ts: Set(ts),
@@ -126,7 +121,7 @@ pub async fn request_withdrawal_with_event(
                     )
                     .exec(txn)
                     .await
-                    .map_err(|e| map_pending_withdrawal_err(e, &user_address, &asset_address))?;
+                    .map_err(|e| map_pending_withdrawal_err(e, user_address, asset_address))?;
                 Ok::<_, PersistDbError>(())
             })
         })
@@ -137,8 +132,8 @@ pub async fn request_withdrawal_with_event(
 #[measure(record_db_time)]
 pub async fn cancel_withdrawal(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
 ) -> Result<(), PersistDbError> {
     cancel_withdrawal_with_event(ctx, user_address, asset_address, None).await
 }
@@ -146,16 +141,14 @@ pub async fn cancel_withdrawal(
 #[measure(record_db_time)]
 pub async fn cancel_withdrawal_with_event(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     event: Option<&EventMeta>,
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
-    let user_address = parse_address(&user_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
     match withdrawal::Entity::find()
-        .filter(withdrawal::Column::UserAddress.eq(&user_address))
-        .filter(withdrawal::Column::AssetAddress.eq(&asset_address))
+        .filter(withdrawal::Column::UserAddress.eq(user_address.canonical()))
+        .filter(withdrawal::Column::AssetAddress.eq(asset_address.canonical()))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
         .one(ctx.db.as_ref())
         .await?
@@ -179,8 +172,8 @@ pub async fn cancel_withdrawal_with_event(
 #[measure(record_db_time)]
 pub async fn finalize_withdrawal(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     executed_amount: U256,
 ) -> Result<(), PersistDbError> {
     finalize_withdrawal_with_event(ctx, user_address, asset_address, executed_amount, None).await
@@ -189,24 +182,20 @@ pub async fn finalize_withdrawal(
 #[measure(record_db_time)]
 pub async fn finalize_withdrawal_with_event(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     executed_amount: U256,
     event: Option<&EventMeta>,
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
-    let user_address = parse_address(&user_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
     ctx.db
         .transaction(|txn| {
-            let user_address = user_address.clone();
-            let asset_address = asset_address.clone();
             Box::pin(async move {
                 let now = Utc::now().naive_utc();
 
                 let pending = withdrawal::Entity::find()
-                    .filter(withdrawal::Column::UserAddress.eq(&user_address))
-                    .filter(withdrawal::Column::AssetAddress.eq(&asset_address))
+                    .filter(withdrawal::Column::UserAddress.eq(user_address.canonical()))
+                    .filter(withdrawal::Column::AssetAddress.eq(asset_address.canonical()))
                     .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
                     .order_by_desc(withdrawal::Column::CreatedAt)
                     .all(txn)
@@ -214,15 +203,15 @@ pub async fn finalize_withdrawal_with_event(
 
                 if pending.is_empty() {
                     return Err(PersistDbError::WithdrawalNotFound {
-                        user: user_address.clone(),
-                        asset: asset_address.clone(),
+                        user: user_address.clone().canonical(),
+                        asset: asset_address.clone().canonical(),
                     });
                 }
                 // This should never happen!
                 if pending.len() > 1 {
                     return Err(PersistDbError::MultiplePendingWithdrawals {
-                        user: user_address.clone(),
-                        asset: asset_address.clone(),
+                        user: user_address.clone().canonical(),
+                        asset: asset_address.clone().canonical(),
                         count: pending.len(),
                     });
                 }
@@ -231,19 +220,20 @@ pub async fn finalize_withdrawal_with_event(
                     .next()
                     .expect("invariant: exactly one pending withdrawal after length checks");
 
-                let requested = U256::from_str(&withdrawal.requested_amount)
-                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+                let requested = U256::from_canonical(&withdrawal.requested_amount)?;
 
                 // `executed_amount` and `requested` should be the same, but if not, we take the minimum as a best effort.
                 //  We can't throw here because it's been already executed on the chain.
                 let executed_amount = std::cmp::min(executed_amount, requested);
 
-                let asset_balance =
-                    get_user_balance_on(txn, &user_address, &withdrawal.asset_address).await?;
-                let current_total = U256::from_str(&asset_balance.total)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let locked = U256::from_str(&asset_balance.locked)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let asset_balance = get_user_balance_on(
+                    txn,
+                    user_address,
+                    Address::from_canonical(&withdrawal.asset_address)?,
+                )
+                .await?;
+                let current_total = asset_balance.total;
+                let locked = asset_balance.locked;
 
                 let new_total = current_total
                     .checked_sub(executed_amount)
@@ -251,8 +241,8 @@ pub async fn finalize_withdrawal_with_event(
 
                 update_user_balance_and_version_on(
                     txn,
-                    &user_address,
-                    &withdrawal.asset_address,
+                    user_address,
+                    Address::from_canonical(&withdrawal.asset_address)?,
                     asset_balance.version,
                     new_total,
                     locked,
@@ -261,7 +251,7 @@ pub async fn finalize_withdrawal_with_event(
 
                 let mut am_w = withdrawal.into_active_model();
                 am_w.status = Set(WithdrawalStatus::Executed);
-                am_w.executed_amount = Set(executed_amount.to_string());
+                am_w.executed_amount = Set(executed_amount.canonical());
                 am_w.execute_event_chain_id = Set(event.as_ref().map(|e| e.chain_id as i64));
                 am_w.execute_event_block_hash = Set(event.as_ref().map(|e| e.block_hash.clone()));
                 am_w.execute_event_tx_hash = Set(event.as_ref().map(|e| e.tx_hash.clone()));
@@ -280,25 +270,21 @@ pub async fn finalize_withdrawal_with_event(
 #[measure(record_db_time)]
 pub async fn mark_withdrawal_executed_with_event(
     ctx: &PersistCtx,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     executed_amount: U256,
     event: Option<&EventMeta>,
 ) -> Result<(), PersistDbError> {
     let event = event.cloned();
-    let user_address = parse_address(&user_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
 
     ctx.db
         .transaction(|txn| {
-            let user_address = user_address.clone();
-            let asset_address = asset_address.clone();
             Box::pin(async move {
                 let now = Utc::now().naive_utc();
 
                 let pending = withdrawal::Entity::find()
-                    .filter(withdrawal::Column::UserAddress.eq(&user_address))
-                    .filter(withdrawal::Column::AssetAddress.eq(&asset_address))
+                    .filter(withdrawal::Column::UserAddress.eq(user_address.canonical()))
+                    .filter(withdrawal::Column::AssetAddress.eq(asset_address.canonical()))
                     .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
                     .order_by_desc(withdrawal::Column::CreatedAt)
                     .all(txn)
@@ -306,14 +292,14 @@ pub async fn mark_withdrawal_executed_with_event(
 
                 if pending.is_empty() {
                     return Err(PersistDbError::WithdrawalNotFound {
-                        user: user_address.clone(),
-                        asset: asset_address.clone(),
+                        user: user_address.clone().canonical(),
+                        asset: asset_address.clone().canonical(),
                     });
                 }
                 if pending.len() > 1 {
                     return Err(PersistDbError::MultiplePendingWithdrawals {
-                        user: user_address.clone(),
-                        asset: asset_address.clone(),
+                        user: user_address.clone().canonical(),
+                        asset: asset_address.clone().canonical(),
                         count: pending.len(),
                     });
                 }
@@ -322,13 +308,12 @@ pub async fn mark_withdrawal_executed_with_event(
                     .into_iter()
                     .next()
                     .expect("invariant: exactly one pending withdrawal after length checks");
-                let requested = U256::from_str(&withdrawal.requested_amount)
-                    .map_err(|e| PersistDbError::InvalidTxAmount(e.to_string()))?;
+                let requested = U256::from_canonical(&withdrawal.requested_amount)?;
                 let executed_amount = std::cmp::min(executed_amount, requested);
 
                 let mut am_w = withdrawal.into_active_model();
                 am_w.status = Set(WithdrawalStatus::Executed);
-                am_w.executed_amount = Set(executed_amount.to_string());
+                am_w.executed_amount = Set(executed_amount.canonical());
                 am_w.execute_event_chain_id = Set(event.as_ref().map(|e| e.chain_id as i64));
                 am_w.execute_event_block_hash = Set(event.as_ref().map(|e| e.block_hash.clone()));
                 am_w.execute_event_tx_hash = Set(event.as_ref().map(|e| e.tx_hash.clone()));
@@ -406,29 +391,23 @@ pub async fn revert_withdrawal_cancel(
 pub async fn revert_withdrawal_execution(
     ctx: &PersistCtx,
     event: EventMeta,
-    user_address: String,
-    asset_address: String,
+    user_address: Address,
+    asset_address: Address,
     executed_amount: U256,
 ) -> Result<(), PersistDbError> {
-    let user_address = parse_address(&user_address)?.into_inner();
-    let asset_address = parse_address(&asset_address)?.into_inner();
     ctx.db
         .transaction(|txn| {
-            let user_address = user_address.clone();
-            let asset_address = asset_address.clone();
             Box::pin(async move {
-                let asset_balance = get_user_balance_on(txn, &user_address, &asset_address).await?;
-                let current_total = U256::from_str(&asset_balance.total)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
-                let locked = U256::from_str(&asset_balance.locked)
-                    .map_err(|e| PersistDbError::InvalidCollateral(e.to_string()))?;
+                let asset_balance = get_user_balance_on(txn, user_address, asset_address).await?;
+                let current_total = asset_balance.total;
+                let locked = asset_balance.locked;
                 let new_total = current_total.checked_add(executed_amount).ok_or_else(|| {
                     PersistDbError::InvariantViolation("revert execute overflow".into())
                 })?;
                 update_user_balance_and_version_on(
                     txn,
-                    &user_address,
-                    &asset_address,
+                    user_address,
+                    asset_address,
                     asset_balance.version,
                     new_total,
                     locked,
@@ -482,13 +461,11 @@ pub async fn revert_withdrawal_execution(
 #[measure(record_db_time)]
 pub async fn get_pending_withdrawal_on<C: ConnectionTrait>(
     conn: &C,
-    user_address: &str,
-    asset_address: &str,
+    user_address: Address,
+    asset_address: Address,
 ) -> Result<Option<withdrawal::Model>, PersistDbError> {
-    let user_address = parse_address(user_address)?;
-    let asset_address = parse_address(asset_address)?;
-    let user_str = user_address.as_str().to_owned();
-    let asset_str = asset_address.as_str().to_owned();
+    let user_str = user_address.canonical().to_owned();
+    let asset_str = asset_address.canonical().to_owned();
 
     let rows = withdrawal::Entity::find()
         .filter(withdrawal::Column::UserAddress.eq(&user_str))
@@ -512,12 +489,10 @@ pub async fn get_pending_withdrawal_on<C: ConnectionTrait>(
 #[measure(record_db_time)]
 pub async fn get_pending_withdrawals_for_user(
     ctx: &PersistCtx,
-    user_address: &str,
+    user_address: Address,
 ) -> Result<Vec<withdrawal::Model>, PersistDbError> {
-    let user_address = parse_address(user_address)?;
-
     let rows = withdrawal::Entity::find()
-        .filter(withdrawal::Column::UserAddress.eq(user_address.as_str()))
+        .filter(withdrawal::Column::UserAddress.eq(user_address.canonical()))
         .filter(withdrawal::Column::Status.eq(WithdrawalStatus::Pending))
         .all(ctx.db.as_ref())
         .await?;

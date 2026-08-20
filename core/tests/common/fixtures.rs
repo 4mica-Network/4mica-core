@@ -4,10 +4,12 @@ use alloy::primitives::{Address, U256, keccak256};
 use alloy::sol_types::SolValue;
 use anyhow::{Result, anyhow};
 use chrono::Utc;
+use core_service::persist::repo::GuaranteeSelector;
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS,
     persist::{PersistCtx, repo},
 };
+use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use entities::{user, user_asset_balance};
 use rand::random;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::OnConflict};
@@ -19,8 +21,12 @@ pub fn random_address() -> String {
 
 /// Canonical checksum-free address normalization used across all test layers.
 pub fn normalize_address(addr: &str) -> Result<String> {
-    let parsed = Address::from_str(addr).map_err(|err| anyhow!("invalid address {addr}: {err}"))?;
-    Ok(format!("{parsed:#x}"))
+    Ok(format!("{:#x}", parse_addr(addr)?))
+}
+
+/// Parse a test address into the typed form the repo layer expects.
+pub fn parse_addr(addr: &str) -> Result<Address> {
+    Address::from_str(addr).map_err(|err| anyhow!("invalid address {addr}: {err}"))
 }
 
 pub async fn ensure_user(ctx: &PersistCtx, addr: &str) -> Result<()> {
@@ -48,8 +54,8 @@ pub async fn ensure_user_with_collateral(ctx: &PersistCtx, addr: &str, amount: U
     ensure_user(ctx, addr).await?;
     repo::deposit(
         ctx,
-        normalize_address(addr)?,
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        parse_addr(addr)?,
+        parse_addr(DEFAULT_ASSET_ADDRESS)?,
         amount,
     )
     .await?;
@@ -112,11 +118,13 @@ pub async fn set_locked_collateral(
     asset_address: &str,
     amount: U256,
 ) -> Result<()> {
-    let user_address = normalize_address(user_address)?;
-    let asset_address = normalize_address(asset_address)?;
-    let balance = repo::get_user_balance_on(ctx.db.as_ref(), &user_address, &asset_address).await?;
-    let total = U256::from_str(&balance.total)
-        .map_err(|e| anyhow!("invalid collateral {}: {}", balance.total, e))?;
+    let balance = repo::get_user_balance_on(
+        ctx.db.as_ref(),
+        parse_addr(user_address)?,
+        parse_addr(asset_address)?,
+    )
+    .await?;
+    let total = balance.total;
     if amount > total {
         return Err(anyhow!(
             "locked collateral {} exceeds total {}",
@@ -126,8 +134,8 @@ pub async fn set_locked_collateral(
     }
     repo::update_user_balance_and_version_on(
         ctx.db.as_ref(),
-        &user_address,
-        &asset_address,
+        parse_addr(user_address)?,
+        parse_addr(asset_address)?,
         balance.version,
         total,
         amount,
@@ -149,4 +157,11 @@ pub fn compute_guarantee_domain_separator(
         .abi_encode_sequence();
 
     Ok(keccak256(encoded).into())
+}
+
+const NETTED: &[GuaranteeSettlementStatus] = &[GuaranteeSettlementStatus::Netted];
+
+/// Selector for a cycle's netted guarantees.
+pub fn netted_in(cycle_id: &str) -> GuaranteeSelector<'_> {
+    GuaranteeSelector::cycle(cycle_id, None, NETTED)
 }

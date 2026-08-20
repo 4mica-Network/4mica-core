@@ -88,11 +88,14 @@ async fn commit_two_party_cycle(
     )
     .await?;
 
-    svc.compute_cycle_exposure_edges(cycle_id).await?;
-    svc.compute_cycle_participant_positions(cycle_id).await?;
-    svc.build_clearing_batch(cycle_id).await?;
-    assert!(svc.mark_cycle_netting_computed(cycle_id).await?);
-    svc.commit_cycle_to_chain(cycle_id)
+    svc.netting().compute_cycle_exposure_edges(cycle_id).await?;
+    svc.netting()
+        .compute_cycle_participant_positions(cycle_id)
+        .await?;
+    svc.netting().build_clearing_batch(cycle_id).await?;
+    assert!(svc.netting().mark_cycle_netting_computed(cycle_id).await?);
+    svc.clearing()
+        .commit_cycle_to_chain(cycle_id)
         .await
         .context("commit_cycle_to_chain")?;
 
@@ -127,11 +130,14 @@ async fn commit_interleaved_cycle(
         .await?;
     }
 
-    svc.compute_cycle_exposure_edges(cycle_id).await?;
-    svc.compute_cycle_participant_positions(cycle_id).await?;
-    svc.build_clearing_batch(cycle_id).await?;
-    assert!(svc.mark_cycle_netting_computed(cycle_id).await?);
-    svc.commit_cycle_to_chain(cycle_id)
+    svc.netting().compute_cycle_exposure_edges(cycle_id).await?;
+    svc.netting()
+        .compute_cycle_participant_positions(cycle_id)
+        .await?;
+    svc.netting().build_clearing_batch(cycle_id).await?;
+    assert!(svc.netting().mark_cycle_netting_computed(cycle_id).await?);
+    svc.clearing()
+        .commit_cycle_to_chain(cycle_id)
         .await
         .context("commit_cycle_to_chain")?;
 
@@ -162,12 +168,13 @@ async fn poll_position_status(
     participant: &str,
     expected: ParticipantCycleStatus,
 ) -> anyhow::Result<()> {
+    let participant_addr: Address = participant.parse()?;
     for _ in 0..POLL_ATTEMPTS {
         let positions =
             repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
         if positions
             .iter()
-            .any(|p| p.participant == participant && p.status == expected)
+            .any(|p| p.participant == participant_addr && p.status == expected)
         {
             return Ok(());
         }
@@ -204,7 +211,7 @@ async fn drive_finalization(
     cycle_id: &str,
 ) -> anyhow::Result<()> {
     for _ in 0..POLL_ATTEMPTS {
-        svc.finalize_due_cycles().await?;
+        svc.clearing().finalize_due_cycles().await?;
         mine(provider, 2).await?;
         if let Some(cycle) = repo::get_cycle_by_id(ctx, cycle_id).await?
             && cycle.status == SettlementCycleStatus::Finalized
@@ -257,6 +264,7 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
 
     // Debtor pays its net debit with the proof the service generates.
     let debtor_proof = svc
+        .netting()
         .get_participant_clearing_proof(cycle_id, &lower(&debtor))
         .await?;
     ClearingHouse::new(*env.clearing_house.address(), debtor_provider.clone())
@@ -279,6 +287,7 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     // A third party (here the debtor's wallet) sponsors the creditor's claim. Core must mirror
     // the CreditorClaimed event to the creditor the leaf names, not to the transaction sender.
     let creditor_proof = svc
+        .netting()
         .get_participant_clearing_proof(cycle_id, &lower(&creditor))
         .await?;
     ClearingHouse::new(*env.clearing_house.address(), debtor_provider)
@@ -318,7 +327,7 @@ async fn cycle_commits_pays_claims_and_finalizes() -> anyhow::Result<()> {
     )
     .await?;
 
-    let settled = svc.settle_due_cycles().await?;
+    let settled = svc.clearing().settle_due_cycles().await?;
     assert!(settled.iter().any(|c| c == cycle_id));
     poll_cycle_confirmed(&provider, ctx, cycle_id, SettlementCycleStatus::Settling).await?;
     drive_finalization(&svc, &provider, ctx, cycle_id).await?;
@@ -356,6 +365,7 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
 
     // Only d2 pays: the cycle is half-funded (d2 owes e, not c).
     let d2_proof = svc
+        .netting()
         .get_participant_clearing_proof(cycle_id, &lower(&d2))
         .await?;
     ClearingHouse::new(*env.clearing_house.address(), d2_provider)
@@ -375,6 +385,7 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
     // wallet's cached nonce, which would leave c's later real claim stuck behind a
     // nonce gap.
     let c_proof = svc
+        .netting()
         .get_participant_clearing_proof(cycle_id, &lower(&c))
         .await?;
     let (_, c_throwaway) = common::chain::wallet_provider(&http, CREDITOR_KEY)?;
@@ -401,6 +412,7 @@ async fn creditor_claim_is_blocked_until_cycle_fully_funded() -> anyhow::Result<
 
     // d1 pays: settles d1->c, releases d1's collateral, and completes funding.
     let d1_proof = svc
+        .netting()
         .get_participant_clearing_proof(cycle_id, &lower(&d1))
         .await?;
     ClearingHouse::new(*env.clearing_house.address(), d1_provider)
@@ -471,7 +483,7 @@ async fn commit_two_party_cycle_finality_soon(
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             period_start: now - ChronoDuration::hours(3),
             period_end: now - ChronoDuration::hours(2),
             resolution_cutoff: now - ChronoDuration::hours(1),
@@ -501,11 +513,14 @@ async fn commit_two_party_cycle_finality_soon(
     )
     .await?;
 
-    svc.compute_cycle_exposure_edges(cycle_id).await?;
-    svc.compute_cycle_participant_positions(cycle_id).await?;
-    svc.build_clearing_batch(cycle_id).await?;
-    assert!(svc.mark_cycle_netting_computed(cycle_id).await?);
-    svc.commit_cycle_to_chain(cycle_id)
+    svc.netting().compute_cycle_exposure_edges(cycle_id).await?;
+    svc.netting()
+        .compute_cycle_participant_positions(cycle_id)
+        .await?;
+    svc.netting().build_clearing_batch(cycle_id).await?;
+    assert!(svc.netting().mark_cycle_netting_computed(cycle_id).await?);
+    svc.clearing()
+        .commit_cycle_to_chain(cycle_id)
         .await
         .context("commit_cycle_to_chain")?;
 
@@ -551,6 +566,7 @@ async fn fully_paid_cycle_with_unclaimed_creditor_is_settled_by_job() -> anyhow:
 
     // The debtor pays; the creditor never claims.
     let debtor_proof = svc
+        .netting()
         .get_participant_clearing_proof(cycle_id, &lower(&debtor))
         .await?;
     ClearingHouse::new(*env.clearing_house.address(), debtor_provider)
@@ -585,7 +601,7 @@ async fn fully_paid_cycle_with_unclaimed_creditor_is_settled_by_job() -> anyhow:
     .await?;
 
     // First job pass: no debtors to seize, but the unclaimed creditor is funded.
-    let settled = svc.settle_due_cycles().await?;
+    let settled = svc.clearing().settle_due_cycles().await?;
     assert!(settled.iter().any(|c| c == cycle_id));
     mine(&provider, 2).await?;
 
@@ -660,7 +676,7 @@ async fn defaulted_cycle_is_batch_settled_by_job() -> anyhow::Result<()> {
     // First job pass: the debtor never paid, so finality handling seizes the
     // debtor's collateral, funds the creditor's collateral, and marks the cycle
     // settling (one-shot — finality and submission are folded into one phase).
-    let settled = svc.settle_due_cycles().await?;
+    let settled = svc.clearing().settle_due_cycles().await?;
     assert!(settled.iter().any(|c| c == cycle_id));
     mine(&provider, 2).await?;
 
@@ -758,7 +774,7 @@ async fn under_collateralized_cycle_is_socialized_to_shortfall_by_job() -> anyho
     // One job pass: the seize recovers nothing, the creditor-funding batch reverts underfunded, so
     // the job drives the cycle terminal (Shortfall) and pays the creditor its share of an empty
     // pool — zero.
-    svc.settle_due_cycles().await?;
+    svc.clearing().settle_due_cycles().await?;
     mine(&provider, 2).await?;
 
     poll_cycle_confirmed(&provider, ctx, cycle_id, SettlementCycleStatus::Shortfall).await?;

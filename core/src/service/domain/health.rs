@@ -1,9 +1,12 @@
-use alloy::providers::Provider;
+//! Liveness and invariant checks surfaced over HTTP and to the metrics upkeep task.
+
+use std::sync::Arc;
+
 use log::error;
 use sea_orm::ConnectionTrait;
 use serde::Serialize;
 
-use crate::service::CoreService;
+use crate::service::ctx::Ctx;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -38,7 +41,15 @@ impl HealthReport {
     }
 }
 
-impl CoreService {
+pub struct HealthService {
+    ctx: Arc<Ctx>,
+}
+
+impl HealthService {
+    pub fn new(ctx: Arc<Ctx>) -> Self {
+        Self { ctx }
+    }
+
     pub async fn run_health_checks(&self) -> HealthReport {
         let db_status = self.check_db().await;
         let rpc_status = self.check_rpc().await;
@@ -56,7 +67,7 @@ impl CoreService {
     }
 
     fn check_settlement_timing(&self) -> CheckStatus {
-        match self.check_settlement_timing_invariant() {
+        match self.ctx.check_settlement_timing_invariant() {
             Ok(()) => CheckStatus::Ok,
             Err(e) => {
                 error!("settlement timing health check failed: {e:#}");
@@ -66,7 +77,7 @@ impl CoreService {
     }
 
     async fn check_db(&self) -> CheckStatus {
-        let db = self.persist_ctx().db.as_ref();
+        let db = self.ctx.db();
         let stmt = sea_orm::Statement::from_string(db.get_database_backend(), "SELECT NOW()");
         match db.query_one_raw(stmt).await {
             Ok(_) => CheckStatus::Ok,
@@ -78,7 +89,7 @@ impl CoreService {
     }
 
     async fn check_rpc(&self) -> CheckStatus {
-        match self.read_provider().get_block_number().await {
+        match self.ctx.chain.block_number().await {
             Ok(_) => CheckStatus::Ok,
             Err(e) => {
                 error!("RPC health check failed: {e}");

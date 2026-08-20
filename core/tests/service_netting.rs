@@ -1,9 +1,11 @@
 //! Service-layer netting: bilateral exposure offsetting, clearing-batch
 //! construction, asset scoping, and guarantee identity/exclusion. No chain.
 
+use core_service::persist::canonical::ReqId;
+use core_service::persist::rows::StoreCycleGuaranteeInput;
 use std::collections::BTreeMap;
 
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use chrono::{Duration, Utc};
 use entities::sea_orm_active_enums::{
     GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
@@ -17,11 +19,11 @@ use common::cycle_fixtures::{
     store_pending_guarantee,
 };
 use common::fixtures::{
-    ensure_user, ensure_user_with_collateral, normalize_address, random_address,
+    ensure_user, ensure_user_with_collateral, netted_in, normalize_address, random_address,
     read_locked_collateral, set_locked_collateral,
 };
 use core_service::config::DEFAULT_ASSET_ADDRESS;
-use core_service::persist::{CycleGuaranteeData, repo};
+use core_service::persist::repo;
 
 const STABLE_ASSET_ADDRESS: &str = "0x1111111111111111111111111111111111111111";
 
@@ -33,8 +35,12 @@ async fn cycle_netting_offsets_bilateral_exposures_into_net_positions() -> anyho
     let participants = build_three_party_cycle(&service, cycle_id).await?;
     let ctx = service.persist_ctx();
 
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
 
@@ -45,25 +51,27 @@ async fn cycle_netting_offsets_bilateral_exposures_into_net_positions() -> anyho
         repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
     let by_participant = positions
         .into_iter()
-        .map(|position| (position.participant.clone(), position))
+        .map(|position| (position.participant, position))
         .collect::<BTreeMap<_, _>>();
 
     let alice = by_participant
-        .get(&participants[0])
+        .get(&participants[0].parse::<Address>()?)
         .expect("alice position");
-    assert_eq!(alice.net_debit, "9");
+    assert_eq!(alice.net_debit, U256::from(9u64));
     assert_eq!(alice.role, ParticipantCycleRole::NetDebtor);
     assert_eq!(alice.status, ParticipantCycleStatus::Unpaid);
 
-    let bob = by_participant.get(&participants[1]).expect("bob position");
-    assert_eq!(bob.net_credit, "6");
+    let bob = by_participant
+        .get(&participants[1].parse::<Address>()?)
+        .expect("bob position");
+    assert_eq!(bob.net_credit, U256::from(6u64));
     assert_eq!(bob.role, ParticipantCycleRole::NetCreditor);
     assert_eq!(bob.status, ParticipantCycleStatus::Claimable);
 
     let carol = by_participant
-        .get(&participants[2])
+        .get(&participants[2].parse::<Address>()?)
         .expect("carol position");
-    assert_eq!(carol.net_credit, "3");
+    assert_eq!(carol.net_credit, U256::from(3u64));
     assert_eq!(carol.role, ParticipantCycleRole::NetCreditor);
     assert_eq!(carol.status, ParticipantCycleStatus::Claimable);
 
@@ -77,17 +85,21 @@ async fn clearing_batch_balances_total_net_debit_and_credit() -> anyhow::Result<
     let cycle_id = "clearing-batch-cycle";
     build_three_party_cycle(&service, cycle_id).await?;
 
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
-    let batch = service.build_clearing_batch(cycle_id).await?;
+    let batch = service.netting().build_clearing_batch(cycle_id).await?;
 
-    assert_eq!(batch.total_net_debit, "9");
-    assert_eq!(batch.total_net_credit, "9");
+    assert_eq!(batch.total_net_debit, U256::from(9u64));
+    assert_eq!(batch.total_net_credit, U256::from(9u64));
     assert_eq!(batch.debtor_count, 1);
     assert_eq!(batch.creditor_count, 2);
-    assert!(batch.merkle_root.starts_with("0x"));
+    assert_ne!(batch.merkle_root, alloy::primitives::B256::ZERO);
 
     Ok(())
 }
@@ -104,7 +116,7 @@ async fn netting_cycles_are_scoped_by_asset_address() -> anyhow::Result<()> {
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
-            asset_address: STABLE_ASSET_ADDRESS.to_string(),
+            asset_address: STABLE_ASSET_ADDRESS.parse()?,
             period_start: now - Duration::hours(3),
             period_end: now - Duration::hours(2),
             resolution_cutoff: now - Duration::hours(1),
@@ -125,14 +137,14 @@ async fn netting_cycles_are_scoped_by_asset_address() -> anyhow::Result<()> {
 
     repo::store_cycle_guarantee_on(
         ctx.db.as_ref(),
-        CycleGuaranteeData {
+        StoreCycleGuaranteeInput {
             guarantee_id: "stable-guarantee".to_string(),
             cycle_id: cycle_id.to_string(),
-            req_id: U256::ZERO,
+            req_id: ReqId(U256::ZERO),
             version: 2,
-            from: payer,
-            to: payee,
-            asset: STABLE_ASSET_ADDRESS.to_string(),
+            from: payer.parse()?,
+            to: payee.parse()?,
+            asset: STABLE_ASSET_ADDRESS.parse()?,
             value: U256::from(8u64),
             start_ts: now,
             cert: "{}".to_string(),
@@ -142,14 +154,21 @@ async fn netting_cycles_are_scoped_by_asset_address() -> anyhow::Result<()> {
     )
     .await?;
 
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
     let cycle = repo::get_cycle_by_id(ctx, cycle_id)
         .await?
         .expect("cycle exists");
-    assert_eq!(cycle.asset_address, STABLE_ASSET_ADDRESS);
+    assert_eq!(
+        cycle.asset_address,
+        normalize_address(STABLE_ASSET_ADDRESS)?
+    );
     assert_eq!(cycle.status, SettlementCycleStatus::Frozen);
     assert_eq!(cycle.gross_payable_amount, "8");
 
@@ -172,8 +191,8 @@ async fn cycle_guarantees_are_identified_by_guarantee_id() -> anyhow::Result<()>
 
     assert_eq!(stored.guarantee_id, guarantee_id);
     assert_eq!(stored.cycle_id, cycle_id);
-    assert_eq!(stored.req_id, "0xb");
-    assert_eq!(stored.value, "7");
+    assert_eq!(stored.req_id, ReqId(U256::from(11u64)));
+    assert_eq!(stored.value, U256::from(7u64));
     assert_eq!(
         stored.settlement_status,
         GuaranteeSettlementStatus::FinalizedPayable
@@ -194,7 +213,10 @@ async fn pending_validation_guarantee_excluded_from_cycle_netting() -> anyhow::R
     store_payable_guarantee(ctx, &cycle_id, &payer, &payee, 10, 0).await?;
     store_pending_guarantee(ctx, &cycle_id, &payer, &payee, 5, 1).await?;
 
-    service.compute_cycle_exposure_edges(&cycle_id).await?;
+    service
+        .netting()
+        .compute_cycle_exposure_edges(&cycle_id)
+        .await?;
 
     let edges = repo::list_exposure_edges_for_cycle_on(ctx.db.as_ref(), &cycle_id).await?;
     assert_eq!(
@@ -202,7 +224,7 @@ async fn pending_validation_guarantee_excluded_from_cycle_netting() -> anyhow::R
         1,
         "only FinalizedPayable guarantees produce edges"
     );
-    assert_eq!(edges[0].finalized_payable_amount, "10");
+    assert_eq!(edges[0].finalized_payable_amount, U256::from(10u64));
 
     Ok(())
 }
@@ -223,7 +245,7 @@ async fn empty_cycle_is_short_circuited_without_chain_commit() -> anyhow::Result
     let payee = random_address();
     store_pending_guarantee(ctx, &cycle_id, &payer, &payee, 5, 0).await?;
 
-    let computed = service.compute_due_cycle_netting().await?;
+    let computed = service.netting().compute_due_cycle_netting().await?;
     assert!(
         computed.is_empty(),
         "an empty cycle must not be reported as netted/committed"
@@ -266,7 +288,7 @@ async fn fully_offsetting_cycle_is_short_circuited_without_chain_commit() -> any
         set_locked_collateral(ctx, who, asset, U256::from(10u64)).await?;
     }
 
-    let computed = service.compute_due_cycle_netting().await?;
+    let computed = service.netting().compute_due_cycle_netting().await?;
     assert!(
         computed.is_empty(),
         "a fully-offsetting cycle must be short-circuited, not netted/committed"
@@ -291,7 +313,7 @@ async fn fully_offsetting_cycle_is_short_circuited_without_chain_commit() -> any
         );
     }
     assert!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), &cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(&cycle_id))
             .await?
             .is_empty(),
         "short-circuit should settle all netted guarantees"
@@ -310,7 +332,12 @@ async fn marking_cycle_netting_computed_moves_payable_guarantees_to_netted() -> 
     let payee = random_address();
     let guarantee_id = store_payable_guarantee(ctx, &cycle_id, &payer, &payee, 13, 0).await?;
 
-    assert!(service.mark_cycle_netting_computed(&cycle_id).await?);
+    assert!(
+        service
+            .netting()
+            .mark_cycle_netting_computed(&cycle_id)
+            .await?
+    );
     let stored = repo::get_guarantee_by_id_on(ctx.db.as_ref(), &guarantee_id)
         .await?
         .expect("guarantee stored");

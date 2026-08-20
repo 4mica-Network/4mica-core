@@ -2,14 +2,16 @@ use crate::auth;
 use crate::auth::constants::{DEFAULT_ROLE, DEFAULT_SCOPES};
 use crate::auth::jwt::AccessTokenClaims;
 use crate::error::{ServiceError, ServiceResult};
-use crate::persist::repo;
-use crate::service::CoreService;
+use crate::persist::canonical::Canonical;
+use crate::persist::{mapper, repo};
+use crate::service::ctx::Ctx;
 use chrono::{DateTime, Duration, Utc};
 use log::{debug, warn};
 use rpc::{
     AuthLogoutRequest, AuthLogoutResponse, AuthNonceRequest, AuthNonceResponse, AuthRefreshRequest,
-    AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse, SiweTemplate,
+    AuthRefreshResponse, AuthVerifyRequest, AuthVerifyResponse, SiweTemplate, UserSuspensionStatus,
 };
+use std::sync::Arc;
 
 const SIWE_CLOCK_SKEW_SECS: i64 = 30;
 
@@ -61,11 +63,19 @@ fn validate_optional_not_before(not_before: Option<&str>, now: DateTime<Utc>) ->
     Ok(())
 }
 
-impl CoreService {
+pub struct AuthService {
+    ctx: Arc<Ctx>,
+}
+
+impl AuthService {
+    pub fn new(ctx: Arc<Ctx>) -> Self {
+        Self { ctx }
+    }
+
     fn build_siwe_context(&self) -> (String, String, String) {
-        let auth_cfg = &self.inner.config.auth;
-        let host = self.inner.config.server_config.host.trim();
-        let port = self.inner.config.server_config.port.trim();
+        let auth_cfg = &self.ctx.config.auth;
+        let host = self.ctx.config.server_config.host.trim();
+        let port = self.ctx.config.server_config.port.trim();
         let domain = auth_cfg
             .siwe_domain
             .as_deref()
@@ -95,15 +105,20 @@ impl CoreService {
 
     pub fn validate_access_token(&self, token: &str) -> ServiceResult<AccessTokenClaims> {
         auth::jwt::validate_access_token(
-            &self.inner.config.auth,
-            &self.inner.config.secrets.jwt_dec_key,
-            self.inner.config.ethereum_config.chain_id,
+            &self.ctx.config.auth,
+            &self.ctx.config.secrets.jwt_dec_key,
+            self.ctx.config.ethereum_config.chain_id,
             token,
         )
     }
 
-    async fn load_wallet_claims(&self, address: &str) -> ServiceResult<(String, Vec<String>)> {
-        let row = repo::get_wallet_role(&self.inner.persist_ctx, address).await?;
+    async fn load_wallet_claims(
+        &self,
+        address: alloy::primitives::Address,
+    ) -> ServiceResult<(String, Vec<String>)> {
+        let row = repo::get_wallet_role(&self.ctx.persist, address).await?;
+        let address = address.canonical();
+        let address = address.as_str();
         match row {
             Some(model) => {
                 auth::utils::validate_wallet_status(&model.status)?;
@@ -131,15 +146,15 @@ impl CoreService {
         &self,
         req: AuthNonceRequest,
     ) -> ServiceResult<AuthNonceResponse> {
-        let auth_cfg = &self.inner.config.auth;
+        let auth_cfg = &self.ctx.config.auth;
         let address = auth::utils::normalize_wallet_address(&req.address)?;
         let now = Utc::now();
         let expires_at = now + Duration::seconds(auth_cfg.nonce_ttl_secs);
         let nonce = repo::common::new_uuid();
 
         repo::insert_auth_nonce(
-            &self.inner.persist_ctx,
-            &address,
+            &self.ctx.persist,
+            crate::evm::parse_address("wallet", &address)?,
             &nonce,
             expires_at.naive_utc(),
         )
@@ -152,7 +167,7 @@ impl CoreService {
             siwe: SiweTemplate {
                 domain,
                 uri,
-                chain_id: self.inner.config.ethereum_config.chain_id,
+                chain_id: self.ctx.config.ethereum_config.chain_id,
                 statement,
                 expiration: expires_at.to_rfc3339(),
                 issued_at: now.to_rfc3339(),
@@ -161,7 +176,7 @@ impl CoreService {
     }
 
     pub async fn verify_auth(&self, req: AuthVerifyRequest) -> ServiceResult<AuthVerifyResponse> {
-        let auth_cfg = &self.inner.config.auth;
+        let auth_cfg = &self.ctx.config.auth;
         let parsed = crate::evm::siwe::parse_siwe_message(&req.message)?;
         let expected_address = auth::utils::parse_wallet_address(&req.address)?;
 
@@ -175,7 +190,7 @@ impl CoreService {
             return Err(ServiceError::Unauthorized("invalid siwe version".into()));
         }
 
-        if parsed.chain_id != self.inner.config.ethereum_config.chain_id {
+        if parsed.chain_id != self.ctx.config.ethereum_config.chain_id {
             return Err(ServiceError::Unauthorized("invalid chain id".into()));
         }
 
@@ -211,34 +226,31 @@ impl CoreService {
         validate_optional_not_before(parsed.not_before.as_deref(), now)?;
 
         let nonce_row =
-            repo::get_auth_nonce(&self.inner.persist_ctx, &address, &parsed.nonce).await?;
+            repo::get_auth_nonce(&self.ctx.persist, expected_address, &parsed.nonce).await?;
         let nonce_row = nonce_row
             .ok_or_else(|| ServiceError::Unauthorized("nonce not found or expired".into()))?;
         if nonce_row.used_at.is_some() || nonce_row.expires_at < now.naive_utc() {
             return Err(ServiceError::Unauthorized("nonce not valid".into()));
         }
 
-        crate::evm::siwe::verify_siwe_message(
-            &self.inner.read_provider,
-            &address,
-            &req.message,
-            &req.signature,
-        )
-        .await?;
+        self.ctx
+            .chain
+            .verify_siwe_message(&address, &req.message, &req.signature)
+            .await?;
 
-        if !repo::mark_auth_nonce_used(&self.inner.persist_ctx, &address, &parsed.nonce).await? {
+        if !repo::mark_auth_nonce_used(&self.ctx.persist, expected_address, &parsed.nonce).await? {
             return Err(ServiceError::Unauthorized("nonce already used".into()));
         }
 
         let subject = address;
-        let (role, scopes) = self.load_wallet_claims(&subject).await?;
+        let (role, scopes) = self.load_wallet_claims(expected_address).await?;
         let access_token = auth::jwt::issue_access_token(
             auth_cfg,
-            &self.inner.config.secrets.jwt_enc_key,
+            &self.ctx.config.secrets.jwt_enc_key,
             &subject,
             &role,
             scopes,
-            self.inner.config.ethereum_config.chain_id,
+            self.ctx.config.ethereum_config.chain_id,
         )?;
 
         let refresh_token = auth::utils::generate_token("refresh");
@@ -247,9 +259,9 @@ impl CoreService {
         let expires_at = now + Duration::seconds(auth_cfg.refresh_ttl_secs);
 
         repo::insert_refresh_token(
-            &self.inner.persist_ctx,
+            &self.ctx.persist,
             &refresh_hash,
-            &subject,
+            expected_address,
             now.naive_utc(),
             expires_at.naive_utc(),
         )
@@ -266,7 +278,7 @@ impl CoreService {
         &self,
         req: AuthRefreshRequest,
     ) -> ServiceResult<AuthRefreshResponse> {
-        let auth_cfg = &self.inner.config.auth;
+        let auth_cfg = &self.ctx.config.auth;
         let token_hash = auth::utils::hash_refresh_token(&req.refresh_token);
         let refresh_token = auth::utils::generate_token("refresh");
         let refresh_hash = auth::utils::hash_refresh_token(&refresh_token);
@@ -274,7 +286,7 @@ impl CoreService {
         let expires_at = now + Duration::seconds(auth_cfg.refresh_ttl_secs);
 
         let address = repo::rotate_refresh_token(
-            &self.inner.persist_ctx,
+            &self.ctx.persist,
             &token_hash,
             &refresh_hash,
             now.naive_utc(),
@@ -282,14 +294,16 @@ impl CoreService {
         )
         .await?;
 
-        let (role, scopes) = self.load_wallet_claims(&address).await?;
+        let (role, scopes) = self
+            .load_wallet_claims(crate::evm::parse_address("wallet", &address)?)
+            .await?;
         let access_token = auth::jwt::issue_access_token(
             auth_cfg,
-            &self.inner.config.secrets.jwt_enc_key,
+            &self.ctx.config.secrets.jwt_enc_key,
             &address,
             &role,
             scopes,
-            self.inner.config.ethereum_config.chain_id,
+            self.ctx.config.ethereum_config.chain_id,
         )?;
 
         Ok(AuthRefreshResponse {
@@ -301,8 +315,19 @@ impl CoreService {
 
     pub async fn logout_auth(&self, req: AuthLogoutRequest) -> ServiceResult<AuthLogoutResponse> {
         let token_hash = auth::utils::hash_refresh_token(&req.refresh_token);
-        let revoked =
-            repo::revoke_refresh_token(&self.inner.persist_ctx, &token_hash, None).await?;
+        let revoked = repo::revoke_refresh_token(&self.ctx.persist, &token_hash, None).await?;
         Ok(AuthLogoutResponse { revoked })
+    }
+
+    /// Suspend or reinstate a user. A suspended user is refused at guarantee issuance.
+    pub async fn set_user_suspension(
+        &self,
+        user_address: String,
+        suspended: bool,
+    ) -> ServiceResult<UserSuspensionStatus> {
+        let user_address = crate::evm::parse_address("user", &user_address)?;
+        let updated =
+            repo::update_user_suspension(&self.ctx.persist, user_address, suspended).await?;
+        Ok(mapper::user_model_to_suspension_status(updated))
     }
 }

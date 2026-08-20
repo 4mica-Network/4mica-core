@@ -8,7 +8,7 @@
 //!      transition is written unconfirmed and only confirmed once its event arrives,
 //!      and an unconfirmed cycle keeps retrying instead of advancing.
 
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use chrono::{Duration, Utc};
 use entities::sea_orm_active_enums::{ParticipantCycleStatus, SettlementCycleStatus};
 use entities::settlement_cycle;
@@ -22,7 +22,8 @@ use common::cycle_fixtures::{
     setup_cycle_service, store_payable_guarantee,
 };
 use common::fixtures::{
-    ensure_user_with_collateral, normalize_address, random_address, read_locked_collateral,
+    ensure_user_with_collateral, netted_in, normalize_address, parse_addr, random_address,
+    read_locked_collateral,
 };
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS, ethereum::event_data::EventMeta, evm, persist::PersistCtx,
@@ -53,9 +54,10 @@ async fn claim(
     tx: &str,
 ) -> anyhow::Result<()> {
     service
+        .clearing()
         .process_credit_claim(
             evm::cycle_id_hash(cycle_id),
-            creditor.to_string(),
+            creditor.parse()?,
             event_meta(tx),
         )
         .await?;
@@ -91,7 +93,8 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
     // alice pays and each creditor claims; each participant's lock is released by settling its
     // own guarantee. (Collateral `total` is reconciled from chain, covered in chain_clearing.)
     service
-        .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice, "0xpay")
+        .clearing()
+        .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice.parse()?, "0xpay")
         .await?;
     claim(&service, cycle_id, bob, "0xclaim-bob").await?;
     claim(&service, cycle_id, carol, "0xclaim-carol").await?;
@@ -101,6 +104,7 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
     // event, so the residual-netted sweep is a no-op — that path is covered by the shortfall test.)
     settle_confirmed(ctx, cycle_id).await?;
     service
+        .clearing()
         .process_cycle_finalized(evm::cycle_id_hash(cycle_id))
         .await?;
 
@@ -112,7 +116,7 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
         );
     }
     assert!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
             .await?
             .is_empty()
     );
@@ -147,7 +151,8 @@ async fn defaulted_debtor_is_seized_and_creditors_are_funded() -> anyhow::Result
     assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
     let onchain = evm::cycle_id_hash(cycle_id);
     service
-        .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xdefault-alice"))
+        .clearing()
+        .process_defaulted_debtor(onchain, alice.parse()?, event_meta("0xdefault-alice"))
         .await?;
     claim(&service, cycle_id, bob, "0xclaim-bob").await?;
     claim(&service, cycle_id, carol, "0xclaim-carol").await?;
@@ -161,10 +166,11 @@ async fn defaulted_debtor_is_seized_and_creditors_are_funded() -> anyhow::Result
 
     let positions =
         repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    let alice_addr: Address = alice.parse()?;
     assert!(
-        positions
-            .iter()
-            .any(|p| &p.participant == alice && p.status == ParticipantCycleStatus::Defaulted)
+        positions.iter().any(|p| {
+            p.participant == alice_addr && p.status == ParticipantCycleStatus::Defaulted
+        })
     );
 
     // Every lock is released. (Collateral `total` is reconciled from chain, covered in
@@ -195,10 +201,11 @@ async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
     // First delivery: flips alice to Defaulted, releases her lock, settles her
     // netted guarantees.
     service
-        .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xdefault-alice"))
+        .clearing()
+        .process_defaulted_debtor(onchain, alice.parse()?, event_meta("0xdefault-alice"))
         .await?;
     let after_first = cycle(ctx, cycle_id).await?;
-    let netted_after_first = repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+    let netted_after_first = repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
         .await?
         .len();
     assert_eq!(read_locked_collateral(ctx, alice, asset).await?, U256::ZERO);
@@ -206,15 +213,17 @@ async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
     // Re-delivery under a *different* tx/block hash bypasses the event dedup and
     // re-runs the handler. It must change nothing.
     service
-        .process_defaulted_debtor(onchain, alice.clone(), event_meta("0xreorg-alice"))
+        .clearing()
+        .process_defaulted_debtor(onchain, alice.parse()?, event_meta("0xreorg-alice"))
         .await?;
 
     let positions =
         repo::list_participant_positions_for_cycle_on(ctx.db.as_ref(), cycle_id).await?;
+    let alice_addr: Address = alice.parse()?;
     assert!(
         positions
             .iter()
-            .any(|p| &p.participant == alice && p.status == ParticipantCycleStatus::Defaulted),
+            .any(|p| p.participant == alice_addr && p.status == ParticipantCycleStatus::Defaulted),
         "alice stays Defaulted after re-delivery"
     );
     assert_eq!(
@@ -223,7 +232,7 @@ async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
         "re-delivery must not touch collateral"
     );
     assert_eq!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
             .await?
             .len(),
         netted_after_first,
@@ -268,7 +277,8 @@ async fn shortfall_resolution_releases_flat_participant_collateral() -> anyhow::
     // resolving event, so it confirms the shortfall and sweeps the flat pair's guarantees.
     let onchain = evm::cycle_id_hash(cycle_id);
     service
-        .process_defaulted_debtor(onchain, debtor.clone(), event_meta("0xseize"))
+        .clearing()
+        .process_defaulted_debtor(onchain, debtor.parse()?, event_meta("0xseize"))
         .await?;
     claim(&service, cycle_id, &creditor, "0xclaim").await?;
 
@@ -283,7 +293,7 @@ async fn shortfall_resolution_releases_flat_participant_collateral() -> anyhow::
         );
     }
     assert!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
             .await?
             .is_empty()
     );
@@ -322,6 +332,7 @@ async fn payment_window_is_unconfirmed_until_commit_event() -> anyhow::Result<()
     assert!(!optimistic.status_confirmed);
 
     service
+        .clearing()
         .process_cycle_committed(evm::cycle_id_hash(cycle_id), "0xcommit")
         .await?;
     assert!(cycle(ctx, cycle_id).await?.status_confirmed);
@@ -346,7 +357,8 @@ async fn settling_confirms_only_when_ledger_fully_resolved() -> anyhow::Result<(
 
     // Debtor paid and only one creditor claimed: the other is still Claimable → unconfirmed.
     service
-        .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice, "0xpay")
+        .clearing()
+        .process_paid_debtor(evm::cycle_id_hash(cycle_id), alice.parse()?, "0xpay")
         .await?;
     claim(&service, cycle_id, bob, "0xclaim-bob").await?;
     assert!(!cycle(ctx, cycle_id).await?.status_confirmed);
@@ -383,6 +395,7 @@ async fn finalize_is_optimistic_until_finalized_event() -> anyhow::Result<()> {
     assert!(!optimistic.status_confirmed);
 
     service
+        .clearing()
         .process_cycle_finalized(evm::cycle_id_hash(cycle_id))
         .await?;
     assert!(cycle(ctx, cycle_id).await?.status_confirmed);
@@ -402,6 +415,7 @@ async fn shortfall_event_mirrors_settling_status() -> anyhow::Result<()> {
     assert!(repo::mark_cycle_settling_on(ctx.db.as_ref(), cycle_id, Utc::now().naive_utc()).await?);
 
     service
+        .clearing()
         .process_cycle_shortfall(evm::cycle_id_hash(cycle_id))
         .await?;
     let mirrored = cycle(ctx, cycle_id).await?;
@@ -465,18 +479,18 @@ async fn recipient_payments_are_queryable_by_recipient() -> anyhow::Result<()> {
 
     repo::submit_payment_transaction(
         ctx,
-        user.clone(),
-        recipient.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user.parse()?,
+        recipient.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         "0xpayment".to_string(),
         U256::from(9u64),
     )
     .await?;
 
-    let rows = repo::get_recipient_transactions(ctx, &recipient).await?;
+    let rows = repo::get_recipient_transactions(ctx, recipient.parse()?).await?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].user_address, user);
-    assert_eq!(rows[0].amount, "9");
+    assert_eq!(rows[0].user_address, parse_addr(&user)?);
+    assert_eq!(rows[0].amount, U256::from(9u64));
     Ok(())
 }
 

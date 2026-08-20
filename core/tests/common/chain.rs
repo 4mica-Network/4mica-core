@@ -15,10 +15,9 @@ use alloy_primitives::Address;
 use anyhow::Context;
 use core_service::{
     config::{AppConfig, EthereumConfig},
-    ethereum::EthereumEventScanner,
     persist::PersistCtx,
     scheduler::TaskScheduler,
-    service::CoreService,
+    service::{CoreService, event_scanner},
 };
 use log::debug;
 
@@ -385,12 +384,7 @@ pub async fn setup_e2e_environment() -> anyhow::Result<E2eEnvironment> {
     clear_all_tables(&persist_ctx).await?;
     let core_service = CoreService::new(cfg.clone()).await?;
 
-    let ethereum_scanner = Arc::new(EthereumEventScanner::new(
-        cfg.ethereum_config.clone(),
-        core_service.persist_ctx().clone(),
-        core_service.read_provider().clone(),
-        Arc::new(core_service.clone()),
-    ));
+    let ethereum_scanner = Arc::new(event_scanner(cfg.ethereum_config.clone(), &core_service));
 
     let mut scheduler = TaskScheduler::new().await?;
     scheduler.add_task(ethereum_scanner).await?;
@@ -416,11 +410,9 @@ pub async fn spawn_core_service_in_existing_environment(
 ) -> anyhow::Result<CoreService> {
     let core_service = CoreService::new(env.cfg.clone()).await?;
 
-    let ethereum_scanner = Arc::new(EthereumEventScanner::new(
+    let ethereum_scanner = Arc::new(event_scanner(
         env.cfg.ethereum_config.clone(),
-        core_service.persist_ctx().clone(),
-        core_service.read_provider().clone(),
-        Arc::new(core_service.clone()),
+        &core_service,
     ));
 
     env.scheduler.add_task(ethereum_scanner).await?;

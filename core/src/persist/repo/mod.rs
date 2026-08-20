@@ -15,7 +15,6 @@ pub use auth::*;
 pub use balances::*;
 pub use chain_cursor::*;
 pub use collateral::*;
-pub use common::Address;
 pub use cycles::*;
 pub use events::*;
 pub use guarantee_validations::*;

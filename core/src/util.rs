@@ -1,12 +1,7 @@
-use alloy_primitives::U256;
 use chrono::{NaiveDateTime, Utc};
 use crypto::hex::DecodeHexError;
 
 use crate::error::{ServiceError, ServiceResult};
-
-pub fn u256_to_string(val: U256) -> String {
-    format!("{:#x}", val)
-}
 
 pub fn now_naive() -> chrono::NaiveDateTime {
     Utc::now().naive_utc()

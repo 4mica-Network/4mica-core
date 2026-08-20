@@ -1,26 +1,30 @@
-use crate::error::ServiceResult;
-use alloy::primitives::U256;
-use anyhow::anyhow;
+use crate::persist::canonical::Canonical;
+use crate::persist::rows::{AssetBalance, UserTransaction};
 use entities::user;
-use rpc::{AssetBalanceInfo, UserSuspensionStatus};
-use std::str::FromStr;
+use rpc::{AssetBalanceInfo, UserSuspensionStatus, UserTransactionInfo};
 
-pub fn asset_balance_model_to_info(
-    model: entities::user_asset_balance::Model,
-) -> ServiceResult<AssetBalanceInfo> {
-    let total = U256::from_str(&model.total)
-        .map_err(|e| anyhow!("invalid asset balance total {}: {e}", model.total))?;
-    let locked = U256::from_str(&model.locked)
-        .map_err(|e| anyhow!("invalid asset balance locked {}: {e}", model.locked))?;
+pub fn asset_balance_to_info(balance: AssetBalance) -> AssetBalanceInfo {
+    AssetBalanceInfo {
+        user_address: balance.user_address.canonical(),
+        asset_address: balance.asset_address.canonical(),
+        total: balance.total,
+        locked: balance.locked,
+        version: balance.version,
+        updated_at: balance.updated_at.and_utc().timestamp(),
+    }
+}
 
-    Ok(AssetBalanceInfo {
-        user_address: model.user_address,
-        asset_address: model.asset_address,
-        total,
-        locked,
-        version: model.version,
-        updated_at: model.updated_at.and_utc().timestamp(),
-    })
+pub fn user_transaction_to_info(tx: UserTransaction) -> UserTransactionInfo {
+    UserTransactionInfo {
+        user_address: tx.user_address.canonical(),
+        recipient_address: tx.recipient_address.canonical(),
+        tx_hash: tx.tx_id,
+        amount: tx.amount,
+        verified: tx.verified,
+        finalized: tx.finalized,
+        failed: tx.failed,
+        created_at: tx.created_at.and_utc().timestamp_millis(),
+    }
 }
 
 pub fn user_model_to_suspension_status(model: user::Model) -> UserSuspensionStatus {

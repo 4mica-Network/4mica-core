@@ -10,22 +10,25 @@ mod common;
 
 use common::cycle_fixtures::{build_three_party_cycle, setup_cycle_service};
 use common::fixtures::{ensure_user_with_collateral, random_address, read_locked_collateral};
-use core_service::{config::DEFAULT_ASSET_ADDRESS, persist::repo};
+use core_service::{
+    config::DEFAULT_ASSET_ADDRESS, persist::repo, service::shared::cycle::CycleOps,
+};
 
 #[tokio::test]
 #[serial_test::file_serial(db)]
 async fn active_cycle_creation_reuses_open_cycle_for_same_asset() -> anyhow::Result<()> {
     let service = setup_cycle_service().await?;
+    let cycle_ops = CycleOps::new(service.ctx().clone());
 
-    let first = service
-        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, Utc::now())
+    let first = cycle_ops
+        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS.parse()?, Utc::now())
         .await?;
     // Take the second instant from the window the service just opened, not from the configured
     // cycle length. Reuse turns on `period_end > now`, so any interval picked here is a guess about
     // how long a window is, and a guess that is one second long opens a second cycle instead.
     let midpoint = first.period_start + (first.period_end - first.period_start) / 2;
-    let second = service
-        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS, midpoint.and_utc())
+    let second = cycle_ops
+        .get_or_create_active_cycle(DEFAULT_ASSET_ADDRESS.parse()?, midpoint.and_utc())
         .await?;
 
     assert_eq!(first.id, second.id);
@@ -45,7 +48,7 @@ async fn elapsed_open_cycle_is_frozen_before_new_cycle_is_created() -> anyhow::R
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: old_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             period_start: now - Duration::hours(3),
             period_end: now - Duration::hours(2),
             resolution_cutoff: now - Duration::hours(1),
@@ -56,7 +59,7 @@ async fn elapsed_open_cycle_is_frozen_before_new_cycle_is_created() -> anyhow::R
     )
     .await?;
 
-    let frozen = service.freeze_elapsed_cycles().await?;
+    let frozen = service.clearing().freeze_elapsed_cycles().await?;
     let old_after = repo::get_cycle_by_id(ctx, old_id)
         .await?
         .expect("old cycle");
@@ -78,7 +81,7 @@ async fn freeze_elapsed_cycles_is_idempotent() -> anyhow::Result<()> {
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             period_start: now - Duration::hours(3),
             period_end: now - Duration::hours(2),
             resolution_cutoff: now - Duration::hours(1),
@@ -89,8 +92,8 @@ async fn freeze_elapsed_cycles_is_idempotent() -> anyhow::Result<()> {
     )
     .await?;
 
-    let first = service.freeze_elapsed_cycles().await?;
-    let second = service.freeze_elapsed_cycles().await?;
+    let first = service.clearing().freeze_elapsed_cycles().await?;
+    let second = service.clearing().freeze_elapsed_cycles().await?;
 
     assert!(
         first.contains(&cycle_id.to_string()),
@@ -115,11 +118,15 @@ async fn computing_netting_does_not_mutate_user_collateral_balances() -> anyhow:
 
     let cycle_id = "collateral-independent-netting-cycle";
     build_three_party_cycle(&service, cycle_id).await?;
-    service.compute_cycle_exposure_edges(cycle_id).await?;
     service
+        .netting()
+        .compute_cycle_exposure_edges(cycle_id)
+        .await?;
+    service
+        .netting()
         .compute_cycle_participant_positions(cycle_id)
         .await?;
-    service.build_clearing_batch(cycle_id).await?;
+    service.netting().build_clearing_batch(cycle_id).await?;
 
     let locked_after = read_locked_collateral(ctx, &user, DEFAULT_ASSET_ADDRESS).await?;
     assert_eq!(locked_before, locked_after);

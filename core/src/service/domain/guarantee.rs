@@ -1,14 +1,11 @@
-use crate::error::PersistDbError;
-use crate::evm::guarantee::{guarantee_id_for_cycle, verify_guarantee_request_signature};
-use crate::service::CoreService;
-use crate::{
-    auth::{
-        access::{self, AccessContext},
-        constants::SCOPE_GUARANTEE_ISSUE,
-    },
-    error::{ServiceError, ServiceResult},
-    persist::repo,
-};
+//! Guarantee issuance: validate the request, assign it to the active cycle, lock the payer's
+//! collateral, and return the signed BLS certificate.
+
+use crate::persist::canonical::ReqId;
+use crate::persist::rows::StoreCycleGuaranteeInput;
+use std::str::FromStr;
+use std::sync::Arc;
+
 use alloy::primitives::Address;
 use anyhow::anyhow;
 use chrono::Utc;
@@ -19,10 +16,28 @@ use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequest, PaymentGuaranteeRequestClaims,
     ValidationRequirement,
 };
-use sea_orm::{ConnectionTrait, TransactionTrait};
-use std::str::FromStr;
+use sea_orm::TransactionTrait;
 
-impl CoreService {
+use crate::auth::access::{self, AccessContext};
+use crate::auth::constants::SCOPE_GUARANTEE_ISSUE;
+use crate::error::{ServiceError, ServiceResult};
+use crate::evm::guarantee::{guarantee_id_for_cycle, verify_guarantee_request_signature};
+use crate::persist::repo;
+use crate::service::ctx::Ctx;
+use crate::service::shared::cycle::CycleOps;
+use crate::service::shared::map_transaction_error;
+
+#[derive(Clone)]
+pub struct GuaranteeService {
+    ctx: Arc<Ctx>,
+    cycle_ops: Arc<CycleOps>,
+}
+
+impl GuaranteeService {
+    pub fn new(ctx: Arc<Ctx>, cycle_ops: Arc<CycleOps>) -> Self {
+        Self { ctx, cycle_ops }
+    }
+
     pub fn verify_guarantee_request_claims(
         &self,
         claims: &PaymentGuaranteeRequestClaims,
@@ -59,7 +74,7 @@ impl CoreService {
         now_secs: u64,
     ) -> ServiceResult<()> {
         let adapter = self
-            .inner
+            .ctx
             .validators
             .get(&validation.validator)
             .ok_or_else(|| {
@@ -82,7 +97,7 @@ impl CoreService {
         }
 
         if let Some(min_validation_window_secs) =
-            self.inner.config.guarantee.min_validation_window_secs
+            self.ctx.config.guarantee.min_validation_window_secs
         {
             check_validation_window(validation, now_secs, min_validation_window_secs)?;
         }
@@ -91,7 +106,7 @@ impl CoreService {
     }
 
     fn guarantee_domain_for_version(&self, version: u64) -> ServiceResult<[u8; 32]> {
-        self.inner
+        self.ctx
             .guarantee_domains
             .get(&version)
             .copied()
@@ -107,18 +122,8 @@ impl CoreService {
         let claims_bytes = <PaymentGuaranteeClaims as TryInto<Vec<u8>>>::try_into(claims)
             .map_err(ServiceError::Other)?;
         let claims = BlsClaims::from_bytes(claims_bytes);
-        BLSCert::sign(self.bls_secret_key(), claims)
+        BLSCert::sign(self.ctx.bls_secret_key(), claims)
             .map_err(|err| ServiceError::Other(anyhow!(err)))
-    }
-
-    async fn process_guarantee_request_claims_on<C: ConnectionTrait>(
-        &self,
-        conn: &C,
-        claims: &PaymentGuaranteeRequestClaims,
-    ) -> ServiceResult<()> {
-        repo::lock_user_balance_for_guarantee_on(conn, claims)
-            .await
-            .map_err(Into::into)
     }
 
     pub async fn issue_payment_guarantee(
@@ -137,19 +142,20 @@ impl CoreService {
             request_version, amount
         );
 
-        verify_guarantee_request_signature(&self.inner.public_params, &req)?;
+        verify_guarantee_request_signature(&self.ctx.public_params, &req)?;
         self.verify_guarantee_request_claims(&req.claims)?;
-        self.check_settlement_timing_invariant()
+
+        let payer = crate::evm::parse_address("user", req.claims.user_address())?;
+        let recipient = crate::evm::parse_address("recipient", req.claims.recipient_address())?;
+        let asset = crate::evm::parse_address("asset", req.claims.asset_address())?;
+
+        self.ctx
+            .check_settlement_timing_invariant()
             .map_err(|e| ServiceError::SettlementTimingHalted(format!("{e:#}")))?;
 
-        repo::ensure_user_is_active(&self.inner.persist_ctx, req.claims.user_address()).await?;
-        repo::ensure_user_is_active_if_exists(
-            &self.inner.persist_ctx,
-            req.claims.recipient_address(),
-        )
-        .await?;
         let active_cycle = self
-            .get_or_create_active_cycle(req.claims.asset_address(), Utc::now())
+            .cycle_ops
+            .get_or_create_active_cycle(asset, Utc::now())
             .await?;
 
         if req.claims.timestamp() < (active_cycle.period_start.and_utc().timestamp() as u64) {
@@ -159,18 +165,18 @@ impl CoreService {
             });
         }
 
-        let validation_deadline = match req.claims.validation() {
-            Some(validation) => Some(enforced_validation_deadline(
-                validation,
-                active_cycle.resolution_cutoff,
-            )?),
+        let validation = match req.claims.validation() {
+            Some(requirement) => Some((
+                requirement,
+                enforced_validation_deadline(requirement, active_cycle.resolution_cutoff)?,
+            )),
             None => None,
         };
 
         let cycle_id_hash = crate::evm::clearing::claim_cycle_id(&active_cycle.id);
         let guarantee_id = guarantee_id_for_cycle(&active_cycle.id, &req.claims);
 
-        if repo::get_guarantee_by_id_on(self.inner.persist_ctx.db.as_ref(), &guarantee_id)
+        if repo::get_guarantee_by_id_on(self.ctx.db(), &guarantee_id)
             .await?
             .is_some()
         {
@@ -183,8 +189,37 @@ impl CoreService {
         let claims =
             PaymentGuaranteeClaims::from_request(&req.claims, guarantee_domain, cycle_id_hash);
 
+        let cert = self.create_bls_cert(claims.clone()).await?;
+
+        let guarantee = StoreCycleGuaranteeInput {
+            guarantee_id: guarantee_id.clone(),
+            cycle_id: active_cycle.id.clone(),
+            req_id: ReqId(claims.req_id),
+            version: claims.version,
+            from: payer,
+            to: recipient,
+            asset,
+            value: claims.amount,
+            start_ts: unix_seconds_to_naive(claims.timestamp)?,
+            cert: serde_json::to_string(&cert).map_err(|e| ServiceError::Other(anyhow!(e)))?,
+            request: Some(
+                serde_json::to_string(&req).map_err(|e| ServiceError::Other(anyhow!(e)))?,
+            ),
+            settlement_status: settlement_status_for_request(&req.claims),
+        };
+        let validation =
+            validation.map(
+                |(requirement, deadline)| repo::StoreGuaranteeValidationInput {
+                    guarantee_id: guarantee_id.clone(),
+                    validator: requirement.validator.clone(),
+                    subject: requirement.subject.to_string(),
+                    deadline,
+                    params: requirement.params.to_vec(),
+                },
+            );
+
         let max_attempts = self
-            .inner
+            .ctx
             .config
             .database_config
             .conflict_retries
@@ -193,16 +228,10 @@ impl CoreService {
         loop {
             attempt += 1;
             match self
-                .issue_payment_guarantee_in_txn(
-                    &req,
-                    &active_cycle.id,
-                    &guarantee_id,
-                    &claims,
-                    validation_deadline,
-                )
+                .issue_payment_guarantee_in_txn(&guarantee, validation.as_ref())
                 .await
             {
-                Ok(cert) => return Ok(cert),
+                Ok(()) => return Ok(cert),
                 Err(ServiceError::OptimisticLockConflict) if attempt < max_attempts => {
                     warn!(
                         "guarantee issuance hit balance lock conflict (attempt {attempt}/{max_attempts}); retrying"
@@ -213,162 +242,59 @@ impl CoreService {
         }
     }
 
+    /// Lock the payer's collateral and write the guarantee, plus its validation when one is
+    /// required, as one unit. Retried by the caller on optimistic-lock conflicts, so it must stay
+    /// free of side effects outside the transaction.
     async fn issue_payment_guarantee_in_txn(
         &self,
-        req: &PaymentGuaranteeRequest,
-        cycle_id: &str,
-        guarantee_id: &str,
-        claims: &PaymentGuaranteeClaims,
-        validation_deadline: Option<chrono::NaiveDateTime>,
-    ) -> ServiceResult<BLSCert> {
-        self.inner
-            .persist_ctx
+        guarantee: &StoreCycleGuaranteeInput,
+        validation: Option<&repo::StoreGuaranteeValidationInput>,
+    ) -> ServiceResult<()> {
+        // Owned up-front: the transaction closure must not borrow from the caller's frame.
+        let guarantee = guarantee.clone();
+        let validation = validation.cloned();
+        self.ctx
+            .persist
             .db
             .transaction::<_, _, ServiceError>(|txn| {
-                let self_clone = self.clone();
-                let req = req.clone();
-                let cycle_id = cycle_id.to_string();
-                let guarantee_id = guarantee_id.to_string();
-                let claims = claims.clone();
+                let guarantee = guarantee.clone();
+                let validation = validation.clone();
                 Box::pin(async move {
-                    self_clone
-                        .process_guarantee_request_claims_on(txn, &req.claims)
-                        .await?;
+                    repo::ensure_user_is_active_on(txn, guarantee.from).await?;
+                    repo::ensure_user_is_active_if_exists_on(txn, guarantee.to).await?;
+                    repo::ensure_user_exists_on(txn, guarantee.to).await?;
 
-                    let cert: BLSCert = self_clone.create_bls_cert(claims.clone()).await?;
-                    repo::prepare_and_store_cycle_guarantee_on(
+                    repo::lock_user_balance_for_guarantee_on(
                         txn,
-                        repo::PrepareCycleGuaranteeInput {
-                            claims: &claims,
-                            cert: &cert,
-                            request: &req,
-                            cycle_id,
-                            guarantee_id: guarantee_id.clone(),
-                            settlement_status: settlement_status_for_request(&req.claims),
-                        },
+                        guarantee.from,
+                        guarantee.asset,
+                        guarantee.value,
                     )
                     .await?;
 
-                    if let Some(validation) = req.claims.validation() {
-                        let deadline = validation_deadline.ok_or_else(|| {
-                            ServiceError::Other(anyhow!(
-                                "validated guarantee {guarantee_id} has no enforced deadline"
-                            ))
-                        })?;
-                        repo::store_guarantee_validation_on(
-                            txn,
-                            repo::StoreGuaranteeValidationInput {
-                                guarantee_id,
-                                validator: validation.validator.clone(),
-                                subject: validation.subject.to_string(),
-                                deadline,
-                                params: validation.params.to_vec(),
-                            },
-                        )
-                        .await?;
+                    repo::store_cycle_guarantee_on(txn, guarantee).await?;
+
+                    if let Some(validation) = validation {
+                        repo::store_guarantee_validation_on(txn, validation).await?;
                     }
 
-                    Ok(cert)
+                    Ok(())
                 })
             })
             .await
-            .map_err(|e| match e {
-                sea_orm::TransactionError::Transaction(inner) => inner,
-                sea_orm::TransactionError::Connection(err) => {
-                    PersistDbError::DatabaseFailure(err).into()
-                }
-            })
+            .map_err(map_transaction_error)
     }
+}
 
-    pub(super) async fn finalize_guarantee_payable_on<C: ConnectionTrait>(
-        &self,
-        conn: &C,
-        guarantee_id: &str,
-    ) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle_on(
-            conn,
-            guarantee_id,
-            &[
-                GuaranteeSettlementStatus::Issued,
-                GuaranteeSettlementStatus::PendingValidation,
-            ],
-            GuaranteeSettlementStatus::FinalizedPayable,
-            false,
-        )
-        .await
-    }
-
-    pub(super) async fn dispute_guarantee_on<C: ConnectionTrait>(
-        &self,
-        conn: &C,
-        guarantee_id: &str,
-    ) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle_on(
-            conn,
-            guarantee_id,
-            &[
-                GuaranteeSettlementStatus::Issued,
-                GuaranteeSettlementStatus::PendingValidation,
-            ],
-            GuaranteeSettlementStatus::Disputed,
-            true,
-        )
-        .await
-    }
-
-    pub(super) async fn cancel_guarantee_on<C: ConnectionTrait>(
-        &self,
-        conn: &C,
-        guarantee_id: &str,
-    ) -> ServiceResult<bool> {
-        self.transition_guarantee_lifecycle_on(
-            conn,
-            guarantee_id,
-            &[
-                GuaranteeSettlementStatus::Issued,
-                GuaranteeSettlementStatus::PendingValidation,
-            ],
-            GuaranteeSettlementStatus::Cancelled,
-            true,
-        )
-        .await
-    }
-
-    async fn transition_guarantee_lifecycle_on<C: ConnectionTrait>(
-        &self,
-        conn: &C,
-        guarantee_id: &str,
-        allowed_from: &[GuaranteeSettlementStatus],
-        target: GuaranteeSettlementStatus,
-        release_locked_collateral: bool,
-    ) -> ServiceResult<bool> {
-        let guarantee = repo::get_guarantee_by_id_on(conn, guarantee_id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(format!("Guarantee {guarantee_id}")))?;
-
-        if guarantee.settlement_status == target {
-            return Ok(false);
-        }
-        if !allowed_from.contains(&guarantee.settlement_status) {
-            return Err(ServiceError::InvalidParams(format!(
-                "guarantee {guarantee_id} is {:?}, cannot transition to {:?}",
-                guarantee.settlement_status, target
-            )));
-        }
-
-        let changed = repo::transition_guarantee_settlement_status_on(
-            conn,
-            guarantee_id,
-            allowed_from,
-            target,
-            Utc::now().naive_utc(),
-        )
-        .await?;
-        if changed && release_locked_collateral {
-            repo::release_locked_collateral_for_guarantee_on(conn, &guarantee).await?;
-        }
-        Ok(changed)
-    }
+/// Interpret a claims timestamp, which is unix seconds, as the naive UTC time the row stores.
+fn unix_seconds_to_naive(timestamp: u64) -> ServiceResult<chrono::NaiveDateTime> {
+    chrono::DateTime::from_timestamp(timestamp as i64, 0)
+        .ok_or_else(|| {
+            ServiceError::InvalidParams(format!(
+                "guarantee timestamp {timestamp} is not a valid time"
+            ))
+        })
+        .map(|dt| dt.naive_utc())
 }
 
 /// Refuses a deadline that leaves a validator less time to answer than `min_window` demands.

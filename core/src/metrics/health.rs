@@ -5,7 +5,7 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use crate::{
     metrics::misc::record_task_time,
     scheduler::Task,
-    service::{CoreService, health::CheckStatus},
+    service::{CoreService, domain::health::CheckStatus},
 };
 
 pub struct HealthCheckTask {
@@ -30,7 +30,7 @@ impl Task for HealthCheckTask {
 
     #[measure(record_task_time, name = "health_check")]
     async fn run(&self) -> anyhow::Result<()> {
-        let report = self.service.run_health_checks().await;
+        let report = self.service.health().run_health_checks().await;
         record_health_status(HealthScope::Db, report.db);
         record_health_status(HealthScope::ChainRpc, report.chain_rpc);
         record_health_status(HealthScope::Overall, report.status);

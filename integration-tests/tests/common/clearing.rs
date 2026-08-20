@@ -8,9 +8,11 @@ use alloy::primitives::{Address, U256};
 use anyhow::{Context, Result, bail};
 use chrono::{Duration, Utc};
 use core_service::config::DEFAULT_ASSET_ADDRESS;
-use core_service::persist::{CycleGuaranteeData, PersistCtx, repo};
+use core_service::persist::canonical::ReqId;
+use core_service::persist::rows::StoreCycleGuaranteeInput;
+use core_service::persist::{PersistCtx, repo};
 use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementCycleStatus};
-use std::str::FromStr;
+
 use std::time::{Duration as StdDuration, Instant};
 
 fn normalize(addr: Address) -> String {
@@ -39,7 +41,7 @@ pub async fn inject_frozen_two_party_cycle(
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.to_string(),
+            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
             period_start: now - Duration::hours(3),
             period_end: now - Duration::hours(2),
             resolution_cutoff: now - Duration::hours(1),
@@ -61,22 +63,22 @@ pub async fn inject_frozen_two_party_cycle(
     let creditor = normalize(creditor);
 
     // Both participants must exist before the guarantee references them.
-    repo::ensure_user_exists_on(ctx.db.as_ref(), &debtor).await?;
-    repo::ensure_user_exists_on(ctx.db.as_ref(), &creditor).await?;
+    repo::ensure_user_exists_on(ctx.db.as_ref(), debtor.parse()?).await?;
+    repo::ensure_user_exists_on(ctx.db.as_ref(), creditor.parse()?).await?;
 
     // Store the payable guarantee already FinalizedPayable so netting counts it
     // immediately (no validation lifecycle needed).
     let guarantee_id = format!("{cycle_id}:{debtor}:{creditor}:0");
     repo::store_cycle_guarantee_on(
         ctx.db.as_ref(),
-        CycleGuaranteeData {
+        StoreCycleGuaranteeInput {
             guarantee_id,
             cycle_id: cycle_id.to_string(),
-            req_id: U256::from(0u64),
+            req_id: ReqId(U256::from(0u64)),
             version: 2,
-            from: debtor.clone(),
-            to: creditor.clone(),
-            asset: DEFAULT_ASSET_ADDRESS.to_string(),
+            from: debtor.parse()?,
+            to: creditor.parse()?,
+            asset: DEFAULT_ASSET_ADDRESS.parse()?,
             value: amount,
             start_ts: now,
             cert: "{}".to_string(),
@@ -91,22 +93,24 @@ pub async fn inject_frozen_two_party_cycle(
     // it — mirroring the post-issuance locked state the netting pipeline expects.
     repo::deposit(
         &ctx,
-        debtor.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        debtor.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         amount,
     )
     .await
     .context("credit debtor collateral")?;
-    let balance =
-        repo::get_user_balance_on(ctx.db.as_ref(), &debtor, DEFAULT_ASSET_ADDRESS).await?;
-    let total = U256::from_str(&balance.total)
-        .map_err(|e| anyhow::anyhow!("invalid debtor collateral {}: {e}", balance.total))?;
+    let balance = repo::get_user_balance_on(
+        ctx.db.as_ref(),
+        debtor.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
+    )
+    .await?;
     repo::update_user_balance_and_version_on(
         ctx.db.as_ref(),
-        &debtor,
-        DEFAULT_ASSET_ADDRESS,
+        debtor.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         balance.version,
-        total,
+        balance.total,
         amount,
     )
     .await

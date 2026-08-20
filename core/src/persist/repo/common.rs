@@ -1,32 +1,11 @@
 use crate::error::PersistDbError;
+use crate::persist::canonical::Canonical;
 use alloy::primitives::Address as AlloyAddress;
 use chrono::NaiveDateTime;
 use sea_orm::sqlx;
 use sea_orm::{DbErr, RuntimeErr};
 use std::str::FromStr;
 use uuid::Uuid;
-
-/// Thin newtype to guarantee we only move around validated on-chain addresses.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Address(String);
-
-impl Address {
-    pub fn parse(raw: impl AsRef<str>) -> Result<Self, PersistDbError> {
-        let trimmed = raw.as_ref().trim();
-        let parsed = AlloyAddress::from_str(trimmed).map_err(|e| {
-            PersistDbError::InvariantViolation(format!("invalid address {trimmed}: {e}"))
-        })?;
-        Ok(Self(format!("{parsed:#x}")))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-}
 
 pub fn now() -> NaiveDateTime {
     crate::util::now_naive()
@@ -68,13 +47,13 @@ pub fn is_unique_violation(err: &DbErr) -> bool {
 
 pub fn map_pending_withdrawal_err(
     err: DbErr,
-    user_address: &str,
-    asset_address: &str,
+    user_address: AlloyAddress,
+    asset_address: AlloyAddress,
 ) -> PersistDbError {
     match constraint_name(&err).as_deref() {
         Some("uniq_user_asset_pending_withdrawal") => PersistDbError::MultiplePendingWithdrawals {
-            user: user_address.to_owned(),
-            asset: asset_address.to_owned(),
+            user: user_address.canonical(),
+            asset: asset_address.canonical(),
             count: 2,
         },
         _ => PersistDbError::DatabaseFailure(err),
@@ -99,21 +78,28 @@ pub fn map_guarantee_validation_err(
     }
 }
 
-pub fn parse_address(addr: impl AsRef<str>) -> Result<Address, PersistDbError> {
-    Address::parse(addr)
+/// Parse an address that arrived as text on a wire type we do not own.
+///
+/// Prefer taking an [`AlloyAddress`] directly; this exists for the few repo inputs that still
+/// carry raw strings from request payloads.
+pub fn parse_address(addr: impl AsRef<str>) -> Result<AlloyAddress, PersistDbError> {
+    let trimmed = addr.as_ref().trim();
+    AlloyAddress::from_str(trimmed)
+        .map_err(|e| PersistDbError::InvariantViolation(format!("invalid address {trimmed}: {e}")))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Address;
+    use super::*;
+    use crate::persist::canonical::Canonical;
 
     #[test]
     fn parse_normalizes_addresses_to_lowercase_hex() {
-        let parsed = Address::parse("  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266  ")
-            .expect("valid address");
+        let parsed =
+            parse_address("  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266  ").expect("valid address");
 
         assert_eq!(
-            parsed.as_str(),
+            parsed.canonical(),
             "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
         );
     }

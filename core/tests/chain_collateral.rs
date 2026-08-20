@@ -8,15 +8,15 @@ use alloy::providers::ext::AnvilApi;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 use core_service::config::DEFAULT_ASSET_ADDRESS;
-use core_service::ethereum::EthereumEventScanner;
 use core_service::ethereum::contract::CollateralDeposited;
 use core_service::ethereum::event_data::EventMeta;
 use core_service::persist::{PersistCtx, repo};
 use core_service::scheduler::Task;
+use core_service::service::event_scanner;
 use entities::sea_orm_active_enums::*;
 use entities::*;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use test_log::test;
 
 #[path = "common/mod.rs"]
@@ -114,8 +114,8 @@ async fn eth_balance_self_heals_from_reorg_double_credit() -> anyhow::Result<()>
     // fresh event identity, as a re-mined block hash would bypass the dedup.
     repo::credit_collateral_with_event_on(
         persist_ctx.db.as_ref(),
-        user_addr.clone(),
-        DEFAULT_ASSET_ADDRESS.to_string(),
+        user_addr.parse()?,
+        DEFAULT_ASSET_ADDRESS.parse()?,
         first,
         CollateralEventType::Deposit,
         Some(EventMeta {
@@ -197,7 +197,7 @@ async fn stored_but_unhandled_event_is_reprocessed_not_skipped() -> anyhow::Resu
         &format!("{:#x}", block_hash),
         &format!("{:#x}", tx_hash),
         log_index,
-        &format!("{:#x}", log.address()),
+        log.address(),
         "{}",
     )
     .await?;
@@ -374,12 +374,7 @@ async fn listener_deletes_cursor_on_hash_mismatch_and_rescans() -> anyhow::Resul
         .await?;
     mine_confirmations(&provider, 1).await?;
 
-    let scanner = EthereumEventScanner::new(
-        env.cfg.ethereum_config.clone(),
-        persist_ctx.clone(),
-        env.core_service.read_provider().clone(),
-        Arc::new(env.core_service.clone()),
-    );
+    let scanner = event_scanner(env.cfg.ethereum_config.clone(), &env.core_service);
 
     if let Err(err) = scanner.run().await {
         let msg = err.to_string();
