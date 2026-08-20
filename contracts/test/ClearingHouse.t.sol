@@ -589,9 +589,7 @@ contract ClearingHouseTest is Test {
         ReceiveAuthorization memory auth =
             _debtorAuthorization(SIGNING_DEBTOR_PK, debtor, NET_AMOUNT, 0, block.timestamp + 1 hours, otherCycle);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ClearingHouse.AuthorizationCycleMismatch.selector, otherCycle, CYCLE_ID)
-        );
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.AuthorizationCycleMismatch.selector, otherCycle, CYCLE_ID));
         clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
     }
 

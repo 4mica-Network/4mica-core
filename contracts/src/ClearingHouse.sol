@@ -227,7 +227,15 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         uint256 balanceBefore = IERC20(cycle.asset).balanceOf(address(this));
         IERC3009(cycle.asset)
             .receiveWithAuthorization(
-                auth.from, address(this), netDebit, auth.validAfter, auth.validBefore, auth.nonce, auth.v, auth.r, auth.s
+                auth.from,
+                address(this),
+                netDebit,
+                auth.validAfter,
+                auth.validBefore,
+                auth.nonce,
+                auth.v,
+                auth.r,
+                auth.s
             );
         uint256 received = IERC20(cycle.asset).balanceOf(address(this)) - balanceBefore;
         if (received != netDebit) revert ExactPaymentRequired(netDebit, received);
