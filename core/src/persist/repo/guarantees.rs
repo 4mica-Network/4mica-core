@@ -9,7 +9,8 @@ use entities::guarantee;
 use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use metrics_4mica::measure;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    Set,
 };
 
 use super::balances::{get_user_balance_on, update_user_balance_and_version_on};
@@ -117,70 +118,92 @@ pub async fn get_guarantee_by_id_on<C: ConnectionTrait>(
     row.map(CycleGuarantee::try_from).transpose()
 }
 
-#[measure(record_db_time)]
-pub async fn transition_guarantee_settlement_status_on<C: ConnectionTrait>(
-    conn: &C,
-    guarantee_id: &str,
-    allowed_from: &[GuaranteeSettlementStatus],
-    target: GuaranteeSettlementStatus,
-    now: NaiveDateTime,
-) -> Result<bool, PersistDbError> {
-    let mut update = guarantee::ActiveModel {
-        settlement_status: Set(target.clone()),
-        updated_at: Set(now),
-        ..Default::default()
-    };
-    if target == GuaranteeSettlementStatus::FinalizedPayable {
-        update.finalized_at = Set(Some(now));
+/// Which guarantees a transition applies to: one by id, or a cycle's, optionally narrowed to a
+/// payer. Always constrained by `from`, so it cannot widen into every guarantee.
+#[derive(Debug, Clone, Copy)]
+pub struct GuaranteeSelector<'a> {
+    scope: Scope<'a>,
+    from: &'a [GuaranteeSettlementStatus],
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Scope<'a> {
+    Id(&'a str),
+    Cycle {
+        cycle_id: &'a str,
+        payer: Option<Address>,
+    },
+}
+
+impl<'a> GuaranteeSelector<'a> {
+    pub fn id(guarantee_id: &'a str, from: &'a [GuaranteeSettlementStatus]) -> Self {
+        Self {
+            scope: Scope::Id(guarantee_id),
+            from,
+        }
     }
 
-    let result = guarantee::Entity::update_many()
-        .filter(guarantee::Column::GuaranteeId.eq(guarantee_id))
-        .filter(guarantee::Column::SettlementStatus.is_in(allowed_from.iter().cloned()))
-        .set(update)
-        .exec(conn)
-        .await?;
+    pub fn cycle(
+        cycle_id: &'a str,
+        payer: Option<Address>,
+        from: &'a [GuaranteeSettlementStatus],
+    ) -> Self {
+        Self {
+            scope: Scope::Cycle { cycle_id, payer },
+            from,
+        }
+    }
 
-    Ok(result.rows_affected == 1)
+    fn condition(&self) -> Condition {
+        let mut condition = Condition::all()
+            .add(guarantee::Column::SettlementStatus.is_in(self.from.iter().cloned()));
+        match self.scope {
+            Scope::Id(guarantee_id) => {
+                condition = condition.add(guarantee::Column::GuaranteeId.eq(guarantee_id));
+            }
+            Scope::Cycle { cycle_id, payer } => {
+                condition = condition.add(guarantee::Column::CycleId.eq(cycle_id));
+                if let Some(payer) = payer {
+                    condition = condition.add(guarantee::Column::FromAddress.eq(payer.canonical()));
+                }
+            }
+        }
+        condition
+    }
 }
 
-#[measure(record_db_time)]
-pub async fn mark_cycle_guarantees_netted_on<C: ConnectionTrait>(
-    conn: &C,
-    cycle_id: &str,
+/// Stamp the column that records when `target` was reached.
+fn stamp_reached_at(
+    update: &mut guarantee::ActiveModel,
+    target: &GuaranteeSettlementStatus,
     now: NaiveDateTime,
-) -> Result<u64, PersistDbError> {
-    let result = guarantee::Entity::update_many()
-        .filter(guarantee::Column::CycleId.eq(cycle_id))
-        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::FinalizedPayable))
-        .set(guarantee::ActiveModel {
-            settlement_status: Set(GuaranteeSettlementStatus::Netted),
-            netted_at: Set(Some(now)),
-            updated_at: Set(now),
-            ..Default::default()
-        })
-        .exec(conn)
-        .await?;
-    Ok(result.rows_affected)
+) {
+    use GuaranteeSettlementStatus::*;
+    match target {
+        FinalizedPayable => update.finalized_at = Set(Some(now)),
+        Netted => update.netted_at = Set(Some(now)),
+        Settled | DefaultRemunerated => update.settled_at = Set(Some(now)),
+        Issued | PendingValidation | Disputed | Cancelled => {}
+    }
 }
 
 #[measure(record_db_time)]
-pub async fn list_netted_guarantees_for_cycle_on<C: ConnectionTrait>(
+pub async fn list_guarantees_on<C: ConnectionTrait>(
     conn: &C,
-    cycle_id: &str,
+    selector: GuaranteeSelector<'_>,
 ) -> Result<Vec<CycleGuarantee>, PersistDbError> {
     let rows = guarantee::Entity::find()
-        .filter(guarantee::Column::CycleId.eq(cycle_id))
-        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
+        .filter(selector.condition())
         .all(conn)
         .await?;
     decode_all(rows)
 }
 
+/// Move everything `selector` matches to `target`, returning how many rows moved.
 #[measure(record_db_time)]
-pub async fn transition_all_netted_guarantees_for_cycle_on<C: ConnectionTrait>(
+pub async fn transition_guarantees_on<C: ConnectionTrait>(
     conn: &C,
-    cycle_id: &str,
+    selector: GuaranteeSelector<'_>,
     target: GuaranteeSettlementStatus,
     now: NaiveDateTime,
 ) -> Result<u64, PersistDbError> {
@@ -189,61 +212,10 @@ pub async fn transition_all_netted_guarantees_for_cycle_on<C: ConnectionTrait>(
         updated_at: Set(now),
         ..Default::default()
     };
-    if matches!(
-        target,
-        GuaranteeSettlementStatus::Settled | GuaranteeSettlementStatus::DefaultRemunerated
-    ) {
-        update.settled_at = Set(Some(now));
-    }
+    stamp_reached_at(&mut update, &target, now);
 
     let result = guarantee::Entity::update_many()
-        .filter(guarantee::Column::CycleId.eq(cycle_id))
-        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
-        .set(update)
-        .exec(conn)
-        .await?;
-    Ok(result.rows_affected)
-}
-
-#[measure(record_db_time)]
-pub async fn list_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>(
-    conn: &C,
-    cycle_id: &str,
-    payer: Address,
-) -> Result<Vec<CycleGuarantee>, PersistDbError> {
-    let rows = guarantee::Entity::find()
-        .filter(guarantee::Column::CycleId.eq(cycle_id))
-        .filter(guarantee::Column::FromAddress.eq(payer.canonical()))
-        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
-        .all(conn)
-        .await?;
-    decode_all(rows)
-}
-
-#[measure(record_db_time)]
-pub async fn transition_netted_guarantees_for_cycle_payer_on<C: ConnectionTrait>(
-    conn: &C,
-    cycle_id: &str,
-    payer: Address,
-    target: GuaranteeSettlementStatus,
-    now: NaiveDateTime,
-) -> Result<u64, PersistDbError> {
-    let mut update = guarantee::ActiveModel {
-        settlement_status: Set(target.clone()),
-        updated_at: Set(now),
-        ..Default::default()
-    };
-    if matches!(
-        target,
-        GuaranteeSettlementStatus::Settled | GuaranteeSettlementStatus::DefaultRemunerated
-    ) {
-        update.settled_at = Set(Some(now));
-    }
-
-    let result = guarantee::Entity::update_many()
-        .filter(guarantee::Column::CycleId.eq(cycle_id))
-        .filter(guarantee::Column::FromAddress.eq(payer.canonical()))
-        .filter(guarantee::Column::SettlementStatus.eq(GuaranteeSettlementStatus::Netted))
+        .filter(selector.condition())
         .set(update)
         .exec(conn)
         .await?;

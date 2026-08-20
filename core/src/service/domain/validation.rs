@@ -3,11 +3,11 @@
 //! A validation-gated guarantee is stored `PendingValidation` at issuance. This driver moves it
 //! out of that state by asking the guarantee's validator adapter for a verdict:
 //!
-//! - approved before the deadline  -> `GuaranteeOps::finalize_payable_on` (nets and settles normally)
-//! - rejected                      -> `GuaranteeOps::dispute_on`          (releases the payer's collateral)
-//! - still pending at the deadline -> `GuaranteeOps::cancel_on`           (releases the payer's collateral)
-//! - still pending before it       -> left `PendingValidation`        (re-checked next sweep)
-//! - validator de-whitelisted      -> `GuaranteeOps::finalize_payable_on` (nothing gates it any more)
+//! - approved before the deadline  -> `FinalizedPayable`     (nets and settles normally)
+//! - rejected                      -> `Disputed`             (releases the payer's collateral)
+//! - still pending at the deadline -> `Cancelled`             (releases the payer's collateral)
+//! - still pending before it       -> left `PendingValidation` (re-checked next sweep)
+//! - validator de-whitelisted      -> `FinalizedPayable`     (nothing gates it any more)
 //!
 //! Whether a validator's answer means approved or rejected is the adapter's decision, not this
 //! module's. The transition and the validation record are written in a single transaction.
@@ -27,7 +27,7 @@ use std::sync::Arc;
 use crate::error::ServiceError;
 use crate::persist::repo;
 use crate::service::ctx::Ctx;
-use crate::service::shared::guarantee::GuaranteeOps;
+use crate::service::shared::guarantee::{GuaranteeTransition, TransitionTarget};
 
 /// What the driver should do with a single `PendingValidation` guarantee this sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,12 +90,11 @@ pub struct ValidationSweepSummary {
 
 pub struct ValidationService {
     ctx: Arc<Ctx>,
-    guarantee_ops: Arc<GuaranteeOps>,
 }
 
 impl ValidationService {
-    pub fn new(ctx: Arc<Ctx>, guarantee_ops: Arc<GuaranteeOps>) -> Self {
-        Self { ctx, guarantee_ops }
+    pub fn new(ctx: Arc<Ctx>) -> Self {
+        Self { ctx }
     }
 
     /// One pass of the validation lifecycle: resolve every pending validation against its
@@ -138,29 +137,36 @@ impl ValidationService {
             .persist
             .db
             .transaction::<_, (), ServiceError>(|txn| {
-                let guarantee_ops = self.guarantee_ops.clone();
                 let guarantee_id = guarantee_id.clone();
                 let evidence = evidence.clone();
                 Box::pin(async move {
                     let decision = match action {
                         ValidationAction::Finalize => {
-                            guarantee_ops
-                                .finalize_payable_on(txn, &guarantee_id)
+                            GuaranteeTransition::guarantee(&guarantee_id)
+                                .to(TransitionTarget::FinalizedPayable)
+                                .run(txn)
                                 .await?;
                             GuaranteeValidationStatus::Approved
                         }
                         ValidationAction::Dispute(_) => {
-                            guarantee_ops.dispute_on(txn, &guarantee_id).await?;
+                            GuaranteeTransition::guarantee(&guarantee_id)
+                                .to(TransitionTarget::Disputed)
+                                .run(txn)
+                                .await?;
                             GuaranteeValidationStatus::Rejected
                         }
                         ValidationAction::Cancel(_) => {
-                            guarantee_ops.cancel_on(txn, &guarantee_id).await?;
+                            GuaranteeTransition::guarantee(&guarantee_id)
+                                .to(TransitionTarget::Cancelled)
+                                .run(txn)
+                                .await?;
                             GuaranteeValidationStatus::Expired
                         }
                         ValidationAction::Skip => {
                             // No validator gates it any more, so make it payable for its cycle.
-                            guarantee_ops
-                                .finalize_payable_on(txn, &guarantee_id)
+                            GuaranteeTransition::guarantee(&guarantee_id)
+                                .to(TransitionTarget::FinalizedPayable)
+                                .run(txn)
                                 .await?;
                             GuaranteeValidationStatus::Skipped
                         }

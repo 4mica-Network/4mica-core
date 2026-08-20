@@ -12,7 +12,7 @@ use alloy::primitives::{Address, B256, U256};
 use anyhow::anyhow;
 use chrono::{Duration, NaiveDateTime, Utc};
 use entities::sea_orm_active_enums::{
-    GuaranteeSettlementStatus, ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
+    ParticipantCycleRole, ParticipantCycleStatus, SettlementCycleStatus,
 };
 use log::{error, info, warn};
 use sea_orm::TransactionTrait;
@@ -27,6 +27,7 @@ use crate::persist::rows::ParticipantPosition;
 use crate::service::ctx::Ctx;
 use crate::service::shared::clearing_proofs::{ClearingProofOps, ParticipantLeaf};
 use crate::service::shared::cycle::CycleOps;
+use crate::service::shared::guarantee::{GuaranteeTransition, SweepTarget};
 use crate::service::shared::{map_transaction_error, settlement_ledger};
 
 pub struct ClearingService {
@@ -716,14 +717,12 @@ impl ClearingService {
                     )
                     .await?;
                     if changed {
-                        settlement_ledger::settle_netted_guarantees_for_payer(
-                            txn,
-                            &cycle_id,
-                            debtor,
-                            GuaranteeSettlementStatus::Settled,
-                            now,
-                        )
-                        .await?;
+                        GuaranteeTransition::in_cycle(&cycle_id)
+                            .to(SweepTarget::Settled)
+                            .at(now)
+                            .by_payer(debtor)
+                            .run(txn)
+                            .await?;
                         settlement_ledger::maybe_confirm_resolved_cycle(txn, &cycle_id, now)
                             .await?;
                     }
@@ -774,14 +773,12 @@ impl ClearingService {
                         // A net creditor's own outgoing guarantees were fully
                         // offset by its incoming exposure, so settling its claim
                         // also discharges those obligations.
-                        settlement_ledger::settle_netted_guarantees_for_payer(
-                            txn,
-                            &cycle_id,
-                            creditor,
-                            GuaranteeSettlementStatus::Settled,
-                            now,
-                        )
-                        .await?;
+                        GuaranteeTransition::in_cycle(&cycle_id)
+                            .to(SweepTarget::Settled)
+                            .at(now)
+                            .by_payer(creditor)
+                            .run(txn)
+                            .await?;
                         settlement_ledger::maybe_confirm_resolved_cycle(txn, &cycle_id, now)
                             .await?;
                     }
@@ -834,14 +831,12 @@ impl ClearingService {
                         return Ok(0);
                     }
 
-                    let guarantees = settlement_ledger::settle_netted_guarantees_for_payer(
-                        txn,
-                        &cycle_id,
-                        debtor,
-                        GuaranteeSettlementStatus::DefaultRemunerated,
-                        now,
-                    )
-                    .await?;
+                    let guarantees = GuaranteeTransition::in_cycle(&cycle_id)
+                        .to(SweepTarget::DefaultRemunerated)
+                        .at(now)
+                        .by_payer(debtor)
+                        .run(txn)
+                        .await?;
 
                     settlement_ledger::maybe_confirm_resolved_cycle(txn, &cycle_id, now).await?;
 

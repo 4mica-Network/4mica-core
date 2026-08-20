@@ -22,7 +22,7 @@ use common::cycle_fixtures::{
     setup_cycle_service, store_payable_guarantee,
 };
 use common::fixtures::{
-    ensure_user_with_collateral, normalize_address, parse_addr, random_address,
+    ensure_user_with_collateral, netted_in, normalize_address, parse_addr, random_address,
     read_locked_collateral,
 };
 use core_service::{
@@ -116,7 +116,7 @@ async fn voluntary_settlement_releases_all_collateral() -> anyhow::Result<()> {
         );
     }
     assert!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
             .await?
             .is_empty()
     );
@@ -205,7 +205,7 @@ async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
         .process_defaulted_debtor(onchain, alice.parse()?, event_meta("0xdefault-alice"))
         .await?;
     let after_first = cycle(ctx, cycle_id).await?;
-    let netted_after_first = repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+    let netted_after_first = repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
         .await?
         .len();
     assert_eq!(read_locked_collateral(ctx, alice, asset).await?, U256::ZERO);
@@ -232,7 +232,7 @@ async fn redelivered_debtor_default_is_idempotent() -> anyhow::Result<()> {
         "re-delivery must not touch collateral"
     );
     assert_eq!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
             .await?
             .len(),
         netted_after_first,
@@ -293,7 +293,7 @@ async fn shortfall_resolution_releases_flat_participant_collateral() -> anyhow::
         );
     }
     assert!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(cycle_id))
             .await?
             .is_empty()
     );

@@ -19,7 +19,7 @@ use common::cycle_fixtures::{
     store_pending_guarantee,
 };
 use common::fixtures::{
-    ensure_user, ensure_user_with_collateral, normalize_address, random_address,
+    ensure_user, ensure_user_with_collateral, netted_in, normalize_address, random_address,
     read_locked_collateral, set_locked_collateral,
 };
 use core_service::config::DEFAULT_ASSET_ADDRESS;
@@ -313,7 +313,7 @@ async fn fully_offsetting_cycle_is_short_circuited_without_chain_commit() -> any
         );
     }
     assert!(
-        repo::list_netted_guarantees_for_cycle_on(ctx.db.as_ref(), &cycle_id)
+        repo::list_guarantees_on(ctx.db.as_ref(), netted_in(&cycle_id))
             .await?
             .is_empty(),
         "short-circuit should settle all netted guarantees"

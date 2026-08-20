@@ -2,14 +2,14 @@
 //!
 //! Everything takes a connection so callers compose it into their own transaction.
 
-use alloy::primitives::Address;
 use chrono::NaiveDateTime;
-use entities::sea_orm_active_enums::{GuaranteeSettlementStatus, SettlementCycleStatus};
+use entities::sea_orm_active_enums::SettlementCycleStatus;
 use log::info;
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
 use crate::error::{ServiceError, ServiceResult};
 use crate::persist::repo;
+use crate::service::shared::guarantee::{GuaranteeTransition, SweepTarget};
 
 /// Confirm a `Settling`/`Shortfall` cycle if its ledger is now fully resolved. A no-op for cycles
 /// in any other state, so it is safe to call after every resolving event.
@@ -37,27 +37,6 @@ pub async fn maybe_confirm_resolved_cycle<C: ConnectionTrait>(
     Ok(())
 }
 
-pub async fn settle_netted_guarantees_for_payer<C: ConnectionTrait>(
-    conn: &C,
-    cycle_id: &str,
-    payer: Address,
-    target: GuaranteeSettlementStatus,
-    now: NaiveDateTime,
-) -> ServiceResult<u64> {
-    let guarantees = repo::list_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer).await?;
-    let changed =
-        repo::transition_netted_guarantees_for_cycle_payer_on(conn, cycle_id, payer, target, now)
-            .await?;
-
-    if changed > 0 {
-        for guarantee in guarantees {
-            repo::release_locked_collateral_for_guarantee_on(conn, &guarantee).await?;
-        }
-    }
-
-    Ok(changed)
-}
-
 /// Settle every guarantee still in `Netted` for a cycle and release the
 /// collateral each one locked, keyed on the payer (`from`) side.
 ///
@@ -69,23 +48,11 @@ pub async fn settle_remaining_netted_guarantees_for_cycle<C: ConnectionTrait>(
     cycle_id: &str,
     now: NaiveDateTime,
 ) -> ServiceResult<u64> {
-    let guarantees = repo::list_netted_guarantees_for_cycle_on(conn, cycle_id).await?;
-    if guarantees.is_empty() {
-        return Ok(0);
-    }
-    let changed = repo::transition_all_netted_guarantees_for_cycle_on(
-        conn,
-        cycle_id,
-        GuaranteeSettlementStatus::Settled,
-        now,
-    )
-    .await?;
-    if changed > 0 {
-        for guarantee in &guarantees {
-            repo::release_locked_collateral_for_guarantee_on(conn, guarantee).await?;
-        }
-    }
-    Ok(changed)
+    GuaranteeTransition::in_cycle(cycle_id)
+        .to(SweepTarget::Settled)
+        .at(now)
+        .run(conn)
+        .await
 }
 
 /// Finalize a fully-offsetting cycle without an on-chain commit: settle its
@@ -103,7 +70,11 @@ pub async fn short_circuit_offsetting_cycle(
             Box::pin(async move {
                 let finalized = repo::short_circuit_frozen_cycle_on(txn, &cycle_id, now).await?;
                 let settled = if finalized {
-                    repo::mark_cycle_guarantees_netted_on(txn, &cycle_id, now).await?;
+                    GuaranteeTransition::in_cycle(&cycle_id)
+                        .to(SweepTarget::Netted)
+                        .at(now)
+                        .run(txn)
+                        .await?;
                     settle_remaining_netted_guarantees_for_cycle(txn, &cycle_id, now).await?
                 } else {
                     0

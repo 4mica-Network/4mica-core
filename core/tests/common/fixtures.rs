@@ -4,10 +4,12 @@ use alloy::primitives::{Address, U256, keccak256};
 use alloy::sol_types::SolValue;
 use anyhow::{Result, anyhow};
 use chrono::Utc;
+use core_service::persist::repo::GuaranteeSelector;
 use core_service::{
     config::DEFAULT_ASSET_ADDRESS,
     persist::{PersistCtx, repo},
 };
+use entities::sea_orm_active_enums::GuaranteeSettlementStatus;
 use entities::{user, user_asset_balance};
 use rand::random;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::OnConflict};
@@ -155,4 +157,11 @@ pub fn compute_guarantee_domain_separator(
         .abi_encode_sequence();
 
     Ok(keccak256(encoded).into())
+}
+
+const NETTED: &[GuaranteeSettlementStatus] = &[GuaranteeSettlementStatus::Netted];
+
+/// Selector for a cycle's netted guarantees.
+pub fn netted_in(cycle_id: &str) -> GuaranteeSelector<'_> {
+    GuaranteeSelector::cycle(cycle_id, None, NETTED)
 }

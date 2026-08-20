@@ -23,6 +23,7 @@ use crate::service::shared::clearing_proofs::{
     ClearingParticipantProof, ClearingProofOps, build_participant_merkle_tree,
 };
 use crate::service::shared::cycle::CycleOps;
+use crate::service::shared::guarantee::{GuaranteeTransition, SweepTarget};
 use crate::service::shared::{map_transaction_error, settlement_ledger};
 
 /// Outcome of running the netting pipeline for a single frozen cycle.
@@ -349,7 +350,11 @@ impl NettingService {
                 Box::pin(async move {
                     let changed = repo::mark_cycle_netting_computed_on(txn, &cycle_id, now).await?;
                     if changed {
-                        repo::mark_cycle_guarantees_netted_on(txn, &cycle_id, now).await?;
+                        GuaranteeTransition::in_cycle(&cycle_id)
+                            .to(SweepTarget::Netted)
+                            .at(now)
+                            .run(txn)
+                            .await?;
                     }
                     Ok(changed)
                 })

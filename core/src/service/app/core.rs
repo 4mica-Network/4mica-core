@@ -23,7 +23,6 @@ use crate::service::domain::system::SystemService;
 use crate::service::domain::validation::ValidationService;
 use crate::service::shared::clearing_proofs::ClearingProofOps;
 use crate::service::shared::cycle::CycleOps;
-use crate::service::shared::guarantee::GuaranteeOps;
 
 /// Everything a caller can reach, wired once and shared.
 struct Services {
@@ -125,7 +124,6 @@ impl CoreService {
     fn from_ctx(ctx: Arc<Ctx>) -> Self {
         // Layer 3: shared primitives, depending only on the context.
         let cycle_ops = Arc::new(CycleOps::new(ctx.clone()));
-        let guarantee_ops = Arc::new(GuaranteeOps::new());
         let proof_ops = Arc::new(ClearingProofOps::new(ctx.clone()));
 
         // Layer 2: domain services, which never depend on each other.
@@ -141,7 +139,7 @@ impl CoreService {
             netting: Arc::new(NettingService::new(ctx.clone(), cycle_ops, proof_ops)),
             query: Arc::new(QueryService::new(ctx.clone())),
             system: Arc::new(SystemService::new(ctx.clone())),
-            validation: Arc::new(ValidationService::new(ctx.clone(), guarantee_ops)),
+            validation: Arc::new(ValidationService::new(ctx.clone())),
         };
 
         Self {
