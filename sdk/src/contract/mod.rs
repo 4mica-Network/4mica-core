@@ -302,7 +302,23 @@ sol! {
 sol! {
     #[sol(rpc)]
     contract ClearingHouse {
+        /// Same shape as [`Core4Mica::ReceiveAuthorization`]; redeclared because `sol!` blocks
+        /// cannot share types.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        struct ReceiveAuthorization {
+            address from;
+            uint256 validAfter;
+            uint256 validBefore;
+            bytes32 nonce;
+            uint8 v;
+            bytes32 r;
+            bytes32 s;
+        }
+
         function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable;
+        /// Sponsored debit payment: a third party submits the debtor's EIP-3009 signature and the
+        /// exact net debit is pulled from `auth.from`'s wallet. `auth.nonce` must equal `cycleId`.
+        function payNetDebitWithAuthorization(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof, ReceiveAuthorization calldata auth) external;
         function claimNetCreditFor(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
     }
 }

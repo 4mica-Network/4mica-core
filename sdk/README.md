@@ -392,7 +392,9 @@ Finalization takes no signature: `finalizeWithdrawalFor` pays the user whoever s
 
 #### `client.settlement`
 
-- `pay_net_debit(cycle_id: String) -> Result<TransactionReceipt, ClearingSettlementError>`: Pay the caller's committed net debit for a cycle
+- `pay_net_debit(cycle_id: String) -> Result<PayReceipt, ClearingSettlementError>`: Pay the caller's committed net debit for a cycle, sponsored via the facilitator where possible
+- `pay_net_debit_gasless(cycle_id: String) -> Result<PayReceipt, ClearingSettlementError>`: Pay strictly through the facilitator — no fallback
+- `pay_net_debit_self_funded(cycle_id: String) -> Result<PayReceipt, ClearingSettlementError>`: Pay with the caller's own transaction
 - `claim_net_credit(cycle_id: String) -> Result<ClaimReceipt, ClearingSettlementError>`: Claim the caller's committed net credit for a cycle, sponsored via the facilitator where possible
 - `claim_net_credit_for(cycle_id: String, creditor: Address) -> Result<ClaimReceipt, ClearingSettlementError>`: Claim `creditor`'s committed net credit, sponsored where possible
 - `claim_net_credit_gasless(cycle_id: String)` / `claim_net_credit_gasless_for(cycle_id: String, creditor: Address) -> Result<ClaimReceipt, ClearingSettlementError>`: Claim strictly through the facilitator, whose relayer pays the gas — no fallback
@@ -404,6 +406,8 @@ Finalization takes no signature: `finalizeWithdrawalFor` pays the user whoever s
 - `approve_erc20(cycle_id: String, token: String, amount: U256) -> Result<TransactionReceipt, ApproveErc20Error>`: Approve the contract that settles this cycle, which is not the 4Mica contract
 
 A claim needs no signature from the creditor: the on-chain payout goes to the address the committed Merkle leaf names, for the amount it fixes, so a submitter can neither redirect nor inflate it. That is also what makes it sponsorable — with a `facilitator_url` configured, `claim_net_credit` POSTs the cycle and creditor to the facilitator's `/clearing/claim`, whose relayer resolves the terms from core and pays the gas, and falls back to the caller's own transaction when the facilitator would not sponsor (never when its refusal names the claim itself — that would revert self-funded too). `ClaimReceipt::path` reports which route ran. Every route ends in the contract's single claim entrypoint, `claimNetCreditFor` — a self-claim just names the caller's own address.
+
+A payment does need the debtor's signature — it pulls money out of their wallet. For an ERC-20 cycle with a `facilitator_url` configured, `pay_net_debit` signs an EIP-3009 `receiveWithAuthorization` binding the ClearingHouse as receiver, the committed amount, and the cycle id as nonce, and POSTs it to the facilitator's `/clearing/pay`; the relayer submits `payNetDebitWithAuthorization` and pays the gas, so the debtor needs no native balance and no allowance. The same fallback discipline applies, and `PayReceipt::path` reports the route. Native-asset cycles cannot be pulled by signature and always settle self-funded (`payNetDebit`, with the debit riding as transaction value; ERC-20 self-funded needs `approve_erc20` first).
 
 #### `client.account`
 

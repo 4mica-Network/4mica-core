@@ -16,8 +16,10 @@ use crate::{
     client::{
         ClientCtx, await_receipt, confirm_echoed,
         facilitator::FacilitatorFailure,
-        model::{ClaimPath, ClaimReceipt},
+        model::{ClaimPath, ClaimReceipt, PayPath, PayReceipt},
+        sig,
     },
+    contract::Core4Mica::ReceiveAuthorization,
     error::{ApproveErc20Error, ClearingSettlementError, SponsorshipError},
     validators::validate_address,
 };
@@ -115,30 +117,127 @@ where
 
 impl<S> SettlementClient<S>
 where
+    S: Signer + Send + Sync,
+{
+    /// Pays the caller's committed net debit gaslessly. The caller signs an EIP-3009
+    /// authorization for the exact amount and the facilitator submits it — no native balance, no
+    /// allowance, and no transaction of the caller's own.
+    ///
+    /// ERC-20 cycles only: a native-asset debit cannot be pulled by signature.
+    pub async fn pay_net_debit_gasless(
+        &self,
+        cycle_id: String,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let action = self.pay_net_debit_action(cycle_id.clone()).await?;
+        self.pay_net_debit_gasless_with(cycle_id, &action).await
+    }
+
+    async fn pay_net_debit_gasless_with(
+        &self,
+        cycle_id: String,
+        action: &ClearingSettlementActionResponse,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let debtor = self.ctx.signer_address();
+        let call = checked_pay_call(action, debtor)?;
+        let asset = cycle_asset(action)?;
+        if asset == Address::ZERO {
+            return Err(ClearingSettlementError::InvalidParams(
+                "native-asset debits cannot be paid gaslessly; use the self-funded route".into(),
+            ));
+        }
+
+        let authorization = sig::debit_authorization(
+            &self.ctx,
+            asset,
+            call.contract_address,
+            call.amount,
+            call.cycle_id,
+        )
+        .await?;
+        let request = FacilitatorPayRequest {
+            cycle_id,
+            authorization,
+        };
+        let response: FacilitatorPayResponse = self
+            .ctx
+            .facilitator()
+            .post("clearing/pay", &request)
+            .await
+            .map_err(ClearingSettlementError::Sponsorship)?;
+        Ok(response.into_receipt(debtor)?)
+    }
+}
+
+impl<S> SettlementClient<S>
+where
     S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
 {
-    /// Pays the caller's committed net debit for a clearing cycle.
+    /// Pays the caller's committed net debit for a clearing cycle, sponsored where possible.
     ///
-    /// For ERC-20 cycles, grant the allowance with [`Self::approve_erc20`] first.
+    /// For an ERC-20 cycle with a facilitator configured, the caller signs an EIP-3009
+    /// authorization for the exact amount and the facilitator submits and pays gas — no allowance
+    /// and no native balance needed. Otherwise — a native-asset cycle, or no facilitator — the
+    /// caller's own transaction runs (grant the allowance with [`Self::approve_erc20`] first for
+    /// ERC-20 cycles). A rejection that names the payment itself is returned rather than retried,
+    /// and so is an unknown outcome: the facilitator may already have submitted, and a second
+    /// payment would revert as `AlreadyPaid` after paying gas.
+    ///
+    /// Read [`PayReceipt::path`] to see which route ran.
     pub async fn pay_net_debit(
         &self,
         cycle_id: String,
-    ) -> Result<TransactionReceipt, ClearingSettlementError> {
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let action = self.pay_net_debit_action(cycle_id.clone()).await?;
+        if !self.is_gasless_available() || cycle_asset(&action)? == Address::ZERO {
+            return self.pay_net_debit_self_funded_with(&action).await;
+        }
+        match self.pay_net_debit_gasless_with(cycle_id, &action).await {
+            Err(err) if sponsorship_unavailable(&err, names_the_payment) => {
+                self.pay_net_debit_self_funded_with(&action).await
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Pays the caller's committed net debit with their own transaction.
+    ///
+    /// For ERC-20 cycles, grant the allowance with [`Self::approve_erc20`] first.
+    pub async fn pay_net_debit_self_funded(
+        &self,
+        cycle_id: String,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
         let action = self.pay_net_debit_action(cycle_id).await?;
-        let call = ClearingActionCall::parse(&action)?;
+        self.pay_net_debit_self_funded_with(&action).await
+    }
+
+    async fn pay_net_debit_self_funded_with(
+        &self,
+        action: &ClearingSettlementActionResponse,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let debtor = self.ctx.signer_address();
+        let call = checked_pay_call(action, debtor)?;
         let contract = self
             .ctx
             .get_clearing_house_write_contract(call.contract_address)
             .await?;
 
-        Ok(await_receipt(
-            contract
-                .payNetDebit(call.cycle_id, call.amount, call.proof)
-                .value(call.payable_value)
-                .send()
-                .await,
-        )
-        .await?)
+        let sent = contract
+            .payNetDebit(call.cycle_id, call.amount, call.proof)
+            .value(call.payable_value)
+            .send()
+            .await;
+        let receipt = await_receipt(sent).await?;
+        if !receipt.status() {
+            return Err(ClearingSettlementError::RevertedOnChain {
+                tx_hash: receipt.transaction_hash,
+            });
+        }
+        Ok(PayReceipt {
+            tx_hash: receipt.transaction_hash,
+            path: PayPath::SelfFunded,
+            debtor,
+            network: None,
+        })
     }
 
     /// Claims the caller's committed net credit for a clearing cycle, sponsored where possible.
@@ -178,7 +277,7 @@ where
             .claim_net_credit_gasless_for(cycle_id.clone(), creditor)
             .await
         {
-            Err(err) if sponsorship_unavailable(&err) => {
+            Err(err) if sponsorship_unavailable(&err, names_the_claim) => {
                 self.claim_net_credit_self_funded_for(cycle_id, creditor)
                     .await
             }
@@ -265,15 +364,18 @@ where
     }
 }
 
-/// Whether an error means "nobody sponsored this", as opposed to "this claim is bad" or "we do not
-/// know what happened". Only the first is worth falling back on: a rejection that names the claim
-/// would revert the caller's own transaction too, after they had paid for it, and an unknown
-/// outcome may mean the facilitator already submitted — a second claim then reverts as
-/// `AlreadyClaimed` after paying gas.
-fn sponsorship_unavailable(err: &ClearingSettlementError) -> bool {
+/// Whether an error means "nobody sponsored this", as opposed to "this request is bad" or "we do
+/// not know what happened". Only the first is worth falling back on: a rejection that names the
+/// request (per `names_the_request`) would revert the caller's own transaction too, after they had
+/// paid for it, and an unknown outcome may mean the facilitator already submitted — a second
+/// attempt then reverts as `AlreadyClaimed`/`AlreadyPaid` after paying gas.
+fn sponsorship_unavailable(
+    err: &ClearingSettlementError,
+    names_the_request: fn(&str) -> bool,
+) -> bool {
     match err {
         ClearingSettlementError::Sponsorship(SponsorshipError::Rejected { code, .. }) => {
-            !names_the_claim(code)
+            !names_the_request(code)
         }
         ClearingSettlementError::Sponsorship(SponsorshipError::OutcomeUnknown(_)) => false,
         ClearingSettlementError::Sponsorship(_) => true,
@@ -294,6 +396,53 @@ fn names_the_claim(code: &str) -> bool {
             | "REVERTED_ON_CHAIN"
             | "RECEIPT_UNAVAILABLE"
     )
+}
+
+/// Rejections that describe the payment rather than the facilitator's willingness to sponsor it.
+/// Beyond the claim codes, this covers the debtor's side of the bargain: a refused signature means
+/// the SDK signed over the wrong terms (falling back would mask the bug at the caller's expense),
+/// and an insufficient balance fails the self-funded route just the same.
+fn names_the_payment(code: &str) -> bool {
+    names_the_claim(code)
+        || matches!(
+            code,
+            "MALFORMED_SIGNATURE"
+                | "SIGNATURE_MISMATCH"
+                | "EXPIRED"
+                | "NOT_YET_VALID"
+                | "NONCE_ALREADY_USED"
+                | "INSUFFICIENT_BALANCE"
+        )
+}
+
+/// The action's cycle asset, `Address::ZERO` for a native-asset cycle.
+fn cycle_asset(
+    action: &ClearingSettlementActionResponse,
+) -> Result<Address, ClearingSettlementError> {
+    validate_address(&action.asset_address).map_err(|err| {
+        ClearingSettlementError::InvalidParams(format!("invalid cycle asset: {err}"))
+    })
+}
+
+/// Validates a pay action against the caller before any money moves: core must have prepared a
+/// debit for this debtor, not some other action or participant.
+fn checked_pay_call(
+    action: &ClearingSettlementActionResponse,
+    debtor: Address,
+) -> Result<ClearingActionCall, ClearingSettlementError> {
+    confirm_echoed(
+        "participant",
+        Some(&action.participant),
+        debtor,
+        ClearingSettlementError::InvalidParams,
+    )?;
+    if action.function_name != "payNetDebit" {
+        return Err(ClearingSettlementError::InvalidParams(format!(
+            "core prepared {}, expected payNetDebit",
+            action.function_name
+        )));
+    }
+    ClearingActionCall::parse(action)
 }
 
 /// Wire format for `POST /clearing/claim`.
@@ -342,6 +491,59 @@ impl FacilitatorClaimResponse {
                 "creditor",
                 self.creditor.as_deref(),
                 creditor,
+                SponsorshipError::OutcomeUnknown,
+            )?,
+            network: self.network,
+        })
+    }
+}
+
+/// Wire format for `POST /clearing/pay`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FacilitatorPayRequest {
+    cycle_id: String,
+    authorization: ReceiveAuthorization,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FacilitatorPayResponse {
+    success: bool,
+    tx_hash: Option<String>,
+    network: Option<String>,
+    debtor: Option<String>,
+    error: Option<String>,
+    #[serde(flatten)]
+    failure: FacilitatorFailure,
+}
+
+impl FacilitatorPayResponse {
+    /// `debtor` falls back to what was asked for: it is echoed for reconciliation, and a
+    /// facilitator that omits it has not changed whose funds the contract pulled. One that echoes
+    /// something else has, and the receipt is refused rather than made to describe it.
+    fn into_receipt(self, debtor: Address) -> Result<PayReceipt, SponsorshipError> {
+        if !self.success {
+            return Err(self.failure.into_sponsorship_error(self.error));
+        }
+
+        let tx_hash = self
+            .tx_hash
+            .as_deref()
+            .and_then(|raw| raw.parse::<B256>().ok())
+            .ok_or_else(|| {
+                SponsorshipError::OutcomeUnknown(
+                    "facilitator reported success without a txHash".into(),
+                )
+            })?;
+
+        Ok(PayReceipt {
+            tx_hash,
+            path: PayPath::Sponsored,
+            debtor: confirm_echoed(
+                "debtor",
+                self.debtor.as_deref(),
+                debtor,
                 SponsorshipError::OutcomeUnknown,
             )?,
             network: self.network,

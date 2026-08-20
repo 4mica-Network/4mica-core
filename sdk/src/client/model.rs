@@ -203,3 +203,31 @@ pub struct ClaimReceipt {
     pub creditor: Address,
     pub network: Option<String>,
 }
+
+/// How a net-debit payment reached the contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayPath {
+    /// Submitted and paid for by the facilitator.
+    Sponsored,
+    /// The caller's own transaction, paying their own gas.
+    SelfFunded,
+}
+
+impl PayPath {
+    /// Whether the caller's own funds paid for the transaction (the debit itself always comes out
+    /// of the debtor's wallet, whichever route ran).
+    pub fn costs_the_caller_gas(&self) -> bool {
+        matches!(self, Self::SelfFunded)
+    }
+}
+
+/// Outcome of a net-debit payment.
+#[derive(Debug, Clone)]
+pub struct PayReceipt {
+    pub tx_hash: B256,
+    /// Which route delivered it — in particular, whether the caller paid gas.
+    pub path: PayPath,
+    /// The account whose funds paid the debit — always the signer, never the submitter.
+    pub debtor: Address,
+    pub network: Option<String>,
+}

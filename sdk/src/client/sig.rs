@@ -24,7 +24,7 @@ use crate::{
         eip712_digest_for_permit2_transfer, eip712_digest_for_receive_authorization,
         eip712_digest_for_request_withdrawal,
     },
-    error::{DepositError, SponsorshipError},
+    error::{ClearingSettlementError, DepositError, SponsorshipError},
 };
 
 /// How long a signed authorization stays redeemable.
@@ -51,12 +51,44 @@ pub(super) async fn eip3009_authorization<S>(
 where
     S: Signer + Send + Sync,
 {
-    let from = ctx.signer_address();
-    let to = ctx.contract_address();
-    let valid_before = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
     let nonce = B256::from(rand::random::<[u8; 32]>());
-
     let domain_separator = ctx.token_domain_separator(token).await?;
+    signed_receive_authorization(ctx, domain_separator, ctx.contract_address(), amount, nonce)
+        .await
+        .map_err(|e| DepositError::Transport(e.to_string()))
+}
+
+/// Signs an EIP-3009 `receiveWithAuthorization` paying the signer's net debit: `amount` of `token`
+/// to `receiver` (the ClearingHouse), with the nonce pinned to the cycle id as
+/// `payNetDebitWithAuthorization` requires.
+pub(super) async fn debit_authorization<S>(
+    ctx: &ClientCtx<S>,
+    token: Address,
+    receiver: Address,
+    amount: U256,
+    cycle_id: B256,
+) -> Result<ReceiveAuthorization, ClearingSettlementError>
+where
+    S: Signer + Send + Sync,
+{
+    let domain_separator = ctx.token_domain_separator(token).await?;
+    signed_receive_authorization(ctx, domain_separator, receiver, amount, cycle_id)
+        .await
+        .map_err(|e| ClearingSettlementError::Transport(e.to_string()))
+}
+
+async fn signed_receive_authorization<S>(
+    ctx: &ClientCtx<S>,
+    domain_separator: B256,
+    to: Address,
+    amount: U256,
+    nonce: B256,
+) -> Result<ReceiveAuthorization, alloy::signers::Error>
+where
+    S: Signer + Send + Sync,
+{
+    let from = ctx.signer_address();
+    let valid_before = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
     let digest = eip712_digest_for_receive_authorization(
         domain_separator,
         from,
@@ -67,15 +99,16 @@ where
         nonce,
     );
 
-    let (v, r, s) = sign_vrs(ctx.signer(), &digest).await?;
+    let sig = ctx.signer().sign_hash(&digest).await?;
+    let bytes = sig.as_bytes();
     Ok(ReceiveAuthorization {
         from,
         validAfter: U256::ZERO,
         validBefore: valid_before,
         nonce,
-        v,
-        r,
-        s,
+        v: bytes[64],
+        r: B256::from_slice(&bytes[0..32]),
+        s: B256::from_slice(&bytes[32..64]),
     })
 }
 

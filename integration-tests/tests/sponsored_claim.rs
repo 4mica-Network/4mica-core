@@ -1,4 +1,4 @@
-use sdk_4mica::client::model::ClaimPath;
+use sdk_4mica::client::model::{ClaimPath, PayPath};
 use sdk_4mica::{Address, U256};
 
 mod common;
@@ -67,11 +67,8 @@ async fn test_sponsored_claim_via_facilitator() -> anyhow::Result<()> {
 
     // The debtor funds the cycle; the claim is gated on full funding.
     let pay_receipt = debtor.settlement.pay_net_debit(cycle_id.clone()).await?;
-    assert!(
-        pay_receipt.status(),
-        "payNetDebit transaction reverted: {:?}",
-        pay_receipt.transaction_hash
-    );
+    assert_eq!(pay_receipt.path, PayPath::SelfFunded);
+    assert_eq!(pay_receipt.debtor, debtor_address);
 
     // Strictly the gasless route — no self-funded fallback — so a facilitator
     // refusal fails the test instead of quietly passing through the fallback.
