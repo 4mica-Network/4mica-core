@@ -234,16 +234,15 @@ impl BulkTransition<'_> {
         let from = [sweep.from()];
         let selector = GuaranteeSelector::cycle(cycle_id, payer, &from);
 
-        let guarantees = if target.frees_collateral() {
-            repo::list_guarantees_on(conn, selector).await?
-        } else {
-            Vec::new()
-        };
-        let changed = repo::transition_guarantees_on(conn, selector, target.status(), now).await?;
-        if changed > 0 {
-            release(conn, target, &guarantees).await?;
+        if !target.frees_collateral() {
+            return Ok(repo::transition_guarantees_on(conn, selector, target.status(), now).await?);
         }
-        Ok(changed)
+
+        // The update reports the rows it moved, so the collateral released is exactly theirs.
+        let moved =
+            repo::transition_guarantees_returning_on(conn, selector, target.status(), now).await?;
+        release(conn, target, &moved).await?;
+        Ok(moved.len() as u64)
     }
 }
 

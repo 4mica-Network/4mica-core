@@ -118,12 +118,12 @@ pub async fn get_guarantee_by_id_on<C: ConnectionTrait>(
     row.map(CycleGuarantee::try_from).transpose()
 }
 
-/// Which guarantees a transition applies to: one by id, or a cycle's, optionally narrowed to a
-/// payer. Always constrained by `from`, so it cannot widen into every guarantee.
+/// Which guarantees to match: one by id, or a cycle's, optionally narrowed to a payer. Always
+/// constrained to `statuses`, so it cannot widen into every guarantee.
 #[derive(Debug, Clone, Copy)]
 pub struct GuaranteeSelector<'a> {
     scope: Scope<'a>,
-    from: &'a [GuaranteeSettlementStatus],
+    statuses: &'a [GuaranteeSettlementStatus],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -136,27 +136,27 @@ enum Scope<'a> {
 }
 
 impl<'a> GuaranteeSelector<'a> {
-    pub fn id(guarantee_id: &'a str, from: &'a [GuaranteeSettlementStatus]) -> Self {
+    pub fn id(guarantee_id: &'a str, statuses: &'a [GuaranteeSettlementStatus]) -> Self {
         Self {
             scope: Scope::Id(guarantee_id),
-            from,
+            statuses,
         }
     }
 
     pub fn cycle(
         cycle_id: &'a str,
         payer: Option<Address>,
-        from: &'a [GuaranteeSettlementStatus],
+        statuses: &'a [GuaranteeSettlementStatus],
     ) -> Self {
         Self {
             scope: Scope::Cycle { cycle_id, payer },
-            from,
+            statuses,
         }
     }
 
     fn condition(&self) -> Condition {
         let mut condition = Condition::all()
-            .add(guarantee::Column::SettlementStatus.is_in(self.from.iter().cloned()));
+            .add(guarantee::Column::SettlementStatus.is_in(self.statuses.iter().cloned()));
         match self.scope {
             Scope::Id(guarantee_id) => {
                 condition = condition.add(guarantee::Column::GuaranteeId.eq(guarantee_id));
@@ -199,6 +199,19 @@ pub async fn list_guarantees_on<C: ConnectionTrait>(
     decode_all(rows)
 }
 
+fn transition_update(
+    target: &GuaranteeSettlementStatus,
+    now: NaiveDateTime,
+) -> guarantee::ActiveModel {
+    let mut update = guarantee::ActiveModel {
+        settlement_status: Set(target.clone()),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+    stamp_reached_at(&mut update, target, now);
+    update
+}
+
 /// Move everything `selector` matches to `target`, returning how many rows moved.
 #[measure(record_db_time)]
 pub async fn transition_guarantees_on<C: ConnectionTrait>(
@@ -207,19 +220,28 @@ pub async fn transition_guarantees_on<C: ConnectionTrait>(
     target: GuaranteeSettlementStatus,
     now: NaiveDateTime,
 ) -> Result<u64, PersistDbError> {
-    let mut update = guarantee::ActiveModel {
-        settlement_status: Set(target.clone()),
-        updated_at: Set(now),
-        ..Default::default()
-    };
-    stamp_reached_at(&mut update, &target, now);
-
     let result = guarantee::Entity::update_many()
         .filter(selector.condition())
-        .set(update)
+        .set(transition_update(&target, now))
         .exec(conn)
         .await?;
     Ok(result.rows_affected)
+}
+
+/// Move everything `selector` matches to `target`, returning the rows that moved.
+#[measure(record_db_time)]
+pub async fn transition_guarantees_returning_on<C: ConnectionTrait>(
+    conn: &C,
+    selector: GuaranteeSelector<'_>,
+    target: GuaranteeSettlementStatus,
+    now: NaiveDateTime,
+) -> Result<Vec<CycleGuarantee>, PersistDbError> {
+    let rows = guarantee::Entity::update_many()
+        .filter(selector.condition())
+        .set(transition_update(&target, now))
+        .exec_with_returning(conn)
+        .await?;
+    decode_all(rows)
 }
 
 #[measure(record_db_time)]
