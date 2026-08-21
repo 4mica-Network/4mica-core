@@ -24,7 +24,7 @@ use crate::{
         sig::{self, Eip2612PermitRequest},
     },
     contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
-    error::{ApproveErc20Error, DepositError},
+    error::{ApproveErc20Error, ClientError, DepositError},
 };
 
 pub struct DepositClient<S> {
@@ -117,7 +117,25 @@ where
             return Err(rejection);
         };
 
-        let permit = sig::eip2612_permit(&self.ctx, token, *nonce).await?;
+        let permit = match sig::eip2612_permit(&self.ctx, token, *nonce).await {
+            Ok(permit) => permit,
+            // The permit digest needs the token's domain separator; without one the approval
+            // cannot be sponsored from here — the same dead end as a token with no EIP-2612
+            // surface, and reported the same way: the nonce advertised that sponsoring *could*
+            // work, which has just been disproven, so it is stripped.
+            Err(DepositError::Client(ClientError::MissingTokenDomainSeparator { .. })) => {
+                return Err(match rejection {
+                    DepositError::Permit2AllowanceRequired { message, .. } => {
+                        DepositError::Permit2AllowanceRequired {
+                            message,
+                            eip2612_nonce: None,
+                        }
+                    }
+                    other => other,
+                });
+            }
+            Err(err) => return Err(err),
+        };
         let deposited = Deposited {
             payer: authorization.from,
             asset: token,

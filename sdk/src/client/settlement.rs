@@ -20,7 +20,7 @@ use crate::{
         sig::{self, Eip2612PermitRequest},
     },
     contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
-    error::{ApproveErc20Error, ClearingSettlementError, SponsorshipError},
+    error::{ApproveErc20Error, ClearingSettlementError, ClientError, SponsorshipError},
     validators::validate_address,
 };
 
@@ -261,7 +261,18 @@ where
         };
 
         let (_, asset, _) = self.checked_gasless_pay(action)?;
-        let permit = sig::debit_eip2612_permit(&self.ctx, asset, *nonce).await?;
+        let permit = match sig::debit_eip2612_permit(&self.ctx, asset, *nonce).await {
+            Ok(permit) => permit,
+            // The permit digest needs the token's domain separator; without one the approval
+            // cannot be sponsored from here — the same dead end as a token with no EIP-2612
+            // surface, and reported the same way.
+            Err(ClearingSettlementError::Client(ClientError::MissingTokenDomainSeparator {
+                ..
+            })) => {
+                return Err(unsponsorable(rejection));
+            }
+            Err(err) => return Err(err),
+        };
         self.submit_permit2_pay(cycle_id, action, Some(permit.into()))
             .await
     }
@@ -583,16 +594,37 @@ fn names_the_payment(code: &str) -> bool {
         )
 }
 
-/// Whether a rejection means "this token cannot redeem an EIP-3009 authorization" rather than
+/// Strips the EIP-2612 nonce from an allowance rejection: the nonce advertises that the approval
+/// *could* be sponsored, which has just been disproven.
+fn unsponsorable(err: ClearingSettlementError) -> ClearingSettlementError {
+    match err {
+        ClearingSettlementError::Permit2AllowanceRequired { message, .. } => {
+            ClearingSettlementError::Permit2AllowanceRequired {
+                message,
+                eip2612_nonce: None,
+            }
+        }
+        other => other,
+    }
+}
+
+/// Whether a rejection means "this token cannot take an EIP-3009 authorization" rather than
 /// "this payment is bad". A token without `receiveWithAuthorization` reverts opaquely, which the
 /// facilitator reports as a failed simulation — indistinguishable, from here, from any other
 /// revert. Retrying over Permit2 is therefore a guess, but a cheap one: the simulation spent no
 /// gas, and a genuinely bad payment fails the second route with its own error.
+///
+/// A token with no published domain separator refuses earlier still — the EIP-3009 digest cannot
+/// even be built — and that is no reason to give up: Permit2's domain derives from the chain id,
+/// so its route stays open.
 fn refuses_the_authorization(err: &ClearingSettlementError) -> bool {
     matches!(
         err,
         ClearingSettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
             if code == "SIMULATION_REVERTED" || code == "UNSUPPORTED_TRANSFER_METHOD"
+    ) || matches!(
+        err,
+        ClearingSettlementError::Client(ClientError::MissingTokenDomainSeparator { .. })
     )
 }
 

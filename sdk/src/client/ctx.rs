@@ -378,12 +378,7 @@ impl<S> ClientCtx<S> {
             }
         }
 
-        found.ok_or_else(|| {
-            ClientError::Initialization(format!(
-                "no EIP-712 domain separator is published for {token}; the token is either \
-                 unsupported or does not implement EIP-3009"
-            ))
-        })
+        found.ok_or(ClientError::MissingTokenDomainSeparator { token })
     }
 
     /// Core4Mica's EIP-712 domain separator, resolved at startup.

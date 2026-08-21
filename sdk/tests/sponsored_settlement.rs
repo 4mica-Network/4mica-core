@@ -1025,6 +1025,92 @@ async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Re
     Ok(())
 }
 
+/// A token core publishes no EIP-712 domain separator for. EIP-3009 cannot even be signed for
+/// it, but that closes one scheme, not the route.
+const UNLISTED_TOKEN: Address = address!("000000000000000000000000000000000000ee75");
+
+/// With no published domain separator the EIP-3009 digest cannot be built — but Permit2's domain
+/// derives from the chain id, so the payment still goes out gaslessly, without a wasted EIP-3009
+/// request.
+#[tokio::test]
+async fn a_token_with_no_published_domain_is_paid_over_permit2() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let signer = PrivateKeySigner::random();
+    let debtor = signer.address();
+    let facilitator_url = spawn_facilitator(
+        "/clearing/pay",
+        facilitator_pay_success(debtor),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, signer_address, chain_log) = test_client_configured(
+        signer,
+        |participant: String| pay_action(&participant, UNLISTED_TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let receipt = client
+        .settlement
+        .pay_net_debit(CYCLE_ID.to_string())
+        .await?;
+
+    assert_eq!(receipt.path, PayPath::Sponsored);
+    assert_eq!(receipt.debtor, signer_address);
+    assert!(chain_log.lock().unwrap().broadcasts.is_empty());
+
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(
+        sent.len(),
+        1,
+        "an unsignable EIP-3009 authorization must not reach the facilitator"
+    );
+    assert_eq!(sent[0]["assetTransferMethod"], "permit2");
+    Ok(())
+}
+
+/// With no domain separator the EIP-2612 permit cannot be signed either, so a missing allowance
+/// leaves no gasless route at all — the composite pays self-funded instead of surfacing the
+/// dead end.
+#[tokio::test]
+async fn a_missing_allowance_without_a_token_domain_falls_back_to_self_funding()
+-> anyhow::Result<()> {
+    let (client, signer_address, chain_log, facilitator_log) = {
+        let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+        let facilitator_url = spawn_facilitator(
+            "/clearing/pay",
+            facilitator_allowance_refusal(Some("7")),
+            facilitator_log.clone(),
+        )
+        .await?;
+        let (client, signer_address, chain_log) = test_client_configured(
+            PrivateKeySigner::random(),
+            |participant: String| pay_action(&participant, UNLISTED_TOKEN),
+            Some(facilitator_url),
+        )
+        .await?;
+        (client, signer_address, chain_log, facilitator_log)
+    };
+
+    let receipt = client
+        .settlement
+        .pay_net_debit(CYCLE_ID.to_string())
+        .await?;
+
+    assert_eq!(receipt.path, PayPath::SelfFunded);
+    assert_eq!(receipt.debtor, signer_address);
+    assert_eq!(
+        facilitator_log.lock().unwrap().len(),
+        1,
+        "only the plain permit2 attempt can be made"
+    );
+    let log = chain_log.lock().unwrap();
+    let sent = log.sole_broadcast();
+    let call = payNetDebitCall::abi_decode(sent.input()).expect("expected payNetDebit");
+    assert_eq!(call.netDebit, U256::from(AMOUNT));
+    Ok(())
+}
+
 /// When Permit2 fails too, the payment is genuinely bad — the refusal surfaces rather than being
 /// papered over by a self-funded transaction that would revert for the same reason.
 #[tokio::test]

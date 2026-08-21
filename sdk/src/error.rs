@@ -80,6 +80,17 @@ pub enum ClientError {
          ConfigBuilder::ethereum_http_rpc_url"
     )]
     ChainRpcUnavailable,
+
+    /// Core publishes no EIP-712 domain separator for this token — it is either absent from the
+    /// supported-token list or listed without one — so no EIP-3009 or EIP-2612 digest can be
+    /// built for it. Scheme-scoped, not fatal: Permit2 and self-funded routes need no token
+    /// domain and remain available, which is why the composite routes treat this as "try the
+    /// next scheme" rather than an error.
+    #[error(
+        "no EIP-712 domain separator is published for {token}; the token is either unsupported \
+         or does not implement EIP-3009"
+    )]
+    MissingTokenDomainSeparator { token: Address },
 }
 
 #[derive(Debug, Error)]
@@ -326,11 +337,18 @@ impl DepositError {
     /// facilitator reports as a failed simulation — indistinguishable, from here, from any other
     /// revert. Retrying over Permit2 is therefore a guess, but a cheap one: the simulation spent no
     /// gas, and a genuinely bad deposit fails again on the second route with its own error.
+    ///
+    /// A token with no published domain separator refuses earlier still — the EIP-3009 digest
+    /// cannot even be built — and that is no reason to give up: Permit2's domain derives from the
+    /// chain id, so its route stays open.
     pub(crate) fn refuses_the_authorization(&self) -> bool {
         matches!(
             self,
             DepositError::Facilitator { code, .. }
                 if code == "SIMULATION_REVERTED" || code == "UNSUPPORTED_TRANSFER_METHOD"
+        ) || matches!(
+            self,
+            DepositError::Client(ClientError::MissingTokenDomainSeparator { .. })
         )
     }
 }
