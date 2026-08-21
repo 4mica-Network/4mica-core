@@ -7,6 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IERC3009, ISignatureTransfer, Permit2Authorization, ReceiveAuthorization} from "./Core4Mica.sol";
 
 /// Minimal view of Core4Mica used by the settlement pool to move collateral.
 interface ICore4MicaSettlement {
@@ -35,6 +36,9 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     // public-variable convention rather than SCREAMING_SNAKE_CASE.
     // forge-lint: disable-next-line(screaming-snake-case-immutable)
     ICore4MicaSettlement public immutable core4Mica;
+
+    /// @notice Canonical Permit2 contract, deployed at the same address on every supported chain.
+    address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
     enum CycleStatus {
         Committed,
@@ -109,6 +113,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     error CycleFullyFunded(uint256 funded, uint256 required);
     error ResolvedDebitExceedsCommitted(uint256 attempted, uint256 total);
     error ClaimedCreditExceedsCommitted(uint256 attempted, uint256 total);
+    error NativeAssetUnsupported();
+    error AuthorizationCycleMismatch(bytes32 nonce, bytes32 cycleId);
 
     mapping(bytes32 => OnchainCycle) private cycles;
     mapping(bytes32 => mapping(address => ParticipantState)) private participantStates;
@@ -193,34 +199,129 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     }
 
     function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable nonReentrant {
-        OnchainCycle storage cycle = _requireCycle(cycleId);
+        OnchainCycle storage cycle = _requireDebtorPayable(cycleId, msg.sender, netDebit, proof);
+        _collect(cycle.asset, netDebit);
+        _settleDebtorPayment(cycleId, cycle, msg.sender, netDebit);
+    }
+
+    /// @notice Pay `auth.from`'s committed net debit for `cycleId` with funds pulled from their
+    /// wallet via the token's EIP-3009 `receiveWithAuthorization`, whoever submits it.
+    /// @dev The signature binds `to = address(this)` and `value = netDebit` (which must match the
+    /// committed Merkle leaf), and the token requires `msg.sender == to`, so a submitter can
+    /// neither redirect the funds nor alter the amount. Requiring `auth.nonce == cycleId` pins the
+    /// authorization to this cycle, so a debtor with equal debits in two cycles cannot have a
+    /// submitter choose which one it settles. That lets a relayer sponsor the gas without the
+    /// debtor holding native balance. ERC-20 cycles only: native value cannot be pulled by
+    /// signature.
+    function payNetDebitWithAuthorization(
+        bytes32 cycleId,
+        uint256 netDebit,
+        bytes32[] calldata proof,
+        ReceiveAuthorization calldata auth
+    ) external nonReentrant {
+        OnchainCycle storage cycle = _requireDebtorPayable(cycleId, auth.from, netDebit, proof);
+        if (cycle.asset == address(0)) revert NativeAssetUnsupported();
+        if (auth.nonce != cycleId) revert AuthorizationCycleMismatch(auth.nonce, cycleId);
+
+        // Exact-delta check: `netDebit` is what gets escrowed and credited to the cycle, so a
+        // token that reports success while delivering less (e.g. fee-on-transfer) would leave the
+        // cycle underfunded. The token enforces the signature, validity window, nonce replay, and
+        // `msg.sender == to`.
+        uint256 balanceBefore = IERC20(cycle.asset).balanceOf(address(this));
+        IERC3009(cycle.asset)
+            .receiveWithAuthorization(
+                auth.from,
+                address(this),
+                netDebit,
+                auth.validAfter,
+                auth.validBefore,
+                auth.nonce,
+                auth.v,
+                auth.r,
+                auth.s
+            );
+        uint256 received = IERC20(cycle.asset).balanceOf(address(this)) - balanceBefore;
+        if (received != netDebit) revert ExactPaymentRequired(netDebit, received);
+
+        _settleDebtorPayment(cycleId, cycle, auth.from, netDebit);
+    }
+
+    /// @notice Pay `p.from`'s committed net debit for `cycleId` with funds pulled from their
+    /// wallet via a Permit2 `permitTransferFrom` signature, whoever submits it.
+    /// @dev Same trust model as `payNetDebitWithAuthorization`: the signed digest binds
+    /// `spender = address(this)` and `amount = netDebit`, the contract pins the transfer's
+    /// recipient to itself, and requiring `p.nonce == uint256(cycleId)` pins the authorization to
+    /// this cycle. Nonce replay protection and the deadline are enforced by Permit2 itself. Unlike
+    /// the EIP-3009 path this works for any ERC-20, but requires a one-time ERC-20 approval from
+    /// `p.from` to Permit2. ERC-20 cycles only: native value cannot be pulled by signature.
+    function payNetDebitWithPermit2(
+        bytes32 cycleId,
+        uint256 netDebit,
+        bytes32[] calldata proof,
+        Permit2Authorization calldata p
+    ) external nonReentrant {
+        OnchainCycle storage cycle = _requireDebtorPayable(cycleId, p.from, netDebit, proof);
+        if (cycle.asset == address(0)) revert NativeAssetUnsupported();
+        if (p.nonce != uint256(cycleId)) revert AuthorizationCycleMismatch(bytes32(p.nonce), cycleId);
+
+        // Exact-delta check, as in the EIP-3009 path: `netDebit` is what gets escrowed and
+        // credited to the cycle, so a short-delivering token would leave the cycle underfunded.
+        uint256 balanceBefore = IERC20(cycle.asset).balanceOf(address(this));
+        ISignatureTransfer(PERMIT2)
+            .permitTransferFrom(
+                ISignatureTransfer.PermitTransferFrom({
+                permitted: ISignatureTransfer.TokenPermissions({token: cycle.asset, amount: netDebit}),
+                nonce: p.nonce,
+                deadline: p.deadline
+            }),
+                ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: netDebit}),
+                p.from,
+                p.signature
+            );
+        uint256 received = IERC20(cycle.asset).balanceOf(address(this)) - balanceBefore;
+        if (received != netDebit) revert ExactPaymentRequired(netDebit, received);
+
+        _settleDebtorPayment(cycleId, cycle, p.from, netDebit);
+    }
+
+    function _requireDebtorPayable(bytes32 cycleId, address debtor, uint256 netDebit, bytes32[] calldata proof)
+        private
+        view
+        returns (OnchainCycle storage cycle)
+    {
+        cycle = _requireCycle(cycleId);
         _requirePaymentWindowOpen(cycleId, cycle);
         // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp > cycle.paymentSubmissionDeadline) {
             revert PaymentWindowElapsed(cycle.paymentSubmissionDeadline);
         }
         if (netDebit == 0) revert AmountZero();
-        if (participantStates[cycleId][msg.sender].paid) {
-            revert AlreadyPaid(cycleId, msg.sender);
+        if (participantStates[cycleId][debtor].paid) {
+            revert AlreadyPaid(cycleId, debtor);
         }
-        _verifyParticipant(cycle, cycleId, msg.sender, netDebit, ParticipantRole.NetDebtor, proof);
+        _verifyParticipant(cycle, cycleId, debtor, netDebit, ParticipantRole.NetDebtor, proof);
         if (cycle.totalResolvedDebit + netDebit > cycle.totalNetDebit) {
             revert ResolvedDebitExceedsCommitted(cycle.totalResolvedDebit + netDebit, cycle.totalNetDebit);
         }
+    }
 
-        _collect(cycle.asset, netDebit);
+    /// Forward collected funds into the settlement escrow and mark the debtor resolved. The
+    /// caller has already moved `netDebit` of `cycle.asset` into this contract.
+    function _settleDebtorPayment(bytes32 cycleId, OnchainCycle storage cycle, address debtor, uint256 netDebit)
+        private
+    {
         if (cycle.asset != address(0)) {
             IERC20(cycle.asset).forceApprove(address(core4Mica), netDebit);
             core4Mica.depositToEscrow(cycle.asset, netDebit);
         }
 
-        ParticipantState storage participant = participantStates[cycleId][msg.sender];
+        ParticipantState storage participant = participantStates[cycleId][debtor];
         participant.netDebit = netDebit;
         participant.paid = true;
         cycle.totalPaidIn += netDebit;
         cycle.totalResolvedDebit += netDebit;
 
-        emit DebtorPaid(cycleId, msg.sender, netDebit);
+        emit DebtorPaid(cycleId, debtor, netDebit);
     }
 
     /// @notice Pay out `creditor`'s committed net credit for `cycleId`, whoever submits it.

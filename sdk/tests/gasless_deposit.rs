@@ -13,6 +13,7 @@ use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
 use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
+use sdk_4mica::client::model::{Asset, DepositPath};
 use sdk_4mica::error::DepositError;
 use sdk_4mica::{Client, ConfigBuilder};
 use serde_json::{Value, json};
@@ -230,6 +231,11 @@ async fn handle_rpc(
             // If it regresses to an eth_call, this returns a JSON-RPC error and the test fails.
             if sel == selector("getGuaranteeVersionConfig(uint64)") {
                 return json_rpc_result(&id, json!(encode_guarantee_version_config()));
+            }
+            // Zero: these tests never grant the self-funded allowance, so a fallback that
+            // pre-checks it must refuse rather than broadcast.
+            if sel == selector("allowance(address,address)") {
+                return json_rpc_result(&id, json!(format!("0x{}", "00".repeat(32))));
             }
             Json(json!({
                 "jsonrpc": "2.0",
@@ -1264,6 +1270,151 @@ async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Re
         facilitator_log.lock().unwrap().deposits.len(),
         1,
         "must not retry when the approval cannot be sponsored"
+    );
+    Ok(())
+}
+
+/// Refuses EIP-3009 as a simulation revert and Permit2 as a missing, unsponsorable allowance —
+/// a token no gasless route can serve.
+async fn spawn_no_gasless_route_facilitator(
+    log: Arc<Mutex<FacilitatorLog>>,
+) -> anyhow::Result<String> {
+    spawn(Router::new().route(
+        "/deposit",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            async move {
+                let response = if body["assetTransferMethod"] == "eip3009" {
+                    json!({
+                        "success": false,
+                        "error": "deposit would revert",
+                        "errorCode": "SIMULATION_REVERTED",
+                        "retryable": false,
+                    })
+                } else {
+                    json!({
+                        "success": false,
+                        "error": "approve permit2 first",
+                        "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
+                        "retryable": false,
+                        "permit2Allowance": {
+                            "spender": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+                            "allowance": "0",
+                            "required": "1000000",
+                        },
+                    })
+                };
+                log.lock().unwrap().deposits.push(body);
+                Json(response)
+            }
+        }),
+    ))
+    .await
+}
+
+/// With no gasless route left, the self-funded fallback needs an ERC-20 allowance the gasless
+/// caller was never asked for. Without one it is refused with the fix named, rather than
+/// broadcast to revert opaquely inside the token.
+#[tokio::test]
+async fn a_fallback_without_an_erc20_allowance_is_refused_not_broadcast() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, _signer, _chain) =
+        client_against(spawn_no_gasless_route_facilitator(facilitator_log.clone())).await?;
+
+    let err = client
+        .deposit
+        .send(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .await
+        .expect_err("a fallback without an allowance must be refused");
+
+    assert!(
+        matches!(
+            err,
+            DepositError::Erc20AllowanceRequired { needed, .. }
+                if needed == U256::from(1_000_000u64)
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        facilitator_log.lock().unwrap().deposits.len(),
+        2,
+        "eip3009 and then plain permit2 must both have been offered"
+    );
+    Ok(())
+}
+
+/// A token core publishes no EIP-712 domain separator for. EIP-3009 and EIP-2612 digests cannot
+/// be built for it, but that closes those schemes, not the route.
+const UNLISTED_TOKEN: Address = address!("000000000000000000000000000000000000ee75");
+
+/// With no published domain separator the EIP-3009 digest cannot be built — but Permit2's domain
+/// derives from the chain id, so the deposit still goes out gaslessly, without a wasted EIP-3009
+/// request.
+#[tokio::test]
+async fn a_token_with_no_published_domain_deposits_over_permit2() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let mut response = success_response();
+    response["asset"] = json!(UNLISTED_TOKEN.to_string());
+    let (client, _signer, chain_log) =
+        client_against(spawn_facilitator(response, facilitator_log.clone())).await?;
+
+    let receipt = client
+        .deposit
+        .send(Asset::Erc20(UNLISTED_TOKEN), U256::from(1_000_000u64))
+        .await?;
+
+    assert_eq!(receipt.path, DepositPath::Permit2);
+
+    let facilitator = facilitator_log.lock().unwrap();
+    assert_eq!(
+        facilitator.deposits.len(),
+        1,
+        "an unsignable EIP-3009 authorization must not reach the facilitator"
+    );
+    assert_eq!(facilitator.deposits[0]["assetTransferMethod"], "permit2");
+
+    // Still chain-free: the missing domain was learned from core, not an eth_call.
+    let chain = chain_log.lock().unwrap();
+    assert!(
+        chain.eth_calls.is_empty(),
+        "routing around the missing domain must read no chain state, saw {:?}",
+        chain.eth_calls
+    );
+    Ok(())
+}
+
+/// With no domain separator the EIP-2612 permit cannot be signed either, so a missing allowance
+/// is a dead end even when the facilitator advertises a nonce — reported as unsponsorable
+/// (`eip2612_nonce: None`), which is exactly what routes `send` to self-funded.
+#[tokio::test]
+async fn a_missing_allowance_without_a_token_domain_cannot_be_sponsored() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, _signer, _chain) = client_against(spawn_allowance_then_success_facilitator(
+        Some("7"),
+        facilitator_log.clone(),
+    ))
+    .await?;
+
+    let err = client
+        .deposit
+        .send_sponsored_permit2(UNLISTED_TOKEN, U256::from(1_000_000u64))
+        .await
+        .expect_err("expected the allowance error to surface");
+
+    assert!(
+        matches!(
+            err,
+            DepositError::Permit2AllowanceRequired {
+                eip2612_nonce: None,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        facilitator_log.lock().unwrap().deposits.len(),
+        1,
+        "must not retry a permit that cannot be signed"
     );
     Ok(())
 }

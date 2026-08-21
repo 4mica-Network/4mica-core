@@ -21,10 +21,10 @@ use crate::{
         ClientCtx, await_receipt, confirm_echoed,
         facilitator::FacilitatorFailure,
         model::{Asset, DepositPath, DepositReceipt},
-        sig::{self, Eip2612Permit},
+        sig::{self, Eip2612PermitRequest},
     },
     contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
-    error::{ApproveErc20Error, DepositError},
+    error::{ApproveErc20Error, ClientError, DepositError},
 };
 
 pub struct DepositClient<S> {
@@ -117,7 +117,25 @@ where
             return Err(rejection);
         };
 
-        let permit = sig::eip2612_permit(&self.ctx, token, *nonce).await?;
+        let permit = match sig::eip2612_permit(&self.ctx, token, *nonce).await {
+            Ok(permit) => permit,
+            // The permit digest needs the token's domain separator; without one the approval
+            // cannot be sponsored from here — the same dead end as a token with no EIP-2612
+            // surface, and reported the same way: the nonce advertised that sponsoring *could*
+            // work, which has just been disproven, so it is stripped.
+            Err(DepositError::Client(ClientError::MissingTokenDomainSeparator { .. })) => {
+                return Err(match rejection {
+                    DepositError::Permit2AllowanceRequired { message, .. } => {
+                        DepositError::Permit2AllowanceRequired {
+                            message,
+                            eip2612_nonce: None,
+                        }
+                    }
+                    other => other,
+                });
+            }
+            Err(err) => return Err(err),
+        };
         let deposited = Deposited {
             payer: authorization.from,
             asset: token,
@@ -293,10 +311,38 @@ where
             // The approval cannot be sponsored, so gaslessness is off the table either way; paying
             // for the deposit directly is one transaction rather than an approval plus a deposit.
             Err(DepositError::Permit2AllowanceRequired { .. }) => {
-                self.send_self_funded(asset, amount).await
+                self.fallback_to_self_funded(token, amount).await
             }
             outcome => outcome,
         }
+    }
+
+    /// The self-funded fallback, taken only after every gasless route was refused. Pre-checks the
+    /// ERC-20 allowance the fallback needs and the gasless routes never did, so a payer who has
+    /// not approved the contract is told exactly that instead of getting an opaque revert from
+    /// inside the token.
+    async fn fallback_to_self_funded(
+        &self,
+        token: Address,
+        amount: U256,
+    ) -> Result<DepositReceipt, DepositError> {
+        let spender = self.ctx.contract_address();
+        let allowance = self
+            .ctx
+            .get_erc20_contract(token)
+            .await?
+            .allowance(self.ctx.signer_address(), spender)
+            .call()
+            .await?;
+        if allowance < amount {
+            return Err(DepositError::Erc20AllowanceRequired {
+                token,
+                spender,
+                allowance,
+                needed: amount,
+            });
+        }
+        self.send_self_funded(Asset::Erc20(token), amount).await
     }
 
     /// Deposits over one specific route, failing rather than choosing another.
@@ -408,30 +454,6 @@ impl DepositRequest {
             asset: asset.to_string(),
             amount: amount.to_string(),
             authorization,
-        }
-    }
-}
-
-/// Wire form of an EIP-2612 permit. `owner` and `spender` are implied — the signer and the
-/// canonical Permit2 — so only the signed values travel.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Eip2612PermitRequest {
-    value: String,
-    deadline: String,
-    v: u8,
-    r: B256,
-    s: B256,
-}
-
-impl From<Eip2612Permit> for Eip2612PermitRequest {
-    fn from(permit: Eip2612Permit) -> Self {
-        Self {
-            value: permit.value.to_string(),
-            deadline: permit.deadline.to_string(),
-            v: permit.v,
-            r: permit.r,
-            s: permit.s,
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Transport for the service that submits signed authorizations and pays the gas for them.
 
+use alloy::primitives::U256;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -100,6 +101,15 @@ pub(super) struct FacilitatorFailure {
 }
 
 impl FacilitatorFailure {
+    /// The EIP-2612 nonce attached to a `PERMIT2_ALLOWANCE_REQUIRED` rejection, for callers that
+    /// unpack the allowance detail themselves rather than through [`Self::into_error`].
+    pub(super) fn eip2612_nonce(&self) -> Option<U256> {
+        self.permit2_allowance
+            .as_ref()
+            .and_then(|allowance| allowance.eip2612_nonce.as_ref())
+            .and_then(|raw| raw.parse().ok())
+    }
+
     /// The generic rejection, for sponsored actions with no scheme-specific detail to unpack.
     pub(super) fn into_sponsorship_error(self, message: Option<String>) -> SponsorshipError {
         SponsorshipError::Rejected {

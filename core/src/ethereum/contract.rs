@@ -324,6 +324,10 @@ pub mod contract_abi {
             error UnauthorizedEthSender(address sender);
             error ClaimConversionShortfall(uint256 requested, uint256 got);
             error CycleFullyFunded(uint256 funded, uint256 required);
+            error ResolvedDebitExceedsCommitted(uint256 attempted, uint256 total);
+            error ClaimedCreditExceedsCommitted(uint256 attempted, uint256 total);
+            error NativeAssetUnsupported();
+            error AuthorizationCycleMismatch(bytes32 nonce, bytes32 cycleId);
         }
     }
 }

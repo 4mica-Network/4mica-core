@@ -80,6 +80,17 @@ pub enum ClientError {
          ConfigBuilder::ethereum_http_rpc_url"
     )]
     ChainRpcUnavailable,
+
+    /// Core publishes no EIP-712 domain separator for this token — it is either absent from the
+    /// supported-token list or listed without one — so no EIP-3009 or EIP-2612 digest can be
+    /// built for it. Scheme-scoped, not fatal: Permit2 and self-funded routes need no token
+    /// domain and remain available, which is why the composite routes treat this as "try the
+    /// next scheme" rather than an error.
+    #[error(
+        "no EIP-712 domain separator is published for {token}; the token is either unsupported \
+         or does not implement EIP-3009"
+    )]
+    MissingTokenDomainSeparator { token: Address },
 }
 
 #[derive(Debug, Error)]
@@ -241,6 +252,23 @@ pub enum DepositError {
         /// derive for itself.
         eip2612_nonce: Option<U256>,
     },
+    /// Every gasless route was refused, and the self-funded fallback would revert too: it pulls
+    /// the funds via `transferFrom`, which needs an ERC-20 allowance the gasless routes never
+    /// did. Checked before falling back, so the caller is told what to fix rather than handed an
+    /// opaque revert from inside the token.
+    ///
+    /// Grant the allowance with [`DepositClient::approve_erc20`](crate::DepositClient::approve_erc20)
+    /// and retry — or approve Permit2 once to restore the gasless route.
+    #[error(
+        "no gasless route is available and the self-funded fallback needs an allowance: {needed} \
+         of {token} required but only {allowance} approved to {spender}; call approve_erc20 first"
+    )]
+    Erc20AllowanceRequired {
+        token: Address,
+        spender: Address,
+        allowance: U256,
+        needed: U256,
+    },
     /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit with
     /// [`DepositPath::SelfFunded`](crate::DepositPath::SelfFunded) instead.
     #[error(
@@ -326,11 +354,18 @@ impl DepositError {
     /// facilitator reports as a failed simulation — indistinguishable, from here, from any other
     /// revert. Retrying over Permit2 is therefore a guess, but a cheap one: the simulation spent no
     /// gas, and a genuinely bad deposit fails again on the second route with its own error.
+    ///
+    /// A token with no published domain separator refuses earlier still — the EIP-3009 digest
+    /// cannot even be built — and that is no reason to give up: Permit2's domain derives from the
+    /// chain id, so its route stays open.
     pub(crate) fn refuses_the_authorization(&self) -> bool {
         matches!(
             self,
             DepositError::Facilitator { code, .. }
                 if code == "SIMULATION_REVERTED" || code == "UNSUPPORTED_TRANSFER_METHOD"
+        ) || matches!(
+            self,
+            DepositError::Client(ClientError::MissingTokenDomainSeparator { .. })
         )
     }
 }
@@ -362,6 +397,39 @@ pub enum ClearingSettlementError {
 
     #[error(transparent)]
     Sponsorship(#[from] SponsorshipError),
+
+    /// Permit2 needs a one-time on-chain `approve(PERMIT2, ...)` that the debtor has not made.
+    ///
+    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so the
+    /// approval can be *signed* rather than transacted — see
+    /// [`SettlementClient::pay_net_debit_sponsored_permit2`](crate::SettlementClient::pay_net_debit_sponsored_permit2),
+    /// which does exactly that. When it is absent the debtor must send `approve(PERMIT2, ...)`
+    /// themselves and pay for it.
+    #[error("permit2 requires a prior approve(PERMIT2, ...): {message}")]
+    Permit2AllowanceRequired {
+        message: String,
+        /// The debtor's current EIP-2612 nonce. The one input a client with no chain access cannot
+        /// derive for itself.
+        eip2612_nonce: Option<U256>,
+    },
+
+    /// Every gasless route was refused, and the self-funded fallback would revert too: paying
+    /// self-funded pulls the debit via `transferFrom`, which needs an ERC-20 allowance the
+    /// gasless routes never did. Checked before falling back, so the caller is told what to fix
+    /// rather than handed an opaque revert from inside the token.
+    ///
+    /// Grant the allowance with [`SettlementClient::approve_erc20`](crate::SettlementClient::approve_erc20)
+    /// and retry — or approve Permit2 once to restore the gasless route.
+    #[error(
+        "no gasless route is available and the self-funded fallback needs an allowance: {needed} \
+         of {token} required but only {allowance} approved to {spender}; call approve_erc20 first"
+    )]
+    Erc20AllowanceRequired {
+        token: Address,
+        spender: Address,
+        allowance: U256,
+        needed: U256,
+    },
 
     /// Mined and reverted, so gas *was* spent — as opposed to a refusal before broadcasting.
     #[error("claim {tx_hash} reverted on-chain")]

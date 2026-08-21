@@ -344,6 +344,14 @@ impl<S> ClientCtx<S> {
         ))
     }
 
+    /// A read-only handle on `token`, for view calls that need no signer.
+    pub(crate) async fn get_erc20_contract(
+        &self,
+        token: Address,
+    ) -> Result<ERC20Instance<DynProvider>, ClientError> {
+        Ok(ERC20::new(token, self.provider().await?.clone()))
+    }
+
     /// A token's EIP-712 domain separator.
     ///
     /// Deliberately not an `eth_call`: signing a gasless deposit must not require the caller to
@@ -378,12 +386,7 @@ impl<S> ClientCtx<S> {
             }
         }
 
-        found.ok_or_else(|| {
-            ClientError::Initialization(format!(
-                "no EIP-712 domain separator is published for {token}; the token is either \
-                 unsupported or does not implement EIP-3009"
-            ))
-        })
+        found.ok_or(ClientError::MissingTokenDomainSeparator { token })
     }
 
     /// Core4Mica's EIP-712 domain separator, resolved at startup.

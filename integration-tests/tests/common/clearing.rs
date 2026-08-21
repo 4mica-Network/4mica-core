@@ -31,6 +31,24 @@ pub async fn inject_frozen_two_party_cycle(
     creditor: Address,
     amount: U256,
 ) -> Result<()> {
+    inject_frozen_two_party_cycle_for_asset(
+        cycle_id,
+        debtor,
+        creditor,
+        amount,
+        DEFAULT_ASSET_ADDRESS,
+    )
+    .await
+}
+
+/// Like [`inject_frozen_two_party_cycle`], but settling in `asset` rather than native ETH.
+pub async fn inject_frozen_two_party_cycle_for_asset(
+    cycle_id: &str,
+    debtor: Address,
+    creditor: Address,
+    amount: U256,
+    asset: &str,
+) -> Result<()> {
     super::load_core_env();
     let ctx = PersistCtx::new()
         .await
@@ -41,7 +59,7 @@ pub async fn inject_frozen_two_party_cycle(
         ctx.db.as_ref(),
         repo::CreateSettlementCycleInput {
             id: cycle_id.to_string(),
-            asset_address: DEFAULT_ASSET_ADDRESS.parse()?,
+            asset_address: asset.parse()?,
             period_start: now - Duration::hours(3),
             period_end: now - Duration::hours(2),
             resolution_cutoff: now - Duration::hours(1),
@@ -78,7 +96,7 @@ pub async fn inject_frozen_two_party_cycle(
             version: 2,
             from: debtor.parse()?,
             to: creditor.parse()?,
-            asset: DEFAULT_ASSET_ADDRESS.parse()?,
+            asset: asset.parse()?,
             value: amount,
             start_ts: now,
             cert: "{}".to_string(),
@@ -91,24 +109,15 @@ pub async fn inject_frozen_two_party_cycle(
 
     // Give the debtor total collateral covering the net debit, then lock all of
     // it — mirroring the post-issuance locked state the netting pipeline expects.
-    repo::deposit(
-        &ctx,
-        debtor.parse()?,
-        DEFAULT_ASSET_ADDRESS.parse()?,
-        amount,
-    )
-    .await
-    .context("credit debtor collateral")?;
-    let balance = repo::get_user_balance_on(
-        ctx.db.as_ref(),
-        debtor.parse()?,
-        DEFAULT_ASSET_ADDRESS.parse()?,
-    )
-    .await?;
+    repo::deposit(&ctx, debtor.parse()?, asset.parse()?, amount)
+        .await
+        .context("credit debtor collateral")?;
+    let balance =
+        repo::get_user_balance_on(ctx.db.as_ref(), debtor.parse()?, asset.parse()?).await?;
     repo::update_user_balance_and_version_on(
         ctx.db.as_ref(),
         debtor.parse()?,
-        DEFAULT_ASSET_ADDRESS.parse()?,
+        asset.parse()?,
         balance.version,
         balance.total,
         amount,

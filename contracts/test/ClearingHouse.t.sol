@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ClearingHouse, ICore4MicaSettlement} from "../src/ClearingHouse.sol";
+import {ReceiveAuthorization} from "../src/Core4Mica.sol";
 import {MockERC20} from "./Core4MicaTestBase.sol";
 
 /// Minimal Core4Mica stand-in for ClearingHouse unit tests: tracks per-user
@@ -526,6 +527,180 @@ contract ClearingHouseTest is Test {
         clearingHouse.claimNetCreditFor(CREDITOR, CYCLE_ID, NET_AMOUNT, creditorProof);
 
         assertEq(usdc.balanceOf(CREDITOR), creditorBefore + NET_AMOUNT);
+    }
+
+    uint256 internal constant SIGNING_DEBTOR_PK = 0xA11CE;
+
+    /// The core guarantee: a third party submits, but the *signer's* funds pay the signer's debt.
+    function test_PayNetDebitWithAuthorization_SettlesTheSignerNotSubmitter() public {
+        address debtor = vm.addr(SIGNING_DEBTOR_PK);
+        usdc.mint(debtor, NET_AMOUNT);
+        bytes32[] memory debtorProof = _commitUsdcCycleWithDebtor(debtor);
+
+        ReceiveAuthorization memory auth =
+            _debtorAuthorization(SIGNING_DEBTOR_PK, debtor, NET_AMOUNT, 0, block.timestamp + 1 hours, CYCLE_ID);
+
+        vm.expectEmit(true, true, false, true);
+        emit ClearingHouse.DebtorPaid(CYCLE_ID, debtor, NET_AMOUNT);
+
+        vm.prank(address(0xFACADE));
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+
+        assertEq(usdc.balanceOf(debtor), 0, "net debit pulled from the signer");
+        assertEq(core4Mica.escrowOf(address(usdc)), NET_AMOUNT, "paid-in funds escrowed");
+        assertTrue(clearingHouse.getParticipantState(CYCLE_ID, debtor).paid);
+        assertFalse(
+            clearingHouse.getParticipantState(CYCLE_ID, address(0xFACADE)).paid, "no state against the submitter"
+        );
+    }
+
+    function test_PayNetDebitWithAuthorization_RejectsWrongSigner() public {
+        address debtor = vm.addr(SIGNING_DEBTOR_PK);
+        usdc.mint(debtor, NET_AMOUNT);
+        bytes32[] memory debtorProof = _commitUsdcCycleWithDebtor(debtor);
+
+        ReceiveAuthorization memory auth =
+            _debtorAuthorization(0xBAD, debtor, NET_AMOUNT, 0, block.timestamp + 1 hours, CYCLE_ID);
+
+        vm.expectRevert("EIP3009: invalid signature");
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+    }
+
+    function test_PayNetDebitWithAuthorization_RejectsValueNotMatchingDebit() public {
+        address debtor = vm.addr(SIGNING_DEBTOR_PK);
+        usdc.mint(debtor, NET_AMOUNT);
+        bytes32[] memory debtorProof = _commitUsdcCycleWithDebtor(debtor);
+
+        // The signature covers `value`; the contract passes `netDebit` as the value, so an
+        // authorization signed over any other amount fails the token's signature check.
+        ReceiveAuthorization memory auth =
+            _debtorAuthorization(SIGNING_DEBTOR_PK, debtor, NET_AMOUNT - 1, 0, block.timestamp + 1 hours, CYCLE_ID);
+
+        vm.expectRevert("EIP3009: invalid signature");
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+    }
+
+    function test_PayNetDebitWithAuthorization_RejectsForeignNonce() public {
+        address debtor = vm.addr(SIGNING_DEBTOR_PK);
+        usdc.mint(debtor, NET_AMOUNT);
+        bytes32[] memory debtorProof = _commitUsdcCycleWithDebtor(debtor);
+
+        bytes32 otherCycle = keccak256("cycle-2");
+        ReceiveAuthorization memory auth =
+            _debtorAuthorization(SIGNING_DEBTOR_PK, debtor, NET_AMOUNT, 0, block.timestamp + 1 hours, otherCycle);
+
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.AuthorizationCycleMismatch.selector, otherCycle, CYCLE_ID));
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+    }
+
+    function test_PayNetDebitWithAuthorization_RejectsExpiredAuthorization() public {
+        address debtor = vm.addr(SIGNING_DEBTOR_PK);
+        usdc.mint(debtor, NET_AMOUNT);
+        bytes32[] memory debtorProof = _commitUsdcCycleWithDebtor(debtor);
+
+        ReceiveAuthorization memory auth =
+            _debtorAuthorization(SIGNING_DEBTOR_PK, debtor, NET_AMOUNT, 0, block.timestamp, CYCLE_ID);
+
+        vm.expectRevert("EIP3009: authorization is expired");
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+    }
+
+    function test_PayNetDebitWithAuthorization_RejectsReplay() public {
+        address debtor = vm.addr(SIGNING_DEBTOR_PK);
+        usdc.mint(debtor, 2 * NET_AMOUNT);
+        bytes32[] memory debtorProof = _commitUsdcCycleWithDebtor(debtor);
+
+        ReceiveAuthorization memory auth =
+            _debtorAuthorization(SIGNING_DEBTOR_PK, debtor, NET_AMOUNT, 0, block.timestamp + 1 hours, CYCLE_ID);
+
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.AlreadyPaid.selector, CYCLE_ID, debtor));
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+
+        assertEq(usdc.balanceOf(debtor), NET_AMOUNT, "funds pulled exactly once");
+    }
+
+    function test_PayNetDebitWithAuthorization_RejectsNativeCycle() public {
+        (, bytes32[] memory debtorProof,) = _commitEthCycle(NET_AMOUNT, NET_AMOUNT);
+
+        // The native check fires before any signature use, so a dummy signature suffices.
+        ReceiveAuthorization memory auth = ReceiveAuthorization({
+            from: DEBTOR,
+            validAfter: 0,
+            validBefore: block.timestamp + 1 hours,
+            nonce: CYCLE_ID,
+            v: 27,
+            r: bytes32(0),
+            s: bytes32(0)
+        });
+
+        vm.expectRevert(ClearingHouse.NativeAssetUnsupported.selector);
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+    }
+
+    function test_PayNetDebitWithAuthorization_RejectsAfterSubmissionDeadline() public {
+        address debtor = vm.addr(SIGNING_DEBTOR_PK);
+        usdc.mint(debtor, NET_AMOUNT);
+        bytes32[] memory debtorProof = _commitUsdcCycleWithDebtor(debtor);
+
+        ReceiveAuthorization memory auth =
+            _debtorAuthorization(SIGNING_DEBTOR_PK, debtor, NET_AMOUNT, 0, block.timestamp + 3 hours, CYCLE_ID);
+
+        uint64 submissionDeadline = uint64(block.timestamp + 1 hours);
+        vm.warp(submissionDeadline + 1);
+
+        vm.expectRevert(abi.encodeWithSelector(ClearingHouse.PaymentWindowElapsed.selector, submissionDeadline));
+        clearingHouse.payNetDebitWithAuthorization(CYCLE_ID, NET_AMOUNT, debtorProof, auth);
+    }
+
+    function _commitUsdcCycleWithDebtor(address debtor) internal returns (bytes32[] memory debtorProof) {
+        bytes32 debtorLeaf = clearingHouse.participantLeaf(
+            CYCLE_ID, address(usdc), debtor, NET_AMOUNT, ClearingHouse.ParticipantRole.NetDebtor
+        );
+        bytes32 creditorLeaf = clearingHouse.participantLeaf(
+            CYCLE_ID, address(usdc), CREDITOR, NET_AMOUNT, ClearingHouse.ParticipantRole.NetCreditor
+        );
+        bytes32 root = _hashPair(debtorLeaf, creditorLeaf);
+        debtorProof = new bytes32[](1);
+        debtorProof[0] = creditorLeaf;
+
+        vm.prank(OPERATOR);
+        clearingHouse.commitCycle(
+            CYCLE_ID,
+            address(usdc),
+            root,
+            NET_AMOUNT,
+            NET_AMOUNT,
+            uint64(block.timestamp + 1 hours),
+            uint64(block.timestamp + 2 hours)
+        );
+    }
+
+    function _debtorAuthorization(
+        uint256 pk,
+        address from,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce
+    ) internal view returns (ReceiveAuthorization memory auth) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                usdc.RECEIVE_WITH_AUTHORIZATION_TYPEHASH(),
+                from,
+                address(clearingHouse),
+                value,
+                validAfter,
+                validBefore,
+                nonce
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", usdc.DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        auth = ReceiveAuthorization({
+            from: from, validAfter: validAfter, validBefore: validBefore, nonce: nonce, v: v, r: r, s: s
+        });
     }
 
     /// The proof binds the creditor, so a submitter cannot name itself and be paid.

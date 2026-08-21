@@ -24,7 +24,7 @@ use crate::{
         eip712_digest_for_permit2_transfer, eip712_digest_for_receive_authorization,
         eip712_digest_for_request_withdrawal,
     },
-    error::{DepositError, SponsorshipError},
+    error::{ClearingSettlementError, DepositError, SponsorshipError},
 };
 
 /// How long a signed authorization stays redeemable.
@@ -40,6 +40,30 @@ pub(super) struct Eip2612Permit {
     pub s: B256,
 }
 
+/// Wire form of an EIP-2612 permit. `owner` and `spender` are implied — the signer and the
+/// canonical Permit2 — so only the signed values travel.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Eip2612PermitRequest {
+    value: String,
+    deadline: String,
+    v: u8,
+    r: B256,
+    s: B256,
+}
+
+impl From<Eip2612Permit> for Eip2612PermitRequest {
+    fn from(permit: Eip2612Permit) -> Self {
+        Self {
+            value: permit.value.to_string(),
+            deadline: permit.deadline.to_string(),
+            v: permit.v,
+            r: permit.r,
+            s: permit.s,
+        }
+    }
+}
+
 /// Signs an EIP-3009 `receiveWithAuthorization` crediting `amount` of `token` to the signer.
 ///
 /// Only tokens implementing EIP-3009 (USDC and similar) can redeem this.
@@ -51,12 +75,44 @@ pub(super) async fn eip3009_authorization<S>(
 where
     S: Signer + Send + Sync,
 {
-    let from = ctx.signer_address();
-    let to = ctx.contract_address();
-    let valid_before = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
     let nonce = B256::from(rand::random::<[u8; 32]>());
-
     let domain_separator = ctx.token_domain_separator(token).await?;
+    signed_receive_authorization(ctx, domain_separator, ctx.contract_address(), amount, nonce)
+        .await
+        .map_err(|e| DepositError::Transport(e.to_string()))
+}
+
+/// Signs an EIP-3009 `receiveWithAuthorization` paying the signer's net debit: `amount` of `token`
+/// to `receiver` (the ClearingHouse), with the nonce pinned to the cycle id as
+/// `payNetDebitWithAuthorization` requires.
+pub(super) async fn debit_authorization<S>(
+    ctx: &ClientCtx<S>,
+    token: Address,
+    receiver: Address,
+    amount: U256,
+    cycle_id: B256,
+) -> Result<ReceiveAuthorization, ClearingSettlementError>
+where
+    S: Signer + Send + Sync,
+{
+    let domain_separator = ctx.token_domain_separator(token).await?;
+    signed_receive_authorization(ctx, domain_separator, receiver, amount, cycle_id)
+        .await
+        .map_err(|e| ClearingSettlementError::Transport(e.to_string()))
+}
+
+async fn signed_receive_authorization<S>(
+    ctx: &ClientCtx<S>,
+    domain_separator: B256,
+    to: Address,
+    amount: U256,
+    nonce: B256,
+) -> Result<ReceiveAuthorization, alloy::signers::Error>
+where
+    S: Signer + Send + Sync,
+{
+    let from = ctx.signer_address();
+    let valid_before = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
     let digest = eip712_digest_for_receive_authorization(
         domain_separator,
         from,
@@ -67,15 +123,54 @@ where
         nonce,
     );
 
-    let (v, r, s) = sign_vrs(ctx.signer(), &digest).await?;
+    let sig = ctx.signer().sign_hash(&digest).await?;
+    let bytes = sig.as_bytes();
     Ok(ReceiveAuthorization {
         from,
         validAfter: U256::ZERO,
         validBefore: valid_before,
         nonce,
-        v,
-        r,
-        s,
+        v: bytes[64],
+        r: B256::from_slice(&bytes[0..32]),
+        s: B256::from_slice(&bytes[32..64]),
+    })
+}
+
+/// Signs a Permit2 `PermitTransferFrom` paying the signer's net debit: `amount` of `token` with
+/// `receiver` (the ClearingHouse) as spender, and the nonce pinned to the cycle id as
+/// `payNetDebitWithPermit2` requires.
+///
+/// Works for any ERC-20, but only if the signer has already approved Permit2 to move that token.
+pub(super) async fn debit_permit2_authorization<S>(
+    ctx: &ClientCtx<S>,
+    token: Address,
+    receiver: Address,
+    amount: U256,
+    cycle_id: B256,
+) -> Result<Permit2Authorization, ClearingSettlementError>
+where
+    S: Signer + Send + Sync,
+{
+    let deadline = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
+    let digest = eip712_digest_for_permit2_transfer(
+        ctx.permit2_domain_separator(),
+        token,
+        amount,
+        receiver,
+        U256::from_be_bytes(cycle_id.0),
+        deadline,
+    );
+
+    let signature = ctx
+        .signer()
+        .sign_hash(&digest)
+        .await
+        .map_err(|e| ClearingSettlementError::Transport(e.to_string()))?;
+    Ok(Permit2Authorization {
+        from: ctx.signer_address(),
+        nonce: U256::from_be_bytes(cycle_id.0),
+        deadline,
+        signature: Bytes::from(signature.as_bytes().to_vec()),
     })
 }
 
@@ -151,6 +246,24 @@ where
         r,
         s,
     })
+}
+
+/// [`eip2612_permit`] reported in the settlement error space, for sponsoring a debit's missing
+/// Permit2 approval.
+pub(super) async fn debit_eip2612_permit<S>(
+    ctx: &ClientCtx<S>,
+    token: Address,
+    nonce: U256,
+) -> Result<Eip2612Permit, ClearingSettlementError>
+where
+    S: Signer + Send + Sync,
+{
+    eip2612_permit(ctx, token, nonce)
+        .await
+        .map_err(|err| match err {
+            DepositError::Client(client) => ClearingSettlementError::Client(client),
+            other => ClearingSettlementError::Transport(other.to_string()),
+        })
 }
 
 /// Signs a `RequestWithdrawal` authorization for `amount` of `asset` (`Address::ZERO` for ETH).

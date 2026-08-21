@@ -1,4 +1,5 @@
 use sdk_4mica::U256;
+use sdk_4mica::client::model::PayPath;
 use std::str::FromStr;
 
 mod common;
@@ -59,11 +60,8 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
     // ClearingHouse accepted the payment (verifying the settlement itself, not
     // core's asynchronous event mirroring).
     let pay_receipt = debtor.settlement.pay_net_debit(cycle_id.clone()).await?;
-    assert!(
-        pay_receipt.status(),
-        "payNetDebit transaction reverted: {:?}",
-        pay_receipt.transaction_hash
-    );
+    assert_eq!(pay_receipt.path, PayPath::SelfFunded);
+    assert_eq!(pay_receipt.debtor, debtor_address);
 
     // The creditor's action should mirror the same net credit, now fully funded
     // by the debtor's payment.

@@ -279,6 +279,7 @@ sol! {
 
         function mint(address to, uint256 amount) external;
         function approve(address spender, uint256 amount) external returns (bool);
+        function allowance(address owner, address spender) external view returns (uint256);
         function transfer(address to, uint256 amount) external returns (bool);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
         /// EIP-712 domain separator, exposed by EIP-2612/EIP-3009 tokens (e.g. USDC). Used to build
@@ -302,7 +303,37 @@ sol! {
 sol! {
     #[sol(rpc)]
     contract ClearingHouse {
+        /// Same shape as [`Core4Mica::ReceiveAuthorization`]; redeclared because `sol!` blocks
+        /// cannot share types.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        struct ReceiveAuthorization {
+            address from;
+            uint256 validAfter;
+            uint256 validBefore;
+            bytes32 nonce;
+            uint8 v;
+            bytes32 r;
+            bytes32 s;
+        }
+
+        /// Same shape as [`Core4Mica::Permit2Authorization`]; redeclared because `sol!` blocks
+        /// cannot share types.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        struct Permit2Authorization {
+            address from;
+            uint256 nonce;
+            uint256 deadline;
+            bytes signature;
+        }
+
         function payNetDebit(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof) external payable;
+        /// Sponsored debit payment: a third party submits the debtor's EIP-3009 signature and the
+        /// exact net debit is pulled from `auth.from`'s wallet. `auth.nonce` must equal `cycleId`.
+        function payNetDebitWithAuthorization(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof, ReceiveAuthorization calldata auth) external;
+        /// Sponsored debit payment via Permit2: a third party submits the debtor's
+        /// `PermitTransferFrom` signature and the exact net debit is pulled from `p.from`'s
+        /// wallet. `p.nonce` must equal `uint256(cycleId)`.
+        function payNetDebitWithPermit2(bytes32 cycleId, uint256 netDebit, bytes32[] calldata proof, Permit2Authorization calldata p) external;
         function claimNetCreditFor(address creditor, bytes32 cycleId, uint256 netCredit, bytes32[] calldata proof) external;
     }
 }
