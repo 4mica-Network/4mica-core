@@ -279,6 +279,7 @@ sol! {
 
         function mint(address to, uint256 amount) external;
         function approve(address spender, uint256 amount) external returns (bool);
+        function allowance(address owner, address spender) external view returns (uint256);
         function transfer(address to, uint256 amount) external returns (bool);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
         /// EIP-712 domain separator, exposed by EIP-2612/EIP-3009 tokens (e.g. USDC). Used to build

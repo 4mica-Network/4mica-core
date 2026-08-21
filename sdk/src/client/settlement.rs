@@ -350,10 +350,11 @@ where
     /// the exact amount — EIP-3009 where the token supports it, Permit2 otherwise — and the
     /// facilitator submits and pays gas; no native balance needed. Otherwise — a native-asset
     /// cycle, no facilitator, or no sponsored scheme left — the caller's own transaction runs
-    /// (grant the allowance with [`Self::approve_erc20`] first for ERC-20 cycles). A rejection
-    /// that names the payment itself is returned rather than retried, and so is an unknown
-    /// outcome: the facilitator may already have submitted, and a second payment would revert as
-    /// `AlreadyPaid` after paying gas.
+    /// (grant the allowance with [`Self::approve_erc20`] first for ERC-20 cycles; a fallback
+    /// without it is refused as [`ClearingSettlementError::Erc20AllowanceRequired`] rather than
+    /// left to revert). A rejection that names the payment itself is returned rather than
+    /// retried, and so is an unknown outcome: the facilitator may already have submitted, and a
+    /// second payment would revert as `AlreadyPaid` after paying gas.
     ///
     /// Read [`PayReceipt::path`] to see which route ran.
     pub async fn pay_net_debit(
@@ -369,13 +370,41 @@ where
             // paying the debit directly is one transaction rather than an approval plus a
             // payment.
             Err(ClearingSettlementError::Permit2AllowanceRequired { .. }) => {
-                self.pay_net_debit_self_funded_with(&action).await
+                self.fallback_to_self_funded(&action).await
             }
             Err(err) if sponsorship_unavailable(&err, names_the_payment) => {
-                self.pay_net_debit_self_funded_with(&action).await
+                self.fallback_to_self_funded(&action).await
             }
             outcome => outcome,
         }
+    }
+
+    /// The self-funded fallback, taken only after a gasless attempt was refused. Pre-checks the
+    /// ERC-20 allowance the fallback needs and the gasless routes never did, so a debtor who has
+    /// not approved the ClearingHouse is told exactly that instead of getting an opaque revert
+    /// from inside the token.
+    async fn fallback_to_self_funded(
+        &self,
+        action: &ClearingSettlementActionResponse,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let call = ClearingActionCall::parse(action)?;
+        let token = cycle_asset(action)?;
+        let allowance = self
+            .ctx
+            .get_erc20_contract(token)
+            .await?
+            .allowance(self.ctx.signer_address(), call.contract_address)
+            .call()
+            .await?;
+        if allowance < call.amount {
+            return Err(ClearingSettlementError::Erc20AllowanceRequired {
+                token,
+                spender: call.contract_address,
+                allowance,
+                needed: call.amount,
+            });
+        }
+        self.pay_net_debit_self_funded_with(action).await
     }
 
     /// Pays the caller's committed net debit with their own transaction.

@@ -252,6 +252,23 @@ pub enum DepositError {
         /// derive for itself.
         eip2612_nonce: Option<U256>,
     },
+    /// Every gasless route was refused, and the self-funded fallback would revert too: it pulls
+    /// the funds via `transferFrom`, which needs an ERC-20 allowance the gasless routes never
+    /// did. Checked before falling back, so the caller is told what to fix rather than handed an
+    /// opaque revert from inside the token.
+    ///
+    /// Grant the allowance with [`DepositClient::approve_erc20`](crate::DepositClient::approve_erc20)
+    /// and retry — or approve Permit2 once to restore the gasless route.
+    #[error(
+        "no gasless route is available and the self-funded fallback needs an allowance: {needed} \
+         of {token} required but only {allowance} approved to {spender}; call approve_erc20 first"
+    )]
+    Erc20AllowanceRequired {
+        token: Address,
+        spender: Address,
+        allowance: U256,
+        needed: U256,
+    },
     /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit with
     /// [`DepositPath::SelfFunded`](crate::DepositPath::SelfFunded) instead.
     #[error(
@@ -394,6 +411,24 @@ pub enum ClearingSettlementError {
         /// The debtor's current EIP-2612 nonce. The one input a client with no chain access cannot
         /// derive for itself.
         eip2612_nonce: Option<U256>,
+    },
+
+    /// Every gasless route was refused, and the self-funded fallback would revert too: paying
+    /// self-funded pulls the debit via `transferFrom`, which needs an ERC-20 allowance the
+    /// gasless routes never did. Checked before falling back, so the caller is told what to fix
+    /// rather than handed an opaque revert from inside the token.
+    ///
+    /// Grant the allowance with [`SettlementClient::approve_erc20`](crate::SettlementClient::approve_erc20)
+    /// and retry — or approve Permit2 once to restore the gasless route.
+    #[error(
+        "no gasless route is available and the self-funded fallback needs an allowance: {needed} \
+         of {token} required but only {allowance} approved to {spender}; call approve_erc20 first"
+    )]
+    Erc20AllowanceRequired {
+        token: Address,
+        spender: Address,
+        allowance: U256,
+        needed: U256,
     },
 
     /// Mined and reverted, so gas *was* spent — as opposed to a refusal before broadcasting.

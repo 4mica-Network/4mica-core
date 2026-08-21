@@ -53,6 +53,9 @@ struct ChainLog {
     /// Participant path segments the core action endpoint was asked for.
     action_requests: Vec<String>,
     broadcasts: Vec<TxEnvelope>,
+    /// ERC-20 allowance served to the fallback pre-check. `None` reads as unlimited, so tests
+    /// that exercise the fallback broadcast need not grant one.
+    erc20_allowance: Option<U256>,
 }
 
 impl ChainLog {
@@ -74,6 +77,31 @@ async fn handle_rpc(
 
     match method {
         "eth_chainId" => rpc_result(&id, json!(format!("0x{CHAIN_ID:x}"))),
+        "eth_call" => {
+            let data = body
+                .get("params")
+                .and_then(|p| p.get(0))
+                .and_then(|tx| tx.get("input").or_else(|| tx.get("data")))
+                .and_then(Value::as_str)
+                .unwrap_or("0x");
+            let bytes = alloy::hex::decode(data.trim_start_matches("0x")).unwrap_or_default();
+            if bytes.get(..4) == Some(&keccak256(b"allowance(address,address)".as_slice())[..4]) {
+                let allowance = log.lock().unwrap().erc20_allowance.unwrap_or(U256::MAX);
+                rpc_result(
+                    &id,
+                    json!(format!(
+                        "0x{}",
+                        alloy::hex::encode(allowance.to_be_bytes::<32>())
+                    )),
+                )
+            } else {
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32601, "message": "mock: unhandled eth_call"},
+                }))
+            }
+        }
         "eth_getTransactionCount" => rpc_result(&id, json!("0x0")),
         "eth_gasPrice" | "eth_maxPriorityFeePerGas" => rpc_result(&id, json!("0x1")),
         "eth_estimateGas" => rpc_result(&id, json!("0x100000")),
@@ -1021,6 +1049,41 @@ async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Re
     assert!(
         chain_log.lock().unwrap().broadcasts.is_empty(),
         "the pinned route must not transact"
+    );
+    Ok(())
+}
+
+/// The self-funded fallback needs an ERC-20 allowance the gasless routes never did. Without one
+/// the fallback is refused with the fix named, rather than broadcast to revert opaquely inside
+/// the token.
+#[tokio::test]
+async fn a_fallback_without_an_erc20_allowance_is_refused_not_broadcast() -> anyhow::Result<()> {
+    let (client, _signer, chain_log, facilitator_log) =
+        test_client_paying(TOKEN, facilitator_refusal("RATE_LIMITED")).await?;
+    chain_log.lock().unwrap().erc20_allowance = Some(U256::ZERO);
+
+    let err = client
+        .settlement
+        .pay_net_debit(CYCLE_ID.to_string())
+        .await
+        .expect_err("a fallback without an allowance must be refused");
+
+    assert!(
+        matches!(
+            err,
+            ClearingSettlementError::Erc20AllowanceRequired { needed, .. }
+                if needed == U256::from(AMOUNT)
+        ),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        facilitator_log.lock().unwrap().len(),
+        1,
+        "the facilitator must have been asked first"
+    );
+    assert!(
+        chain_log.lock().unwrap().broadcasts.is_empty(),
+        "nothing may be broadcast without the allowance"
     );
     Ok(())
 }

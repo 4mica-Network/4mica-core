@@ -311,10 +311,38 @@ where
             // The approval cannot be sponsored, so gaslessness is off the table either way; paying
             // for the deposit directly is one transaction rather than an approval plus a deposit.
             Err(DepositError::Permit2AllowanceRequired { .. }) => {
-                self.send_self_funded(asset, amount).await
+                self.fallback_to_self_funded(token, amount).await
             }
             outcome => outcome,
         }
+    }
+
+    /// The self-funded fallback, taken only after every gasless route was refused. Pre-checks the
+    /// ERC-20 allowance the fallback needs and the gasless routes never did, so a payer who has
+    /// not approved the contract is told exactly that instead of getting an opaque revert from
+    /// inside the token.
+    async fn fallback_to_self_funded(
+        &self,
+        token: Address,
+        amount: U256,
+    ) -> Result<DepositReceipt, DepositError> {
+        let spender = self.ctx.contract_address();
+        let allowance = self
+            .ctx
+            .get_erc20_contract(token)
+            .await?
+            .allowance(self.ctx.signer_address(), spender)
+            .call()
+            .await?;
+        if allowance < amount {
+            return Err(DepositError::Erc20AllowanceRequired {
+                token,
+                spender,
+                allowance,
+                needed: amount,
+            });
+        }
+        self.send_self_funded(Asset::Erc20(token), amount).await
     }
 
     /// Deposits over one specific route, failing rather than choosing another.

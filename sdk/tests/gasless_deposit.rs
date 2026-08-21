@@ -232,6 +232,11 @@ async fn handle_rpc(
             if sel == selector("getGuaranteeVersionConfig(uint64)") {
                 return json_rpc_result(&id, json!(encode_guarantee_version_config()));
             }
+            // Zero: these tests never grant the self-funded allowance, so a fallback that
+            // pre-checks it must refuse rather than broadcast.
+            if sel == selector("allowance(address,address)") {
+                return json_rpc_result(&id, json!(format!("0x{}", "00".repeat(32))));
+            }
             Json(json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -1265,6 +1270,75 @@ async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Re
         facilitator_log.lock().unwrap().deposits.len(),
         1,
         "must not retry when the approval cannot be sponsored"
+    );
+    Ok(())
+}
+
+/// Refuses EIP-3009 as a simulation revert and Permit2 as a missing, unsponsorable allowance —
+/// a token no gasless route can serve.
+async fn spawn_no_gasless_route_facilitator(
+    log: Arc<Mutex<FacilitatorLog>>,
+) -> anyhow::Result<String> {
+    spawn(Router::new().route(
+        "/deposit",
+        post(move |Json(body): Json<Value>| {
+            let log = log.clone();
+            async move {
+                let response = if body["assetTransferMethod"] == "eip3009" {
+                    json!({
+                        "success": false,
+                        "error": "deposit would revert",
+                        "errorCode": "SIMULATION_REVERTED",
+                        "retryable": false,
+                    })
+                } else {
+                    json!({
+                        "success": false,
+                        "error": "approve permit2 first",
+                        "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
+                        "retryable": false,
+                        "permit2Allowance": {
+                            "spender": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+                            "allowance": "0",
+                            "required": "1000000",
+                        },
+                    })
+                };
+                log.lock().unwrap().deposits.push(body);
+                Json(response)
+            }
+        }),
+    ))
+    .await
+}
+
+/// With no gasless route left, the self-funded fallback needs an ERC-20 allowance the gasless
+/// caller was never asked for. Without one it is refused with the fix named, rather than
+/// broadcast to revert opaquely inside the token.
+#[tokio::test]
+async fn a_fallback_without_an_erc20_allowance_is_refused_not_broadcast() -> anyhow::Result<()> {
+    let facilitator_log = Arc::new(Mutex::new(FacilitatorLog::default()));
+    let (client, _signer, _chain) =
+        client_against(spawn_no_gasless_route_facilitator(facilitator_log.clone())).await?;
+
+    let err = client
+        .deposit
+        .send(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .await
+        .expect_err("a fallback without an allowance must be refused");
+
+    assert!(
+        matches!(
+            err,
+            DepositError::Erc20AllowanceRequired { needed, .. }
+                if needed == U256::from(1_000_000u64)
+        ),
+        "got {err:?}"
+    );
+    assert_eq!(
+        facilitator_log.lock().unwrap().deposits.len(),
+        2,
+        "eip3009 and then plain permit2 must both have been offered"
     );
     Ok(())
 }
