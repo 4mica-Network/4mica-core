@@ -826,6 +826,205 @@ async fn a_token_that_cannot_redeem_eip3009_is_paid_over_permit2() -> anyhow::Re
     Ok(())
 }
 
+/// A `PERMIT2_ALLOWANCE_REQUIRED` rejection, carrying the owner's EIP-2612 nonce when the token
+/// has a permit surface.
+fn facilitator_allowance_refusal(eip2612_nonce: Option<&str>) -> Value {
+    let mut refusal = json!({
+        "success": false,
+        "error": "approve(PERMIT2) missing",
+        "errorCode": "PERMIT2_ALLOWANCE_REQUIRED",
+        "retryable": false,
+    });
+    if let Some(nonce) = eip2612_nonce {
+        refusal["permit2Allowance"] = json!({ "eip2612Nonce": nonce });
+    }
+    refusal
+}
+
+/// The token's EIP-2612 `Permit` digest, recomputed from the literal type string. The spender is
+/// always the canonical Permit2 — the permit grants Permit2 its allowance, nothing else.
+fn expected_permit_digest(owner: Address, value: U256, nonce: U256, deadline: U256) -> B256 {
+    let type_hash = keccak256(
+        b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+            .as_slice(),
+    );
+    let mut encoded = Vec::with_capacity(32 * 6);
+    encoded.extend_from_slice(type_hash.as_slice());
+    encoded.extend_from_slice(B256::left_padding_from(owner.as_slice()).as_slice());
+    encoded.extend_from_slice(
+        B256::left_padding_from(sdk_4mica::contract::PERMIT2_ADDRESS.as_slice()).as_slice(),
+    );
+    encoded.extend_from_slice(&value.to_be_bytes::<32>());
+    encoded.extend_from_slice(&nonce.to_be_bytes::<32>());
+    encoded.extend_from_slice(&deadline.to_be_bytes::<32>());
+    let struct_hash = keccak256(encoded);
+
+    let mut preimage = Vec::with_capacity(2 + 64);
+    preimage.extend_from_slice(b"\x19\x01");
+    preimage.extend_from_slice(TOKEN_DOMAIN.as_slice());
+    preimage.extend_from_slice(struct_hash.as_slice());
+    keccak256(preimage)
+}
+
+/// A missing Permit2 allowance is recovered from by *signing* the approval: the rejection carries
+/// the owner's EIP-2612 nonce, the SDK signs a permit over it, and the retry bundles both — the
+/// debtor still never transacts.
+#[tokio::test]
+async fn a_missing_allowance_is_signed_for_and_retried() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let signer = PrivateKeySigner::random();
+    let debtor = signer.address();
+    let facilitator_url = spawn_facilitator_responding(
+        "/clearing/pay",
+        move |body| {
+            if body["assetTransferMethod"] == "eip3009" {
+                facilitator_refusal("SIMULATION_REVERTED")
+            } else if body.get("eip2612Permit").is_some() {
+                facilitator_pay_success(debtor)
+            } else {
+                facilitator_allowance_refusal(Some("7"))
+            }
+        },
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, signer_address, chain_log) = test_client_configured(
+        signer,
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let receipt = client
+        .settlement
+        .pay_net_debit(CYCLE_ID.to_string())
+        .await?;
+
+    assert_eq!(receipt.path, PayPath::Sponsored);
+    assert!(
+        chain_log.lock().unwrap().broadcasts.is_empty(),
+        "still chain-free: the nonce came over HTTP, not from an eth_call"
+    );
+
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(
+        sent.len(),
+        3,
+        "eip3009, plain permit2, then permit2 with the permit"
+    );
+    // The first Permit2 attempt carries no permit — sponsoring an approval the debtor may
+    // already have made would waste the facilitator's gas.
+    assert!(sent[1].get("eip2612Permit").is_none());
+
+    let permit = &sent[2]["eip2612Permit"];
+    assert!(permit.is_object(), "retry must carry a permit: {permit}");
+    let value = U256::from_str(permit["value"].as_str().unwrap_or_default())?;
+    assert_eq!(
+        value,
+        U256::MAX,
+        "the allowance only lets Permit2 act, so it is unlimited"
+    );
+    let deadline = U256::from_str(permit["deadline"].as_str().unwrap_or_default())?;
+    let v = permit["v"].as_u64().unwrap_or_default();
+    let r: B256 = permit["r"].as_str().unwrap_or_default().parse()?;
+    let s: B256 = permit["s"].as_str().unwrap_or_default().parse()?;
+
+    // Nonce 7 is what the rejection advertised; a permit signed over any other nonce would be
+    // rejected by the token as replayed.
+    let digest = expected_permit_digest(signer_address, value, U256::from(7u64), deadline);
+    let recovered =
+        Signature::from_scalars_and_parity(r, s, v == 28).recover_address_from_prehash(&digest)?;
+    assert_eq!(
+        recovered, signer_address,
+        "permit must recover to the signer over the token's Permit digest"
+    );
+    Ok(())
+}
+
+/// Without an EIP-2612 nonce the approval cannot be signed, so gaslessness is off the table — the
+/// composite pays the debit with the caller's own transaction instead of surfacing a dead end.
+#[tokio::test]
+async fn an_unsponsorable_allowance_falls_back_to_a_self_funded_payment() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let facilitator_url = spawn_facilitator_responding(
+        "/clearing/pay",
+        move |body| {
+            if body["assetTransferMethod"] == "eip3009" {
+                facilitator_refusal("SIMULATION_REVERTED")
+            } else {
+                facilitator_allowance_refusal(None)
+            }
+        },
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, signer_address, chain_log) = test_client_configured(
+        PrivateKeySigner::random(),
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let receipt = client
+        .settlement
+        .pay_net_debit(CYCLE_ID.to_string())
+        .await?;
+
+    assert_eq!(receipt.path, PayPath::SelfFunded);
+    assert_eq!(receipt.debtor, signer_address);
+    assert_eq!(
+        facilitator_log.lock().unwrap().len(),
+        2,
+        "no permit retry without a nonce to sign"
+    );
+    let log = chain_log.lock().unwrap();
+    let sent = log.sole_broadcast();
+    let call = payNetDebitCall::abi_decode(sent.input()).expect("expected payNetDebit");
+    assert_eq!(call.netDebit, U256::from(AMOUNT));
+    Ok(())
+}
+
+/// Pinned to the sponsored route, a token with no EIP-2612 surface is a dead end reported as
+/// such — never a silent self-funded transaction.
+#[tokio::test]
+async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let facilitator_url = spawn_facilitator_responding(
+        "/clearing/pay",
+        move |_| facilitator_allowance_refusal(None),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, _signer, chain_log) = test_client_configured(
+        PrivateKeySigner::random(),
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let err = client
+        .settlement
+        .pay_net_debit_sponsored_permit2(CYCLE_ID.to_string())
+        .await
+        .expect_err("an unsponsorable approval must be reported");
+
+    assert!(
+        matches!(
+            err,
+            ClearingSettlementError::Permit2AllowanceRequired {
+                eip2612_nonce: None,
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    assert!(
+        chain_log.lock().unwrap().broadcasts.is_empty(),
+        "the pinned route must not transact"
+    );
+    Ok(())
+}
+
 /// When Permit2 fails too, the payment is genuinely bad — the refusal surfaces rather than being
 /// papered over by a self-funded transaction that would revert for the same reason.
 #[tokio::test]

@@ -21,7 +21,7 @@ use crate::{
         ClientCtx, await_receipt, confirm_echoed,
         facilitator::FacilitatorFailure,
         model::{Asset, DepositPath, DepositReceipt},
-        sig::{self, Eip2612Permit},
+        sig::{self, Eip2612PermitRequest},
     },
     contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
     error::{ApproveErc20Error, DepositError},
@@ -408,30 +408,6 @@ impl DepositRequest {
             asset: asset.to_string(),
             amount: amount.to_string(),
             authorization,
-        }
-    }
-}
-
-/// Wire form of an EIP-2612 permit. `owner` and `spender` are implied — the signer and the
-/// canonical Permit2 — so only the signed values travel.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Eip2612PermitRequest {
-    value: String,
-    deadline: String,
-    v: u8,
-    r: B256,
-    s: B256,
-}
-
-impl From<Eip2612Permit> for Eip2612PermitRequest {
-    fn from(permit: Eip2612Permit) -> Self {
-        Self {
-            value: permit.value.to_string(),
-            deadline: permit.deadline.to_string(),
-            v: permit.v,
-            r: permit.r,
-            s: permit.s,
         }
     }
 }

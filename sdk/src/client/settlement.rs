@@ -17,7 +17,7 @@ use crate::{
         ClientCtx, await_receipt, confirm_echoed,
         facilitator::FacilitatorFailure,
         model::{ClaimPath, ClaimReceipt, PayPath, PayReceipt},
-        sig,
+        sig::{self, Eip2612PermitRequest},
     },
     contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
     error::{ApproveErc20Error, ClearingSettlementError, SponsorshipError},
@@ -124,10 +124,10 @@ where
     /// facilitator submits it — no native balance, no allowance, and no transaction of the
     /// caller's own.
     ///
-    /// Tries EIP-3009 first; where the token cannot redeem it, retries over Permit2, which works
-    /// for any ERC-20 but needs the signer's one-time `approve(PERMIT2, …)` to already be on
-    /// chain. Call [`Self::pay_net_debit_eip3009`] or [`Self::pay_net_debit_permit2`] to pin one
-    /// scheme instead.
+    /// Tries EIP-3009 first; where the token cannot redeem it, retries over Permit2 with the
+    /// one-time `approve(PERMIT2, …)` signed rather than transacted where the token allows it.
+    /// Call [`Self::pay_net_debit_eip3009`], [`Self::pay_net_debit_permit2`] or
+    /// [`Self::pay_net_debit_sponsored_permit2`] to pin one scheme instead.
     ///
     /// ERC-20 cycles only: a native-asset debit cannot be pulled by signature.
     pub async fn pay_net_debit_gasless(
@@ -155,13 +155,34 @@ where
     /// trying another scheme.
     ///
     /// Works for any ERC-20, but **is not gasless on its own**: Permit2 needs a one-time on-chain
-    /// `approve(PERMIT2, …)` from the debtor, without which the facilitator declines.
+    /// `approve(PERMIT2, …)` from the debtor, without which this fails with
+    /// [`ClearingSettlementError::Permit2AllowanceRequired`].
+    /// [`Self::pay_net_debit_sponsored_permit2`] covers that approval too, where the token
+    /// allows it.
     pub async fn pay_net_debit_permit2(
         &self,
         cycle_id: String,
     ) -> Result<PayReceipt, ClearingSettlementError> {
         let action = self.pay_net_debit_action(cycle_id.clone()).await?;
         self.pay_net_debit_permit2_with(cycle_id, &action).await
+    }
+
+    /// Pays through Permit2, signing the missing approval rather than transacting for it.
+    ///
+    /// Tries the plain Permit2 route first; if the allowance is missing *and* the token supports
+    /// EIP-2612, signs a permit for it and retries so both are submitted together. Still costs
+    /// the debtor nothing.
+    ///
+    /// Fails with [`ClearingSettlementError::Permit2AllowanceRequired`] for tokens with no
+    /// EIP-2612 surface — their approval cannot be sponsored, so the debtor must send it
+    /// themselves.
+    pub async fn pay_net_debit_sponsored_permit2(
+        &self,
+        cycle_id: String,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let action = self.pay_net_debit_action(cycle_id.clone()).await?;
+        self.pay_net_debit_sponsored_permit2_with(cycle_id, &action)
+            .await
     }
 
     async fn pay_net_debit_gasless_with(
@@ -181,7 +202,8 @@ where
         if !refuses_the_authorization(&rejection) {
             return Err(rejection);
         }
-        self.pay_net_debit_permit2_with(cycle_id, action).await
+        self.pay_net_debit_sponsored_permit2_with(cycle_id, action)
+            .await
     }
 
     async fn pay_net_debit_eip3009_with(
@@ -211,6 +233,45 @@ where
         cycle_id: String,
         action: &ClearingSettlementActionResponse,
     ) -> Result<PayReceipt, ClearingSettlementError> {
+        self.submit_permit2_pay(cycle_id, action, None).await
+    }
+
+    async fn pay_net_debit_sponsored_permit2_with(
+        &self,
+        cycle_id: String,
+        action: &ClearingSettlementActionResponse,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        // Try the plain route first: the debtor may already have approved, in which case a permit
+        // is pointless and only costs the submitter a no-op.
+        let rejection = match self
+            .submit_permit2_pay(cycle_id.clone(), action, None)
+            .await
+        {
+            Ok(receipt) => return Ok(receipt),
+            Err(err) => err,
+        };
+
+        let ClearingSettlementError::Permit2AllowanceRequired {
+            eip2612_nonce: Some(nonce),
+            ..
+        } = &rejection
+        else {
+            // Either a different failure, or a token whose approval cannot be sponsored.
+            return Err(rejection);
+        };
+
+        let (_, asset, _) = self.checked_gasless_pay(action)?;
+        let permit = sig::debit_eip2612_permit(&self.ctx, asset, *nonce).await?;
+        self.submit_permit2_pay(cycle_id, action, Some(permit.into()))
+            .await
+    }
+
+    async fn submit_permit2_pay(
+        &self,
+        cycle_id: String,
+        action: &ClearingSettlementActionResponse,
+        eip2612_permit: Option<Eip2612PermitRequest>,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
         let (debtor, asset, call) = self.checked_gasless_pay(action)?;
         let permit2_authorization = sig::debit_permit2_authorization(
             &self.ctx,
@@ -224,6 +285,7 @@ where
             cycle_id,
             PayAuthorization::Permit2 {
                 permit2_authorization,
+                eip2612_permit,
             },
             debtor,
         )
@@ -263,7 +325,7 @@ where
             .post("clearing/pay", &request)
             .await
             .map_err(ClearingSettlementError::Sponsorship)?;
-        Ok(response.into_receipt(debtor)?)
+        response.into_receipt(debtor)
     }
 }
 
@@ -292,6 +354,12 @@ where
             return self.pay_net_debit_self_funded_with(&action).await;
         }
         match self.pay_net_debit_gasless_with(cycle_id, &action).await {
+            // The approval cannot be sponsored, so gaslessness is off the table either way;
+            // paying the debit directly is one transaction rather than an approval plus a
+            // payment.
+            Err(ClearingSettlementError::Permit2AllowanceRequired { .. }) => {
+                self.pay_net_debit_self_funded_with(&action).await
+            }
             Err(err) if sponsorship_unavailable(&err, names_the_payment) => {
                 self.pay_net_debit_self_funded_with(&action).await
             }
@@ -634,6 +702,9 @@ enum PayAuthorization {
     },
     Permit2 {
         permit2_authorization: Permit2Authorization,
+        /// Sponsored approval, so the debtor never transacts.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        eip2612_permit: Option<Eip2612PermitRequest>,
     },
 }
 
@@ -653,9 +724,22 @@ impl FacilitatorPayResponse {
     /// `debtor` falls back to what was asked for: it is echoed for reconciliation, and a
     /// facilitator that omits it has not changed whose funds the contract pulled. One that echoes
     /// something else has, and the receipt is refused rather than made to describe it.
-    fn into_receipt(self, debtor: Address) -> Result<PayReceipt, SponsorshipError> {
+    fn into_receipt(self, debtor: Address) -> Result<PayReceipt, ClearingSettlementError> {
         if !self.success {
-            return Err(self.failure.into_sponsorship_error(self.error));
+            // The one rejection with detail to unpack: the missing-allowance nonce is what lets
+            // the sponsored-Permit2 route sign the approval instead of surrendering.
+            let eip2612_nonce = self.failure.eip2612_nonce();
+            return Err(match self.failure.into_sponsorship_error(self.error) {
+                SponsorshipError::Rejected { code, message, .. }
+                    if code == "PERMIT2_ALLOWANCE_REQUIRED" =>
+                {
+                    ClearingSettlementError::Permit2AllowanceRequired {
+                        message,
+                        eip2612_nonce,
+                    }
+                }
+                other => other.into(),
+            });
         }
 
         let tx_hash = self

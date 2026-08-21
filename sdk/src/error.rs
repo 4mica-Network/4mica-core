@@ -363,6 +363,21 @@ pub enum ClearingSettlementError {
     #[error(transparent)]
     Sponsorship(#[from] SponsorshipError),
 
+    /// Permit2 needs a one-time on-chain `approve(PERMIT2, ...)` that the debtor has not made.
+    ///
+    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so the
+    /// approval can be *signed* rather than transacted — see
+    /// [`SettlementClient::pay_net_debit_sponsored_permit2`](crate::SettlementClient::pay_net_debit_sponsored_permit2),
+    /// which does exactly that. When it is absent the debtor must send `approve(PERMIT2, ...)`
+    /// themselves and pay for it.
+    #[error("permit2 requires a prior approve(PERMIT2, ...): {message}")]
+    Permit2AllowanceRequired {
+        message: String,
+        /// The debtor's current EIP-2612 nonce. The one input a client with no chain access cannot
+        /// derive for itself.
+        eip2612_nonce: Option<U256>,
+    },
+
     /// Mined and reverted, so gas *was* spent — as opposed to a refusal before broadcasting.
     #[error("claim {tx_hash} reverted on-chain")]
     RevertedOnChain { tx_hash: B256 },

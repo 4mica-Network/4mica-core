@@ -40,6 +40,30 @@ pub(super) struct Eip2612Permit {
     pub s: B256,
 }
 
+/// Wire form of an EIP-2612 permit. `owner` and `spender` are implied — the signer and the
+/// canonical Permit2 — so only the signed values travel.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Eip2612PermitRequest {
+    value: String,
+    deadline: String,
+    v: u8,
+    r: B256,
+    s: B256,
+}
+
+impl From<Eip2612Permit> for Eip2612PermitRequest {
+    fn from(permit: Eip2612Permit) -> Self {
+        Self {
+            value: permit.value.to_string(),
+            deadline: permit.deadline.to_string(),
+            v: permit.v,
+            r: permit.r,
+            s: permit.s,
+        }
+    }
+}
+
 /// Signs an EIP-3009 `receiveWithAuthorization` crediting `amount` of `token` to the signer.
 ///
 /// Only tokens implementing EIP-3009 (USDC and similar) can redeem this.
@@ -222,6 +246,24 @@ where
         r,
         s,
     })
+}
+
+/// [`eip2612_permit`] reported in the settlement error space, for sponsoring a debit's missing
+/// Permit2 approval.
+pub(super) async fn debit_eip2612_permit<S>(
+    ctx: &ClientCtx<S>,
+    token: Address,
+    nonce: U256,
+) -> Result<Eip2612Permit, ClearingSettlementError>
+where
+    S: Signer + Send + Sync,
+{
+    eip2612_permit(ctx, token, nonce)
+        .await
+        .map_err(|err| match err {
+            DepositError::Client(client) => ClearingSettlementError::Client(client),
+            other => ClearingSettlementError::Transport(other.to_string()),
+        })
 }
 
 /// Signs a `RequestWithdrawal` authorization for `amount` of `asset` (`Address::ZERO` for ETH).
