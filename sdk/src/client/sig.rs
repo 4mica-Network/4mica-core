@@ -112,6 +112,44 @@ where
     })
 }
 
+/// Signs a Permit2 `PermitTransferFrom` paying the signer's net debit: `amount` of `token` with
+/// `receiver` (the ClearingHouse) as spender, and the nonce pinned to the cycle id as
+/// `payNetDebitWithPermit2` requires.
+///
+/// Works for any ERC-20, but only if the signer has already approved Permit2 to move that token.
+pub(super) async fn debit_permit2_authorization<S>(
+    ctx: &ClientCtx<S>,
+    token: Address,
+    receiver: Address,
+    amount: U256,
+    cycle_id: B256,
+) -> Result<Permit2Authorization, ClearingSettlementError>
+where
+    S: Signer + Send + Sync,
+{
+    let deadline = U256::from(now_secs().saturating_add(AUTHORIZATION_TTL_SECS));
+    let digest = eip712_digest_for_permit2_transfer(
+        ctx.permit2_domain_separator(),
+        token,
+        amount,
+        receiver,
+        U256::from_be_bytes(cycle_id.0),
+        deadline,
+    );
+
+    let signature = ctx
+        .signer()
+        .sign_hash(&digest)
+        .await
+        .map_err(|e| ClearingSettlementError::Transport(e.to_string()))?;
+    Ok(Permit2Authorization {
+        from: ctx.signer_address(),
+        nonce: U256::from_be_bytes(cycle_id.0),
+        deadline,
+        signature: Bytes::from(signature.as_bytes().to_vec()),
+    })
+}
+
 /// Signs a Permit2 `PermitTransferFrom` for `amount` of `token`.
 ///
 /// Works for any ERC-20, but only if the signer has already approved Permit2 to move that token.

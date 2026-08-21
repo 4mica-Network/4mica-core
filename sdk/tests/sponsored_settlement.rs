@@ -11,9 +11,10 @@
 //! not sponsor, and never when its refusal names the claim itself.
 //!
 //! The debit side mirrors the routing but not the trust model: paying pulls money *out of* the
-//! debtor's wallet, so what travels to the facilitator is an EIP-3009 authorization whose
-//! bindings — the ClearingHouse as receiver, the leaf's exact amount, the cycle id as nonce —
-//! these tests pin byte-for-byte by recomputing the digest from literal type strings.
+//! debtor's wallet, so what travels to the facilitator is an EIP-3009 authorization — or, for a
+//! token that cannot redeem one, a Permit2 authorization — whose bindings — the ClearingHouse as
+//! receiver/spender, the leaf's exact amount, the cycle id as nonce — these tests pin
+//! byte-for-byte by recomputing the digests from literal type strings.
 
 use alloy::consensus::{Transaction, TxEnvelope};
 use alloy::eips::eip2718::Decodable2718;
@@ -222,12 +223,23 @@ async fn spawn_facilitator(
     response: Value,
     log: FacilitatorLog,
 ) -> anyhow::Result<String> {
+    spawn_facilitator_responding(path, move |_| response.clone(), log).await
+}
+
+/// Like [`spawn_facilitator`], but choosing the reply per request — what a scheme-routing test
+/// needs to refuse EIP-3009 while accepting Permit2.
+async fn spawn_facilitator_responding(
+    path: &'static str,
+    respond: impl Fn(&Value) -> Value + Clone + Send + Sync + 'static,
+    log: FacilitatorLog,
+) -> anyhow::Result<String> {
     spawn(Router::new().route(
         path,
         post(move |Json(body): Json<Value>| {
-            let response = response.clone();
+            let respond = respond.clone();
             let log = log.clone();
             async move {
+                let response = respond(&body);
                 log.lock().unwrap().push(body);
                 Json(response)
             }
@@ -655,6 +667,7 @@ async fn a_gasless_payment_signs_the_cycle_terms_for_the_clearing_house() -> any
     let sent = facilitator_log.lock().unwrap();
     assert_eq!(sent.len(), 1, "expected exactly one facilitator request");
     assert_eq!(sent[0]["cycleId"], format!("{CYCLE_ID:#x}"));
+    assert_eq!(sent[0]["assetTransferMethod"], "eip3009");
 
     let auth = &sent[0]["authorization"];
     let from: Address = auth["from"].as_str().unwrap_or_default().parse()?;
@@ -679,6 +692,169 @@ async fn a_gasless_payment_signs_the_cycle_terms_for_the_clearing_house() -> any
         recovered, signer,
         "signature must recover to the signer over a digest binding the ClearingHouse, the leaf \
          amount, and the cycle id"
+    );
+    Ok(())
+}
+
+/// Permit2's `PermitTransferFrom` digest, recomputed from the literal type strings — domain
+/// included, since Permit2's domain is derived (canonical singleton address, no version) rather
+/// than fetched — so a drift in the SDK's digest code fails the recovery assertion instead of
+/// cancelling out.
+fn expected_permit2_digest(
+    token: Address,
+    amount: U256,
+    spender: Address,
+    nonce: U256,
+    deadline: U256,
+) -> B256 {
+    let domain_typehash = keccak256(
+        b"EIP712Domain(string name,uint256 chainId,address verifyingContract)".as_slice(),
+    );
+    let mut encoded = Vec::with_capacity(32 * 4);
+    encoded.extend_from_slice(domain_typehash.as_slice());
+    encoded.extend_from_slice(keccak256(b"Permit2".as_slice()).as_slice());
+    encoded.extend_from_slice(&U256::from(CHAIN_ID).to_be_bytes::<32>());
+    encoded.extend_from_slice(
+        B256::left_padding_from(sdk_4mica::contract::PERMIT2_ADDRESS.as_slice()).as_slice(),
+    );
+    let domain = keccak256(encoded);
+
+    let permissions_typehash =
+        keccak256(b"TokenPermissions(address token,uint256 amount)".as_slice());
+    let mut encoded = Vec::with_capacity(32 * 3);
+    encoded.extend_from_slice(permissions_typehash.as_slice());
+    encoded.extend_from_slice(B256::left_padding_from(token.as_slice()).as_slice());
+    encoded.extend_from_slice(&amount.to_be_bytes::<32>());
+    let token_permissions = keccak256(encoded);
+
+    let permit_typehash = keccak256(
+        b"PermitTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline)TokenPermissions(address token,uint256 amount)"
+            .as_slice(),
+    );
+    let mut encoded = Vec::with_capacity(32 * 5);
+    encoded.extend_from_slice(permit_typehash.as_slice());
+    encoded.extend_from_slice(token_permissions.as_slice());
+    encoded.extend_from_slice(B256::left_padding_from(spender.as_slice()).as_slice());
+    encoded.extend_from_slice(&nonce.to_be_bytes::<32>());
+    encoded.extend_from_slice(&deadline.to_be_bytes::<32>());
+    let struct_hash = keccak256(encoded);
+
+    let mut preimage = Vec::with_capacity(2 + 64);
+    preimage.extend_from_slice(b"\x19\x01");
+    preimage.extend_from_slice(domain.as_slice());
+    preimage.extend_from_slice(struct_hash.as_slice());
+    keccak256(preimage)
+}
+
+/// A token that cannot redeem an EIP-3009 authorization reverts the facilitator's simulation; the
+/// SDK then retries over Permit2 with the same cycle terms — the ClearingHouse as spender, the
+/// leaf's exact amount, and the cycle id as nonce.
+#[tokio::test]
+async fn a_token_that_cannot_redeem_eip3009_is_paid_over_permit2() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let signer = PrivateKeySigner::random();
+    let debtor = signer.address();
+    let facilitator_url = spawn_facilitator_responding(
+        "/clearing/pay",
+        move |body| {
+            if body["assetTransferMethod"] == "permit2" {
+                facilitator_pay_success(debtor)
+            } else {
+                facilitator_refusal("SIMULATION_REVERTED")
+            }
+        },
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, signer_address, chain_log) = test_client_configured(
+        signer,
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let receipt = client
+        .settlement
+        .pay_net_debit(CYCLE_ID.to_string())
+        .await?;
+
+    assert_eq!(receipt.path, PayPath::Sponsored);
+    assert_eq!(receipt.debtor, signer_address);
+    assert!(
+        chain_log.lock().unwrap().broadcasts.is_empty(),
+        "a sponsored payment must not touch the chain from here"
+    );
+
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(sent.len(), 2, "EIP-3009 must be tried before Permit2");
+    assert_eq!(sent[0]["assetTransferMethod"], "eip3009");
+    assert_eq!(sent[1]["assetTransferMethod"], "permit2");
+    assert_eq!(sent[1]["cycleId"], format!("{CYCLE_ID:#x}"));
+
+    let auth = &sent[1]["permit2Authorization"];
+    let from: Address = auth["from"].as_str().unwrap_or_default().parse()?;
+    assert_eq!(
+        from, signer_address,
+        "the authorization must bind the signer"
+    );
+    let nonce = U256::from_str(auth["nonce"].as_str().unwrap_or_default())?;
+    assert_eq!(
+        nonce,
+        U256::from_be_bytes(CYCLE_ID.0),
+        "the nonce must pin the cycle"
+    );
+
+    let deadline = U256::from_str(auth["deadline"].as_str().unwrap_or_default())?;
+    let digest =
+        expected_permit2_digest(TOKEN, U256::from(AMOUNT), CLEARING_HOUSE, nonce, deadline);
+    let signature = alloy::hex::decode(
+        auth["signature"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches("0x"),
+    )?;
+    assert_eq!(signature.len(), 65, "expected a packed 65-byte signature");
+    let r = B256::from_slice(&signature[0..32]);
+    let s = B256::from_slice(&signature[32..64]);
+    let recovered = Signature::from_scalars_and_parity(r, s, signature[64] == 28)
+        .recover_address_from_prehash(&digest)?;
+    assert_eq!(
+        recovered, signer_address,
+        "signature must recover to the signer over a digest binding the ClearingHouse as \
+         spender, the leaf amount, and the cycle id"
+    );
+    Ok(())
+}
+
+/// When Permit2 fails too, the payment is genuinely bad — the refusal surfaces rather than being
+/// papered over by a self-funded transaction that would revert for the same reason.
+#[tokio::test]
+async fn a_payment_refused_over_both_schemes_surfaces_without_fallback() -> anyhow::Result<()> {
+    let (client, _signer, chain_log, facilitator_log) =
+        test_client_paying(TOKEN, facilitator_refusal("SIMULATION_REVERTED")).await?;
+
+    let err = client
+        .settlement
+        .pay_net_debit(CYCLE_ID.to_string())
+        .await
+        .expect_err("a payment refused over both schemes must surface");
+
+    assert!(
+        matches!(
+            &err,
+            ClearingSettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
+                if code == "SIMULATION_REVERTED"
+        ),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        facilitator_log.lock().unwrap().len(),
+        2,
+        "both schemes must have been offered"
+    );
+    assert!(
+        chain_log.lock().unwrap().broadcasts.is_empty(),
+        "nothing may be broadcast when the refusal names the payment"
     );
     Ok(())
 }

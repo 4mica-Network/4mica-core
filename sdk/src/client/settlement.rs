@@ -19,7 +19,7 @@ use crate::{
         model::{ClaimPath, ClaimReceipt, PayPath, PayReceipt},
         sig,
     },
-    contract::Core4Mica::ReceiveAuthorization,
+    contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
     error::{ApproveErc20Error, ClearingSettlementError, SponsorshipError},
     validators::validate_address,
 };
@@ -119,9 +119,15 @@ impl<S> SettlementClient<S>
 where
     S: Signer + Send + Sync,
 {
-    /// Pays the caller's committed net debit gaslessly. The caller signs an EIP-3009
-    /// authorization for the exact amount and the facilitator submits it — no native balance, no
-    /// allowance, and no transaction of the caller's own.
+    /// Pays the caller's committed net debit gaslessly, over whichever signature scheme the
+    /// cycle's token supports. The caller signs an authorization for the exact amount and the
+    /// facilitator submits it — no native balance, no allowance, and no transaction of the
+    /// caller's own.
+    ///
+    /// Tries EIP-3009 first; where the token cannot redeem it, retries over Permit2, which works
+    /// for any ERC-20 but needs the signer's one-time `approve(PERMIT2, …)` to already be on
+    /// chain. Call [`Self::pay_net_debit_eip3009`] or [`Self::pay_net_debit_permit2`] to pin one
+    /// scheme instead.
     ///
     /// ERC-20 cycles only: a native-asset debit cannot be pulled by signature.
     pub async fn pay_net_debit_gasless(
@@ -132,20 +138,58 @@ where
         self.pay_net_debit_gasless_with(cycle_id, &action).await
     }
 
+    /// Pays the caller's committed net debit gaslessly with an EIP-3009 authorization, failing
+    /// rather than trying another scheme.
+    ///
+    /// Requires a token implementing EIP-3009 (USDC and similar); for anything else see
+    /// [`Self::pay_net_debit_permit2`].
+    pub async fn pay_net_debit_eip3009(
+        &self,
+        cycle_id: String,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let action = self.pay_net_debit_action(cycle_id.clone()).await?;
+        self.pay_net_debit_eip3009_with(cycle_id, &action).await
+    }
+
+    /// Pays the caller's committed net debit gaslessly through Permit2, failing rather than
+    /// trying another scheme.
+    ///
+    /// Works for any ERC-20, but **is not gasless on its own**: Permit2 needs a one-time on-chain
+    /// `approve(PERMIT2, …)` from the debtor, without which the facilitator declines.
+    pub async fn pay_net_debit_permit2(
+        &self,
+        cycle_id: String,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let action = self.pay_net_debit_action(cycle_id.clone()).await?;
+        self.pay_net_debit_permit2_with(cycle_id, &action).await
+    }
+
     async fn pay_net_debit_gasless_with(
         &self,
         cycle_id: String,
         action: &ClearingSettlementActionResponse,
     ) -> Result<PayReceipt, ClearingSettlementError> {
-        let debtor = self.ctx.signer_address();
-        let call = checked_pay_call(action, debtor)?;
-        let asset = cycle_asset(action)?;
-        if asset == Address::ZERO {
-            return Err(ClearingSettlementError::InvalidParams(
-                "native-asset debits cannot be paid gaslessly; use the self-funded route".into(),
-            ));
+        // EIP-3009 is the cheaper route, but nothing says up front whether the token implements
+        // it — so try it and read the answer off the rejection, which costs no gas.
+        let rejection = match self
+            .pay_net_debit_eip3009_with(cycle_id.clone(), action)
+            .await
+        {
+            Ok(receipt) => return Ok(receipt),
+            Err(err) => err,
+        };
+        if !refuses_the_authorization(&rejection) {
+            return Err(rejection);
         }
+        self.pay_net_debit_permit2_with(cycle_id, action).await
+    }
 
+    async fn pay_net_debit_eip3009_with(
+        &self,
+        cycle_id: String,
+        action: &ClearingSettlementActionResponse,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let (debtor, asset, call) = self.checked_gasless_pay(action)?;
         let authorization = sig::debit_authorization(
             &self.ctx,
             asset,
@@ -154,6 +198,61 @@ where
             call.cycle_id,
         )
         .await?;
+        self.submit_pay(
+            cycle_id,
+            PayAuthorization::Eip3009 { authorization },
+            debtor,
+        )
+        .await
+    }
+
+    async fn pay_net_debit_permit2_with(
+        &self,
+        cycle_id: String,
+        action: &ClearingSettlementActionResponse,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
+        let (debtor, asset, call) = self.checked_gasless_pay(action)?;
+        let permit2_authorization = sig::debit_permit2_authorization(
+            &self.ctx,
+            asset,
+            call.contract_address,
+            call.amount,
+            call.cycle_id,
+        )
+        .await?;
+        self.submit_pay(
+            cycle_id,
+            PayAuthorization::Permit2 {
+                permit2_authorization,
+            },
+            debtor,
+        )
+        .await
+    }
+
+    /// Validations shared by every gasless debit route: the terms must name this signer, and the
+    /// cycle must settle in an ERC-20 — a native debit cannot be pulled by signature.
+    fn checked_gasless_pay(
+        &self,
+        action: &ClearingSettlementActionResponse,
+    ) -> Result<(Address, Address, ClearingActionCall), ClearingSettlementError> {
+        let debtor = self.ctx.signer_address();
+        let call = checked_pay_call(action, debtor)?;
+        let asset = cycle_asset(action)?;
+        if asset == Address::ZERO {
+            return Err(ClearingSettlementError::InvalidParams(
+                "native-asset debits cannot be paid gaslessly; use the self-funded route".into(),
+            ));
+        }
+        Ok((debtor, asset, call))
+    }
+
+    async fn submit_pay(
+        &self,
+        cycle_id: String,
+        authorization: PayAuthorization,
+        debtor: Address,
+    ) -> Result<PayReceipt, ClearingSettlementError> {
         let request = FacilitatorPayRequest {
             cycle_id,
             authorization,
@@ -174,13 +273,14 @@ where
 {
     /// Pays the caller's committed net debit for a clearing cycle, sponsored where possible.
     ///
-    /// For an ERC-20 cycle with a facilitator configured, the caller signs an EIP-3009
-    /// authorization for the exact amount and the facilitator submits and pays gas — no allowance
-    /// and no native balance needed. Otherwise — a native-asset cycle, or no facilitator — the
-    /// caller's own transaction runs (grant the allowance with [`Self::approve_erc20`] first for
-    /// ERC-20 cycles). A rejection that names the payment itself is returned rather than retried,
-    /// and so is an unknown outcome: the facilitator may already have submitted, and a second
-    /// payment would revert as `AlreadyPaid` after paying gas.
+    /// For an ERC-20 cycle with a facilitator configured, the caller signs an authorization for
+    /// the exact amount — EIP-3009 where the token supports it, Permit2 otherwise — and the
+    /// facilitator submits and pays gas; no native balance needed. Otherwise — a native-asset
+    /// cycle, no facilitator, or no sponsored scheme left — the caller's own transaction runs
+    /// (grant the allowance with [`Self::approve_erc20`] first for ERC-20 cycles). A rejection
+    /// that names the payment itself is returned rather than retried, and so is an unknown
+    /// outcome: the facilitator may already have submitted, and a second payment would revert as
+    /// `AlreadyPaid` after paying gas.
     ///
     /// Read [`PayReceipt::path`] to see which route ran.
     pub async fn pay_net_debit(
@@ -415,6 +515,19 @@ fn names_the_payment(code: &str) -> bool {
         )
 }
 
+/// Whether a rejection means "this token cannot redeem an EIP-3009 authorization" rather than
+/// "this payment is bad". A token without `receiveWithAuthorization` reverts opaquely, which the
+/// facilitator reports as a failed simulation — indistinguishable, from here, from any other
+/// revert. Retrying over Permit2 is therefore a guess, but a cheap one: the simulation spent no
+/// gas, and a genuinely bad payment fails the second route with its own error.
+fn refuses_the_authorization(err: &ClearingSettlementError) -> bool {
+    matches!(
+        err,
+        ClearingSettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
+            if code == "SIMULATION_REVERTED" || code == "UNSUPPORTED_TRANSFER_METHOD"
+    )
+}
+
 /// The action's cycle asset, `Address::ZERO` for a native-asset cycle.
 fn cycle_asset(
     action: &ClearingSettlementActionResponse,
@@ -503,7 +616,25 @@ impl FacilitatorClaimResponse {
 #[serde(rename_all = "camelCase")]
 struct FacilitatorPayRequest {
     cycle_id: String,
-    authorization: ReceiveAuthorization,
+    #[serde(flatten)]
+    authorization: PayAuthorization,
+}
+
+/// The authorization and its `assetTransferMethod` tag, flattened into the request as siblings —
+/// the same envelope a deposit's authorization travels in.
+#[derive(Debug, Serialize)]
+#[serde(
+    tag = "assetTransferMethod",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum PayAuthorization {
+    Eip3009 {
+        authorization: ReceiveAuthorization,
+    },
+    Permit2 {
+        permit2_authorization: Permit2Authorization,
+    },
 }
 
 #[derive(Debug, Deserialize)]
