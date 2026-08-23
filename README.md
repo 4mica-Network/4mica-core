@@ -47,24 +47,22 @@ Install from crates.io:
 
 ```toml
 [dependencies]
-sdk-4mica = "1.2.0"
+sdk-4mica = "2.0.0-alpha.4"
 ```
 
 Minimal bootstrap:
 
 ```rust
-use sdk_4mica::{Client, ConfigBuilder};
+use alloy::signers::local::PrivateKeySigner;
+use sdk_4mica::Client;
+use std::str::FromStr;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let client = Client::new(
-        ConfigBuilder::default()
-            .wallet_private_key(std::env::var("WALLET_PRIVATE_KEY")?)
-            .build()?,
-    )
-    .await?;
+    let signer = PrivateKeySigner::from_str(&std::env::var("WALLET_PRIVATE_KEY")?)?;
+    let client = Client::builder().signer(signer).connect().await?;
 
-    println!("Connected to 4Mica as {}", client.address());
+    println!("Connected to 4Mica as {}", client.signer_address());
     Ok(())
 }
 ```

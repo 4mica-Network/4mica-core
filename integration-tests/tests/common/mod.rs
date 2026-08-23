@@ -12,7 +12,8 @@ use core_service::persist::{PersistCtx, repo};
 use crypto::hex::DecodeHexError;
 use rpc::RpcProxy;
 use sdk_4mica::{
-    AccountClient, Address, Asset, Client, Config, ConfigBuilder, DepositPath, U256, UserInfo,
+    AccountClient, Address, Asset, AssetPosition, Client, ClientBuilder, Config, CredentialsConfig,
+    U256,
 };
 use serde::Deserialize;
 use std::str::FromStr;
@@ -65,6 +66,23 @@ pub fn get_now() -> Duration {
         .unwrap()
 }
 
+/// The bearer token the config authenticates with, if any.
+pub fn config_bearer_token<S>(config: &Config<S>) -> Option<String> {
+    match &config.credentials {
+        CredentialsConfig::Bearer(token) => Some(token.clone()),
+        _ => None,
+    }
+}
+
+/// Native for the zero address, ERC-20 otherwise — the inverse of `Asset::address()`.
+pub fn as_asset(address: Address) -> Asset {
+    if address == Address::ZERO {
+        Asset::Native
+    } else {
+        Asset::Erc20(address)
+    }
+}
+
 pub fn skip_without_local_core_stack() -> bool {
     if std::env::var_os(LOCAL_CORE_E2E_ENV).is_some() {
         return false;
@@ -78,8 +96,8 @@ pub fn skip_without_local_core_stack() -> bool {
 
 pub async fn get_chain_timestamp<S>(config: &Config<S>) -> anyhow::Result<u64> {
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
-    if let Some(token) = &config.bearer_token {
-        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    if let Some(token) = config_bearer_token(config) {
+        rpc_proxy = rpc_proxy.with_bearer_token(token);
     }
     let public_params = rpc_proxy.get_public_params().await?;
     let res = reqwest::Client::new()
@@ -118,8 +136,8 @@ pub async fn mine_confirmations<S>(config: &Config<S>, blocks: u64) -> anyhow::R
     }
 
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
-    if let Some(token) = &config.bearer_token {
-        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    if let Some(token) = config_bearer_token(config) {
+        rpc_proxy = rpc_proxy.with_bearer_token(token);
     }
     let public_params = rpc_proxy.get_public_params().await?;
     let response = reqwest::Client::new()
@@ -182,8 +200,8 @@ pub async fn skip_on_chain_clock_drift<S>(config: &Config<S>) -> anyhow::Result<
 
 pub async fn eth_rpc_url<S>(config: &Config<S>) -> anyhow::Result<String> {
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
-    if let Some(token) = &config.bearer_token {
-        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    if let Some(token) = config_bearer_token(config) {
+        rpc_proxy = rpc_proxy.with_bearer_token(token);
     }
     Ok(rpc_proxy.get_public_params().await?.ethereum_http_rpc_url)
 }
@@ -225,8 +243,8 @@ pub async fn advance_chain_time<S>(config: &Config<S>, seconds: u64) -> anyhow::
 /// Read the contract's current withdrawal grace period (seconds).
 pub async fn withdrawal_grace_period<S>(config: &Config<S>) -> anyhow::Result<u64> {
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
-    if let Some(token) = &config.bearer_token {
-        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    if let Some(token) = config_bearer_token(config) {
+        rpc_proxy = rpc_proxy.with_bearer_token(token);
     }
     let public_params = rpc_proxy.get_public_params().await?;
     let contract_address = Address::from_str(&public_params.contract_address)?;
@@ -300,8 +318,8 @@ pub async fn fund_user_with_erc20(
 
 pub async fn assert_core_contract_deployed<S>(config: &Config<S>) -> anyhow::Result<()> {
     let mut rpc_proxy = RpcProxy::new(config.rpc_url.as_str())?;
-    if let Some(token) = &config.bearer_token {
-        rpc_proxy = rpc_proxy.with_bearer_token(token.clone());
+    if let Some(token) = config_bearer_token(config) {
+        rpc_proxy = rpc_proxy.with_bearer_token(token);
     }
     let public_params = rpc_proxy.get_public_params().await?;
 
@@ -333,10 +351,11 @@ pub async fn assert_core_contract_deployed<S>(config: &Config<S>) -> anyhow::Res
     Ok(())
 }
 
-pub fn extract_asset_info(assets: &[UserInfo], asset_address: Address) -> Option<&UserInfo> {
-    assets
-        .iter()
-        .find(|info| info.asset == asset_address.to_string())
+pub fn extract_asset_info(
+    assets: &[AssetPosition],
+    asset_address: Address,
+) -> Option<&AssetPosition> {
+    assets.iter().find(|info| info.asset == asset_address)
 }
 
 pub async fn wait_for_collateral_increase<S: Signer + Sync>(
@@ -348,12 +367,12 @@ pub async fn wait_for_collateral_increase<S: Signer + Sync>(
     let poll_interval = Duration::from_millis(200);
     let timeout = Duration::from_secs(60);
     let start = Instant::now();
-    let asset_address = asset_address.to_string();
+    let asset = as_asset(asset_address);
     let target_total = starting_total + increase_by;
     let mut last_total = starting_total;
 
     loop {
-        if let Some(balance) = account.asset_balance(asset_address.clone()).await? {
+        if let Some(balance) = account.asset_balance(asset).await? {
             last_total = balance.total;
             if last_total >= target_total {
                 return Ok(());
@@ -472,7 +491,7 @@ async fn build_authed_config(
     scopes: &[String],
 ) -> anyhow::Result<Config<PrivateKeySigner>> {
     let access_token = login_with_siwe(base_url, private_key, role, scopes).await?;
-    let config = ConfigBuilder::default()
+    let config = ClientBuilder::default()
         .rpc_url(base_url.to_string())
         .signer(PrivateKeySigner::from_str(private_key)?)
         .bearer_token(access_token)
@@ -504,7 +523,7 @@ pub async fn authed_user_client(
     private_key: &str,
 ) -> anyhow::Result<(Config<PrivateKeySigner>, Client<PrivateKeySigner>)> {
     let config = build_authed_user_config(LOCAL_CORE_URL, private_key).await?;
-    let client = Client::new(config.clone()).await?;
+    let client = Client::connect(config.clone()).await?;
     Ok((config, client))
 }
 
@@ -513,7 +532,7 @@ pub async fn authed_recipient_client(
     private_key: &str,
 ) -> anyhow::Result<(Config<PrivateKeySigner>, Client<PrivateKeySigner>)> {
     let config = build_authed_recipient_config(LOCAL_CORE_URL, private_key).await?;
-    let client = Client::new(config.clone()).await?;
+    let client = Client::connect(config.clone()).await?;
     Ok((config, client))
 }
 
@@ -525,13 +544,13 @@ pub async fn authed_user_client_with_facilitator(
 ) -> anyhow::Result<(Config<PrivateKeySigner>, Client<PrivateKeySigner>)> {
     let scopes = vec![SCOPE_PAYMENT_READ.to_string()];
     let access_token = login_with_siwe(LOCAL_CORE_URL, private_key, ROLE_USER, &scopes).await?;
-    let config = ConfigBuilder::default()
+    let config = ClientBuilder::default()
         .rpc_url(LOCAL_CORE_URL.to_string())
         .signer(PrivateKeySigner::from_str(private_key)?)
         .bearer_token(access_token)
         .facilitator_url(facilitator_url)
         .build()?;
-    let client = Client::new(config.clone()).await?;
+    let client = Client::connect(config.clone()).await?;
     Ok((config, client))
 }
 
@@ -547,13 +566,13 @@ pub async fn authed_recipient_client_with_facilitator(
     ];
     let access_token =
         login_with_siwe(LOCAL_CORE_URL, private_key, ROLE_RECIPIENT, &scopes).await?;
-    let config = ConfigBuilder::default()
+    let config = ClientBuilder::default()
         .rpc_url(LOCAL_CORE_URL.to_string())
         .signer(PrivateKeySigner::from_str(private_key)?)
         .bearer_token(access_token)
         .facilitator_url(facilitator_url)
         .build()?;
-    let client = Client::new(config.clone()).await?;
+    let client = Client::connect(config.clone()).await?;
     Ok((config, client))
 }
 
@@ -561,7 +580,7 @@ pub async fn authed_recipient_client_with_facilitator(
 pub async fn core_total(client: &Client<PrivateKeySigner>, asset: Address) -> anyhow::Result<U256> {
     Ok(client
         .account
-        .asset_balance(asset.to_string())
+        .asset_balance(as_asset(asset))
         .await?
         .map_or(U256::ZERO, |balance| balance.total))
 }
@@ -570,7 +589,7 @@ pub async fn core_total(client: &Client<PrivateKeySigner>, asset: Address) -> an
 pub async fn user_asset(
     client: &Client<PrivateKeySigner>,
     asset: Address,
-) -> anyhow::Result<UserInfo> {
+) -> anyhow::Result<AssetPosition> {
     let assets = client.account.assets().await?;
     extract_asset_info(&assets, asset)
         .cloned()
@@ -596,12 +615,14 @@ pub async fn deposit_collateral_and_await(
     if erc20_token.is_some() {
         let rpc_url = eth_rpc_url(config).await?;
         fund_user_with_erc20(&rpc_url, asset, config.signer.address(), amount).await?;
-        client.deposit.approve_erc20(asset, amount).await?;
+        client.tokens.approve(asset, amount).await?;
     }
 
     client
         .deposit
-        .send_via(DepositPath::SelfFunded, deposit_asset, amount)
+        .of(deposit_asset, amount)
+        .self_funded()
+        .send()
         .await?;
     mine_confirmations(config, 2).await?;
     wait_for_collateral_increase(&client.account, asset, total_before, amount).await

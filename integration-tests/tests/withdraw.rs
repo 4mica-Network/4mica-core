@@ -1,8 +1,5 @@
 use alloy::primitives::{Address, utils::parse_ether};
-use sdk_4mica::{
-    Asset, U256,
-    error::{FinalizeWithdrawalError, RequestWithdrawalError},
-};
+use sdk_4mica::{Asset, U256, error::WithdrawError};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -34,6 +31,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     client
         .withdraw
         .request(Asset::Native, withdrawal_amount)
+        .send()
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -42,7 +40,7 @@ async fn test_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     assert!(after_request.withdrawal_request_timestamp > 0);
 
     // Cancel it; the request clears and collateral is left unchanged.
-    client.withdraw.cancel(Asset::Native).await?;
+    client.withdraw.cancel(Asset::Native).send().await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let after_cancel = user_asset(&client, ETH_ASSET_ADDRESS).await?;
@@ -71,13 +69,14 @@ async fn test_withdrawal_finalization_grace_period_not_elapsed() -> anyhow::Resu
     client
         .withdraw
         .request(Asset::Native, parse_ether("1")?)
+        .send()
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Finalizing before the grace period elapses must be rejected.
-    let result = client.withdraw.finalize(Asset::Native).await;
+    let result = client.withdraw.finalize(Asset::Native).send().await;
     assert!(
-        matches!(result, Err(FinalizeWithdrawalError::GracePeriodNotElapsed)),
+        matches!(result, Err(WithdrawError::GracePeriodNotElapsed)),
         "expected withdrawal finalize to fail due to grace period not elapsed"
     );
 
@@ -103,9 +102,10 @@ async fn test_withdrawal_insufficient_collateral() -> anyhow::Result<()> {
     let result = client
         .withdraw
         .request(Asset::Native, collateral + parse_ether("1")?)
+        .send()
         .await;
     assert!(
-        matches!(result, Err(RequestWithdrawalError::InsufficientAvailable)),
+        matches!(result, Err(WithdrawError::InsufficientAvailable)),
         "expected withdrawal request to fail due to insufficient collateral"
     );
 
@@ -132,6 +132,7 @@ async fn test_withdrawal_finalizes_after_grace_period() -> anyhow::Result<()> {
     client
         .withdraw
         .request(Asset::Native, withdrawal_amount)
+        .send()
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -140,7 +141,7 @@ async fn test_withdrawal_finalizes_after_grace_period() -> anyhow::Result<()> {
     // impractical — we elapse it on anvil instead.
     let grace = withdrawal_grace_period(&config).await?;
     advance_chain_time(&config, grace + 60).await?;
-    client.withdraw.finalize(Asset::Native).await?;
+    client.withdraw.finalize(Asset::Native).send().await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // The request is cleared and collateral dropped by the withdrawn amount.
@@ -166,7 +167,7 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
             .await?;
 
     // Pick the first ERC20 the deployment supports.
-    let supported = client.supported_tokens().await?;
+    let supported = client.tokens.supported().await?;
     let token = supported
         .tokens
         .first()
@@ -181,6 +182,7 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     client
         .withdraw
         .request(Asset::Erc20(token_address), withdrawal_amount)
+        .send()
         .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -189,7 +191,11 @@ async fn test_erc20_withdrawal_request_and_cancel() -> anyhow::Result<()> {
     assert!(after_request.withdrawal_request_timestamp > 0);
 
     // Cancel and verify the request clears.
-    client.withdraw.cancel(Asset::Erc20(token_address)).await?;
+    client
+        .withdraw
+        .cancel(Asset::Erc20(token_address))
+        .send()
+        .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let after_cancel = user_asset(&client, token_address).await?;

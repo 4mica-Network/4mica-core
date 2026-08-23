@@ -25,7 +25,7 @@ async fn test_issue_and_verify_payment_guarantee() -> anyhow::Result<()> {
     // Native ETH first, then every ERC20 the deployment supports (USDC, etc.).
     issue_and_verify_for_asset(&client, &config, wallet_address, None, 18).await?;
 
-    let supported = client.supported_tokens().await?;
+    let supported = client.tokens.supported().await?;
     assert!(
         !supported.tokens.is_empty(),
         "core must advertise at least one supported ERC20"
@@ -62,7 +62,7 @@ async fn issue_and_verify_for_asset(
 
     let locked_before = client
         .account
-        .asset_balance(asset_address.to_string())
+        .asset_balance(common::as_asset(asset_address))
         .await?
         .map_or(U256::ZERO, |balance| balance.locked);
 
@@ -105,7 +105,7 @@ async fn issue_and_verify_for_asset(
 
     let locked_after = client
         .account
-        .asset_balance(asset_address.to_string())
+        .asset_balance(common::as_asset(asset_address))
         .await?
         .map_or(U256::ZERO, |balance| balance.locked);
     assert_eq!(

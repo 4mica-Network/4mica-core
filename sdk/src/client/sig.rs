@@ -24,7 +24,7 @@ use crate::{
         eip712_digest_for_permit2_transfer, eip712_digest_for_receive_authorization,
         eip712_digest_for_request_withdrawal,
     },
-    error::{ClearingSettlementError, DepositError, SponsorshipError},
+    error::{DepositError, SettlementError, SponsorshipError},
 };
 
 /// How long a signed authorization stays redeemable.
@@ -91,14 +91,14 @@ pub(super) async fn debit_authorization<S>(
     receiver: Address,
     amount: U256,
     cycle_id: B256,
-) -> Result<ReceiveAuthorization, ClearingSettlementError>
+) -> Result<ReceiveAuthorization, SettlementError>
 where
     S: Signer + Send + Sync,
 {
     let domain_separator = ctx.token_domain_separator(token).await?;
     signed_receive_authorization(ctx, domain_separator, receiver, amount, cycle_id)
         .await
-        .map_err(|e| ClearingSettlementError::Transport(e.to_string()))
+        .map_err(|e| SettlementError::Transport(e.to_string()))
 }
 
 async fn signed_receive_authorization<S>(
@@ -147,7 +147,7 @@ pub(super) async fn debit_permit2_authorization<S>(
     receiver: Address,
     amount: U256,
     cycle_id: B256,
-) -> Result<Permit2Authorization, ClearingSettlementError>
+) -> Result<Permit2Authorization, SettlementError>
 where
     S: Signer + Send + Sync,
 {
@@ -165,7 +165,7 @@ where
         .signer()
         .sign_hash(&digest)
         .await
-        .map_err(|e| ClearingSettlementError::Transport(e.to_string()))?;
+        .map_err(|e| SettlementError::Transport(e.to_string()))?;
     Ok(Permit2Authorization {
         from: ctx.signer_address(),
         nonce: U256::from_be_bytes(cycle_id.0),
@@ -254,15 +254,15 @@ pub(super) async fn debit_eip2612_permit<S>(
     ctx: &ClientCtx<S>,
     token: Address,
     nonce: U256,
-) -> Result<Eip2612Permit, ClearingSettlementError>
+) -> Result<Eip2612Permit, SettlementError>
 where
     S: Signer + Send + Sync,
 {
     eip2612_permit(ctx, token, nonce)
         .await
         .map_err(|err| match err {
-            DepositError::Client(client) => ClearingSettlementError::Client(client),
-            other => ClearingSettlementError::Transport(other.to_string()),
+            DepositError::Client(client) => SettlementError::Client(client),
+            other => SettlementError::Transport(other.to_string()),
         })
 }
 

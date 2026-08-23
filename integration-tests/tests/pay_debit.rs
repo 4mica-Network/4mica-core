@@ -1,5 +1,5 @@
 use sdk_4mica::U256;
-use sdk_4mica::client::model::PayPath;
+use sdk_4mica::client::model::TokenRoute;
 use std::str::FromStr;
 
 mod common;
@@ -49,37 +49,28 @@ async fn test_pay_net_debit_and_claim_net_credit() -> anyhow::Result<()> {
     common::clearing::wait_for_payment_window(&cycle_id, &rpc_url).await?;
 
     // The debtor's settlement action should describe exactly the net debit owed.
-    let pay_action = debtor
-        .settlement
-        .pay_net_debit_action(cycle_id.clone())
-        .await?;
+    let pay_action = debtor.settlement.pay(cycle_id.clone()).action().await?;
     assert_eq!(pay_action.function_name, "payNetDebit");
     assert_eq!(U256::from_str(&pay_action.amount)?, amount);
 
     // Debtor pays the net debit on-chain; a successful receipt is the proof the
     // ClearingHouse accepted the payment (verifying the settlement itself, not
     // core's asynchronous event mirroring).
-    let pay_receipt = debtor.settlement.pay_net_debit(cycle_id.clone()).await?;
-    assert_eq!(pay_receipt.path, PayPath::SelfFunded);
-    assert_eq!(pay_receipt.debtor, debtor_address);
+    let pay_receipt = debtor.settlement.pay(cycle_id.clone()).send().await?;
+    assert_eq!(pay_receipt.route, TokenRoute::SelfFunded);
+    assert_eq!(pay_receipt.account, debtor_address);
 
     // The creditor's action should mirror the same net credit, now fully funded
     // by the debtor's payment.
-    let claim_action = creditor
-        .settlement
-        .claim_net_credit_action(cycle_id.clone())
-        .await?;
+    let claim_action = creditor.settlement.claim(cycle_id.clone()).action().await?;
     assert_eq!(claim_action.function_name, "claimNetCreditFor");
     assert_eq!(U256::from_str(&claim_action.amount)?, amount);
 
     // Creditor claims the net credit on-chain. A successful return is the proof the ClearingHouse
     // paid out: a mined revert surfaces as `RevertedOnChain`. No facilitator is configured here,
     // so the claim must have gone out as the creditor's own transaction.
-    let claim_receipt = creditor
-        .settlement
-        .claim_net_credit(cycle_id.clone())
-        .await?;
-    assert!(claim_receipt.path.costs_the_caller_gas());
+    let claim_receipt = creditor.settlement.claim(cycle_id.clone()).send().await?;
+    assert!(!claim_receipt.route.is_gasless());
 
     Ok(())
 }
