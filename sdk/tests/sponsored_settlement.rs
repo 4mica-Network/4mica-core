@@ -731,6 +731,161 @@ async fn a_gasless_payment_signs_the_cycle_terms_for_the_clearing_house() -> any
     Ok(())
 }
 
+/// `sign()` fetches the debit's terms from core and binds them exactly as the one-shot gasless
+/// send does: ClearingHouse as receiver, the leaf's amount, the cycle id as nonce.
+#[tokio::test]
+async fn pay_sign_binds_the_cycle_terms() -> anyhow::Result<()> {
+    let signer = PrivateKeySigner::random();
+    let (client, signer_address, _chain_log) =
+        test_client_responding(signer, |participant: String| {
+            pay_action(&participant, TOKEN)
+        })
+        .await?;
+
+    let authorization = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .sign()
+        .await?;
+
+    assert_eq!(authorization.from, signer_address);
+    assert_eq!(
+        authorization.nonce, CYCLE_ID,
+        "the nonce must pin the cycle"
+    );
+    let digest = expected_erc3009_digest(
+        authorization.from,
+        CLEARING_HOUSE,
+        U256::from(AMOUNT),
+        authorization.validBefore,
+        authorization.nonce,
+    );
+    let recovered = Signature::from_scalars_and_parity(
+        authorization.r,
+        authorization.s,
+        authorization.v == 28,
+    )
+    .recover_address_from_prehash(&digest)?;
+    assert_eq!(recovered, signer_address);
+    Ok(())
+}
+
+/// An attached authorization redeems without refetching the debit's terms: the facilitator
+/// resolves them, and the receipt names the authorization's signer, not the submitter.
+#[tokio::test]
+async fn an_attached_pay_authorization_redeems_through_the_facilitator() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let signer = PrivateKeySigner::random();
+    let facilitator_url = spawn_facilitator(
+        "/clearing/pay",
+        facilitator_pay_success(signer.address()),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, signer_address, chain_log) = test_client_configured(
+        signer,
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let authorization = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .sign()
+        .await?;
+    let receipt = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .authorization(authorization)
+        .send()
+        .await?;
+
+    assert_eq!(receipt.account, signer_address);
+    assert_eq!(
+        chain_log.lock().unwrap().action_requests.len(),
+        1,
+        "only sign() needs the terms; the attached authorization must redeem without refetching"
+    );
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(sent[0]["cycleId"], format!("{CYCLE_ID:#x}"));
+    assert_eq!(sent[0]["assetTransferMethod"], "eip3009");
+    Ok(())
+}
+
+#[tokio::test]
+async fn pay_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let facilitator_url = spawn_facilitator(
+        "/clearing/pay/verify",
+        json!({ "isValid": true }),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, _signer, _chain_log) = test_client_configured(
+        PrivateKeySigner::random(),
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let authorization = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .sign()
+        .await?;
+    client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .authorization(authorization)
+        .verify()
+        .await?;
+
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["cycleId"], format!("{CYCLE_ID:#x}"));
+    assert_eq!(sent[0]["assetTransferMethod"], "eip3009");
+    Ok(())
+}
+
+#[tokio::test]
+async fn claim_verify_posts_the_creditor() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let facilitator_url = spawn_facilitator(
+        "/clearing/claim/verify",
+        json!({ "isValid": true }),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, _signer, _chain_log) = test_client_configured(
+        PrivateKeySigner::random(),
+        |participant: String| claim_action(&participant, "claimNetCreditFor"),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    client
+        .settlement
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .verify()
+        .await?;
+
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["cycleId"], format!("{CYCLE_ID:#x}"));
+    assert_eq!(
+        sent[0]["creditor"].as_str().map(str::to_lowercase),
+        Some(format!("{CREDITOR:#x}"))
+    );
+    Ok(())
+}
+
 /// Permit2's `PermitTransferFrom` digest, recomputed from the literal type strings — domain
 /// included, since Permit2's domain is derived (canonical singleton address, no version) rather
 /// than fetched — so a drift in the SDK's digest code fails the recovery assertion instead of

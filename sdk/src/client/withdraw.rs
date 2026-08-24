@@ -3,7 +3,8 @@
 //!
 //! Each step is an intent builder: [`WithdrawClient::request`], [`WithdrawClient::cancel`] and
 //! [`WithdrawClient::finalize`] capture what to do, a route pin (`gasless()`, `self_funded()`)
-//! narrows how, and a terminal (`send()`, `sign()`) does it. Unpinned, `send()` prefers the
+//! narrows how, and a terminal (`send()`, `sign()`, `verify()`) does it. An authorization signed
+//! elsewhere attaches to a gasless pin with `authorization(…)`. Unpinned, `send()` prefers the
 //! gasless route and falls back to the user's own transaction. Every route applies to the signer,
 //! so the choice only changes who pays — [`WithdrawReceipt::route`] reports which one ran.
 //!
@@ -57,13 +58,13 @@ impl<S> WithdrawClient<S> {
     }
 
     /// Starts a withdrawal request for `amount` of `asset`. Nothing happens until a terminal
-    /// (`send()`, `sign()`) runs.
+    /// (`send()`, `sign()`, `verify()`) runs.
     pub fn request(&self, asset: Asset, amount: U256) -> RequestBuilder<S, route::Auto> {
         RequestBuilder {
             ctx: self.ctx.clone(),
             asset,
             amount,
-            _route: PhantomData,
+            route: route::Auto,
         }
     }
 
@@ -72,7 +73,7 @@ impl<S> WithdrawClient<S> {
         CancelBuilder {
             ctx: self.ctx.clone(),
             asset,
-            _route: PhantomData,
+            route: route::Auto,
         }
     }
 
@@ -84,88 +85,25 @@ impl<S> WithdrawClient<S> {
             _route: PhantomData,
         }
     }
-
-    /// Submits a withdrawal request signed elsewhere — a hardware wallet, another process, or a
-    /// later session. The authorization is self-contained, so it need not have been signed here.
-    pub async fn submit_request(
-        &self,
-        authorization: WithdrawalRequestAuthorization,
-    ) -> Result<WithdrawReceipt, WithdrawError> {
-        let (user, asset) = (authorization.user, authorization.asset);
-        Ok(submit(
-            &self.ctx,
-            WithdrawRequest::Request { authorization },
-            user,
-            asset,
-        )
-        .await?)
-    }
-
-    /// Submits a cancellation signed elsewhere.
-    pub async fn submit_cancel(
-        &self,
-        authorization: WithdrawalCancelAuthorization,
-    ) -> Result<WithdrawReceipt, WithdrawError> {
-        let (user, asset) = (authorization.user, authorization.asset);
-        Ok(submit(
-            &self.ctx,
-            WithdrawRequest::Cancel { authorization },
-            user,
-            asset,
-        )
-        .await?)
-    }
-
-    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
-    ///
-    /// Worth doing before handing an authorization to a user-facing flow, since it tells a
-    /// permanently unusable authorization apart from a transient failure.
-    pub async fn verify_request(
-        &self,
-        authorization: WithdrawalRequestAuthorization,
-    ) -> Result<(), WithdrawError> {
-        Ok(verify(&self.ctx, WithdrawRequest::Request { authorization }).await?)
-    }
-
-    /// Preflight for a cancellation. See [`Self::verify_request`].
-    pub async fn verify_cancel(
-        &self,
-        authorization: WithdrawalCancelAuthorization,
-    ) -> Result<(), WithdrawError> {
-        Ok(verify(&self.ctx, WithdrawRequest::Cancel { authorization }).await?)
-    }
-
-    /// Preflight for a finalization — worth more here than elsewhere, since it is the one step
-    /// that can be refused purely by the clock.
-    pub async fn verify_finalize(&self, asset: Asset) -> Result<(), WithdrawError>
-    where
-        S: Signer,
-    {
-        let request = WithdrawRequest::Finalize {
-            user: self.ctx.signer_address(),
-            asset: asset.address(),
-        };
-        Ok(verify(&self.ctx, request).await?)
-    }
 }
 
 /// A withdrawal request being built. Terminal signer bounds are per route: the gasless pin needs
 /// only a [`Signer`], the self-funded pin a transaction signer too.
-#[must_use = "a builder does nothing until a terminal method (`send`, `sign`) runs"]
+#[must_use = "a builder does nothing until a terminal method (`send`, `sign`, `verify`) runs"]
 pub struct RequestBuilder<S, R = route::Auto> {
     ctx: ClientCtx<S>,
     asset: Asset,
     amount: U256,
-    _route: PhantomData<R>,
+    route: R,
 }
 
 impl<S, R> RequestBuilder<S, R> {
-    fn with_route<T>(self) -> RequestBuilder<S, T> {
+    fn with_route<T>(self, route: T) -> RequestBuilder<S, T> {
         RequestBuilder {
             ctx: self.ctx,
             asset: self.asset,
             amount: self.amount,
-            _route: PhantomData,
+            route,
         }
     }
 }
@@ -173,12 +111,12 @@ impl<S, R> RequestBuilder<S, R> {
 impl<S> RequestBuilder<S, route::Auto> {
     /// Pins the gasless route: the facilitator submits and pays, with no self-funded fallback.
     pub fn gasless(self) -> RequestBuilder<S, route::Gasless> {
-        self.with_route()
+        self.with_route(route::Gasless)
     }
 
     /// Pins the user's own transaction.
     pub fn self_funded(self) -> RequestBuilder<S, route::SelfFunded> {
-        self.with_route()
+        self.with_route(route::SelfFunded)
     }
 
     /// Requests the withdrawal, gaslessly where possible.
@@ -198,17 +136,17 @@ impl<S> RequestBuilder<S, route::Auto> {
         S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
         if !self.ctx.facilitator().is_configured() {
-            return self.with_route::<route::SelfFunded>().send().await;
+            return self.with_route(route::SelfFunded).send().await;
         }
         let gasless = RequestBuilder {
             ctx: self.ctx.clone(),
             asset: self.asset,
             amount: self.amount,
-            _route: PhantomData::<route::Gasless>,
+            route: route::Gasless,
         };
         match gasless.send().await {
             Err(err) if sponsorship_unavailable(&err) => {
-                self.with_route::<route::SelfFunded>().send().await
+                self.with_route(route::SelfFunded).send().await
             }
             outcome => outcome,
         }
@@ -217,8 +155,8 @@ impl<S> RequestBuilder<S, route::Auto> {
 
 impl<S> RequestBuilder<S, route::Gasless> {
     /// Signs the request without submitting it, for callers that redeem it elsewhere — a hardware
-    /// wallet, another process, or a later session. Redeem with
-    /// [`WithdrawClient::submit_request`].
+    /// wallet, another process, or a later session. Redeem by attaching it to a fresh builder:
+    /// `withdraw.request(asset, amount).gasless().authorization(auth).send()`.
     pub async fn sign(self) -> Result<WithdrawalRequestAuthorization, WithdrawError>
     where
         S: Signer + Send + Sync,
@@ -227,6 +165,17 @@ impl<S> RequestBuilder<S, route::Gasless> {
             sig::request_withdrawal_authorization(&self.ctx, self.asset.address(), self.amount)
                 .await?,
         )
+    }
+
+    /// Attaches a request authorization signed elsewhere. It is self-contained, so it need not
+    /// have been signed here.
+    pub fn authorization(
+        self,
+        authorization: WithdrawalRequestAuthorization,
+    ) -> RequestBuilder<S, route::Authorized<WithdrawalRequestAuthorization>> {
+        self.with_route(route::Authorized {
+            auth: authorization,
+        })
     }
 
     /// Requests the withdrawal gaslessly. The user needs no native balance and makes no
@@ -245,6 +194,55 @@ impl<S> RequestBuilder<S, route::Gasless> {
         Ok(submit(
             &self.ctx,
             WithdrawRequest::Request { authorization },
+            user,
+            asset,
+        )
+        .await?)
+    }
+}
+
+impl<S> RequestBuilder<S, route::Authorized<WithdrawalRequestAuthorization>> {
+    /// The authorization names its asset and amount, so a builder that disagrees with it would
+    /// submit terms the caller never stated.
+    fn checked(&self) -> Result<(), WithdrawError> {
+        let auth = &self.route.auth;
+        if auth.asset != self.asset.address() || auth.amount != self.amount {
+            return Err(WithdrawError::InvalidParams(format!(
+                "authorization signs {} of {}, but the builder asks {} of {}",
+                auth.amount,
+                auth.asset,
+                self.amount,
+                self.asset.address(),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
+    ///
+    /// Worth doing before handing an authorization to a user-facing flow, since it tells a
+    /// permanently unusable authorization apart from a transient failure.
+    pub async fn verify(&self) -> Result<(), WithdrawError> {
+        self.checked()?;
+        Ok(verify(
+            &self.ctx,
+            WithdrawRequest::Request {
+                authorization: self.route.auth.clone(),
+            },
+        )
+        .await?)
+    }
+
+    /// Requests the withdrawal with the attached authorization. The submitter needs no signer of
+    /// their own.
+    pub async fn send(self) -> Result<WithdrawReceipt, WithdrawError> {
+        self.checked()?;
+        let (user, asset) = (self.route.auth.user, self.route.auth.asset);
+        Ok(submit(
+            &self.ctx,
+            WithdrawRequest::Request {
+                authorization: self.route.auth,
+            },
             user,
             asset,
         )
@@ -279,19 +277,19 @@ impl<S> RequestBuilder<S, route::SelfFunded> {
 }
 
 /// A withdrawal cancellation being built.
-#[must_use = "a builder does nothing until a terminal method (`send`, `sign`) runs"]
+#[must_use = "a builder does nothing until a terminal method (`send`, `sign`, `verify`) runs"]
 pub struct CancelBuilder<S, R = route::Auto> {
     ctx: ClientCtx<S>,
     asset: Asset,
-    _route: PhantomData<R>,
+    route: R,
 }
 
 impl<S, R> CancelBuilder<S, R> {
-    fn with_route<T>(self) -> CancelBuilder<S, T> {
+    fn with_route<T>(self, route: T) -> CancelBuilder<S, T> {
         CancelBuilder {
             ctx: self.ctx,
             asset: self.asset,
-            _route: PhantomData,
+            route,
         }
     }
 }
@@ -299,12 +297,12 @@ impl<S, R> CancelBuilder<S, R> {
 impl<S> CancelBuilder<S, route::Auto> {
     /// Pins the gasless route: the facilitator submits and pays, with no self-funded fallback.
     pub fn gasless(self) -> CancelBuilder<S, route::Gasless> {
-        self.with_route()
+        self.with_route(route::Gasless)
     }
 
     /// Pins the user's own transaction.
     pub fn self_funded(self) -> CancelBuilder<S, route::SelfFunded> {
-        self.with_route()
+        self.with_route(route::SelfFunded)
     }
 
     /// Cancels the pending withdrawal request, gaslessly where possible.
@@ -313,16 +311,16 @@ impl<S> CancelBuilder<S, route::Auto> {
         S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
         if !self.ctx.facilitator().is_configured() {
-            return self.with_route::<route::SelfFunded>().send().await;
+            return self.with_route(route::SelfFunded).send().await;
         }
         let gasless = CancelBuilder {
             ctx: self.ctx.clone(),
             asset: self.asset,
-            _route: PhantomData::<route::Gasless>,
+            route: route::Gasless,
         };
         match gasless.send().await {
             Err(err) if sponsorship_unavailable(&err) => {
-                self.with_route::<route::SelfFunded>().send().await
+                self.with_route(route::SelfFunded).send().await
             }
             outcome => outcome,
         }
@@ -330,13 +328,23 @@ impl<S> CancelBuilder<S, route::Auto> {
 }
 
 impl<S> CancelBuilder<S, route::Gasless> {
-    /// Signs the cancellation without submitting it. Redeem with
-    /// [`WithdrawClient::submit_cancel`].
+    /// Signs the cancellation without submitting it. Redeem by attaching it to a fresh builder:
+    /// `withdraw.cancel(asset).gasless().authorization(auth).send()`.
     pub async fn sign(self) -> Result<WithdrawalCancelAuthorization, WithdrawError>
     where
         S: Signer + Send + Sync,
     {
         Ok(sig::cancel_withdrawal_authorization(&self.ctx, self.asset.address()).await?)
+    }
+
+    /// Attaches a cancellation authorization signed elsewhere.
+    pub fn authorization(
+        self,
+        authorization: WithdrawalCancelAuthorization,
+    ) -> CancelBuilder<S, route::Authorized<WithdrawalCancelAuthorization>> {
+        self.with_route(route::Authorized {
+            auth: authorization,
+        })
     }
 
     /// Cancels the pending withdrawal request gaslessly.
@@ -350,6 +358,50 @@ impl<S> CancelBuilder<S, route::Gasless> {
         Ok(submit(
             &self.ctx,
             WithdrawRequest::Cancel { authorization },
+            user,
+            asset,
+        )
+        .await?)
+    }
+}
+
+impl<S> CancelBuilder<S, route::Authorized<WithdrawalCancelAuthorization>> {
+    /// The authorization names its asset, so a builder that disagrees with it would cancel a
+    /// request the caller never stated.
+    fn checked(&self) -> Result<(), WithdrawError> {
+        let auth = &self.route.auth;
+        if auth.asset != self.asset.address() {
+            return Err(WithdrawError::InvalidParams(format!(
+                "authorization cancels for {}, but the builder asks {}",
+                auth.asset,
+                self.asset.address(),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
+    pub async fn verify(&self) -> Result<(), WithdrawError> {
+        self.checked()?;
+        Ok(verify(
+            &self.ctx,
+            WithdrawRequest::Cancel {
+                authorization: self.route.auth.clone(),
+            },
+        )
+        .await?)
+    }
+
+    /// Cancels the pending withdrawal request with the attached authorization. The submitter
+    /// needs no signer of their own.
+    pub async fn send(self) -> Result<WithdrawReceipt, WithdrawError> {
+        self.checked()?;
+        let (user, asset) = (self.route.auth.user, self.route.auth.asset);
+        Ok(submit(
+            &self.ctx,
+            WithdrawRequest::Cancel {
+                authorization: self.route.auth,
+            },
             user,
             asset,
         )
@@ -379,7 +431,9 @@ impl<S> CancelBuilder<S, route::SelfFunded> {
 
 /// A withdrawal finalization being built. No `sign()` on any route: `finalizeWithdrawalFor` is
 /// permissionless because it pays the user, so there is nothing to sign.
-#[must_use = "a builder does nothing until a terminal method (`send`) runs"]
+#[must_use = "a builder does nothing until a terminal method (`send`, `verify`) runs"]
+/// `PhantomData` rather than a stored route: with no authorization to carry, no finalize state
+/// holds data.
 pub struct FinalizeBuilder<S, R = route::Auto> {
     ctx: ClientCtx<S>,
     asset: Asset,
@@ -405,6 +459,20 @@ impl<S> FinalizeBuilder<S, route::Auto> {
     /// Pins the user's own transaction.
     pub fn self_funded(self) -> FinalizeBuilder<S, route::SelfFunded> {
         self.with_route()
+    }
+
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas —
+    /// worth more here than elsewhere, since finalization is the one step that can be refused
+    /// purely by the clock.
+    pub async fn verify(&self) -> Result<(), WithdrawError>
+    where
+        S: Signer,
+    {
+        let request = WithdrawRequest::Finalize {
+            user: self.ctx.signer_address(),
+            asset: self.asset.address(),
+        };
+        Ok(verify(&self.ctx, request).await?)
     }
 
     /// Pays out the elapsed withdrawal request, gaslessly where possible.

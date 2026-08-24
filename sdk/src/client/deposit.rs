@@ -1,19 +1,20 @@
 //! Depositing collateral, over whichever route is cheapest for the payer.
 //!
 //! [`DepositClient::of`] captures the intent, a route pin (`gasless()`, `eip3009()`, `permit2()`,
-//! `self_funded()`) narrows how, and a terminal (`send()`, `sign()`) does it. Gasless routes
-//! ([EIP-3009] and [Permit2]) have the payer sign an authorization that someone else redeems and
-//! pays gas for; the self-funded route is the payer's own transaction. Every route credits the
-//! signer, so the choice only changes who pays — [`DepositReceipt::route`] reports which one ran.
+//! `self_funded()`) narrows how, and a terminal (`send()`, `sign()`, `verify()`, `approve()`)
+//! does it. Gasless routes ([EIP-3009] and [Permit2]) have the payer sign an authorization that
+//! someone else redeems and pays gas for — attach one signed elsewhere with `authorization(…)` —
+//! while the self-funded route is the payer's own transaction. Every route credits the
+//! authorization's signer, so the choice only changes who pays — [`DepositReceipt::route`]
+//! reports which one ran.
 //!
 //! [EIP-3009]: https://eips.ethereum.org/EIPS/eip-3009
 //! [Permit2]: https://github.com/Uniswap/permit2
 
-use std::marker::PhantomData;
-
 use alloy::{
     network::TxSigner,
     primitives::{Address, B256, U256},
+    rpc::types::TransactionReceipt,
     signers::{Signature, Signer},
 };
 use serde::{Deserialize, Serialize};
@@ -54,116 +55,35 @@ impl<S> DepositClient<S> {
     }
 
     /// Starts a deposit of `amount` of `asset`. Nothing happens until a terminal (`send()`,
-    /// `sign()`) runs.
+    /// `sign()`, `verify()`, `approve()`) runs.
     pub fn of(&self, asset: Asset, amount: U256) -> DepositBuilder<S, route::Auto> {
         DepositBuilder {
             ctx: self.ctx.clone(),
             asset,
             amount,
-            _route: PhantomData,
+            route: route::Auto,
         }
-    }
-
-    /// Deposits with an EIP-3009 authorization signed elsewhere — a hardware wallet, another
-    /// process, or an earlier session. The authorization is self-contained, so it need not have
-    /// been signed here.
-    pub async fn submit_eip3009(
-        &self,
-        token: Address,
-        amount: U256,
-        authorization: ReceiveAuthorization,
-    ) -> Result<DepositReceipt, DepositError> {
-        let deposited = Deposited {
-            payer: authorization.from,
-            asset: token,
-            amount,
-        };
-        submit(
-            &self.ctx,
-            DepositRequest::new(
-                token,
-                amount,
-                DepositAuthorization::Eip3009 { authorization },
-            ),
-            TokenRoute::Eip3009,
-            deposited,
-        )
-        .await
-    }
-
-    /// Deposits with a Permit2 authorization signed elsewhere.
-    pub async fn submit_permit2(
-        &self,
-        token: Address,
-        amount: U256,
-        authorization: Permit2Authorization,
-    ) -> Result<DepositReceipt, DepositError> {
-        let deposited = Deposited {
-            payer: authorization.from,
-            asset: token,
-            amount,
-        };
-        submit(
-            &self.ctx,
-            DepositRequest::new(
-                token,
-                amount,
-                DepositAuthorization::Permit2 {
-                    permit2_authorization: authorization,
-                    eip2612_permit: None,
-                },
-            ),
-            TokenRoute::Permit2,
-            deposited,
-        )
-        .await
-    }
-
-    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
-    ///
-    /// Worth doing before handing an authorization to a user-facing flow, since it tells a
-    /// permanently unusable authorization apart from a transient failure.
-    pub async fn verify_eip3009(
-        &self,
-        token: Address,
-        amount: U256,
-        authorization: ReceiveAuthorization,
-    ) -> Result<(), DepositError> {
-        let request = DepositRequest::new(
-            token,
-            amount,
-            DepositAuthorization::Eip3009 { authorization },
-        );
-        let response: DepositVerifyResponse = self
-            .ctx
-            .facilitator()
-            .post("deposit/verify", &request)
-            .await?;
-        if response.is_valid {
-            return Ok(());
-        }
-        Err(response.failure.into_error(response.invalid_reason))
     }
 }
 
 /// A deposit being built. Terminal signer bounds are per route: gasless pins need only a
 /// [`Signer`], the self-funded pin (and the auto route, which may fall back to it) a transaction
 /// signer too.
-#[must_use = "a builder does nothing until a terminal method (`send`, `sign`) runs"]
+#[must_use = "a builder does nothing until a terminal method (`send`, `sign`, `verify`, `approve`) runs"]
 pub struct DepositBuilder<S, R = route::Auto> {
     ctx: ClientCtx<S>,
     asset: Asset,
     amount: U256,
-    _route: PhantomData<R>,
+    route: R,
 }
 
 impl<S, R> DepositBuilder<S, R> {
-    fn with_route<T>(self) -> DepositBuilder<S, T> {
+    fn with_route<T>(self, route: T) -> DepositBuilder<S, T> {
         DepositBuilder {
             ctx: self.ctx,
             asset: self.asset,
             amount: self.amount,
-            _route: PhantomData,
+            route,
         }
     }
 
@@ -183,22 +103,22 @@ impl<S> DepositBuilder<S, route::Auto> {
     /// Pins "any gasless scheme": EIP-3009 first, then Permit2 with the approval sponsored, with
     /// no self-funded fallback.
     pub fn gasless(self) -> DepositBuilder<S, route::Gasless> {
-        self.with_route()
+        self.with_route(route::Gasless)
     }
 
     /// Pins the EIP-3009 route, failing rather than trying another scheme.
     pub fn eip3009(self) -> DepositBuilder<S, route::Eip3009> {
-        self.with_route()
+        self.with_route(route::Eip3009)
     }
 
     /// Pins the Permit2 route, failing rather than trying another scheme.
     pub fn permit2(self) -> DepositBuilder<S, route::Permit2> {
-        self.with_route()
+        self.with_route(route::Permit2)
     }
 
     /// Pins the payer's own transaction.
     pub fn self_funded(self) -> DepositBuilder<S, route::SelfFunded> {
-        self.with_route()
+        self.with_route(route::SelfFunded)
     }
 
     /// Deposits over the cheapest route available.
@@ -214,10 +134,10 @@ impl<S> DepositBuilder<S, route::Auto> {
         S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
     {
         let Asset::Erc20(token) = self.asset else {
-            return self.with_route::<route::SelfFunded>().send().await;
+            return self.with_route(route::SelfFunded).send().await;
         };
         if !self.ctx.facilitator().is_configured() {
-            return self.with_route::<route::SelfFunded>().send().await;
+            return self.with_route(route::SelfFunded).send().await;
         }
 
         // EIP-3009 is the cheapest route, but nothing says up front whether a token implements it —
@@ -263,13 +183,26 @@ impl<S> DepositBuilder<S, route::Gasless> {
 
 impl<S> DepositBuilder<S, route::Eip3009> {
     /// Signs the EIP-3009 authorization without submitting it, for callers that redeem it
-    /// elsewhere. Redeem with [`DepositClient::submit_eip3009`].
+    /// elsewhere. Redeem by attaching it to a fresh builder:
+    /// `deposit.of(asset, amount).eip3009().authorization(auth).send()`.
     pub async fn sign(self) -> Result<ReceiveAuthorization, DepositError>
     where
         S: Signer + Send + Sync,
     {
         let token = self.erc20_token()?;
         sig::eip3009_authorization(&self.ctx, token, self.amount).await
+    }
+
+    /// Attaches an EIP-3009 authorization signed elsewhere — a hardware wallet, another process,
+    /// or an earlier session. The authorization is self-contained, so it need not have been
+    /// signed here.
+    pub fn authorization(
+        self,
+        authorization: ReceiveAuthorization,
+    ) -> DepositBuilder<S, route::Authorized<ReceiveAuthorization>> {
+        self.with_route(route::Authorized {
+            auth: authorization,
+        })
     }
 
     /// Deposits gaslessly with an EIP-3009 authorization. The payer needs no native balance and
@@ -289,17 +222,27 @@ impl<S> DepositBuilder<S, route::Eip3009> {
 impl<S> DepositBuilder<S, route::Permit2> {
     /// Upgrades the pin to sign the missing Permit2 approval (EIP-2612) rather than fail on it.
     pub fn sponsor_approval(self) -> DepositBuilder<S, route::SponsoredPermit2> {
-        self.with_route()
+        self.with_route(route::SponsoredPermit2)
     }
 
-    /// Signs the Permit2 authorization without submitting it. Redeem with
-    /// [`DepositClient::submit_permit2`].
+    /// Signs the Permit2 authorization without submitting it. Redeem by attaching it to a fresh
+    /// builder: `deposit.of(asset, amount).permit2().authorization(auth).send()`.
     pub async fn sign(self) -> Result<Permit2Authorization, DepositError>
     where
         S: Signer + Send + Sync,
     {
         let token = self.erc20_token()?;
         sig::permit2_authorization(&self.ctx, token, self.amount).await
+    }
+
+    /// Attaches a Permit2 authorization signed elsewhere.
+    pub fn authorization(
+        self,
+        authorization: Permit2Authorization,
+    ) -> DepositBuilder<S, route::Authorized<Permit2Authorization>> {
+        self.with_route(route::Authorized {
+            auth: authorization,
+        })
     }
 
     /// Deposits gaslessly through Permit2.
@@ -339,11 +282,111 @@ impl<S> DepositBuilder<S, route::SponsoredPermit2> {
     }
 }
 
+impl<S> DepositBuilder<S, route::Authorized<ReceiveAuthorization>> {
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
+    ///
+    /// Worth doing before handing an authorization to a user-facing flow, since it tells a
+    /// permanently unusable authorization apart from a transient failure.
+    pub async fn verify(&self) -> Result<(), DepositError> {
+        let token = self.erc20_token()?;
+        let request = DepositRequest::new(
+            token,
+            self.amount,
+            DepositAuthorization::Eip3009 {
+                authorization: self.route.auth.clone(),
+            },
+        );
+        verify_deposit(&self.ctx, &request).await
+    }
+
+    /// Deposits with the attached authorization. The submitter needs no signer of their own.
+    pub async fn send(self) -> Result<DepositReceipt, DepositError> {
+        let token = self.erc20_token()?;
+        let deposited = Deposited {
+            payer: self.route.auth.from,
+            asset: token,
+            amount: self.amount,
+        };
+        submit(
+            &self.ctx,
+            DepositRequest::new(
+                token,
+                self.amount,
+                DepositAuthorization::Eip3009 {
+                    authorization: self.route.auth,
+                },
+            ),
+            TokenRoute::Eip3009,
+            deposited,
+        )
+        .await
+    }
+}
+
+impl<S> DepositBuilder<S, route::Authorized<Permit2Authorization>> {
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
+    pub async fn verify(&self) -> Result<(), DepositError> {
+        let token = self.erc20_token()?;
+        let request = DepositRequest::new(
+            token,
+            self.amount,
+            DepositAuthorization::Permit2 {
+                permit2_authorization: self.route.auth.clone(),
+                eip2612_permit: None,
+            },
+        );
+        verify_deposit(&self.ctx, &request).await
+    }
+
+    /// Deposits with the attached authorization. The submitter needs no signer of their own.
+    pub async fn send(self) -> Result<DepositReceipt, DepositError> {
+        let token = self.erc20_token()?;
+        let deposited = Deposited {
+            payer: self.route.auth.from,
+            asset: token,
+            amount: self.amount,
+        };
+        submit(
+            &self.ctx,
+            DepositRequest::new(
+                token,
+                self.amount,
+                DepositAuthorization::Permit2 {
+                    permit2_authorization: self.route.auth,
+                    eip2612_permit: None,
+                },
+            ),
+            TokenRoute::Permit2,
+            deposited,
+        )
+        .await
+    }
+}
+
 impl<S> DepositBuilder<S, route::SelfFunded> {
+    /// Allows the 4Mica contract to spend the deposit's amount of its token, which a self-funded
+    /// ERC-20 deposit needs before `send()`.
+    pub async fn approve(&self) -> Result<TransactionReceipt, DepositError>
+    where
+        S: TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let Asset::Erc20(token) = self.asset else {
+            return Err(DepositError::InvalidParams(
+                "native ETH needs no approval; its value rides with the transaction".into(),
+            ));
+        };
+        let contract = self.ctx.get_erc20_write_contract(token).await?;
+        let sent = contract
+            .approve(self.ctx.contract_address(), self.amount)
+            .send()
+            .await;
+        Ok(await_receipt(sent).await?)
+    }
+
     /// Deposits with the payer's own transaction, reported in the same shape as a gasless one.
     ///
     /// For ERC-20 deposits the signer must have approved the contract first; see
-    /// [`TokensClient::approve`](crate::TokensClient::approve).
+    /// [`Self::approve`].
     pub async fn send(self) -> Result<DepositReceipt, DepositError>
     where
         S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
@@ -553,6 +596,17 @@ async fn submit<S>(
 ) -> Result<DepositReceipt, DepositError> {
     let response: DepositResponse = ctx.facilitator().post("deposit", &request).await?;
     response.into_receipt(route, deposited)
+}
+
+async fn verify_deposit<S>(
+    ctx: &ClientCtx<S>,
+    request: &DepositRequest,
+) -> Result<(), DepositError> {
+    let response: DepositVerifyResponse = ctx.facilitator().post("deposit/verify", request).await?;
+    if response.is_valid {
+        return Ok(());
+    }
+    Err(response.failure.into_error(response.invalid_reason))
 }
 
 /// What a deposit was asked to do, to hold the facilitator's answer against.

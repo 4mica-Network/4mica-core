@@ -42,9 +42,10 @@ where
 {
     /// Allows the 4Mica contract to spend `amount` of `token` on the signer's behalf.
     ///
-    /// Only self-funded deposits need this; gasless routes carry their own authorization. For the
-    /// contract that settles a clearing cycle, see
-    /// [`SettlementClient::approve_erc20`](crate::SettlementClient::approve_erc20).
+    /// Only self-funded deposits need this; gasless routes carry their own authorization — and a
+    /// deposit builder resolves the same approval itself via `deposit.of(…).self_funded().approve()`.
+    /// For the contract that settles a clearing cycle, use
+    /// `settlement.pay(…).self_funded().approve()` instead.
     pub async fn approve(
         &self,
         token: Address,

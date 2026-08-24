@@ -3,9 +3,10 @@
 //!
 //! [`SettlementClient::pay`] and [`SettlementClient::claim`] capture the intent, a route pin
 //! (`gasless()`, `eip3009()`, `permit2()`, `self_funded()`) narrows how, and a terminal (`send()`,
-//! `action()`) does it. The claim side addresses someone else's credit with `creditor(…)` — an
-//! input, not a different method: the payout goes to the address the committed leaf names either
-//! way.
+//! `sign()`, `verify()`, `approve()`, `action()`) does it. A debit authorization signed elsewhere
+//! attaches with `authorization(…)`. The claim side addresses someone else's credit with
+//! `creditor(…)` — an input, not a different method: the payout goes to the address the committed
+//! leaf names either way.
 
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -28,7 +29,7 @@ use crate::{
         sig::{self, Eip2612PermitRequest},
     },
     contract::Core4Mica::{Permit2Authorization, ReceiveAuthorization},
-    error::{ClientError, SettlementError, SponsorshipError, TokenError},
+    error::{ClientError, SettlementError, SponsorshipError},
     validators::validate_address,
 };
 
@@ -56,12 +57,12 @@ impl<S> SettlementClient<S> {
     }
 
     /// Starts a net-debit payment for `cycle_id`. Nothing happens until a terminal (`send()`,
-    /// `action()`) runs.
+    /// `sign()`, `verify()`, `approve()`, `action()`) runs.
     pub fn pay(&self, cycle_id: impl Into<String>) -> PayBuilder<S, route::Auto> {
         PayBuilder {
             ctx: self.ctx.clone(),
             cycle_id: cycle_id.into(),
-            _route: PhantomData,
+            route: route::Auto,
         }
     }
 
@@ -77,50 +78,22 @@ impl<S> SettlementClient<S> {
     }
 }
 
-impl<S> SettlementClient<S>
-where
-    S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
-{
-    /// Approves the contract that settles `cycle_id` to spend `amount` of `token`.
-    ///
-    /// Only the self-funded pay route needs this; gasless routes carry their own authorization.
-    pub async fn approve_erc20(
-        &self,
-        cycle_id: impl Into<String>,
-        token: Address,
-        amount: U256,
-    ) -> Result<TransactionReceipt, TokenError> {
-        let action = pay_action(&self.ctx, cycle_id.into())
-            .await
-            .map_err(|err| TokenError::InvalidParams(err.to_string()))?;
-        let spender = validate_address(&action.contract_address).map_err(|_| {
-            TokenError::InvalidParams(format!(
-                "invalid ClearingHouse address: {}",
-                action.contract_address
-            ))
-        })?;
-        let contract = self.ctx.get_erc20_write_contract(token).await?;
-
-        Ok(await_receipt(contract.approve(spender, amount).send().await).await?)
-    }
-}
-
 /// A net-debit payment being built. Terminal signer bounds are per route: gasless pins need only a
 /// [`Signer`], the self-funded pin (and the auto route, which may fall back to it) a transaction
 /// signer too.
-#[must_use = "a builder does nothing until a terminal method (`send`, `action`) runs"]
+#[must_use = "a builder does nothing until a terminal method (`send`, `sign`, `verify`, `approve`, `action`) runs"]
 pub struct PayBuilder<S, R = route::Auto> {
     ctx: ClientCtx<S>,
     cycle_id: String,
-    _route: PhantomData<R>,
+    route: R,
 }
 
 impl<S, R> PayBuilder<S, R> {
-    fn with_route<T>(self) -> PayBuilder<S, T> {
+    fn with_route<T>(self, route: T) -> PayBuilder<S, T> {
         PayBuilder {
             ctx: self.ctx,
             cycle_id: self.cycle_id,
-            _route: PhantomData,
+            route,
         }
     }
 }
@@ -129,22 +102,22 @@ impl<S> PayBuilder<S, route::Auto> {
     /// Pins "any gasless scheme": EIP-3009 first, then Permit2 with the approval sponsored, with
     /// no self-funded fallback.
     pub fn gasless(self) -> PayBuilder<S, route::Gasless> {
-        self.with_route()
+        self.with_route(route::Gasless)
     }
 
     /// Pins the EIP-3009 route, failing rather than trying another scheme.
     pub fn eip3009(self) -> PayBuilder<S, route::Eip3009> {
-        self.with_route()
+        self.with_route(route::Eip3009)
     }
 
     /// Pins the Permit2 route, failing rather than trying another scheme.
     pub fn permit2(self) -> PayBuilder<S, route::Permit2> {
-        self.with_route()
+        self.with_route(route::Permit2)
     }
 
     /// Pins the caller's own transaction.
     pub fn self_funded(self) -> PayBuilder<S, route::SelfFunded> {
-        self.with_route()
+        self.with_route(route::SelfFunded)
     }
 
     /// The terms of the caller's net debit: where to pay, how much, and the proof the contract
@@ -162,7 +135,7 @@ impl<S> PayBuilder<S, route::Auto> {
     /// the exact amount — EIP-3009 where the token supports it, Permit2 otherwise — and the
     /// facilitator submits and pays gas; no native balance needed. Otherwise — a native-asset
     /// cycle, no facilitator, or no gasless scheme left — the caller's own transaction runs
-    /// (grant the allowance with [`SettlementClient::approve_erc20`] first for ERC-20 cycles; a
+    /// (grant the allowance with `pay(…).self_funded().approve()` first for ERC-20 cycles; a
     /// fallback without it is refused as [`SettlementError::Erc20AllowanceRequired`] rather than
     /// left to revert). A rejection that names the payment itself is returned rather than
     /// retried, and so is an unknown outcome: the facilitator may already have submitted, and a
@@ -208,6 +181,37 @@ impl<S> PayBuilder<S, route::Gasless> {
 }
 
 impl<S> PayBuilder<S, route::Eip3009> {
+    /// Signs the debit authorization without submitting it, for callers that redeem it
+    /// elsewhere. Fetches the debit's terms from core first: the signature binds the
+    /// ClearingHouse, the exact amount, and — as its nonce — the cycle. Redeem by attaching it to
+    /// a fresh builder: `settlement.pay(cycle_id).eip3009().authorization(auth).send()`.
+    pub async fn sign(self) -> Result<ReceiveAuthorization, SettlementError>
+    where
+        S: Signer + Send + Sync,
+    {
+        let action = pay_action(&self.ctx, self.cycle_id).await?;
+        let (_, asset, call) = checked_gasless_pay(&self.ctx, &action)?;
+        sig::debit_authorization(
+            &self.ctx,
+            asset,
+            call.contract_address,
+            call.amount,
+            call.cycle_id,
+        )
+        .await
+    }
+
+    /// Attaches a debit authorization signed elsewhere. It is self-contained, so it need not
+    /// have been signed here.
+    pub fn authorization(
+        self,
+        authorization: ReceiveAuthorization,
+    ) -> PayBuilder<S, route::Authorized<ReceiveAuthorization>> {
+        self.with_route(route::Authorized {
+            auth: authorization,
+        })
+    }
+
     /// Pays gaslessly with an EIP-3009 authorization, failing rather than trying another scheme.
     ///
     /// Requires a token implementing EIP-3009 (USDC and similar); for anything else pin
@@ -224,7 +228,35 @@ impl<S> PayBuilder<S, route::Eip3009> {
 impl<S> PayBuilder<S, route::Permit2> {
     /// Upgrades the pin to sign the missing Permit2 approval (EIP-2612) rather than fail on it.
     pub fn sponsor_approval(self) -> PayBuilder<S, route::SponsoredPermit2> {
-        self.with_route()
+        self.with_route(route::SponsoredPermit2)
+    }
+
+    /// Signs the Permit2 debit authorization without submitting it. See the EIP-3009 pin's
+    /// `sign()`; redeem with `settlement.pay(cycle_id).permit2().authorization(auth).send()`.
+    pub async fn sign(self) -> Result<Permit2Authorization, SettlementError>
+    where
+        S: Signer + Send + Sync,
+    {
+        let action = pay_action(&self.ctx, self.cycle_id).await?;
+        let (_, asset, call) = checked_gasless_pay(&self.ctx, &action)?;
+        sig::debit_permit2_authorization(
+            &self.ctx,
+            asset,
+            call.contract_address,
+            call.amount,
+            call.cycle_id,
+        )
+        .await
+    }
+
+    /// Attaches a Permit2 debit authorization signed elsewhere.
+    pub fn authorization(
+        self,
+        authorization: Permit2Authorization,
+    ) -> PayBuilder<S, route::Authorized<Permit2Authorization>> {
+        self.with_route(route::Authorized {
+            auth: authorization,
+        })
     }
 
     /// Pays gaslessly through Permit2, failing rather than trying another scheme.
@@ -260,10 +292,98 @@ impl<S> PayBuilder<S, route::SponsoredPermit2> {
     }
 }
 
+impl<S> PayBuilder<S, route::Authorized<ReceiveAuthorization>> {
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
+    ///
+    /// Worth doing before handing an authorization to a user-facing flow, since it tells a
+    /// permanently unusable authorization apart from a transient failure.
+    pub async fn verify(&self) -> Result<(), SettlementError> {
+        let request = FacilitatorPayRequest {
+            cycle_id: self.cycle_id.clone(),
+            authorization: PayAuthorization::Eip3009 {
+                authorization: self.route.auth.clone(),
+            },
+        };
+        verify_pay(&self.ctx, &request).await
+    }
+
+    /// Pays the committed net debit with the attached authorization. The submitter needs no
+    /// signer of their own: the facilitator resolves the debit's terms from core, and the
+    /// signature fixes whose funds move.
+    pub async fn send(self) -> Result<PayReceipt, SettlementError> {
+        let debtor = self.route.auth.from;
+        submit_pay(
+            &self.ctx,
+            self.cycle_id,
+            PayAuthorization::Eip3009 {
+                authorization: self.route.auth,
+            },
+            TokenRoute::Eip3009,
+            debtor,
+        )
+        .await
+    }
+}
+
+impl<S> PayBuilder<S, route::Authorized<Permit2Authorization>> {
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
+    pub async fn verify(&self) -> Result<(), SettlementError> {
+        let request = FacilitatorPayRequest {
+            cycle_id: self.cycle_id.clone(),
+            authorization: PayAuthorization::Permit2 {
+                permit2_authorization: self.route.auth.clone(),
+                eip2612_permit: None,
+            },
+        };
+        verify_pay(&self.ctx, &request).await
+    }
+
+    /// Pays the committed net debit with the attached authorization. The submitter needs no
+    /// signer of their own.
+    pub async fn send(self) -> Result<PayReceipt, SettlementError> {
+        let debtor = self.route.auth.from;
+        submit_pay(
+            &self.ctx,
+            self.cycle_id,
+            PayAuthorization::Permit2 {
+                permit2_authorization: self.route.auth,
+                eip2612_permit: None,
+            },
+            TokenRoute::Permit2,
+            debtor,
+        )
+        .await
+    }
+}
+
 impl<S> PayBuilder<S, route::SelfFunded> {
+    /// Approves the settling ClearingHouse to pull exactly the committed debit, which a
+    /// self-funded ERC-20 pay needs before `send()`. Token, spender and amount all come from the
+    /// cycle's prepared action.
+    pub async fn approve(&self) -> Result<TransactionReceipt, SettlementError>
+    where
+        S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
+    {
+        let action = pay_action(&self.ctx, self.cycle_id.clone()).await?;
+        let call = checked_pay_call(&action, self.ctx.signer_address())?;
+        let token = cycle_asset(&action)?;
+        if token == Address::ZERO {
+            return Err(SettlementError::InvalidParams(
+                "a native-asset debit needs no approval; its value rides with the transaction"
+                    .into(),
+            ));
+        }
+        let contract = self.ctx.get_erc20_write_contract(token).await?;
+        let sent = contract
+            .approve(call.contract_address, call.amount)
+            .send()
+            .await;
+        Ok(await_receipt(sent).await?)
+    }
+
     /// Pays the caller's committed net debit with their own transaction.
     ///
-    /// For ERC-20 cycles, grant the allowance with [`SettlementClient::approve_erc20`] first.
+    /// For ERC-20 cycles, grant the allowance with [`Self::approve`] first.
     pub async fn send(self) -> Result<PayReceipt, SettlementError>
     where
         S: Signer + TxSigner<Signature> + Send + Sync + Clone + 'static,
@@ -276,7 +396,10 @@ impl<S> PayBuilder<S, route::SelfFunded> {
 /// A net-credit claim being built. Takes no signature on any route: the on-chain payout goes to
 /// the address the committed leaf names, for the amount that leaf fixes, so a submitter can
 /// neither redirect the payout nor inflate it. The only question is who pays the gas.
-#[must_use = "a builder does nothing until a terminal method (`send`, `action`) runs"]
+///
+/// `PhantomData` rather than a stored route: with no authorization to carry, no claim state holds
+/// data.
+#[must_use = "a builder does nothing until a terminal method (`send`, `verify`, `action`) runs"]
 pub struct ClaimBuilder<S, R = route::Auto> {
     ctx: ClientCtx<S>,
     cycle_id: String,
@@ -326,6 +449,19 @@ impl<S> ClaimBuilder<S, route::Auto> {
         S: Signer + Sync,
     {
         claim_action_for(&self.ctx, self.cycle_id.clone(), self.resolved_creditor()).await
+    }
+
+    /// Preflight: runs every check a real gasless submission would run, without spending
+    /// anyone's gas.
+    pub async fn verify(&self) -> Result<(), SettlementError>
+    where
+        S: Signer,
+    {
+        let request = FacilitatorClaimRequest {
+            cycle_id: self.cycle_id.clone(),
+            creditor: self.resolved_creditor(),
+        };
+        verify_claim(&self.ctx, &request).await
     }
 
     /// Claims the committed net credit, gaslessly where possible.
@@ -568,6 +704,56 @@ async fn submit_pay<S>(
     response.into_receipt(route, debtor)
 }
 
+async fn verify_pay<S>(
+    ctx: &ClientCtx<S>,
+    request: &FacilitatorPayRequest,
+) -> Result<(), SettlementError> {
+    let response: ClearingVerifyResponse = ctx
+        .facilitator()
+        .post("clearing/pay/verify", request)
+        .await
+        .map_err(SettlementError::Sponsorship)?;
+    if response.is_valid {
+        return Ok(());
+    }
+    Err(pay_rejection(response.failure, response.invalid_reason))
+}
+
+async fn verify_claim<S>(
+    ctx: &ClientCtx<S>,
+    request: &FacilitatorClaimRequest,
+) -> Result<(), SettlementError> {
+    let response: ClearingVerifyResponse = ctx
+        .facilitator()
+        .post("clearing/claim/verify", request)
+        .await
+        .map_err(SettlementError::Sponsorship)?;
+    if response.is_valid {
+        return Ok(());
+    }
+    Err(response
+        .failure
+        .into_sponsorship_error(response.invalid_reason)
+        .into())
+}
+
+/// The one rejection with detail to unpack: the missing-allowance nonce is what lets the
+/// sponsored-Permit2 route sign the approval instead of surrendering.
+fn pay_rejection(failure: FacilitatorFailure, message: Option<String>) -> SettlementError {
+    let eip2612_nonce = failure.eip2612_nonce();
+    match failure.into_sponsorship_error(message) {
+        SponsorshipError::Rejected { code, message, .. }
+            if code == "PERMIT2_ALLOWANCE_REQUIRED" =>
+        {
+            SettlementError::Permit2AllowanceRequired {
+                message,
+                eip2612_nonce,
+            }
+        }
+        other => other.into(),
+    }
+}
+
 /// The self-funded fallback, taken only after a gasless attempt was refused. Pre-checks the
 /// ERC-20 allowance the fallback needs and the gasless routes never did, so a debtor who has
 /// not approved the ClearingHouse is told exactly that instead of getting an opaque revert
@@ -797,12 +983,22 @@ fn checked_pay_call(
     ClearingActionCall::parse(action)
 }
 
-/// Wire format for `POST /clearing/claim`.
+/// Wire format for `POST /clearing/claim` and `POST /clearing/claim/verify`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FacilitatorClaimRequest {
     cycle_id: String,
     creditor: Address,
+}
+
+/// Wire format for `POST /clearing/pay/verify` and `POST /clearing/claim/verify` responses.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClearingVerifyResponse {
+    is_valid: bool,
+    invalid_reason: Option<String>,
+    #[serde(flatten)]
+    failure: FacilitatorFailure,
 }
 
 #[derive(Debug, Deserialize)]
@@ -850,7 +1046,7 @@ impl FacilitatorClaimResponse {
     }
 }
 
-/// Wire format for `POST /clearing/pay`.
+/// Wire format for `POST /clearing/pay` and `POST /clearing/pay/verify`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FacilitatorPayRequest {
@@ -901,20 +1097,7 @@ impl FacilitatorPayResponse {
         debtor: Address,
     ) -> Result<PayReceipt, SettlementError> {
         if !self.success {
-            // The one rejection with detail to unpack: the missing-allowance nonce is what lets
-            // the sponsored-Permit2 route sign the approval instead of surrendering.
-            let eip2612_nonce = self.failure.eip2612_nonce();
-            return Err(match self.failure.into_sponsorship_error(self.error) {
-                SponsorshipError::Rejected { code, message, .. }
-                    if code == "PERMIT2_ALLOWANCE_REQUIRED" =>
-                {
-                    SettlementError::Permit2AllowanceRequired {
-                        message,
-                        eip2612_nonce,
-                    }
-                }
-                other => other.into(),
-            });
+            return Err(pay_rejection(self.failure, self.error));
         }
 
         let tx_hash = self

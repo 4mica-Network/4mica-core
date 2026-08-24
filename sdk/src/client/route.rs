@@ -3,7 +3,9 @@
 //! A builder starts at [`Auto`] and pinning a route changes its type, so each route exposes
 //! exactly the terminals that exist for it — a gasless pin offers `sign()`, a self-funded pin
 //! does not, and an unpinned builder offers no `sign()` at all because the signature type is
-//! unknowable before a route is chosen.
+//! unknowable before a route is chosen. Attaching an externally signed authorization moves a
+//! pinned builder to [`Authorized`], where nothing is left to sign and the terminals are
+//! `verify()` and `send()`.
 
 /// No route pinned: the terminal picks the cheapest available and may fall back.
 #[derive(Debug, Clone, Copy)]
@@ -32,3 +34,10 @@ pub struct Permit2;
 /// never pays gas even without a prior approval.
 #[derive(Debug, Clone, Copy)]
 pub struct SponsoredPermit2;
+
+/// A pinned route carrying an authorization signed elsewhere. The signature already fixes the
+/// terms, so there is nothing left to sign — only `verify()` and `send()`.
+#[derive(Debug, Clone)]
+pub struct Authorized<A> {
+    pub(crate) auth: A,
+}

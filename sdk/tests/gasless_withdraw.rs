@@ -259,6 +259,7 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
 #[derive(Default)]
 struct FacilitatorLog {
     withdrawals: Vec<Value>,
+    verifies: Vec<Value>,
 }
 
 /// A stand-in facilitator that records requests and replies with `response`. Deliberately dumb: the
@@ -267,18 +268,32 @@ async fn spawn_facilitator(
     response: Value,
     log: Arc<Mutex<FacilitatorLog>>,
 ) -> anyhow::Result<String> {
-    spawn(Router::new().route(
-        "/withdraw",
-        post(move |Json(body): Json<Value>| {
-            let log = log.clone();
-            let response = response.clone();
-            async move {
-                let response = echoing_request(response, &body);
-                log.lock().unwrap().withdrawals.push(body);
-                Json(response)
-            }
-        }),
-    ))
+    let withdraw_log = log.clone();
+    spawn(
+        Router::new()
+            .route(
+                "/withdraw",
+                post(move |Json(body): Json<Value>| {
+                    let log = withdraw_log.clone();
+                    let response = response.clone();
+                    async move {
+                        let response = echoing_request(response, &body);
+                        log.lock().unwrap().withdrawals.push(body);
+                        Json(response)
+                    }
+                }),
+            )
+            .route(
+                "/withdraw/verify",
+                post(move |Json(body): Json<Value>| {
+                    let log = log.clone();
+                    async move {
+                        log.lock().unwrap().verifies.push(body);
+                        Json(json!({ "isValid": true }))
+                    }
+                }),
+            ),
+    )
     .await
 }
 
@@ -747,6 +762,90 @@ async fn a_sponsored_finalize_carries_no_authorization() -> anyhow::Result<()> {
         format!("{signer:#x}")
     );
     assert!(!chain_log.lock().unwrap().broadcast_a_transaction());
+    Ok(())
+}
+
+/// An authorization signed here and redeemed through `authorization(…)` must put the same request
+/// on the wire as signing and sending in one go.
+#[tokio::test]
+async fn an_attached_authorization_round_trips_through_send() -> anyhow::Result<()> {
+    let (client, signer, _chain_log, facilitator_log) =
+        client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
+        .await?;
+    let receipt = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .authorization(authorization)
+        .send()
+        .await?;
+
+    assert_eq!(receipt.account, signer);
+    let sent = facilitator_log.lock().unwrap().withdrawals[0].clone();
+    assert_eq!(sent["action"], "request");
+    assert!(sent["authorization"]["signature"].is_string());
+    Ok(())
+}
+
+/// The authorization names its own terms, so a builder that disagrees is refused before anything
+/// reaches the facilitator.
+#[tokio::test]
+async fn a_mismatched_authorization_is_refused_locally() -> anyhow::Result<()> {
+    let (client, _signer, _chain_log, facilitator_log) =
+        client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
+        .await?;
+    let err = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT + 1))
+        .gasless()
+        .authorization(authorization)
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, WithdrawError::InvalidParams(_)), "{err:?}");
+    let facilitator = facilitator_log.lock().unwrap();
+    assert!(
+        facilitator.withdrawals.is_empty() && facilitator.verifies.is_empty(),
+        "a mismatch must not reach the facilitator"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn finalize_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<()> {
+    let (client, signer, _chain_log, facilitator_log) =
+        client_with_facilitator(success_response()).await?;
+
+    client
+        .withdraw
+        .finalize(Asset::Erc20(TOKEN))
+        .verify()
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let sent = &facilitator.verifies[0];
+    assert_eq!(sent["action"], "finalize");
+    assert_eq!(
+        sent["user"].as_str().unwrap().to_lowercase(),
+        format!("{signer:#x}")
+    );
+    assert!(
+        facilitator.withdrawals.is_empty(),
+        "verifying must not submit anything"
+    );
     Ok(())
 }
 

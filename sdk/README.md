@@ -33,17 +33,21 @@ Every operation follows the same three-step grammar:
 1. **Entry — the intent.** What to do: `client.deposit.of(asset, amount)`,
    `client.withdraw.request(asset, amount)`, `client.settlement.pay(cycle_id)`. Entries do no
    IO; they return a builder.
-2. **Route pin — optional.** How to do it: `.gasless()`, `.eip3009()`, `.permit2()`,
-   `.permit2().sponsor_approval()`, `.self_funded()`. Pinning changes the builder's type, so
-   each route offers exactly the terminals that exist for it. Unpinned, the terminal takes the
-   cheapest route available and may fall back.
+2. **Modifiers — optional.** How to do it: a route pin (`.gasless()`, `.eip3009()`,
+   `.permit2()`, `.permit2().sponsor_approval()`, `.self_funded()`) and, on a pinned route,
+   `.authorization(auth)` to attach an authorization signed elsewhere. Each modifier changes
+   the builder's type, so each state offers exactly the terminals that exist for it.
+   Unpinned, the terminal takes the cheapest route available and may fall back.
 3. **Terminal — the effect.** `.send()` executes; `.sign()` (gasless pins only) produces an
-   authorization for someone else to submit; `.action()` (settlement) fetches the prepared
-   call.
+   authorization for someone else to submit; `.verify()` preflights without consuming the
+   builder; `.approve()` (self-funded pins) sends the prerequisite ERC-20 approval;
+   `.action()` (settlement) fetches the prepared call.
 
 ```rust
 client.deposit.of(asset, amount).send().await?;                  // auto route
 client.deposit.of(asset, amount).eip3009().sign().await?;        // offline authorization
+client.deposit.of(asset, amount).eip3009().authorization(auth)   // signed elsewhere,
+    .send().await?;                                              // submitted here
 client.withdraw.request(asset, amount).gasless().send().await?;  // strictly gasless
 client.settlement.claim(cycle_id).creditor(addr).send().await?;  // someone else's credit
 ```
@@ -383,8 +387,8 @@ Entry: `of(asset: Asset, amount: U256)` returns a `DepositBuilder`.
 - `of(…).permit2().send()` / `.sign()`: The Permit2 route only, given an existing Permit2 approval; `sign()` produces a `Permit2Authorization`
 - `of(…).permit2().sponsor_approval().send()`: Permit2 with the missing approval signed (EIP-2612) rather than transacted. No `sign()` on this pin — the permit needs the payer's current EIP-2612 nonce, which only arrives with the facilitator's rejection
 - `of(…).self_funded().send()`: The payer's own transaction
-- `submit_eip3009(token, amount, authorization)` / `submit_permit2(token, amount, authorization)`: Deposit with an authorization signed elsewhere
-- `verify_eip3009(token, amount, authorization)`: Preflight an authorization without spending gas
+- `of(…).self_funded().approve()`: The ERC-20 approval a self-funded deposit needs — the builder knows the token, spender and amount
+- `of(…).eip3009().authorization(auth)` / `of(…).permit2().authorization(auth)`: Attach an authorization signed elsewhere; the authorized builder offers `send()` and a non-consuming `verify()` preflight
 - `is_gasless_available() -> bool`: Whether a facilitator is configured at all
 
 All deposit terminals return `Result<DepositReceipt, DepositError>`; `receipt.route` is a
@@ -398,8 +402,8 @@ Entries: `request(asset, amount)`, `cancel(asset)`, `finalize(asset)`.
 - `….gasless().send()`: The gasless route only, failing rather than falling back. Works for ETH too — the contract verifies the signature itself
 - `….self_funded().send()`: The user's own transaction only
 - `request(…).gasless().sign()` / `cancel(…).gasless().sign()`: Sign an authorization for someone else to submit. Finalize has no `sign()` — `finalizeWithdrawalFor` is permissionless because it pays the user
-- `submit_request(authorization)` / `submit_cancel(authorization)`: Submit an authorization signed elsewhere
-- `verify_request(authorization)` / `verify_cancel(authorization)` / `verify_finalize(asset)`: Preflight a step without spending gas
+- `request(…).gasless().authorization(auth)` / `cancel(…).gasless().authorization(auth)`: Attach an authorization signed elsewhere; the authorized builder offers `send()` and a non-consuming `verify()` preflight
+- `finalize(…).verify()`: Preflight a finalization without spending gas — the one step that can be refused purely by the clock
 - `is_gasless_available() -> bool`: Whether a facilitator is configured at all
 
 All withdraw terminals return `Result<WithdrawReceipt, WithdrawError>`; `receipt.route` is a
@@ -420,13 +424,16 @@ Entries: `pay(cycle_id)`, `claim(cycle_id)`.
 - `pay(…).send()`: Pay the caller's committed net debit, gaslessly via the facilitator where possible, falling back to the caller's own transaction
 - `pay(…).gasless().send()`: Any gasless scheme, no fallback
 - `pay(…).eip3009().send()` / `pay(…).permit2().send()` / `pay(…).permit2().sponsor_approval().send()`: One specific scheme
+- `pay(…).eip3009().sign()` / `pay(…).permit2().sign()`: Sign the debit authorization for someone else to submit — the terms come from core, the nonce is the cycle id
+- `pay(…).eip3009().authorization(auth)` / `pay(…).permit2().authorization(auth)`: Attach a debit authorization signed elsewhere; the authorized builder offers `send()` and a non-consuming `verify()` preflight
 - `pay(…).self_funded().send()`: The caller's own transaction
+- `pay(…).self_funded().approve()`: Approve the settling ClearingHouse for exactly the committed debit — token, spender and amount all come from the cycle's prepared action
 - `pay(…).action()`: The prepared `payNetDebit` call (amount, proof, contract)
 - `claim(…).send()`: Claim the caller's committed net credit, gaslessly where possible
 - `claim(…).creditor(addr)`: Address someone else's credit — the payout still goes to the address the committed leaf names
 - `claim(…).gasless().send()` / `claim(…).self_funded().send()`: Pin the route
+- `claim(…).verify()`: Preflight the claim without spending gas
 - `claim(…).action()`: The prepared claim call
-- `approve_erc20(cycle_id, token: Address, amount) -> Result<TransactionReceipt, TokenError>`: Approve the contract that settles this cycle, which is not the 4Mica contract
 - `is_gasless_available() -> bool`: Whether a facilitator is configured at all
 
 Pay terminals return `Result<PayReceipt, SettlementError>` (`receipt.route` is a `TokenRoute`);
@@ -434,7 +441,7 @@ claim terminals return `Result<ClaimReceipt, SettlementError>` (`receipt.route` 
 
 A claim needs no signature from the creditor: the on-chain payout goes to the address the committed Merkle leaf names, for the amount it fixes, so a submitter can neither redirect nor inflate it. That is also what makes it sponsorable — with a `facilitator_url` configured, `claim(…).send()` POSTs the cycle and creditor to the facilitator's `/clearing/claim`, whose relayer resolves the terms from core and pays the gas, and falls back to the caller's own transaction when the facilitator would not sponsor (never when its refusal names the claim itself — that would revert self-funded too). `ClaimReceipt::route` reports which route ran. Every route ends in the contract's single claim entrypoint, `claimNetCreditFor` — a self-claim just names the caller's own address.
 
-A payment does need the debtor's signature — it pulls money out of their wallet. For an ERC-20 cycle with a `facilitator_url` configured, `pay(…).send()` signs an EIP-3009 `receiveWithAuthorization` binding the ClearingHouse as receiver, the committed amount, and the cycle id as nonce, and POSTs it to the facilitator's `/clearing/pay`; the relayer submits `payNetDebitWithAuthorization` and pays the gas, so the debtor needs no native balance and no allowance. The same fallback discipline applies, and `PayReceipt::route` reports the route. Native-asset cycles cannot be pulled by signature and always settle self-funded (`payNetDebit`, with the debit riding as transaction value; ERC-20 self-funded needs `approve_erc20` first).
+A payment does need the debtor's signature — it pulls money out of their wallet. For an ERC-20 cycle with a `facilitator_url` configured, `pay(…).send()` signs an EIP-3009 `receiveWithAuthorization` binding the ClearingHouse as receiver, the committed amount, and the cycle id as nonce, and POSTs it to the facilitator's `/clearing/pay`; the relayer submits `payNetDebitWithAuthorization` and pays the gas, so the debtor needs no native balance and no allowance. The same fallback discipline applies, and `PayReceipt::route` reports the route. Native-asset cycles cannot be pulled by signature and always settle self-funded (`payNetDebit`, with the debit riding as transaction value; ERC-20 self-funded needs `pay(…).self_funded().approve()` first).
 
 #### `client.account`
 
@@ -465,7 +472,9 @@ A payment does need the debtor's signature — it pulls money out of their walle
 #### Approve ERC20 Token (self-funded deposits only)
 
 Gasless deposits carry their own authorization; only a self-funded ERC20 deposit needs an
-allowance first.
+allowance first. The deposit builder can grant it itself —
+`client.deposit.of(asset, amount).self_funded().approve()` — or use the token utility
+directly:
 
 ```rust
 use sdk_4mica::{Address, U256};
@@ -670,20 +679,15 @@ Once a cycle's netting is committed on-chain, a payer who ended the window owing
 makes a single call covering every payment they made in it.
 
 ```rust
-use sdk_4mica::{Address, U256};
-
 let cycle_id = "0x0000000000000000000000000000000000000000:1784210160".to_string();
 
-// For self-funded ERC20 settlement, approve the settling contract first. It is a
-// different address from the one `client.tokens.approve` targets.
-let usdc: Address = "0x1234567890123456789012345678901234567890".parse()?;
-client
-    .settlement
-    .approve_erc20(cycle_id.clone(), usdc, U256::from(1000_000_000u128))
-    .await?;
+// For self-funded ERC20 settlement, approve the settling contract first. The builder
+// resolves the token, the ClearingHouse and the exact committed debit from the cycle.
+let pay = client.settlement.pay(cycle_id).self_funded();
+pay.approve().await?;
 
 // Native-asset debits carry their value with the call; no approval needed.
-let receipt = client.settlement.pay(cycle_id).send().await?;
+let receipt = pay.send().await?;
 println!("Net debit paid via {:?}: {:?}", receipt.route, receipt.tx_hash);
 ```
 
@@ -842,8 +846,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 5. At cycle settlement the payer approves the ClearingHouse for the ERC20
     //    net debit (self-funded only), then pays it:
-    //      user_client.settlement.approve_erc20(cycle_id.clone(), usdc_address, amount).await?;
-    //      user_client.settlement.pay(cycle_id).send().await?;
+    //      let pay = user_client.settlement.pay(cycle_id).self_funded();
+    //      pay.approve().await?;
+    //      pay.send().await?;
 
     Ok(())
 }
@@ -919,7 +924,7 @@ use sdk_4mica::error::{
 **`SettlementError`**
 
 - `InvalidParams(String)`: Invalid parameters in the prepared clearing action
-- `Permit2AllowanceRequired { message, eip2612_nonce }` / `Erc20AllowanceRequired { … }`: As for deposits, but for the debit; the self-funded allowance is granted with `client.settlement.approve_erc20`
+- `Permit2AllowanceRequired { message, eip2612_nonce }` / `Erc20AllowanceRequired { … }`: As for deposits, but for the debit; the self-funded allowance is granted with `pay(…).self_funded().approve()`
 - `RevertedOnChain { tx_hash }`: Mined and reverted, so gas was spent
 - `Rpc(rpc::ApiClientError)`, `Auth(AuthError)`, `Sponsorship(SponsorshipError)`, `Client(ClientError)`, `UnknownRevert { … }`, `Transport(String)`
 
@@ -980,7 +985,7 @@ cargo build --release
 - **Handle errors properly**: Always handle errors explicitly. The SDK provides specific error types for each failure scenario to help you build robust applications
 - **Check signer addresses**: When acting as a recipient, ensure your signer address matches the recipient address. The SDK will return `InvalidParams` errors for mismatches
 - **Validate amounts**: The SDK prevents zero-amount transactions at the contract level, but you should validate amounts in your application for better UX
-- **ERC20 Approvals**: A self-funded ERC20 deposit needs `client.tokens.approve` first; gasless routes carry their own authorization and need none. Approve only the amount you need. Paying an ERC20 net debit self-funded needs a _separate_ approval via `client.settlement.approve_erc20` — a different contract from the one the deposit approval targets
+- **ERC20 Approvals**: A self-funded ERC20 deposit needs an approval first — `deposit.of(…).self_funded().approve()` — while gasless routes carry their own authorization and need none. Approve only the amount you need. Paying an ERC20 net debit self-funded needs a _separate_ approval via `settlement.pay(…).self_funded().approve()` — a different contract from the one the deposit approval targets
 - **Asset Matching**: Cycles are scoped to a single asset. Ensure the asset in your payment claims matches the asset you intend to settle in; the contract will reject mismatched assets
 - **Use random `req_id`s**: Never reuse or sequence `req_id`. A duplicate within a cycle is rejected, and `X402Flow` generates one for you
 - **Multi-Asset Management**: Each asset (ETH and each ERC20 token) has its own collateral balance and withdrawal request. Use `client.account.assets()` to view all your asset balances

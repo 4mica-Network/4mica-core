@@ -355,12 +355,12 @@ pub enum SettlementError {
     /// gasless routes never did. Checked before falling back, so the caller is told what to fix
     /// rather than handed an opaque revert from inside the token.
     ///
-    /// Grant the allowance with
-    /// [`SettlementClient::approve_erc20`](crate::SettlementClient::approve_erc20) and retry — or
+    /// Grant the allowance with `settlement.pay(…).self_funded().approve()` and retry — or
     /// approve Permit2 once to restore the gasless route.
     #[error(
         "no gasless route is available and the self-funded fallback needs an allowance: {needed} \
-         of {token} required but only {allowance} approved to {spender}; call approve_erc20 first"
+         of {token} required but only {allowance} approved to {spender}; call \
+         pay(…).self_funded().approve() first"
     )]
     Erc20AllowanceRequired {
         token: Address,

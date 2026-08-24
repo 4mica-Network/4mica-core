@@ -1219,11 +1219,79 @@ async fn facilitator_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<
         .await?;
     client
         .deposit
-        .verify_eip3009(TOKEN, U256::from(1_000_000u64), authorization)
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .authorization(authorization)
+        .verify()
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
     assert_eq!(facilitator.verifies.len(), 1);
+    assert!(
+        facilitator.deposits.is_empty(),
+        "verifying must not submit anything"
+    );
+    Ok(())
+}
+
+/// An authorization signed here and redeemed through `authorization(…)` must put the same request
+/// on the wire as signing and sending in one go.
+#[tokio::test]
+async fn an_attached_authorization_sends_the_expected_wire_shape() -> anyhow::Result<()> {
+    let (client, signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .sign()
+        .await?;
+    let receipt = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .authorization(authorization)
+        .send()
+        .await?;
+    assert_eq!(receipt.account, signer);
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.deposits[0];
+    assert_eq!(body["assetTransferMethod"], "eip3009");
+    assert_eq!(body["amount"], "1000000");
+    for field in ["from", "validAfter", "validBefore", "nonce", "v", "r", "s"] {
+        assert!(
+            body["authorization"].get(field).is_some(),
+            "authorization is missing {field}: {body}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_attached_permit2_authorization_verifies_over_the_permit2_shape() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .sign()
+        .await?;
+    client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .authorization(authorization)
+        .verify()
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.verifies[0];
+    assert_eq!(body["assetTransferMethod"], "permit2");
+    assert!(body["permit2Authorization"].get("signature").is_some());
     assert!(
         facilitator.deposits.is_empty(),
         "verifying must not submit anything"
