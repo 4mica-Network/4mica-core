@@ -761,12 +761,9 @@ async fn pay_sign_binds_the_cycle_terms() -> anyhow::Result<()> {
         authorization.validBefore,
         authorization.nonce,
     );
-    let recovered = Signature::from_scalars_and_parity(
-        authorization.r,
-        authorization.s,
-        authorization.v == 28,
-    )
-    .recover_address_from_prehash(&digest)?;
+    let recovered =
+        Signature::from_scalars_and_parity(authorization.r, authorization.s, authorization.v == 28)
+            .recover_address_from_prehash(&digest)?;
     assert_eq!(recovered, signer_address);
     Ok(())
 }
