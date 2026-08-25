@@ -870,6 +870,7 @@ async fn claim_verify_posts_the_creditor() -> anyhow::Result<()> {
         .settlement
         .claim(CYCLE_ID.to_string())
         .creditor(CREDITOR)
+        .gasless()
         .verify()
         .await?;
 

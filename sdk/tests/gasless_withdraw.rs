@@ -832,6 +832,7 @@ async fn finalize_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<()>
     client
         .withdraw
         .finalize(Asset::Erc20(TOKEN))
+        .gasless()
         .verify()
         .await?;
 

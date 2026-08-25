@@ -461,20 +461,6 @@ impl<S> FinalizeBuilder<S, route::Auto> {
         self.with_route()
     }
 
-    /// Preflight: runs every check a real submission would run, without spending anyone's gas —
-    /// worth more here than elsewhere, since finalization is the one step that can be refused
-    /// purely by the clock.
-    pub async fn verify(&self) -> Result<(), WithdrawError>
-    where
-        S: Signer,
-    {
-        let request = WithdrawRequest::Finalize {
-            user: self.ctx.signer_address(),
-            asset: self.asset.address(),
-        };
-        Ok(verify(&self.ctx, request).await?)
-    }
-
     /// Pays out the elapsed withdrawal request, gaslessly where possible.
     pub async fn send(self) -> Result<WithdrawReceipt, WithdrawError>
     where
@@ -498,6 +484,20 @@ impl<S> FinalizeBuilder<S, route::Auto> {
 }
 
 impl<S> FinalizeBuilder<S, route::Gasless> {
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas —
+    /// worth more here than elsewhere, since finalization is the one step that can be refused
+    /// purely by the clock.
+    pub async fn verify(&self) -> Result<(), WithdrawError>
+    where
+        S: Signer,
+    {
+        let request = WithdrawRequest::Finalize {
+            user: self.ctx.signer_address(),
+            asset: self.asset.address(),
+        };
+        Ok(verify(&self.ctx, request).await?)
+    }
+
     /// Finalizes gaslessly. Takes no signature: `finalizeWithdrawalFor` pays the user whoever
     /// submits it.
     pub async fn send(self) -> Result<WithdrawReceipt, WithdrawError>

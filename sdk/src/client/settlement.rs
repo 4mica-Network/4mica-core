@@ -451,19 +451,6 @@ impl<S> ClaimBuilder<S, route::Auto> {
         claim_action_for(&self.ctx, self.cycle_id.clone(), self.resolved_creditor()).await
     }
 
-    /// Preflight: runs every check a real gasless submission would run, without spending
-    /// anyone's gas.
-    pub async fn verify(&self) -> Result<(), SettlementError>
-    where
-        S: Signer,
-    {
-        let request = FacilitatorClaimRequest {
-            cycle_id: self.cycle_id.clone(),
-            creditor: self.resolved_creditor(),
-        };
-        verify_claim(&self.ctx, &request).await
-    }
-
     /// Claims the committed net credit, gaslessly where possible.
     ///
     /// Goes through the facilitator when one is configured, so the caller needs no native balance;
@@ -491,6 +478,18 @@ impl<S> ClaimBuilder<S, route::Auto> {
 }
 
 impl<S> ClaimBuilder<S, route::Gasless> {
+    /// Preflight: runs every check a real submission would run, without spending anyone's gas.
+    pub async fn verify(&self) -> Result<(), SettlementError>
+    where
+        S: Signer,
+    {
+        let request = FacilitatorClaimRequest {
+            cycle_id: self.cycle_id.clone(),
+            creditor: self.resolved_creditor(),
+        };
+        verify_claim(&self.ctx, &request).await
+    }
+
     /// Claims the committed net credit gaslessly. The caller needs no native balance and makes no
     /// transaction — the facilitator resolves the claim's terms from core and submits it.
     ///
