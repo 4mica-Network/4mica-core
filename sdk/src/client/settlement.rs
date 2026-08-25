@@ -408,6 +408,13 @@ pub struct ClaimBuilder<S, R = route::Auto> {
 }
 
 impl<S, R> ClaimBuilder<S, R> {
+    /// Claims `creditor`'s committed net credit rather than the signer's own, paying them rather
+    /// than anyone else — they may of course be the same account.
+    pub fn creditor(mut self, creditor: Address) -> Self {
+        self.creditor = Some(creditor);
+        self
+    }
+
     fn with_route<T>(self) -> ClaimBuilder<S, T> {
         ClaimBuilder {
             ctx: self.ctx,
@@ -426,13 +433,6 @@ impl<S, R> ClaimBuilder<S, R> {
 }
 
 impl<S> ClaimBuilder<S, route::Auto> {
-    /// Claims `creditor`'s committed net credit rather than the signer's own, paying them rather
-    /// than anyone else — they may of course be the same account.
-    pub fn creditor(mut self, creditor: Address) -> Self {
-        self.creditor = Some(creditor);
-        self
-    }
-
     /// Pins the gasless route: the facilitator submits and pays, with no self-funded fallback.
     pub fn gasless(self) -> ClaimBuilder<S, route::Gasless> {
         self.with_route()
