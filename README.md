@@ -37,7 +37,7 @@ Visit the official website: [https://4mica.xyz](https://4mica.xyz)
 
 ## 📦 Rust SDK
 
-The official Rust client for interacting with the 4Mica payment network ships in this repository under `sdk/`. It provides:
+The official Rust client for interacting with the 4Mica payment network lives in the [4mica](https://github.com/4mica-Network/4mica) monorepo under `apps/sdk/`. It provides:
 
 - User flows: deposit collateral, sign payments, manage withdrawals (ETH or ERC20)
 - Recipient flows: create tabs, verify guarantees, and claim collateral
@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-See `sdk/README.md` for full examples, configuration options, and X402 flows.
+See the [SDK README](https://github.com/4mica-Network/4mica/tree/main/apps/sdk) for full examples, configuration options, and X402 flows.
 
 ## Validated guarantees
 

@@ -4,7 +4,7 @@
 STACK := deployment/dev_stack.sh
 
 .PHONY: help infra-up dev-up dev-down dev-down-all deploy env migrate core status logs vk \
-        test-core test-sdk-unit test-sdk test
+        test-core test-sdk test
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -52,18 +52,15 @@ vk: ## Print on-chain VK words for BLS_PRIVATE_KEY (or: make vk KEY=0x..)
 #
 # Dependency map:
 #   test-core      needs infra-up  (DB + anvil + contracts; api.rs spawns core in-process)
-#   test-sdk-unit  needs nothing   (pure unit tests + self-spawning mock servers)
-#   test-sdk       needs dev-up    (withdraw.rs hits localhost:3000 via SDK_LOCAL_E2E=1)
+#   test-sdk       needs dev-up    (integration-tests drive the SDK against
+#                                   localhost:3000 via SDK_LOCAL_E2E=1)
 # ---------------------------------------------------------------------------
 
 test-core: ## Run all core integration tests (needs infra-up, not full stack)
 	@set -a; . ./.env; set +a; cargo test -p core-service
 
-test-sdk-unit: ## Run SDK unit tests (no running stack needed)
-	@cargo test -p sdk-4mica
-
-test-sdk: ## Run SDK e2e tests incl. withdraw flows (needs dev-up / core-service on :3000)
-	@set -a; . ./.env; set +a; SDK_LOCAL_E2E=1 cargo test -p sdk-4mica
+test-sdk: ## Run SDK e2e tests (needs dev-up / core-service on :3000)
+	@set -a; . ./.env; set +a; SDK_LOCAL_E2E=1 cargo test -p integration-tests
 
 test: ## Run core tests (infra only, core DOWN) then SDK e2e (full stack, core UP)
 	@$(STACK) infra

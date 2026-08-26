@@ -154,7 +154,7 @@ jobs:
       # shared DB + chain_id. The external service is only started later, for the
       # SDK e2e tests.
 
-      - name: Run workspace tests (exclude sdk and core-service)
+      - name: Run workspace tests (exclude core-service)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BLS_PRIVATE_KEY: ${{ secrets.CI_BLS_PRIVATE_KEY }}
@@ -170,7 +170,7 @@ jobs:
           ETHEREUM_EVENT_SCANNER_CRON: "*/3 * * * * *"
           GUARANTEE_REQUEST_VERSION: "2"
           TRUSTED_VALIDATION_REGISTRIES: ${{ secrets.TRUSTED_VALIDATION_REGISTRY }}
-        run: cargo test --workspace --exclude sdk-4mica --exclude integration-tests --exclude core-service
+        run: cargo test --workspace --exclude integration-tests --exclude core-service
 
       - name: Run core tests (no external core-service running)
         env:
@@ -198,10 +198,8 @@ jobs:
             cargo test -p core-service --test "$test_name"
           done
 
-      - name: Run SDK unit tests
-        # sdk-4mica holds the offline unit tests. integration-tests holds the
-        # live-stack e2e tests, which self-skip without SDK_LOCAL_E2E — running
-        # them here keeps them compiling without needing an external core-service.
-        run: |
-          cargo test -p sdk-4mica
-          cargo test -p integration-tests
+      - name: Run integration tests
+        # integration-tests holds the live-stack e2e tests, which self-skip
+        # without SDK_LOCAL_E2E — running them here keeps them compiling
+        # without needing an external core-service.
+        run: cargo test -p integration-tests
