@@ -1,10 +1,10 @@
 use alloy::primitives::{Address, B256, U256};
 use rpc::{ClearingSettlementAction, ClearingSettlementActionResponse};
-use sdk_4mica::error::ClearingSettlementError;
+use sdk_4mica::error::SettlementError;
 
 #[test]
 fn clearing_settlement_error_wraps_rpc_failures() {
-    let err = ClearingSettlementError::Rpc(rpc::ApiClientError::Api {
+    let err = SettlementError::Rpc(rpc::ApiClientError::Api {
         status: reqwest::StatusCode::BAD_REQUEST,
         message: "settlement cycle has no clearing batch".to_string(),
     });

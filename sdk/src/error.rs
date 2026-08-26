@@ -1,12 +1,40 @@
 use crate::contract::Core4Mica;
 use alloy::contract as alloy_contract;
 use alloy::primitives::{Address, B256, Bytes, U256};
-use anyhow::Error;
+use anyhow::Error as AnyError;
 use reqwest::StatusCode;
 use rpc::ApiClientError;
 use serde_json::Value;
 use thiserror::Error;
 use url::ParseError;
+
+/// Umbrella over every error this SDK returns, for callers that funnel them into one `?` rather
+/// than branching per operation. Each operation still returns its own enum below.
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
+    #[error(transparent)]
+    Client(#[from] ClientError),
+    #[error(transparent)]
+    Sponsorship(#[from] SponsorshipError),
+    #[error(transparent)]
+    Deposit(#[from] DepositError),
+    #[error(transparent)]
+    Withdraw(#[from] WithdrawError),
+    #[error(transparent)]
+    Settlement(#[from] SettlementError),
+    #[error(transparent)]
+    Payment(#[from] PaymentError),
+    #[error(transparent)]
+    Account(#[from] AccountError),
+    #[error(transparent)]
+    Token(#[from] TokenError),
+    #[error(transparent)]
+    X402(#[from] X402Error),
+}
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -36,31 +64,6 @@ pub enum AuthError {
     Internal(String),
 }
 
-impl From<AuthError> for ApiClientError {
-    fn from(val: AuthError) -> Self {
-        let status = match &val {
-            AuthError::Api { status, .. } => *status,
-            AuthError::InvalidUrl(_) | AuthError::MissingConfig => StatusCode::BAD_REQUEST,
-            AuthError::MissingRefreshToken => StatusCode::UNAUTHORIZED,
-            AuthError::Transport(_) => StatusCode::SERVICE_UNAVAILABLE,
-            AuthError::Decode(_) => StatusCode::BAD_GATEWAY,
-            AuthError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            AuthError::Signing(_) => StatusCode::UNAUTHORIZED,
-        };
-
-        match val {
-            AuthError::InvalidUrl(err) => ApiClientError::InvalidUrl(err),
-            AuthError::Transport(err) => ApiClientError::Transport(err),
-            AuthError::Decode(err) => ApiClientError::Decode(err),
-            AuthError::Api { status, message } => ApiClientError::Api { status, message },
-            other => ApiClientError::Api {
-                status,
-                message: other.to_string(),
-            },
-        }
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("client RPC error: {0}")]
@@ -77,7 +80,7 @@ pub enum ClientError {
     /// chain — so this is only ever raised by the paths that do.
     #[error(
         "no Ethereum RPC endpoint is available; set 4MICA_ETHEREUM_HTTP_RPC_URL or \
-         ConfigBuilder::ethereum_http_rpc_url"
+         ClientBuilder::ethereum_http_rpc_url"
     )]
     ChainRpcUnavailable,
 
@@ -93,23 +96,6 @@ pub enum ClientError {
     MissingTokenDomainSeparator { token: Address },
 }
 
-#[derive(Debug, Error)]
-pub enum SignPaymentError {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-    #[error("address mismatch: signer={signer:?} != claims.user_address={claims}")]
-    AddressMismatch { signer: Address, claims: String },
-    #[error("invalid user address in claims")]
-    InvalidUserAddress,
-    #[error("invalid recipient address in claims")]
-    InvalidRecipientAddress,
-    #[error("failed to sign the payment: {0}")]
-    Failed(String),
-
-    #[error(transparent)]
-    Rpc(#[from] ApiClientError),
-}
-
 /// A sponsored action the facilitator declined, or could not be asked to perform at all.
 ///
 /// Shared by every gasless route: the rejection envelope is the same whatever is being sponsored,
@@ -119,7 +105,7 @@ pub enum SponsorshipError {
     /// No facilitator URL was configured, so there is nobody to pay the gas. Every client falls
     /// back to the caller's own transaction on this, rather than surfacing it.
     #[error(
-        "no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url"
+        "no facilitator configured; set 4MICA_FACILITATOR_URL or ClientBuilder::facilitator_url"
     )]
     NotConfigured,
     /// The facilitator refused. `code` is carried verbatim so a caller can still branch on a code
@@ -142,10 +128,16 @@ pub enum SponsorshipError {
     OutcomeUnknown(String),
 }
 
+/// Anything a withdrawal step can fail with. One enum for request, cancel and finalize: they share
+/// almost every failure, and the step that ran is known at the call site.
 #[derive(Debug, Error)]
-pub enum FinalizeWithdrawalError {
+pub enum WithdrawError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
+    #[error("amount is zero")]
+    AmountZero,
+    #[error("insufficient available")]
+    InsufficientAvailable,
     #[error("no withdrawal requested")]
     NoWithdrawalRequested,
     #[error("grace period not elapsed")]
@@ -160,48 +152,6 @@ pub enum FinalizeWithdrawalError {
         requested: String,
         actual: String,
     },
-
-    #[error(transparent)]
-    Sponsorship(#[from] SponsorshipError),
-
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
-    #[error("unknown revert (selector {selector:#x})")]
-    UnknownRevert { selector: u32, data: Vec<u8> },
-    #[error("provider/transport error: {0}")]
-    Transport(String),
-}
-
-#[derive(Debug, Error)]
-pub enum RequestWithdrawalError {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-    #[error("amount is zero")]
-    AmountZero,
-    #[error("insufficient available")]
-    InsufficientAvailable,
-    #[error("unsupported asset: {0}")]
-    UnsupportedAsset(Address),
-
-    #[error(transparent)]
-    Sponsorship(#[from] SponsorshipError),
-
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
-    #[error("unknown revert (selector {selector:#x})")]
-    UnknownRevert { selector: u32, data: Vec<u8> },
-    #[error("provider/transport error: {0}")]
-    Transport(String),
-}
-
-#[derive(Debug, Error)]
-pub enum CancelWithdrawalError {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-    #[error("no withdrawal requested")]
-    NoWithdrawalRequested,
 
     #[error(transparent)]
     Sponsorship(#[from] SponsorshipError),
@@ -240,11 +190,10 @@ pub enum DepositError {
 
     /// Permit2 needs a one-time on-chain `approve(PERMIT2, ...)` that the payer has not made.
     ///
-    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so the
-    /// approval can be *signed* rather than transacted — see
-    /// [`DepositClient::send_sponsored_permit2`](crate::DepositClient::send_sponsored_permit2),
-    /// which does exactly that. When it is absent the payer must send `approve(PERMIT2, ...)`
-    /// themselves and pay for it.
+    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so
+    /// the approval can be *signed* rather than transacted — pin the route with
+    /// `deposit.of(…).permit2().sponsor_approval()`, which does exactly that. When it is absent
+    /// the payer must send `approve(PERMIT2, ...)` themselves and pay for it.
     #[error("permit2 requires a prior approve(PERMIT2, ...): {message}")]
     Permit2AllowanceRequired {
         message: String,
@@ -257,11 +206,11 @@ pub enum DepositError {
     /// did. Checked before falling back, so the caller is told what to fix rather than handed an
     /// opaque revert from inside the token.
     ///
-    /// Grant the allowance with [`DepositClient::approve_erc20`](crate::DepositClient::approve_erc20)
-    /// and retry — or approve Permit2 once to restore the gasless route.
+    /// Grant the allowance with [`TokensClient::approve`](crate::TokensClient::approve) and retry
+    /// — or approve Permit2 once to restore the gasless route.
     #[error(
         "no gasless route is available and the self-funded fallback needs an allowance: {needed} \
-         of {token} required but only {allowance} approved to {spender}; call approve_erc20 first"
+         of {token} required but only {allowance} approved to {spender}; call tokens.approve first"
     )]
     Erc20AllowanceRequired {
         token: Address,
@@ -269,10 +218,10 @@ pub enum DepositError {
         allowance: U256,
         needed: U256,
     },
-    /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit with
-    /// [`DepositPath::SelfFunded`](crate::DepositPath::SelfFunded) instead.
+    /// No facilitator URL was configured, so gasless deposits are unavailable. Deposit over the
+    /// self-funded route instead.
     #[error(
-        "no facilitator configured; set 4MICA_FACILITATOR_URL or ConfigBuilder::facilitator_url"
+        "no facilitator configured; set 4MICA_FACILITATOR_URL or ClientBuilder::facilitator_url"
     )]
     FacilitatorNotConfigured,
     /// A rejection the facilitator reported that has no dedicated variant here — including codes
@@ -371,26 +320,15 @@ impl DepositError {
 }
 
 #[derive(Debug, Error)]
-pub enum ApproveErc20Error {
-    #[error("invalid params: {0}")]
-    InvalidParams(String),
-
-    #[error(transparent)]
-    Client(#[from] ClientError),
-
-    #[error("unknown revert (selector {selector:#x})")]
-    UnknownRevert { selector: u32, data: Vec<u8> },
-    #[error("provider/transport error: {0}")]
-    Transport(String),
-}
-
-#[derive(Debug, Error)]
-pub enum ClearingSettlementError {
+pub enum SettlementError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
 
     #[error(transparent)]
     Rpc(#[from] ApiClientError),
+
+    #[error(transparent)]
+    Auth(#[from] AuthError),
 
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -400,11 +338,10 @@ pub enum ClearingSettlementError {
 
     /// Permit2 needs a one-time on-chain `approve(PERMIT2, ...)` that the debtor has not made.
     ///
-    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so the
-    /// approval can be *signed* rather than transacted — see
-    /// [`SettlementClient::pay_net_debit_sponsored_permit2`](crate::SettlementClient::pay_net_debit_sponsored_permit2),
-    /// which does exactly that. When it is absent the debtor must send `approve(PERMIT2, ...)`
-    /// themselves and pay for it.
+    /// Actionable in two ways. When `eip2612_nonce` is present the token supports EIP-2612, so
+    /// the approval can be *signed* rather than transacted — pin the route with
+    /// `settlement.pay(…).permit2().sponsor_approval()`, which does exactly that. When it is
+    /// absent the debtor must send `approve(PERMIT2, ...)` themselves and pay for it.
     #[error("permit2 requires a prior approve(PERMIT2, ...): {message}")]
     Permit2AllowanceRequired {
         message: String,
@@ -418,11 +355,12 @@ pub enum ClearingSettlementError {
     /// gasless routes never did. Checked before falling back, so the caller is told what to fix
     /// rather than handed an opaque revert from inside the token.
     ///
-    /// Grant the allowance with [`SettlementClient::approve_erc20`](crate::SettlementClient::approve_erc20)
-    /// and retry — or approve Permit2 once to restore the gasless route.
+    /// Grant the allowance with `settlement.pay(…).self_funded().approve()` and retry — or
+    /// approve Permit2 once to restore the gasless route.
     #[error(
         "no gasless route is available and the self-funded fallback needs an allowance: {needed} \
-         of {token} required but only {allowance} approved to {spender}; call approve_erc20 first"
+         of {token} required but only {allowance} approved to {spender}; call \
+         pay(…).self_funded().approve() first"
     )]
     Erc20AllowanceRequired {
         token: Address,
@@ -432,7 +370,7 @@ pub enum ClearingSettlementError {
     },
 
     /// Mined and reverted, so gas *was* spent — as opposed to a refusal before broadcasting.
-    #[error("claim {tx_hash} reverted on-chain")]
+    #[error("settlement transaction {tx_hash} reverted on-chain")]
     RevertedOnChain { tx_hash: B256 },
 
     #[error("unknown revert (selector {selector:#x})")]
@@ -441,47 +379,77 @@ pub enum ClearingSettlementError {
     Transport(String),
 }
 
+/// Anything the payment-guarantee flow can fail with: signing a request, issuing the certificate,
+/// verifying it, or listing what was received.
 #[derive(Debug, Error)]
-pub enum GetUserError {
+pub enum PaymentError {
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+    #[error("address mismatch: signer={signer:?} != claims.user_address={claims}")]
+    AddressMismatch { signer: Address, claims: String },
+    #[error("invalid user address in claims")]
+    InvalidUserAddress,
+    #[error("invalid recipient address in claims")]
+    InvalidRecipientAddress,
+    #[error("failed to sign the payment: {0}")]
+    SigningFailed(String),
+
+    #[error("invalid BLS certificate")]
+    InvalidCertificate(#[source] AnyError),
+    #[error("certificate signature mismatch")]
+    CertificateMismatch,
+    #[error("guarantee domain mismatch")]
+    GuaranteeDomainMismatch,
+    #[error("unsupported guarantee version: {0}")]
+    UnsupportedGuaranteeVersion(u64),
+
+    #[error("failed to decode API response: {0}")]
+    Decode(String),
+
+    #[error(transparent)]
+    Rpc(#[from] ApiClientError),
+
+    #[error(transparent)]
+    Auth(#[from] AuthError),
+}
+
+/// Anything the account queries can fail with.
+#[derive(Debug, Error)]
+pub enum AccountError {
     #[error("unsupported asset: {0}")]
     UnsupportedAsset(Address),
     #[error("Aave is not configured")]
     AaveNotConfigured,
+    #[error("failed to decode API response: {0}")]
+    Decode(String),
     #[error("unknown revert (selector {selector:#x})")]
     UnknownRevert { selector: u32, data: Vec<u8> },
     #[error("provider/transport error: {0}")]
     Transport(String),
     #[error(transparent)]
     Client(#[from] ClientError),
+    #[error(transparent)]
+    Rpc(#[from] ApiClientError),
+    #[error(transparent)]
+    Auth(#[from] AuthError),
 }
 
+/// Anything the token utilities can fail with.
 #[derive(Debug, Error)]
-pub enum IssuePaymentGuaranteeError {
+pub enum TokenError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
 
     #[error(transparent)]
-    Rpc(#[from] ApiClientError),
-}
+    Api(#[from] ApiClientError),
 
-#[derive(Debug, Error)]
-pub enum RecipientQueryError {
     #[error(transparent)]
-    Rpc(#[from] ApiClientError),
-}
+    Client(#[from] ClientError),
 
-#[derive(Debug, Error)]
-pub enum VerifyGuaranteeError {
-    #[error("invalid BLS certificate")]
-    InvalidCertificate(#[source] Error),
-    #[error("certificate signature mismatch")]
-    CertificateMismatch,
-    #[error("guarantee version mismatch: expected {expected}, got {actual}")]
-    GuaranteeVersionMismatch { expected: u64, actual: u64 },
-    #[error("guarantee domain mismatch")]
-    GuaranteeDomainMismatch,
-    #[error("unsupported guarantee version: {0}")]
-    UnsupportedGuaranteeVersion(u64),
+    #[error("unknown revert (selector {selector:#x})")]
+    UnknownRevert { selector: u32, data: Vec<u8> },
+    #[error("provider/transport error: {0}")]
+    Transport(String),
 }
 
 #[derive(Debug, Error)]
@@ -497,11 +465,11 @@ pub enum X402Error {
     #[error("invalid paymentRequirements.extra: {0}")]
     InvalidExtra(String),
     #[error("invalid number for field {field}: {source}")]
-    InvalidNumber { field: String, source: Error },
+    InvalidNumber { field: String, source: AnyError },
     #[error("settlement failed with status {status}: {body}")]
     SettlementFailed { status: StatusCode, body: Value },
     #[error(transparent)]
-    Signing(#[from] SignPaymentError),
+    Signing(#[from] PaymentError),
     #[error(transparent)]
     Http(#[from] reqwest::Error),
 }
@@ -589,15 +557,15 @@ macro_rules! impl_contract_error_target {
     };
 }
 
-impl_contract_error_target!(FinalizeWithdrawalError);
-impl_contract_error_target!(RequestWithdrawalError);
-impl_contract_error_target!(CancelWithdrawalError);
+impl_contract_error_target!(WithdrawError);
 impl_contract_error_target!(DepositError);
-impl_contract_error_target!(ApproveErc20Error);
-impl_contract_error_target!(ClearingSettlementError);
-impl_contract_error_target!(GetUserError);
+impl_contract_error_target!(TokenError);
+impl_contract_error_target!(SettlementError);
+impl_contract_error_target!(AccountError);
 
-impl_from_alloy_error!(FinalizeWithdrawalError, {
+impl_from_alloy_error!(WithdrawError, {
+    Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
+    Core4Mica::Core4MicaErrors::InsufficientAvailable(_) => Self::InsufficientAvailable,
     Core4Mica::Core4MicaErrors::NoWithdrawalRequested(_) => Self::NoWithdrawalRequested,
     Core4Mica::Core4MicaErrors::GracePeriodNotElapsed(_) => Self::GracePeriodNotElapsed,
     Core4Mica::Core4MicaErrors::TransferFailed(_) => Self::TransferFailed,
@@ -607,16 +575,6 @@ impl_from_alloy_error!(FinalizeWithdrawalError, {
         requested: err.requested.to_string(),
         actual: err.actual.to_string(),
     },
-});
-
-impl_from_alloy_error!(RequestWithdrawalError, {
-    Core4Mica::Core4MicaErrors::AmountZero(_) => Self::AmountZero,
-    Core4Mica::Core4MicaErrors::InsufficientAvailable(_) => Self::InsufficientAvailable,
-    Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
-});
-
-impl_from_alloy_error!(CancelWithdrawalError, {
-    Core4Mica::Core4MicaErrors::NoWithdrawalRequested(_) => Self::NoWithdrawalRequested,
 });
 
 impl_from_alloy_error!(DepositError, {
@@ -633,11 +591,11 @@ impl_from_alloy_error!(DepositError, {
     },
 });
 
-impl_from_alloy_error!(ClearingSettlementError);
+impl_from_alloy_error!(SettlementError);
 
-impl_from_alloy_error!(ApproveErc20Error);
+impl_from_alloy_error!(TokenError);
 
-impl_from_alloy_error!(GetUserError, {
+impl_from_alloy_error!(AccountError, {
     Core4Mica::Core4MicaErrors::UnsupportedAsset(err) => Self::UnsupportedAsset(err.asset),
     Core4Mica::Core4MicaErrors::AaveNotConfigured(_) => Self::AaveNotConfigured,
 });

@@ -16,7 +16,7 @@ use alloy::sol;
 use alloy::sol_types::SolCall;
 use rpc::{RpcProxy, SupportedTokenInfo};
 use sdk_4mica::contract::Core4Mica;
-use sdk_4mica::{Client, Config, ReceiveAuthorization};
+use sdk_4mica::{Asset, Client, Config, ReceiveAuthorization};
 use std::str::FromStr;
 
 sol! {
@@ -73,8 +73,8 @@ async fn core_as_submitter<S>(
         .erased();
 
     let mut proxy = RpcProxy::new(config.rpc_url.as_str())?;
-    if let Some(token) = &config.bearer_token {
-        proxy = proxy.with_bearer_token(token.clone());
+    if let Some(token) = common::config_bearer_token(config) {
+        proxy = proxy.with_bearer_token(token);
     }
     let contract_address = Address::from_str(&proxy.get_public_params().await?.contract_address)?;
     Ok(Core4Mica::new(contract_address, provider))
@@ -108,7 +108,7 @@ async fn eip3009_token<S>(
     let provider = ProviderBuilder::new().connect(&rpc_url).await?;
     let redeem_selector = alloy::hex::encode(ERC3009Probe::receiveWithAuthorizationCall::SELECTOR);
 
-    for token in client.supported_tokens().await?.tokens {
+    for token in client.tokens.supported().await?.tokens {
         let asset = Address::from_str(&token.address)?;
 
         let has_domain_separator = provider
@@ -177,7 +177,9 @@ async fn test_gasless_deposit_credits_signer_and_costs_them_no_gas() -> anyhow::
     // Sign locally — no transaction, no allowance, no gas.
     let auth = depositor
         .deposit
-        .sign_eip3009(token.address.parse()?, amount)
+        .of(Asset::Erc20(token.address.parse()?), amount)
+        .eip3009()
+        .sign()
         .await?;
     assert_eq!(
         auth.from, depositor_address,
@@ -256,7 +258,9 @@ async fn test_gasless_deposit_authorization_cannot_be_replayed() -> anyhow::Resu
 
     let auth = depositor
         .deposit
-        .sign_eip3009(token.address.parse()?, amount)
+        .of(Asset::Erc20(token.address.parse()?), amount)
+        .eip3009()
+        .sign()
         .await?;
 
     submit_authorization(&submitter_config, asset, amount, auth.clone()).await?;
@@ -306,7 +310,9 @@ async fn test_gasless_deposit_rejects_a_tampered_amount() -> anyhow::Result<()> 
 
     let auth = depositor
         .deposit
-        .sign_eip3009(token.address.parse()?, amount)
+        .of(Asset::Erc20(token.address.parse()?), amount)
+        .eip3009()
+        .sign()
         .await?;
 
     // The value is inside the signature, so a submitter cannot pull more than was authorized.

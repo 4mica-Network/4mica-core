@@ -24,10 +24,10 @@ use alloy::sol_types::SolCall;
 use axum::{Json, Router, extract::Path, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
 use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
-use sdk_4mica::client::model::{ClaimPath, PayPath};
+use sdk_4mica::client::model::{Route, TokenRoute};
 use sdk_4mica::contract::ClearingHouse::{claimNetCreditForCall, payNetDebitCall};
-use sdk_4mica::error::{ClearingSettlementError, SponsorshipError};
-use sdk_4mica::{Client, ConfigBuilder};
+use sdk_4mica::error::{SettlementError, SponsorshipError};
+use sdk_4mica::{Client, ClientBuilder};
 use serde_json::{Value, json};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -389,17 +389,17 @@ where
     .await?;
 
     let signer_address = signer.address();
-    let mut builder = ConfigBuilder::default()
+    let mut builder = ClientBuilder::default()
         .rpc_url(core_url)
         .signer(signer)
         // Skips the auth handshake, which these tests are not about.
-        .bearer_token("test-token".into())
+        .bearer_token("test-token")
         .ethereum_http_rpc_url(eth_url)
         .contract_address(CONTRACT.to_string());
     if let Some(url) = facilitator_url {
         builder = builder.facilitator_url(url);
     }
-    let client = Client::new(builder.build()?).await?;
+    let client = Client::connect(builder.build()?).await?;
 
     Ok((client, signer_address, log))
 }
@@ -418,7 +418,9 @@ async fn a_sponsored_claim_names_the_creditor_not_the_signer() -> anyhow::Result
 
     client
         .settlement
-        .claim_net_credit_for(CYCLE_ID.to_string(), CREDITOR)
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .send()
         .await?;
 
     let log = log.lock().unwrap();
@@ -447,10 +449,7 @@ async fn a_sponsored_claim_names_the_creditor_not_the_signer() -> anyhow::Result
 async fn a_self_claim_names_the_signer() -> anyhow::Result<()> {
     let (client, signer, log) = test_client().await?;
 
-    client
-        .settlement
-        .claim_net_credit(CYCLE_ID.to_string())
-        .await?;
+    client.settlement.claim(CYCLE_ID.to_string()).send().await?;
 
     let log = log.lock().unwrap();
     assert_eq!(log.action_requests, vec![signer.to_string()]);
@@ -492,11 +491,13 @@ async fn a_gasless_claim_goes_through_the_facilitator() -> anyhow::Result<()> {
 
     let receipt = client
         .settlement
-        .claim_net_credit_for(CYCLE_ID.to_string(), CREDITOR)
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .send()
         .await?;
 
-    assert_eq!(receipt.path, ClaimPath::Sponsored);
-    assert_eq!(receipt.creditor, CREDITOR);
+    assert_eq!(receipt.route, Route::Gasless);
+    assert_eq!(receipt.account, CREDITOR);
     assert!(
         chain_log.lock().unwrap().broadcasts.is_empty(),
         "a sponsored claim must not touch the chain from here"
@@ -520,14 +521,17 @@ async fn a_receipt_for_another_creditor_is_refused() -> anyhow::Result<()> {
 
     let err = client
         .settlement
-        .claim_net_credit_gasless_for(CYCLE_ID.to_string(), CREDITOR)
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .gasless()
+        .send()
         .await
         .expect_err("a mis-echoed creditor must be refused");
 
     assert!(
         matches!(
             err,
-            ClearingSettlementError::Sponsorship(SponsorshipError::OutcomeUnknown(_))
+            SettlementError::Sponsorship(SponsorshipError::OutcomeUnknown(_))
         ),
         "unexpected error: {err}"
     );
@@ -543,14 +547,16 @@ async fn a_refusal_naming_the_claim_does_not_fall_back() -> anyhow::Result<()> {
 
     let err = client
         .settlement
-        .claim_net_credit_for(CYCLE_ID.to_string(), CREDITOR)
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .send()
         .await
         .expect_err("a claim-naming refusal must surface");
 
     assert!(
         matches!(
             &err,
-            ClearingSettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
+            SettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
                 if code == "SIMULATION_REVERTED"
         ),
         "unexpected error: {err}"
@@ -571,10 +577,12 @@ async fn an_unwilling_facilitator_falls_back_to_self_funding() -> anyhow::Result
 
     let receipt = client
         .settlement
-        .claim_net_credit_for(CYCLE_ID.to_string(), CREDITOR)
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .send()
         .await?;
 
-    assert_eq!(receipt.path, ClaimPath::SelfFunded);
+    assert_eq!(receipt.route, Route::SelfFunded);
     assert_eq!(
         facilitator_log.lock().unwrap().len(),
         1,
@@ -599,12 +607,14 @@ async fn a_claim_with_a_mismatched_participant_never_reaches_the_chain() -> anyh
 
     let err = client
         .settlement
-        .claim_net_credit_for(CYCLE_ID.to_string(), CREDITOR)
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .send()
         .await
         .expect_err("a proof for another participant must be rejected");
 
     assert!(
-        matches!(err, ClearingSettlementError::InvalidParams(_)),
+        matches!(err, SettlementError::InvalidParams(_)),
         "unexpected error: {err}"
     );
     assert!(
@@ -680,13 +690,10 @@ async fn a_gasless_payment_signs_the_cycle_terms_for_the_clearing_house() -> any
         (client, signer_address, chain_log, facilitator_log)
     };
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::Sponsored);
-    assert_eq!(receipt.debtor, signer);
+    assert!(receipt.route.is_gasless());
+    assert_eq!(receipt.account, signer);
     assert!(
         chain_log.lock().unwrap().broadcasts.is_empty(),
         "a sponsored payment must not touch the chain from here"
@@ -720,6 +727,159 @@ async fn a_gasless_payment_signs_the_cycle_terms_for_the_clearing_house() -> any
         recovered, signer,
         "signature must recover to the signer over a digest binding the ClearingHouse, the leaf \
          amount, and the cycle id"
+    );
+    Ok(())
+}
+
+/// `sign()` fetches the debit's terms from core and binds them exactly as the one-shot gasless
+/// send does: ClearingHouse as receiver, the leaf's amount, the cycle id as nonce.
+#[tokio::test]
+async fn pay_sign_binds_the_cycle_terms() -> anyhow::Result<()> {
+    let signer = PrivateKeySigner::random();
+    let (client, signer_address, _chain_log) =
+        test_client_responding(signer, |participant: String| {
+            pay_action(&participant, TOKEN)
+        })
+        .await?;
+
+    let authorization = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .sign()
+        .await?;
+
+    assert_eq!(authorization.from, signer_address);
+    assert_eq!(
+        authorization.nonce, CYCLE_ID,
+        "the nonce must pin the cycle"
+    );
+    let digest = expected_erc3009_digest(
+        authorization.from,
+        CLEARING_HOUSE,
+        U256::from(AMOUNT),
+        authorization.validBefore,
+        authorization.nonce,
+    );
+    let recovered =
+        Signature::from_scalars_and_parity(authorization.r, authorization.s, authorization.v == 28)
+            .recover_address_from_prehash(&digest)?;
+    assert_eq!(recovered, signer_address);
+    Ok(())
+}
+
+/// An attached authorization redeems without refetching the debit's terms: the facilitator
+/// resolves them, and the receipt names the authorization's signer, not the submitter.
+#[tokio::test]
+async fn an_attached_pay_authorization_redeems_through_the_facilitator() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let signer = PrivateKeySigner::random();
+    let facilitator_url = spawn_facilitator(
+        "/clearing/pay",
+        facilitator_pay_success(signer.address()),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, signer_address, chain_log) = test_client_configured(
+        signer,
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let authorization = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .sign()
+        .await?;
+    let receipt = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .authorization(authorization)
+        .send()
+        .await?;
+
+    assert_eq!(receipt.account, signer_address);
+    assert_eq!(
+        chain_log.lock().unwrap().action_requests.len(),
+        1,
+        "only sign() needs the terms; the attached authorization must redeem without refetching"
+    );
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(sent[0]["cycleId"], format!("{CYCLE_ID:#x}"));
+    assert_eq!(sent[0]["assetTransferMethod"], "eip3009");
+    Ok(())
+}
+
+#[tokio::test]
+async fn pay_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let facilitator_url = spawn_facilitator(
+        "/clearing/pay/verify",
+        json!({ "isValid": true }),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, _signer, _chain_log) = test_client_configured(
+        PrivateKeySigner::random(),
+        |participant: String| pay_action(&participant, TOKEN),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    let authorization = client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .sign()
+        .await?;
+    client
+        .settlement
+        .pay(CYCLE_ID.to_string())
+        .eip3009()
+        .authorization(authorization)
+        .verify()
+        .await?;
+
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["cycleId"], format!("{CYCLE_ID:#x}"));
+    assert_eq!(sent[0]["assetTransferMethod"], "eip3009");
+    Ok(())
+}
+
+#[tokio::test]
+async fn claim_verify_posts_the_creditor() -> anyhow::Result<()> {
+    let facilitator_log: FacilitatorLog = Arc::new(Mutex::new(Vec::new()));
+    let facilitator_url = spawn_facilitator(
+        "/clearing/claim/verify",
+        json!({ "isValid": true }),
+        facilitator_log.clone(),
+    )
+    .await?;
+    let (client, _signer, _chain_log) = test_client_configured(
+        PrivateKeySigner::random(),
+        |participant: String| claim_action(&participant, "claimNetCreditFor"),
+        Some(facilitator_url),
+    )
+    .await?;
+
+    client
+        .settlement
+        .claim(CYCLE_ID.to_string())
+        .creditor(CREDITOR)
+        .gasless()
+        .verify()
+        .await?;
+
+    let sent = facilitator_log.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["cycleId"], format!("{CYCLE_ID:#x}"));
+    assert_eq!(
+        sent[0]["creditor"].as_str().map(str::to_lowercase),
+        Some(format!("{CREDITOR:#x}"))
     );
     Ok(())
 }
@@ -801,13 +961,10 @@ async fn a_token_that_cannot_redeem_eip3009_is_paid_over_permit2() -> anyhow::Re
     )
     .await?;
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::Sponsored);
-    assert_eq!(receipt.debtor, signer_address);
+    assert!(receipt.route.is_gasless());
+    assert_eq!(receipt.account, signer_address);
     assert!(
         chain_log.lock().unwrap().broadcasts.is_empty(),
         "a sponsored payment must not touch the chain from here"
@@ -923,12 +1080,9 @@ async fn a_missing_allowance_is_signed_for_and_retried() -> anyhow::Result<()> {
     )
     .await?;
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::Sponsored);
+    assert!(receipt.route.is_gasless());
     assert!(
         chain_log.lock().unwrap().broadcasts.is_empty(),
         "still chain-free: the nonce came over HTTP, not from an eth_call"
@@ -993,13 +1147,10 @@ async fn an_unsponsorable_allowance_falls_back_to_a_self_funded_payment() -> any
     )
     .await?;
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::SelfFunded);
-    assert_eq!(receipt.debtor, signer_address);
+    assert_eq!(receipt.route, TokenRoute::SelfFunded);
+    assert_eq!(receipt.account, signer_address);
     assert_eq!(
         facilitator_log.lock().unwrap().len(),
         2,
@@ -1032,14 +1183,17 @@ async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Re
 
     let err = client
         .settlement
-        .pay_net_debit_sponsored_permit2(CYCLE_ID.to_string())
+        .pay(CYCLE_ID.to_string())
+        .permit2()
+        .sponsor_approval()
+        .send()
         .await
         .expect_err("an unsponsorable approval must be reported");
 
     assert!(
         matches!(
             err,
-            ClearingSettlementError::Permit2AllowanceRequired {
+            SettlementError::Permit2AllowanceRequired {
                 eip2612_nonce: None,
                 ..
             }
@@ -1064,14 +1218,15 @@ async fn a_fallback_without_an_erc20_allowance_is_refused_not_broadcast() -> any
 
     let err = client
         .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
+        .pay(CYCLE_ID.to_string())
+        .send()
         .await
         .expect_err("a fallback without an allowance must be refused");
 
     assert!(
         matches!(
             err,
-            ClearingSettlementError::Erc20AllowanceRequired { needed, .. }
+            SettlementError::Erc20AllowanceRequired { needed, .. }
                 if needed == U256::from(AMOUNT)
         ),
         "unexpected error: {err}"
@@ -1113,13 +1268,10 @@ async fn a_token_with_no_published_domain_is_paid_over_permit2() -> anyhow::Resu
     )
     .await?;
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::Sponsored);
-    assert_eq!(receipt.debtor, signer_address);
+    assert!(receipt.route.is_gasless());
+    assert_eq!(receipt.account, signer_address);
     assert!(chain_log.lock().unwrap().broadcasts.is_empty());
 
     let sent = facilitator_log.lock().unwrap();
@@ -1155,13 +1307,10 @@ async fn a_missing_allowance_without_a_token_domain_falls_back_to_self_funding()
         (client, signer_address, chain_log, facilitator_log)
     };
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::SelfFunded);
-    assert_eq!(receipt.debtor, signer_address);
+    assert_eq!(receipt.route, TokenRoute::SelfFunded);
+    assert_eq!(receipt.account, signer_address);
     assert_eq!(
         facilitator_log.lock().unwrap().len(),
         1,
@@ -1183,14 +1332,15 @@ async fn a_payment_refused_over_both_schemes_surfaces_without_fallback() -> anyh
 
     let err = client
         .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
+        .pay(CYCLE_ID.to_string())
+        .send()
         .await
         .expect_err("a payment refused over both schemes must surface");
 
     assert!(
         matches!(
             &err,
-            ClearingSettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
+            SettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
                 if code == "SIMULATION_REVERTED"
         ),
         "unexpected error: {err}"
@@ -1216,14 +1366,15 @@ async fn a_refusal_naming_the_payment_does_not_fall_back() -> anyhow::Result<()>
 
     let err = client
         .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
+        .pay(CYCLE_ID.to_string())
+        .send()
         .await
         .expect_err("a payment-naming refusal must surface");
 
     assert!(
         matches!(
             &err,
-            ClearingSettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
+            SettlementError::Sponsorship(SponsorshipError::Rejected { code, .. })
                 if code == "SIGNATURE_MISMATCH"
         ),
         "unexpected error: {err}"
@@ -1242,13 +1393,10 @@ async fn an_unwilling_facilitator_falls_back_to_a_self_funded_payment() -> anyho
     let (client, signer, chain_log, facilitator_log) =
         test_client_paying(TOKEN, facilitator_refusal("RATE_LIMITED")).await?;
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::SelfFunded);
-    assert_eq!(receipt.debtor, signer);
+    assert_eq!(receipt.route, TokenRoute::SelfFunded);
+    assert_eq!(receipt.account, signer);
     assert_eq!(
         facilitator_log.lock().unwrap().len(),
         1,
@@ -1270,12 +1418,9 @@ async fn a_native_cycle_goes_straight_to_self_funding() -> anyhow::Result<()> {
     let (client, _signer, chain_log, facilitator_log) =
         test_client_paying(Address::ZERO, facilitator_pay_success(Address::ZERO)).await?;
 
-    let receipt = client
-        .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
-        .await?;
+    let receipt = client.settlement.pay(CYCLE_ID.to_string()).send().await?;
 
-    assert_eq!(receipt.path, PayPath::SelfFunded);
+    assert_eq!(receipt.route, TokenRoute::SelfFunded);
     assert!(
         facilitator_log.lock().unwrap().is_empty(),
         "a native debit must not be offered to the facilitator"
@@ -1296,14 +1441,16 @@ async fn a_payment_receipt_for_another_debtor_is_refused() -> anyhow::Result<()>
 
     let err = client
         .settlement
-        .pay_net_debit_gasless(CYCLE_ID.to_string())
+        .pay(CYCLE_ID.to_string())
+        .gasless()
+        .send()
         .await
         .expect_err("a mis-echoed debtor must be refused");
 
     assert!(
         matches!(
             err,
-            ClearingSettlementError::Sponsorship(SponsorshipError::OutcomeUnknown(_))
+            SettlementError::Sponsorship(SponsorshipError::OutcomeUnknown(_))
         ),
         "unexpected error: {err}"
     );
@@ -1334,12 +1481,13 @@ async fn a_payment_with_a_mismatched_participant_signs_nothing() -> anyhow::Resu
 
     let err = client
         .settlement
-        .pay_net_debit(CYCLE_ID.to_string())
+        .pay(CYCLE_ID.to_string())
+        .send()
         .await
         .expect_err("terms for another participant must be rejected");
 
     assert!(
-        matches!(err, ClearingSettlementError::InvalidParams(_)),
+        matches!(err, SettlementError::InvalidParams(_)),
         "unexpected error: {err}"
     );
     assert!(

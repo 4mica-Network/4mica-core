@@ -12,9 +12,7 @@ use rpc::{
 use crate::{
     PaymentSignature,
     client::{ClientCtx, model::RecipientPaymentInfo},
-    error::{
-        IssuePaymentGuaranteeError, RecipientQueryError, SignPaymentError, VerifyGuaranteeError,
-    },
+    error::PaymentError,
     sig::PaymentSigner,
 };
 
@@ -42,29 +40,22 @@ impl<S> PaymentClient<S> {
 
     /// Checks that `cert` was issued by the operator this client trusts, returning the claims it
     /// certifies.
-    pub fn verify_guarantee(
-        &self,
-        cert: &BLSCert,
-    ) -> Result<PaymentGuaranteeClaims, VerifyGuaranteeError> {
+    pub fn verify_guarantee(&self, cert: &BLSCert) -> Result<PaymentGuaranteeClaims, PaymentError> {
         match cert.verify(self.ctx.operator_public_key()) {
             Ok(()) => {}
             Err(BlsError::VerificationFailed) => {
-                return Err(VerifyGuaranteeError::CertificateMismatch);
+                return Err(PaymentError::CertificateMismatch);
             }
             Err(err) => {
-                return Err(VerifyGuaranteeError::InvalidCertificate(
-                    anyhow::Error::new(err),
-                ));
+                return Err(PaymentError::InvalidCertificate(anyhow::Error::new(err)));
             }
         }
 
         let claims = PaymentGuaranteeClaims::try_from(cert.claims().as_bytes())
-            .map_err(VerifyGuaranteeError::InvalidCertificate)?;
+            .map_err(PaymentError::InvalidCertificate)?;
 
         let Some(expected_domain) = self.ctx.guarantee_domain_for_version(claims.version) else {
-            return Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(
-                claims.version,
-            ));
+            return Err(PaymentError::UnsupportedGuaranteeVersion(claims.version));
         };
         let guarantee_domains = HashMap::from([(claims.version, *expected_domain)]);
         Self::verify_guarantee_metadata(&claims, &guarantee_domains)?;
@@ -74,15 +65,13 @@ impl<S> PaymentClient<S> {
     fn verify_guarantee_metadata(
         claims: &PaymentGuaranteeClaims,
         guarantee_domains: &HashMap<u64, [u8; 32]>,
-    ) -> Result<(), VerifyGuaranteeError> {
+    ) -> Result<(), PaymentError> {
         let Some(expected_domain) = guarantee_domains.get(&claims.version) else {
-            return Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(
-                claims.version,
-            ));
+            return Err(PaymentError::UnsupportedGuaranteeVersion(claims.version));
         };
 
         if claims.domain != *expected_domain {
-            return Err(VerifyGuaranteeError::GuaranteeDomainMismatch);
+            return Err(PaymentError::GuaranteeDomainMismatch);
         }
 
         Ok(())
@@ -99,7 +88,7 @@ where
         &self,
         claims: PaymentGuaranteeRequestClaims,
         scheme: SigningScheme,
-    ) -> Result<PaymentSignature, SignPaymentError> {
+    ) -> Result<PaymentSignature, PaymentError> {
         // TODO: Cache public parameters for a while
         let pub_params = self.ctx.rpc_proxy().await?.get_public_params().await?;
 
@@ -124,7 +113,7 @@ where
         claims: PaymentGuaranteeRequestClaims,
         signature: String,
         scheme: SigningScheme,
-    ) -> Result<BLSCert, IssuePaymentGuaranteeError> {
+    ) -> Result<BLSCert, PaymentError> {
         let cert = self
             .ctx
             .rpc_proxy()
@@ -135,18 +124,16 @@ where
     }
 
     /// Payments guaranteed to the signer as a recipient.
-    pub async fn list_received(&self) -> Result<Vec<RecipientPaymentInfo>, RecipientQueryError> {
+    pub async fn list_received(&self) -> Result<Vec<RecipientPaymentInfo>, PaymentError> {
         let address = self.ctx.signer_address().to_string();
-        let payments = self
-            .ctx
+        self.ctx
             .rpc_proxy()
             .await?
             .list_recipient_payments(address)
             .await?
             .into_iter()
-            .map(Into::into)
-            .collect();
-        Ok(payments)
+            .map(|payment| RecipientPaymentInfo::try_from(payment).map_err(PaymentError::Decode))
+            .collect()
     }
 }
 
@@ -157,7 +144,7 @@ mod tests {
     use rpc::{GUARANTEE_CLAIMS_VERSION, PaymentGuaranteeClaims};
     use std::collections::HashMap;
 
-    use crate::error::VerifyGuaranteeError;
+    use crate::error::PaymentError;
 
     fn test_claims(version: u64, domain: [u8; 32]) -> PaymentGuaranteeClaims {
         PaymentGuaranteeClaims {
@@ -192,7 +179,7 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(VerifyGuaranteeError::UnsupportedGuaranteeVersion(99))
+            Err(PaymentError::UnsupportedGuaranteeVersion(99))
         ));
     }
 
@@ -203,9 +190,6 @@ mod tests {
             &claims,
             &HashMap::from([(GUARANTEE_CLAIMS_VERSION, [0x33; 32])]),
         );
-        assert!(matches!(
-            result,
-            Err(VerifyGuaranteeError::GuaranteeDomainMismatch)
-        ));
+        assert!(matches!(result, Err(PaymentError::GuaranteeDomainMismatch)));
     }
 }

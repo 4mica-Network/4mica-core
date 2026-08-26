@@ -1,53 +1,71 @@
-use alloy::{primitives::Address, signers::local::PrivateKeySigner};
+use std::str::FromStr;
+
+use alloy::{primitives::Address, signers::Signer, signers::local::PrivateKeySigner};
 use url::Url;
 use zeroize::Zeroize;
 
 use crate::{
-    error::ConfigError,
+    client::Client,
+    error::{ConfigError, Error},
     validators::{validate_address, validate_url, validate_wallet_private_key},
 };
 
 const DEFAULT_AUTH_REFRESH_MARGIN_SECS: u64 = 60;
 const DEFAULT_RPC_URL: &str = "https://ethereum.sepolia.api.4mica.xyz/";
 
+/// A network this SDK has a default core endpoint for. Parses from the shorthand (`"base"`) or
+/// the CAIP-2 id (`"eip155:8453"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NetworkInfo {
-    pub caip2: &'static str,
-    pub rpc_url: &'static str,
+pub enum Network {
+    Base,
+    BaseSepolia,
+    EthereumSepolia,
 }
 
-pub const NETWORKS: &[(&str, NetworkInfo)] = &[
-    (
-        "base",
-        NetworkInfo {
-            caip2: "eip155:8453",
-            rpc_url: "https://base.api.4mica.xyz/",
-        },
-    ),
-    (
-        "base-sepolia",
-        NetworkInfo {
-            caip2: "eip155:84532",
-            rpc_url: "https://base.sepolia.api.4mica.xyz/",
-        },
-    ),
-    (
-        "ethereum-sepolia",
-        NetworkInfo {
-            caip2: "eip155:11155111",
-            rpc_url: "https://ethereum.sepolia.api.4mica.xyz/",
-        },
-    ),
-];
-
-pub fn resolve_network_rpc_url(network: &str) -> Option<&'static str> {
-    NETWORKS.iter().find_map(|(name, info)| {
-        if *name == network || info.caip2 == network {
-            Some(info.rpc_url)
-        } else {
-            None
+impl Network {
+    pub fn caip2(&self) -> &'static str {
+        match self {
+            Self::Base => "eip155:8453",
+            Self::BaseSepolia => "eip155:84532",
+            Self::EthereumSepolia => "eip155:11155111",
         }
-    })
+    }
+
+    pub fn rpc_url(&self) -> &'static str {
+        match self {
+            Self::Base => "https://base.api.4mica.xyz/",
+            Self::BaseSepolia => "https://base.sepolia.api.4mica.xyz/",
+            Self::EthereumSepolia => "https://ethereum.sepolia.api.4mica.xyz/",
+        }
+    }
+}
+
+impl FromStr for Network {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "base" | "eip155:8453" => Ok(Self::Base),
+            "base-sepolia" | "eip155:84532" => Ok(Self::BaseSepolia),
+            "ethereum-sepolia" | "eip155:11155111" => Ok(Self::EthereumSepolia),
+            _ => Err(ConfigError::InvalidValue(format!(
+                "unknown network \"{value}\". Use a known shorthand (e.g. \"base\") or CAIP-2 id, \
+                 or call rpc_url() directly."
+            ))),
+        }
+    }
+}
+
+/// How API calls authenticate. The default is [`Credentials::Siwe`]: sign in with the configured
+/// signer.
+#[derive(Debug, Clone)]
+pub enum Credentials {
+    /// Sign in with the configured signer (SIWE), refreshing tokens as needed.
+    Siwe,
+    /// A pre-issued bearer token, in place of signing in.
+    Bearer(String),
+    /// Unauthenticated: only public endpoints work.
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -56,37 +74,47 @@ pub struct AuthConfig {
     pub refresh_margin_secs: u64,
 }
 
+/// [`Credentials`] with everything resolved, as [`Client::connect`] consumes it.
+#[derive(Debug, Clone)]
+pub enum CredentialsConfig {
+    Siwe(AuthConfig),
+    Bearer(String),
+    None,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config<S> {
     pub rpc_url: Url,
     pub signer: S,
     pub ethereum_http_rpc_url: Option<Url>,
     pub contract_address: Option<Address>,
-    pub bearer_token: Option<String>,
-    pub auth: Option<AuthConfig>,
-    /// Facilitator that sponsors gas for deposits. Without one, every deposit is self-funded.
+    pub credentials: CredentialsConfig,
+    /// Facilitator that sponsors gas. Without one, every operation is self-funded.
     pub facilitator_url: Option<Url>,
 }
 
-pub struct ConfigBuilder<S = PrivateKeySigner> {
+/// Builds a [`Client`] (via [`connect()`](Self::connect)) or a [`Config`] (via
+/// [`build()`](Self::build)). No setter has side effects: what authenticates is decided by
+/// [`credentials()`](Self::credentials) alone, and the auth tuning knobs apply only when the
+/// credentials are SIWE.
+#[derive(Debug)]
+pub struct ClientBuilder<S = PrivateKeySigner> {
     rpc_url: Option<String>,
     signer: Option<S>,
     ethereum_http_rpc_url: Option<String>,
     contract_address: Option<String>,
-    bearer_token: Option<String>,
+    credentials: Credentials,
     auth_url: Option<String>,
     auth_refresh_margin_secs: Option<u64>,
-    auth_refresh_margin_parse_error: Option<String>,
-    auth_enabled: bool,
     facilitator_url: Option<String>,
 }
 
-impl ConfigBuilder<PrivateKeySigner> {
+impl ClientBuilder<PrivateKeySigner> {
     pub fn from_env() -> Result<Self, ConfigError> {
         let mut builder = Self::default();
 
         if let Ok(v) = std::env::var("4MICA_NETWORK") {
-            builder = builder.network(&v)?;
+            builder = builder.network(v.parse()?);
         } else if let Ok(v) = std::env::var("4MICA_RPC_URL") {
             builder = builder.rpc_url(v);
         }
@@ -113,50 +141,26 @@ impl ConfigBuilder<PrivateKeySigner> {
             builder = builder.auth_url(v);
         }
         if let Ok(v) = std::env::var("4MICA_AUTH_REFRESH_MARGIN_SECS") {
-            match v.parse::<u64>() {
-                Ok(secs) => {
-                    builder = builder.auth_refresh_margin_secs(secs);
-                }
-                Err(_) => {
-                    builder.auth_refresh_margin_parse_error = Some(v);
-                    builder.auth_enabled = true;
-                }
-            }
+            let secs = v.parse::<u64>().map_err(|_| {
+                ConfigError::InvalidValue(format!("invalid 4MICA_AUTH_REFRESH_MARGIN_SECS: {v}"))
+            })?;
+            builder = builder.auth_refresh_margin_secs(secs);
         }
 
         Ok(builder)
     }
 }
 
-impl<S> ConfigBuilder<S> {
-    fn empty() -> Self {
-        Self {
-            rpc_url: None,
-            signer: None,
-            ethereum_http_rpc_url: None,
-            contract_address: None,
-            bearer_token: None,
-            auth_url: None,
-            auth_refresh_margin_secs: None,
-            auth_refresh_margin_parse_error: None,
-            auth_enabled: false,
-            facilitator_url: None,
-        }
-    }
-
-    pub fn rpc_url(mut self, rpc_url: String) -> Self {
-        self.rpc_url = Some(rpc_url);
+impl<S> ClientBuilder<S> {
+    pub fn rpc_url(mut self, rpc_url: impl Into<String>) -> Self {
+        self.rpc_url = Some(rpc_url.into());
         self
     }
 
-    pub fn network(mut self, value: &str) -> Result<Self, ConfigError> {
-        let url = resolve_network_rpc_url(value).ok_or_else(|| {
-            ConfigError::InvalidValue(format!(
-                "unknown network \"{value}\". Use a known shorthand (e.g. \"base\") or CAIP-2 id, or call rpc_url() directly."
-            ))
-        })?;
-        self.rpc_url = Some(url.to_string());
-        Ok(self)
+    /// Points the client at a known network's default core endpoint.
+    pub fn network(mut self, network: Network) -> Self {
+        self.rpc_url = Some(network.rpc_url().to_string());
+        self
     }
 
     pub fn signer(mut self, signer: S) -> Self {
@@ -166,53 +170,66 @@ impl<S> ConfigBuilder<S> {
 
     /// If not provided, the default config will be fetched from the server.
     /// You normally don't need to provide this!
-    pub fn ethereum_http_rpc_url(mut self, ethereum_http_rpc_url: String) -> Self {
-        self.ethereum_http_rpc_url = Some(ethereum_http_rpc_url);
+    pub fn ethereum_http_rpc_url(mut self, ethereum_http_rpc_url: impl Into<String>) -> Self {
+        self.ethereum_http_rpc_url = Some(ethereum_http_rpc_url.into());
         self
     }
 
-    /// Facilitator that sponsors gas for deposits. Without one, every deposit is self-funded.
-    pub fn facilitator_url(mut self, facilitator_url: String) -> Self {
-        self.facilitator_url = Some(facilitator_url);
+    /// Facilitator that sponsors gas. Without one, every operation is self-funded.
+    pub fn facilitator_url(mut self, facilitator_url: impl Into<String>) -> Self {
+        self.facilitator_url = Some(facilitator_url.into());
         self
     }
 
     /// If not provided, the default config will be fetched from the server.
     /// You normally don't need to provide this!
-    pub fn contract_address(mut self, contract_address: String) -> Self {
-        self.contract_address = Some(contract_address);
+    pub fn contract_address(mut self, contract_address: impl Into<String>) -> Self {
+        self.contract_address = Some(contract_address.into());
         self
     }
 
-    /// Bearer token for authenticated API calls, in place of signing in.
-    pub fn bearer_token(mut self, bearer_token: String) -> Self {
-        self.bearer_token = Some(bearer_token);
+    /// How API calls authenticate. Defaults to [`Credentials::Siwe`].
+    pub fn credentials(mut self, credentials: Credentials) -> Self {
+        self.credentials = credentials;
         self
     }
 
-    /// Authenticate by signing in with the configured signer (SIWE).
-    pub fn enable_auth(mut self) -> Self {
-        self.auth_enabled = true;
+    /// Shorthand for [`credentials(Credentials::Bearer(…))`](Self::credentials). A blank token is
+    /// ignored, keeping whatever credentials were already chosen.
+    pub fn bearer_token(self, bearer_token: impl Into<String>) -> Self {
+        let token = bearer_token.into();
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            return self;
+        }
+        self.credentials(Credentials::Bearer(trimmed.to_string()))
+    }
+
+    /// Auth base URL for SIWE credentials. Defaults to the RPC URL.
+    pub fn auth_url(mut self, auth_url: impl Into<String>) -> Self {
+        self.auth_url = Some(auth_url.into());
         self
     }
 
-    /// Optional auth base URL. Defaults to the RPC URL when auth is enabled.
-    pub fn auth_url(mut self, auth_url: String) -> Self {
-        self.auth_url = Some(auth_url);
-        self.auth_enabled = true;
-        self
-    }
-
-    /// Refresh access tokens when the remaining TTL is below this threshold (in seconds).
+    /// Refresh access tokens when the remaining TTL is below this threshold (in seconds). Applies
+    /// to SIWE credentials only.
     pub fn auth_refresh_margin_secs(mut self, secs: u64) -> Self {
         self.auth_refresh_margin_secs = Some(secs);
-        self.auth_enabled = true;
         self
+    }
+
+    /// Builds the [`Client`] and connects it: reaches core for its public parameters, which is why
+    /// this is fallible and async. Most callers want this rather than [`build()`](Self::build).
+    pub async fn connect(self) -> Result<Client<S>, Error>
+    where
+        S: Signer + Sync + Clone,
+    {
+        let config = self.build()?;
+        Ok(Client::connect(config).await?)
     }
 
     pub fn build(self) -> Result<Config<S>, ConfigError> {
         let rpc_url = Self::required(self.rpc_url, "rpc_url")?;
-
         let signer = Self::required(self.signer, "signer")?;
 
         let rpc_url =
@@ -225,37 +242,24 @@ impl<S> ConfigBuilder<S> {
         )?;
         let contract_address =
             Self::optional(self.contract_address, validate_address, "contract_address")?;
-        let bearer_token = self.bearer_token.and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
+
+        let credentials = match self.credentials {
+            Credentials::Siwe => {
+                let auth_url = match self.auth_url {
+                    Some(raw) => {
+                        validate_url(&raw).map_err(|e| ConfigError::InvalidValue(e.to_string()))?
+                    }
+                    None => rpc_url.clone(),
+                };
+                CredentialsConfig::Siwe(AuthConfig {
+                    auth_url,
+                    refresh_margin_secs: self
+                        .auth_refresh_margin_secs
+                        .unwrap_or(DEFAULT_AUTH_REFRESH_MARGIN_SECS),
+                })
             }
-        });
-
-        if let Some(raw) = self.auth_refresh_margin_parse_error {
-            return Err(ConfigError::InvalidValue(format!(
-                "invalid auth_refresh_margin_secs: {raw}"
-            )));
-        }
-
-        let auth = if self.auth_enabled && bearer_token.is_none() {
-            let auth_url = match self.auth_url {
-                Some(raw) => {
-                    validate_url(&raw).map_err(|e| ConfigError::InvalidValue(e.to_string()))?
-                }
-                None => rpc_url.clone(),
-            };
-            let refresh_margin_secs = self
-                .auth_refresh_margin_secs
-                .unwrap_or(DEFAULT_AUTH_REFRESH_MARGIN_SECS);
-            Some(AuthConfig {
-                auth_url,
-                refresh_margin_secs,
-            })
-        } else {
-            None
+            Credentials::Bearer(token) => CredentialsConfig::Bearer(token),
+            Credentials::None => CredentialsConfig::None,
         };
 
         let facilitator_url = self
@@ -270,8 +274,7 @@ impl<S> ConfigBuilder<S> {
             signer,
             ethereum_http_rpc_url,
             contract_address,
-            bearer_token,
-            auth,
+            credentials,
             facilitator_url,
         })
     }
@@ -294,11 +297,18 @@ impl<S> ConfigBuilder<S> {
     }
 }
 
-impl<S> Default for ConfigBuilder<S> {
+impl<S> Default for ClientBuilder<S> {
     fn default() -> Self {
-        Self::empty()
-            .rpc_url(DEFAULT_RPC_URL.to_string())
-            .enable_auth()
+        Self {
+            rpc_url: Some(DEFAULT_RPC_URL.to_string()),
+            signer: None,
+            ethereum_http_rpc_url: None,
+            contract_address: None,
+            credentials: Credentials::Siwe,
+            auth_url: None,
+            auth_refresh_margin_secs: None,
+            facilitator_url: None,
+        }
     }
 }
 
@@ -315,99 +325,105 @@ mod tests {
     const VALID_RPC_URL: &str = "http://api.4mica.xyz/";
     const VALID_ETH_RPC_URL: &str = "http://localhost:8545/";
 
+    fn valid_signer() -> PrivateKeySigner {
+        PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key")
+    }
+
     #[test]
     fn test_default_builder() {
-        let builder = ConfigBuilder::<PrivateKeySigner>::default();
+        let builder = ClientBuilder::<PrivateKeySigner>::default();
 
         assert_eq!(builder.rpc_url, Some(DEFAULT_RPC_URL.to_string()));
         assert!(builder.signer.is_none());
         assert!(builder.ethereum_http_rpc_url.is_none());
         assert!(builder.contract_address.is_none());
-        assert!(builder.bearer_token.is_none());
+        assert!(matches!(builder.credentials, Credentials::Siwe));
         assert!(builder.auth_url.is_none());
         assert!(builder.auth_refresh_margin_secs.is_none());
-        assert!(builder.auth_enabled);
     }
 
     #[test]
     fn test_build_with_required_fields_only() {
-        let local_signer =
-            PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key");
+        let signer = valid_signer();
+        let config = ClientBuilder::default()
+            .signer(signer.clone())
+            .build()
+            .expect("config should build");
 
-        let config = ConfigBuilder::default()
-            .signer(local_signer.clone())
-            .build();
-
-        assert!(config.is_ok());
-        let config = config.unwrap();
         assert_eq!(config.rpc_url.as_str(), DEFAULT_RPC_URL);
-        assert_eq!(config.signer.address(), local_signer.address());
+        assert_eq!(config.signer.address(), signer.address());
         assert!(config.ethereum_http_rpc_url.is_none());
         assert!(config.contract_address.is_none());
-        assert!(config.bearer_token.is_none());
-        let auth = config.auth.expect("default builder should enable auth");
+        let CredentialsConfig::Siwe(auth) = config.credentials else {
+            panic!("default credentials should be SIWE");
+        };
         assert_eq!(auth.auth_url.as_str(), DEFAULT_RPC_URL);
         assert_eq!(auth.refresh_margin_secs, DEFAULT_AUTH_REFRESH_MARGIN_SECS);
     }
 
     #[test]
-    fn test_build_with_bearer_token_disables_auth() {
-        let config = ConfigBuilder::default()
-            .signer(PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key"))
-            .bearer_token("test-token".to_string())
+    fn test_build_with_bearer_token_replaces_siwe() {
+        let config = ClientBuilder::default()
+            .signer(valid_signer())
+            .bearer_token("test-token")
             .build()
             .expect("config should build");
 
-        assert_eq!(config.bearer_token.as_deref(), Some("test-token"));
-        assert!(config.auth.is_none());
+        let CredentialsConfig::Bearer(token) = config.credentials else {
+            panic!("bearer_token should select bearer credentials");
+        };
+        assert_eq!(token, "test-token");
+    }
+
+    #[test]
+    fn test_a_blank_bearer_token_is_ignored() {
+        let config = ClientBuilder::default()
+            .signer(valid_signer())
+            .bearer_token("   ")
+            .build()
+            .expect("config should build");
+
+        assert!(matches!(config.credentials, CredentialsConfig::Siwe(_)));
     }
 
     #[test]
     fn test_build_with_all_fields() {
-        let local_signer =
-            PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key");
+        let signer = valid_signer();
+        let config = ClientBuilder::default()
+            .rpc_url(VALID_RPC_URL)
+            .signer(signer.clone())
+            .ethereum_http_rpc_url(VALID_ETH_RPC_URL)
+            .contract_address(VALID_ADDRESS)
+            .build()
+            .expect("config should build");
 
-        let config = ConfigBuilder::default()
-            .rpc_url(VALID_RPC_URL.to_string())
-            .signer(local_signer.clone())
-            .ethereum_http_rpc_url(VALID_ETH_RPC_URL.to_string())
-            .contract_address(VALID_ADDRESS.to_string())
-            .build();
-
-        assert!(config.is_ok());
-        let config = config.unwrap();
         assert_eq!(config.rpc_url.as_str(), VALID_RPC_URL);
-        assert_eq!(config.signer.address(), local_signer.address());
+        assert_eq!(config.signer.address(), signer.address());
         assert_eq!(
             config.ethereum_http_rpc_url.unwrap().as_str(),
             VALID_ETH_RPC_URL
         );
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
-        assert!(config.bearer_token.is_none());
-        assert!(config.auth.is_some());
+        assert!(matches!(config.credentials, CredentialsConfig::Siwe(_)));
     }
 
     #[test]
     fn test_network_resolves_base() {
-        let builder = ConfigBuilder::<PrivateKeySigner>::default()
-            .network("base")
-            .expect("base network should resolve");
+        let builder = ClientBuilder::<PrivateKeySigner>::default().network(Network::Base);
 
         assert_eq!(
             builder.rpc_url,
             Some("https://base.api.4mica.xyz/".to_string())
         );
-        assert_eq!(
-            resolve_network_rpc_url("eip155:8453"),
-            Some("https://base.api.4mica.xyz/")
-        );
+        assert_eq!("eip155:8453".parse::<Network>().unwrap(), Network::Base);
+        assert_eq!("base".parse::<Network>().unwrap(), Network::Base);
+        assert!("solana".parse::<Network>().is_err());
     }
 
     #[test]
     fn test_build_missing_signer() {
-        let config = ConfigBuilder::<PrivateKeySigner>::default().build();
+        let config = ClientBuilder::<PrivateKeySigner>::default().build();
 
-        assert!(config.is_err());
         match config.unwrap_err() {
             ConfigError::Missing(field) => assert_eq!(field, "signer"),
             _ => panic!("Expected Missing error"),
@@ -416,12 +432,11 @@ mod tests {
 
     #[test]
     fn test_build_invalid_rpc_url() {
-        let config = ConfigBuilder::default()
-            .rpc_url("not-a-valid-url".to_string())
-            .signer(PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key"))
+        let config = ClientBuilder::default()
+            .rpc_url("not-a-valid-url")
+            .signer(valid_signer())
             .build();
 
-        assert!(config.is_err());
         match config.unwrap_err() {
             ConfigError::InvalidValue(msg) => assert!(msg.contains("invalid URL")),
             _ => panic!("Expected InvalidValue error"),
@@ -430,12 +445,11 @@ mod tests {
 
     #[test]
     fn test_build_invalid_ethereum_http_rpc_url() {
-        let config = ConfigBuilder::default()
-            .signer(PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key"))
-            .ethereum_http_rpc_url("not-a-valid-url".to_string())
+        let config = ClientBuilder::default()
+            .signer(valid_signer())
+            .ethereum_http_rpc_url("not-a-valid-url")
             .build();
 
-        assert!(config.is_err());
         match config.unwrap_err() {
             ConfigError::InvalidValue(msg) => assert!(msg.contains("invalid URL")),
             _ => panic!("Expected InvalidValue error"),
@@ -444,12 +458,11 @@ mod tests {
 
     #[test]
     fn test_build_invalid_contract_address() {
-        let config = ConfigBuilder::default()
-            .signer(PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key"))
-            .contract_address("not-a-valid-address".to_string())
+        let config = ClientBuilder::default()
+            .signer(valid_signer())
+            .contract_address("not-a-valid-address")
             .build();
 
-        assert!(config.is_err());
         match config.unwrap_err() {
             ConfigError::InvalidValue(msg) => assert!(msg.contains("invalid address")),
             _ => panic!("Expected InvalidValue error"),
@@ -459,8 +472,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_from_env_with_all_vars() {
-        let local_signer =
-            PrivateKeySigner::from_str(VALID_PRIVATE_KEY).expect("Invalid private key");
+        let signer = valid_signer();
 
         unsafe {
             std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
@@ -470,7 +482,7 @@ mod tests {
             std::env::set_var("4MICA_BEARER_TOKEN", "test-token");
         }
 
-        let config = ConfigBuilder::from_env()
+        let config = ClientBuilder::from_env()
             .expect("Invalid environment variables")
             .build();
 
@@ -483,17 +495,18 @@ mod tests {
             std::env::remove_var("4MICA_BEARER_TOKEN");
         }
 
-        assert!(config.is_ok());
-        let config = config.unwrap();
+        let config = config.expect("config should build");
         assert_eq!(config.rpc_url.as_str(), VALID_RPC_URL);
-        assert_eq!(config.signer.address(), local_signer.address());
+        assert_eq!(config.signer.address(), signer.address());
         assert_eq!(
             config.ethereum_http_rpc_url.unwrap().as_str(),
             VALID_ETH_RPC_URL
         );
         assert_eq!(config.contract_address.unwrap().to_string(), VALID_ADDRESS);
-        assert_eq!(config.bearer_token.as_deref(), Some("test-token"));
-        assert!(config.auth.is_none());
+        assert!(matches!(
+            config.credentials,
+            CredentialsConfig::Bearer(ref token) if token == "test-token"
+        ));
     }
 
     #[test]
@@ -503,12 +516,11 @@ mod tests {
             std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
         }
 
-        let local_signer =
-            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
+        let signer = validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
 
-        let config = ConfigBuilder::from_env()
+        let config = ClientBuilder::from_env()
             .expect("Invalid environment variables")
-            .signer(local_signer.clone())
+            .signer(signer.clone())
             .build();
 
         // Clean up
@@ -516,10 +528,9 @@ mod tests {
             std::env::remove_var("4MICA_RPC_URL");
         }
 
-        assert!(config.is_ok());
-        let config = config.unwrap();
+        let config = config.expect("config should build");
         assert_eq!(config.rpc_url.as_str(), VALID_RPC_URL);
-        assert_eq!(config.signer.address(), local_signer.address());
+        assert_eq!(config.signer.address(), signer.address());
     }
 
     #[test]
@@ -533,18 +544,38 @@ mod tests {
             std::env::remove_var("4MICA_AUTH_REFRESH_MARGIN_SECS");
         }
 
-        let local_signer =
-            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
+        let signer = validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
 
-        let config = ConfigBuilder::from_env()
+        let config = ClientBuilder::from_env()
             .expect("Invalid environment variables")
-            .signer(local_signer)
+            .signer(signer)
             .build()
             .expect("config should build");
 
         assert_eq!(config.rpc_url.as_str(), DEFAULT_RPC_URL);
-        let auth = config.auth.expect("from_env should enable auth by default");
+        let CredentialsConfig::Siwe(auth) = config.credentials else {
+            panic!("from_env should default to SIWE credentials");
+        };
         assert_eq!(auth.auth_url.as_str(), DEFAULT_RPC_URL);
+    }
+
+    #[test]
+    #[serial]
+    fn test_from_env_rejects_a_bad_refresh_margin() {
+        unsafe {
+            std::env::set_var("4MICA_AUTH_REFRESH_MARGIN_SECS", "not-a-number");
+        }
+
+        let result = ClientBuilder::from_env();
+
+        unsafe {
+            std::env::remove_var("4MICA_AUTH_REFRESH_MARGIN_SECS");
+        }
+
+        match result.unwrap_err() {
+            ConfigError::InvalidValue(msg) => assert!(msg.contains("not-a-number")),
+            _ => panic!("Expected InvalidValue error"),
+        }
     }
 
     #[test]
@@ -555,12 +586,11 @@ mod tests {
             std::env::set_var("4MICA_RPC_URL", VALID_RPC_URL);
         }
 
-        let local_signer =
-            validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
+        let signer = validate_wallet_private_key(VALID_PRIVATE_KEY).expect("Invalid private key");
 
-        let config = ConfigBuilder::from_env()
+        let config = ClientBuilder::from_env()
             .expect("Invalid environment variables")
-            .signer(local_signer)
+            .signer(signer)
             .build()
             .expect("config should build");
 

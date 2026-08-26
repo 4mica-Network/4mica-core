@@ -13,9 +13,9 @@ use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
 use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
-use sdk_4mica::client::model::{Asset, DepositPath};
+use sdk_4mica::client::model::{Asset, TokenRoute};
 use sdk_4mica::error::DepositError;
-use sdk_4mica::{Client, ConfigBuilder};
+use sdk_4mica::{Client, ClientBuilder};
 use serde_json::{Value, json};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -436,14 +436,14 @@ async fn test_client() -> anyhow::Result<(Client<PrivateKeySigner>, Address, Arc
 
     let signer = PrivateKeySigner::random();
     let signer_address = signer.address();
-    let cfg = ConfigBuilder::default()
+    let cfg = ClientBuilder::default()
         .rpc_url(core_url)
         .signer(signer)
         .ethereum_http_rpc_url(eth_url)
         .contract_address(CONTRACT.to_string())
         .build()?;
 
-    let client = Client::new(cfg).await?;
+    let client = Client::connect(cfg).await?;
     // Drop setup traffic so per-test assertions only see the signing calls.
     log.lock().unwrap().eth_calls.clear();
     Ok((client, signer_address, log))
@@ -509,7 +509,7 @@ async fn client_against(
 
     let signer = PrivateKeySigner::random();
     let signer_address = signer.address();
-    let cfg = ConfigBuilder::default()
+    let cfg = ClientBuilder::default()
         .rpc_url(core_url)
         .signer(signer)
         .ethereum_http_rpc_url(eth_url)
@@ -517,7 +517,7 @@ async fn client_against(
         .facilitator_url(facilitator_url)
         .build()?;
 
-    let client = Client::new(cfg).await?;
+    let client = Client::connect(cfg).await?;
     // Drop setup traffic so per-test assertions only see what the deposit did.
     chain_log.lock().unwrap().eth_calls.clear();
     chain_log.lock().unwrap().methods.clear();
@@ -536,7 +536,12 @@ async fn sign_deposit_authorization_recovers_to_signer_over_erc3009_digest() -> 
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .eip3009()
+        .sign()
+        .await?;
 
     assert_eq!(
         auth.from, signer_address,
@@ -567,7 +572,12 @@ async fn sign_deposit_authorization_binds_core4mica_as_recipient() -> anyhow::Re
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .eip3009()
+        .sign()
+        .await?;
     let signature = Signature::from_scalars_and_parity(auth.r, auth.s, auth.v == 28);
 
     // A facilitator cannot redirect the funds: only `to == Core4Mica` recovers to the signer.
@@ -595,7 +605,12 @@ async fn sign_deposit_authorization_binds_amount() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .eip3009()
+        .sign()
+        .await?;
     let signature = Signature::from_scalars_and_parity(auth.r, auth.s, auth.v == 28);
 
     let inflated = expected_erc3009_digest(
@@ -621,7 +636,12 @@ async fn sign_deposit_authorization_takes_the_token_domain_from_core_not_the_cha
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(1_000_000u64);
 
-    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .eip3009()
+        .sign()
+        .await?;
 
     assert!(
         log.lock().unwrap().domain_separator_targets().is_empty(),
@@ -653,7 +673,12 @@ async fn sign_deposit_authorization_expires_one_hour_out() -> anyhow::Result<()>
     let (client, _signer_address, _log) = test_client().await?;
     let before = now_secs();
 
-    let auth = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .eip3009()
+        .sign()
+        .await?;
 
     let after = now_secs();
     let valid_before: u64 = auth.validBefore.to::<u64>();
@@ -675,7 +700,12 @@ async fn sign_deposit_authorization_v_is_ecrecover_compatible() -> anyhow::Resul
 
     // The token calls `ecrecover(digest, v, r, s)`, which rejects a raw 0/1 y-parity.
     for _ in 0..8 {
-        let auth = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
+        let auth = client
+            .deposit
+            .of(Asset::Erc20(TOKEN), U256::from(1u64))
+            .eip3009()
+            .sign()
+            .await?;
         assert!(
             auth.v == 27 || auth.v == 28,
             "v must be 27 or 28 for ecrecover, got {}",
@@ -689,8 +719,18 @@ async fn sign_deposit_authorization_v_is_ecrecover_compatible() -> anyhow::Resul
 async fn sign_deposit_authorization_uses_a_fresh_nonce_per_call() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
 
-    let first = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
-    let second = client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
+    let first = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .eip3009()
+        .sign()
+        .await?;
+    let second = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .eip3009()
+        .sign()
+        .await?;
 
     assert_ne!(
         first.nonce, second.nonce,
@@ -705,7 +745,12 @@ async fn sign_deposit_permit2_recovers_to_signer_over_permit2_digest() -> anyhow
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .permit2()
+        .sign()
+        .await?;
 
     assert_eq!(auth.from, signer_address, "permit must bind the signer");
     assert_eq!(
@@ -735,7 +780,12 @@ async fn sign_deposit_permit2_binds_core4mica_as_spender() -> anyhow::Result<()>
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .permit2()
+        .sign()
+        .await?;
     let signature = Signature::from_raw(&auth.signature)?;
 
     // Only Core4Mica may consume the permit — no other contract can call permitTransferFrom with it.
@@ -762,7 +812,12 @@ async fn sign_deposit_permit2_binds_token_and_amount() -> anyhow::Result<()> {
     let (client, signer_address, _log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .permit2()
+        .sign()
+        .await?;
     let signature = Signature::from_raw(&auth.signature)?;
 
     let wrong_token = expected_permit2_digest(
@@ -800,7 +855,12 @@ async fn sign_deposit_permit2_derives_the_canonical_permit2_domain_offline() -> 
     let (client, signer_address, log) = test_client().await?;
     let amount = U256::from(2_500_000u64);
 
-    let auth = client.deposit.sign_permit2(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .permit2()
+        .sign()
+        .await?;
 
     assert!(
         log.lock().unwrap().domain_separator_targets().is_empty(),
@@ -830,7 +890,12 @@ async fn sign_deposit_permit2_expires_one_hour_out() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
     let before = now_secs();
 
-    let auth = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .permit2()
+        .sign()
+        .await?;
 
     let after = now_secs();
     let deadline: u64 = auth.deadline.to::<u64>();
@@ -845,8 +910,18 @@ async fn sign_deposit_permit2_expires_one_hour_out() -> anyhow::Result<()> {
 async fn sign_deposit_permit2_uses_a_fresh_nonce_per_call() -> anyhow::Result<()> {
     let (client, _signer_address, _log) = test_client().await?;
 
-    let first = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
-    let second = client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
+    let first = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .permit2()
+        .sign()
+        .await?;
+    let second = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .permit2()
+        .sign()
+        .await?;
 
     assert_ne!(
         first.nonce, second.nonce,
@@ -859,8 +934,18 @@ async fn sign_deposit_permit2_uses_a_fresh_nonce_per_call() -> anyhow::Result<()
 async fn gasless_signing_never_broadcasts_a_transaction() -> anyhow::Result<()> {
     let (client, _signer_address, log) = test_client().await?;
 
-    client.deposit.sign_eip3009(TOKEN, U256::from(1u64)).await?;
-    client.deposit.sign_permit2(TOKEN, U256::from(1u64)).await?;
+    client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .eip3009()
+        .sign()
+        .await?;
+    client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1u64))
+        .permit2()
+        .sign()
+        .await?;
 
     let methods = log.lock().unwrap().methods.clone();
     for method in &methods {
@@ -879,7 +964,12 @@ async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
 
     // Signing and submission happen in different processes: a gas-sponsoring submitter receives
     // these as an HTTP request body, so the serde derives on both types are load-bearing.
-    let auth = client.deposit.sign_eip3009(TOKEN, amount).await?;
+    let auth = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .eip3009()
+        .sign()
+        .await?;
     let decoded: sdk_4mica::ReceiveAuthorization =
         serde_json::from_str(&serde_json::to_string(&auth)?)?;
     assert_eq!(decoded.from, signer_address);
@@ -890,7 +980,12 @@ async fn authorizations_survive_a_json_round_trip() -> anyhow::Result<()> {
     assert_eq!(decoded.r, auth.r);
     assert_eq!(decoded.s, auth.s);
 
-    let permit = client.deposit.sign_permit2(TOKEN, amount).await?;
+    let permit = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), amount)
+        .permit2()
+        .sign()
+        .await?;
     let decoded: sdk_4mica::Permit2Authorization =
         serde_json::from_str(&serde_json::to_string(&permit)?)?;
     assert_eq!(decoded.from, signer_address);
@@ -914,7 +1009,9 @@ async fn facilitator_deposit_never_touches_an_ethereum_rpc() -> anyhow::Result<(
 
     let receipt = client
         .deposit
-        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .send()
         .await?;
 
     assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
@@ -956,7 +1053,9 @@ async fn facilitator_deposit_sends_the_expected_wire_shape() -> anyhow::Result<(
 
     client
         .deposit
-        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .send()
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
@@ -994,7 +1093,9 @@ async fn facilitator_permit2_deposit_sends_the_permit2_shape() -> anyhow::Result
 
     client
         .deposit
-        .send_permit2(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .send()
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
@@ -1023,7 +1124,9 @@ async fn facilitator_maps_a_known_error_code_to_a_typed_variant() -> anyhow::Res
 
     let err = client
         .deposit
-        .send_permit2(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .send()
         .await
         .expect_err("expected the facilitator's rejection to surface");
 
@@ -1048,7 +1151,9 @@ async fn facilitator_passes_through_an_unknown_error_code() -> anyhow::Result<()
 
     let err = client
         .deposit
-        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .send()
         .await
         .expect_err("expected the facilitator's rejection to surface");
 
@@ -1075,7 +1180,9 @@ async fn facilitator_success_without_a_tx_hash_is_an_error() -> anyhow::Result<(
 
     let err = client
         .deposit
-        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .send()
         .await
         .expect_err("expected a missing txHash to be rejected");
     assert!(
@@ -1106,15 +1213,85 @@ async fn facilitator_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<
 
     let authorization = client
         .deposit
-        .sign_eip3009(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .sign()
         .await?;
     client
         .deposit
-        .verify_eip3009(TOKEN, U256::from(1_000_000u64), authorization)
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .authorization(authorization)
+        .verify()
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
     assert_eq!(facilitator.verifies.len(), 1);
+    assert!(
+        facilitator.deposits.is_empty(),
+        "verifying must not submit anything"
+    );
+    Ok(())
+}
+
+/// An authorization signed here and redeemed through `authorization(…)` must put the same request
+/// on the wire as signing and sending in one go.
+#[tokio::test]
+async fn an_attached_authorization_sends_the_expected_wire_shape() -> anyhow::Result<()> {
+    let (client, signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .sign()
+        .await?;
+    let receipt = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .authorization(authorization)
+        .send()
+        .await?;
+    assert_eq!(receipt.account, signer);
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.deposits[0];
+    assert_eq!(body["assetTransferMethod"], "eip3009");
+    assert_eq!(body["amount"], "1000000");
+    for field in ["from", "validAfter", "validBefore", "nonce", "v", "r", "s"] {
+        assert!(
+            body["authorization"].get(field).is_some(),
+            "authorization is missing {field}: {body}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_attached_permit2_authorization_verifies_over_the_permit2_shape() -> anyhow::Result<()> {
+    let (client, _signer, _chain, facilitator_log) =
+        test_client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .sign()
+        .await?;
+    client
+        .deposit
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .authorization(authorization)
+        .verify()
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let body = &facilitator.verifies[0];
+    assert_eq!(body["assetTransferMethod"], "permit2");
+    assert!(body["permit2Authorization"].get("signature").is_some());
     assert!(
         facilitator.deposits.is_empty(),
         "verifying must not submit anything"
@@ -1131,7 +1308,9 @@ async fn facilitator_calls_fail_clearly_when_none_is_configured() -> anyhow::Res
     assert!(!client.deposit.is_gasless_available());
     let err = client
         .deposit
-        .send_eip3009(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .eip3009()
+        .send()
         .await
         .expect_err("expected an unconfigured facilitator to be reported");
     assert!(
@@ -1153,7 +1332,10 @@ async fn sponsored_permit2_signs_the_approval_and_retries() -> anyhow::Result<()
 
     let receipt = client
         .deposit
-        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .sponsor_approval()
+        .send()
         .await?;
     assert_eq!(receipt.tx_hash, B256::repeat_byte(0x11));
 
@@ -1204,7 +1386,10 @@ async fn sponsored_permit2_permit_recovers_to_the_signer() -> anyhow::Result<()>
 
     client
         .deposit
-        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .sponsor_approval()
+        .send()
         .await?;
 
     let facilitator = facilitator_log.lock().unwrap();
@@ -1252,7 +1437,10 @@ async fn sponsored_permit2_gives_up_when_the_token_has_no_permit() -> anyhow::Re
 
     let err = client
         .deposit
-        .send_sponsored_permit2(TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .sponsor_approval()
+        .send()
         .await
         .expect_err("expected the allowance error to surface");
 
@@ -1323,7 +1511,8 @@ async fn a_fallback_without_an_erc20_allowance_is_refused_not_broadcast() -> any
 
     let err = client
         .deposit
-        .send(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .of(Asset::Erc20(TOKEN), U256::from(1_000_000u64))
+        .send()
         .await
         .expect_err("a fallback without an allowance must be refused");
 
@@ -1360,10 +1549,11 @@ async fn a_token_with_no_published_domain_deposits_over_permit2() -> anyhow::Res
 
     let receipt = client
         .deposit
-        .send(Asset::Erc20(UNLISTED_TOKEN), U256::from(1_000_000u64))
+        .of(Asset::Erc20(UNLISTED_TOKEN), U256::from(1_000_000u64))
+        .send()
         .await?;
 
-    assert_eq!(receipt.path, DepositPath::Permit2);
+    assert_eq!(receipt.route, TokenRoute::Permit2);
 
     let facilitator = facilitator_log.lock().unwrap();
     assert_eq!(
@@ -1397,7 +1587,10 @@ async fn a_missing_allowance_without_a_token_domain_cannot_be_sponsored() -> any
 
     let err = client
         .deposit
-        .send_sponsored_permit2(UNLISTED_TOKEN, U256::from(1_000_000u64))
+        .of(Asset::Erc20(UNLISTED_TOKEN), U256::from(1_000_000u64))
+        .permit2()
+        .sponsor_approval()
+        .send()
         .await
         .expect_err("expected the allowance error to surface");
 

@@ -1,4 +1,4 @@
-use sdk_4mica::client::model::{ClaimPath, PayPath};
+use sdk_4mica::client::model::{Route, TokenRoute};
 use sdk_4mica::{Address, U256};
 
 mod common;
@@ -66,19 +66,16 @@ async fn test_sponsored_claim_via_facilitator() -> anyhow::Result<()> {
     common::clearing::wait_for_payment_window(&cycle_id, &rpc_url).await?;
 
     // The debtor funds the cycle; the claim is gated on full funding.
-    let pay_receipt = debtor.settlement.pay_net_debit(cycle_id.clone()).await?;
-    assert_eq!(pay_receipt.path, PayPath::SelfFunded);
-    assert_eq!(pay_receipt.debtor, debtor_address);
+    let pay_receipt = debtor.settlement.pay(cycle_id.clone()).send().await?;
+    assert_eq!(pay_receipt.route, TokenRoute::SelfFunded);
+    assert_eq!(pay_receipt.account, debtor_address);
 
     // Strictly the gasless route — no self-funded fallback — so a facilitator
     // refusal fails the test instead of quietly passing through the fallback.
     let balance_before = eth_balance(&rpc_url, creditor_address).await?;
-    let receipt = creditor
-        .settlement
-        .claim_net_credit_gasless(cycle_id)
-        .await?;
-    assert_eq!(receipt.path, ClaimPath::Sponsored);
-    assert_eq!(receipt.creditor, creditor_address);
+    let receipt = creditor.settlement.claim(cycle_id).gasless().send().await?;
+    assert_eq!(receipt.route, Route::Gasless);
+    assert_eq!(receipt.account, creditor_address);
 
     // The creditor sent no transaction, so their balance moves by exactly the
     // payout — the relayer's gas never touches them.

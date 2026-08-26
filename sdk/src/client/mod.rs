@@ -1,20 +1,20 @@
 use std::{fmt::Display, str::FromStr};
 
+use alloy::signers::local::PrivateKeySigner;
 use alloy::{
     network::Ethereum, primitives::Address, providers::PendingTransactionBuilder,
     rpc::types::TransactionReceipt, signers::Signer,
 };
-use rpc::{ApiClientError, SupportedTokensResponse};
 
 use crate::{
     auth::AuthTokens,
-    config::Config,
+    config::{ClientBuilder, Config},
     error::{AuthError, ClientError},
 };
 
 use self::{
     account::AccountClient, deposit::DepositClient, payment::PaymentClient,
-    settlement::SettlementClient, withdraw::WithdrawClient,
+    settlement::SettlementClient, tokens::TokensClient, withdraw::WithdrawClient,
 };
 
 mod ctx;
@@ -25,7 +25,9 @@ pub mod account;
 pub mod deposit;
 pub mod model;
 pub mod payment;
+pub mod route;
 pub mod settlement;
+pub mod tokens;
 pub mod withdraw;
 
 pub(crate) use ctx::ClientCtx;
@@ -65,10 +67,14 @@ where
     }
 }
 
-/// Entry point to the SDK
-pub struct Client<S> {
+/// Entry point to the SDK.
+///
+/// Each field is an intent-builder client: an entry captures what to do
+/// (`client.deposit.of(…)`), a route pin narrows how (`.gasless()`, `.self_funded()`), and a
+/// terminal does it (`.send()`, `.sign()`).
+pub struct Client<S = PrivateKeySigner> {
     ctx: ClientCtx<S>,
-    /// Depositing collateral, sponsored or self-funded.
+    /// Depositing collateral, gasless or self-funded.
     pub deposit: DepositClient<S>,
     /// Requesting, cancelling and finalizing withdrawals.
     pub withdraw: WithdrawClient<S>,
@@ -78,6 +84,8 @@ pub struct Client<S> {
     pub settlement: SettlementClient<S>,
     /// Reading the signer's own balances and positions.
     pub account: AccountClient<S>,
+    /// Supported-token metadata and ERC-20 approvals.
+    pub tokens: TokensClient<S>,
 }
 
 impl<S: Clone> Clone for Client<S> {
@@ -89,12 +97,21 @@ impl<S: Clone> Clone for Client<S> {
             payment: self.payment.clone(),
             settlement: self.settlement.clone(),
             account: self.account.clone(),
+            tokens: self.tokens.clone(),
         }
     }
 }
 
 impl<S> Client<S> {
-    pub async fn new(cfg: Config<S>) -> Result<Self, ClientError>
+    /// Starts a [`ClientBuilder`]; finish with
+    /// [`connect()`](crate::config::ClientBuilder::connect).
+    pub fn builder() -> ClientBuilder<S> {
+        ClientBuilder::default()
+    }
+
+    /// Connects with an already-built [`Config`]. Reaches core for its public parameters, which is
+    /// why construction is fallible and async.
+    pub async fn connect(cfg: Config<S>) -> Result<Self, ClientError>
     where
         S: Signer + Sync + Clone,
     {
@@ -106,6 +123,7 @@ impl<S> Client<S> {
             payment: PaymentClient::new(ctx.clone()),
             settlement: SettlementClient::new(ctx.clone()),
             account: AccountClient::new(ctx.clone()),
+            tokens: TokensClient::new(ctx.clone()),
             ctx,
         })
     }
@@ -125,11 +143,6 @@ impl<S> Client<S> {
         S: Signer + Sync,
     {
         self.ctx.login().await
-    }
-
-    /// The assets that can be deposited, with the metadata needed to sign for them.
-    pub async fn supported_tokens(&self) -> Result<SupportedTokensResponse, ApiClientError> {
-        self.ctx.supported_tokens().await
     }
 }
 

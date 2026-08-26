@@ -1,5 +1,5 @@
-//! Tests for the sponsored withdrawal paths — `sign_request`, `sign_cancel`, and the fallback
-//! `request`/`cancel`/`finalize` take.
+//! Tests for the gasless withdrawal routes — the `gasless()` pins' `sign()`/`send()` terminals,
+//! and the fallback the unpinned `request`/`cancel`/`finalize` builders take.
 //!
 //! These run fully offline against a mock JSON-RPC node, a mock core and a mock facilitator, so
 //! they cover what `contracts/test/Core4MicaGaslessWithdrawal.t.sol` cannot: whether the *SDK*
@@ -13,8 +13,8 @@ use alloy::signers::local::PrivateKeySigner;
 use axum::{Json, Router, routing::get, routing::post};
 use crypto::bls::KeyMaterial;
 use rpc::{CorePublicParameters, GUARANTEE_CLAIMS_VERSION, GuaranteeVersionDomain};
-use sdk_4mica::error::{CancelWithdrawalError, RequestWithdrawalError, SponsorshipError};
-use sdk_4mica::{Asset, Client, ConfigBuilder, WithdrawPath};
+use sdk_4mica::error::{SponsorshipError, WithdrawError};
+use sdk_4mica::{Asset, Client, ClientBuilder, Route};
 use serde_json::{Value, json};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -259,6 +259,7 @@ fn public_params(eth_rpc_url: &str) -> CorePublicParameters {
 #[derive(Default)]
 struct FacilitatorLog {
     withdrawals: Vec<Value>,
+    verifies: Vec<Value>,
 }
 
 /// A stand-in facilitator that records requests and replies with `response`. Deliberately dumb: the
@@ -267,18 +268,32 @@ async fn spawn_facilitator(
     response: Value,
     log: Arc<Mutex<FacilitatorLog>>,
 ) -> anyhow::Result<String> {
-    spawn(Router::new().route(
-        "/withdraw",
-        post(move |Json(body): Json<Value>| {
-            let log = log.clone();
-            let response = response.clone();
-            async move {
-                let response = echoing_request(response, &body);
-                log.lock().unwrap().withdrawals.push(body);
-                Json(response)
-            }
-        }),
-    ))
+    let withdraw_log = log.clone();
+    spawn(
+        Router::new()
+            .route(
+                "/withdraw",
+                post(move |Json(body): Json<Value>| {
+                    let log = withdraw_log.clone();
+                    let response = response.clone();
+                    async move {
+                        let response = echoing_request(response, &body);
+                        log.lock().unwrap().withdrawals.push(body);
+                        Json(response)
+                    }
+                }),
+            )
+            .route(
+                "/withdraw/verify",
+                post(move |Json(body): Json<Value>| {
+                    let log = log.clone();
+                    async move {
+                        log.lock().unwrap().verifies.push(body);
+                        Json(json!({ "isValid": true }))
+                    }
+                }),
+            ),
+    )
     .await
 }
 
@@ -357,7 +372,7 @@ async fn client_with(
 
     let signer = PrivateKeySigner::random();
     let signer_address = signer.address();
-    let mut builder = ConfigBuilder::default()
+    let mut builder = ClientBuilder::default()
         .rpc_url(core_url)
         .signer(signer)
         .ethereum_http_rpc_url(eth_url)
@@ -366,7 +381,7 @@ async fn client_with(
         builder = builder.facilitator_url(url);
     }
 
-    let client = Client::new(builder.build()?).await?;
+    let client = Client::connect(builder.build()?).await?;
     // Drop setup traffic so per-test assertions only see the withdrawal calls.
     let mut guard = log.lock().unwrap();
     guard.eth_calls.clear();
@@ -406,7 +421,9 @@ async fn a_signed_request_recovers_to_the_signer_over_the_contracts_digest() -> 
 
     let auth = client
         .withdraw
-        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
         .await?;
 
     assert_eq!(auth.user, signer);
@@ -438,7 +455,12 @@ async fn a_signed_request_recovers_to_the_signer_over_the_contracts_digest() -> 
 async fn a_signed_cancel_recovers_to_the_signer_over_the_contracts_digest() -> anyhow::Result<()> {
     let (client, signer, _log) = client_with(None).await?;
 
-    let auth = client.withdraw.sign_cancel(Asset::Erc20(TOKEN)).await?;
+    let auth = client
+        .withdraw
+        .cancel(Asset::Erc20(TOKEN))
+        .gasless()
+        .sign()
+        .await?;
 
     let digest = expected_cancel_digest(
         CORE_DOMAIN,
@@ -461,7 +483,9 @@ async fn eth_withdrawals_can_be_signed_too() -> anyhow::Result<()> {
 
     let auth = client
         .withdraw
-        .sign_request(Asset::Native, U256::from(AMOUNT))
+        .request(Asset::Native, U256::from(AMOUNT))
+        .gasless()
+        .sign()
         .await?;
 
     assert_eq!(auth.asset, Address::ZERO);
@@ -487,11 +511,15 @@ async fn each_authorization_gets_a_fresh_nonce() -> anyhow::Result<()> {
 
     let first = client
         .withdraw
-        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
         .await?;
     let second = client
         .withdraw
-        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
         .await?;
 
     assert_ne!(first.nonce, second.nonce);
@@ -506,9 +534,16 @@ async fn signing_never_touches_the_chain() -> anyhow::Result<()> {
 
     client
         .withdraw
-        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
         .await?;
-    client.withdraw.sign_cancel(Asset::Erc20(TOKEN)).await?;
+    client
+        .withdraw
+        .cancel(Asset::Erc20(TOKEN))
+        .gasless()
+        .sign()
+        .await?;
 
     let calls = log.lock().unwrap().eth_calls.clone();
     assert!(calls.is_empty(), "signing made chain calls: {calls:?}");
@@ -539,8 +574,8 @@ async fn a_core_that_publishes_no_guarantee_domains_reads_them_from_the_chain() 
     ))
     .await?;
 
-    let client = Client::new(
-        ConfigBuilder::default()
+    let client = Client::connect(
+        ClientBuilder::default()
             .rpc_url(core_url)
             .signer(PrivateKeySigner::random())
             .ethereum_http_rpc_url(eth_url)
@@ -583,19 +618,21 @@ async fn a_core_that_publishes_no_separator_falls_back_to_the_derived_domain() -
     ))
     .await?;
 
-    let config = ConfigBuilder::default()
+    let config = ClientBuilder::default()
         .rpc_url(core_url)
         .signer(PrivateKeySigner::random())
         .ethereum_http_rpc_url(eth_url)
         .contract_address(CONTRACT.to_string())
         .build()?;
 
-    let client = Client::new(config).await?;
+    let client = Client::connect(config).await?;
     let signer = client.signer_address();
 
     let auth = client
         .withdraw
-        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
         .await?;
 
     let digest = expected_request_digest(
@@ -620,7 +657,9 @@ async fn a_published_separator_takes_precedence_over_the_derivation() -> anyhow:
 
     let auth = client
         .withdraw
-        .sign_request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
         .await?;
 
     assert_ne!(
@@ -651,11 +690,13 @@ async fn a_sponsored_request_puts_the_authorization_on_the_wire() -> anyhow::Res
 
     let receipt = client
         .withdraw
-        .request_gasless(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .send()
         .await?;
 
-    assert_eq!(receipt.path, WithdrawPath::Sponsored);
-    assert!(!receipt.path.costs_the_user_gas());
+    assert_eq!(receipt.route, Route::Gasless);
+    assert!(receipt.route.is_gasless());
     assert!(
         !chain_log.lock().unwrap().broadcast_a_transaction(),
         "a sponsored withdrawal must cost the user no transaction"
@@ -683,7 +724,12 @@ async fn a_sponsored_cancel_is_tagged_as_such() -> anyhow::Result<()> {
     let (client, _signer, _chain_log, facilitator_log) =
         client_with_facilitator(success_response()).await?;
 
-    client.withdraw.cancel_gasless(Asset::Erc20(TOKEN)).await?;
+    client
+        .withdraw
+        .cancel(Asset::Erc20(TOKEN))
+        .gasless()
+        .send()
+        .await?;
 
     let sent = facilitator_log.lock().unwrap().withdrawals[0].clone();
     assert_eq!(sent["action"], "cancel");
@@ -703,7 +749,9 @@ async fn a_sponsored_finalize_carries_no_authorization() -> anyhow::Result<()> {
 
     client
         .withdraw
-        .finalize_gasless(Asset::Erc20(TOKEN))
+        .finalize(Asset::Erc20(TOKEN))
+        .gasless()
+        .send()
         .await?;
 
     let sent = facilitator_log.lock().unwrap().withdrawals[0].clone();
@@ -717,6 +765,91 @@ async fn a_sponsored_finalize_carries_no_authorization() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// An authorization signed here and redeemed through `authorization(…)` must put the same request
+/// on the wire as signing and sending in one go.
+#[tokio::test]
+async fn an_attached_authorization_round_trips_through_send() -> anyhow::Result<()> {
+    let (client, signer, _chain_log, facilitator_log) =
+        client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
+        .await?;
+    let receipt = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .authorization(authorization)
+        .send()
+        .await?;
+
+    assert_eq!(receipt.account, signer);
+    let sent = facilitator_log.lock().unwrap().withdrawals[0].clone();
+    assert_eq!(sent["action"], "request");
+    assert!(sent["authorization"]["signature"].is_string());
+    Ok(())
+}
+
+/// The authorization names its own terms, so a builder that disagrees is refused before anything
+/// reaches the facilitator.
+#[tokio::test]
+async fn a_mismatched_authorization_is_refused_locally() -> anyhow::Result<()> {
+    let (client, _signer, _chain_log, facilitator_log) =
+        client_with_facilitator(success_response()).await?;
+
+    let authorization = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .sign()
+        .await?;
+    let err = client
+        .withdraw
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT + 1))
+        .gasless()
+        .authorization(authorization)
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, WithdrawError::InvalidParams(_)), "{err:?}");
+    let facilitator = facilitator_log.lock().unwrap();
+    assert!(
+        facilitator.withdrawals.is_empty() && facilitator.verifies.is_empty(),
+        "a mismatch must not reach the facilitator"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn finalize_verify_posts_to_the_preflight_endpoint() -> anyhow::Result<()> {
+    let (client, signer, _chain_log, facilitator_log) =
+        client_with_facilitator(success_response()).await?;
+
+    client
+        .withdraw
+        .finalize(Asset::Erc20(TOKEN))
+        .gasless()
+        .verify()
+        .await?;
+
+    let facilitator = facilitator_log.lock().unwrap();
+    let sent = &facilitator.verifies[0];
+    assert_eq!(sent["action"], "finalize");
+    assert_eq!(
+        sent["user"].as_str().unwrap().to_lowercase(),
+        format!("{signer:#x}")
+    );
+    assert!(
+        facilitator.withdrawals.is_empty(),
+        "verifying must not submit anything"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_eth_travels_as_the_zero_address() -> anyhow::Result<()> {
     let (client, _signer, _chain_log, facilitator_log) =
@@ -724,7 +857,9 @@ async fn native_eth_travels_as_the_zero_address() -> anyhow::Result<()> {
 
     client
         .withdraw
-        .request_gasless(Asset::Native, U256::from(AMOUNT))
+        .request(Asset::Native, U256::from(AMOUNT))
+        .gasless()
+        .send()
         .await?;
 
     let sent = facilitator_log.lock().unwrap().withdrawals[0].clone();
@@ -746,13 +881,15 @@ async fn no_facilitator_means_the_gasless_call_says_so() -> anyhow::Result<()> {
 
     let err = client
         .withdraw
-        .request_gasless(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .gasless()
+        .send()
         .await
         .expect_err("no facilitator is configured");
 
     assert!(matches!(
         err,
-        RequestWithdrawalError::Sponsorship(SponsorshipError::NotConfigured)
+        WithdrawError::Sponsorship(SponsorshipError::NotConfigured)
     ));
     Ok(())
 }
@@ -767,6 +904,7 @@ async fn request_falls_back_to_self_funding_without_a_facilitator() -> anyhow::R
     let _ = client
         .withdraw
         .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .send()
         .await;
 
     assert!(
@@ -785,6 +923,7 @@ async fn a_throttled_facilitator_falls_back_to_self_funding() -> anyhow::Result<
     let _ = client
         .withdraw
         .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .send()
         .await;
 
     assert_eq!(facilitator_log.lock().unwrap().withdrawals.len(), 1);
@@ -805,12 +944,13 @@ async fn a_rejection_naming_the_request_is_returned_rather_than_retried() -> any
     let err = client
         .withdraw
         .request(Asset::Erc20(TOKEN), U256::from(AMOUNT))
+        .send()
         .await
         .expect_err("the facilitator said this would revert");
 
     assert!(matches!(
         err,
-        RequestWithdrawalError::Sponsorship(SponsorshipError::Rejected { .. })
+        WithdrawError::Sponsorship(SponsorshipError::Rejected { .. })
     ));
     assert!(
         !log.lock().unwrap().broadcast_a_transaction(),
@@ -824,7 +964,7 @@ async fn cancel_falls_back_the_same_way() -> anyhow::Result<()> {
     let (client, _signer, log, _facilitator_log) =
         client_with_facilitator(rejection("RELAYER_BALANCE_TOO_LOW")).await?;
 
-    let _ = client.withdraw.cancel(Asset::Erc20(TOKEN)).await;
+    let _ = client.withdraw.cancel(Asset::Erc20(TOKEN)).send().await;
 
     assert!(log.lock().unwrap().broadcast_a_transaction());
     Ok(())
@@ -838,13 +978,15 @@ async fn a_facilitator_that_reports_success_without_a_tx_hash_is_not_believed() 
 
     let err = client
         .withdraw
-        .cancel_gasless(Asset::Erc20(TOKEN))
+        .cancel(Asset::Erc20(TOKEN))
+        .gasless()
+        .send()
         .await
         .expect_err("success without a txHash is not a success");
 
     assert!(matches!(
         err,
-        CancelWithdrawalError::Sponsorship(SponsorshipError::OutcomeUnknown(_))
+        WithdrawError::Sponsorship(SponsorshipError::OutcomeUnknown(_))
     ));
     Ok(())
 }

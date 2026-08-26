@@ -18,7 +18,7 @@ use url::Url;
 use crate::{
     auth::{AuthSession, AuthTokens},
     client::facilitator::Facilitator,
-    config::Config,
+    config::{Config, CredentialsConfig},
     contract::{
         ClearingHouse::{self, ClearingHouseInstance},
         Core4Mica::{self, Core4MicaInstance},
@@ -69,13 +69,12 @@ impl<S> ClientCtx<S> {
         S: Signer + Sync + Clone,
     {
         let rpc_proxy = Self::build_rpc_proxy(&cfg)?;
-        let auth_session = cfg.auth.as_ref().and_then(|auth_cfg| {
-            if cfg.bearer_token.is_some() {
-                None
-            } else {
+        let auth_session = match &cfg.credentials {
+            CredentialsConfig::Siwe(auth_cfg) => {
                 Some(AuthSession::new(auth_cfg.clone(), cfg.signer.clone()))
             }
-        });
+            CredentialsConfig::Bearer(_) | CredentialsConfig::None => None,
+        };
         let public_params = rpc_proxy
             .get_public_params()
             .await
@@ -117,7 +116,7 @@ impl<S> ClientCtx<S> {
     fn build_rpc_proxy(cfg: &Config<S>) -> Result<RpcProxy, ClientError> {
         let mut proxy =
             RpcProxy::new(cfg.rpc_url.as_ref()).map_err(|e| ClientError::Rpc(e.to_string()))?;
-        if let Some(token) = &cfg.bearer_token {
+        if let CredentialsConfig::Bearer(token) = &cfg.credentials {
             proxy = proxy.with_bearer_token(token.clone());
         }
         Ok(proxy)
@@ -433,16 +432,15 @@ impl<S> ClientCtx<S> {
         self.0.rpc_proxy.get_supported_tokens().await
     }
 
-    pub(crate) async fn rpc_proxy(&self) -> Result<RpcProxy, ApiClientError>
+    /// The proxy with a fresh access token attached. Only auth can fail here: the proxy itself
+    /// was built at construction.
+    pub(crate) async fn rpc_proxy(&self) -> Result<RpcProxy, AuthError>
     where
         S: Signer + Sync,
     {
         let mut proxy = self.0.rpc_proxy.clone();
         if let Some(auth) = &self.0.auth_session {
-            let token = auth
-                .access_token()
-                .await
-                .map_err(Into::<ApiClientError>::into)?;
+            let token = auth.access_token().await?;
             proxy = proxy.with_bearer_token(token);
         }
         Ok(proxy)

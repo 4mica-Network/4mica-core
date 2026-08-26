@@ -13,7 +13,7 @@
 //! ```
 
 use alloy::signers::local::PrivateKeySigner;
-use sdk_4mica::{Address, Asset, Client, Config, ConfigBuilder, DepositPath, U256};
+use sdk_4mica::{Address, Asset, Client, ClientBuilder, Config, TokenRoute, U256};
 
 mod common;
 use crate::common::{eth_balance, skip_on_chain_clock_drift, skip_without_local_core_stack};
@@ -38,25 +38,31 @@ async fn assert_gasless(
     client: &Client<PrivateKeySigner>,
     config: &Config<PrivateKeySigner>,
     token: Address,
-    path: DepositPath,
+    route: TokenRoute,
 ) -> anyhow::Result<()> {
-    let label = format!("{path:?}");
+    let label = format!("{route:?}");
     let payer = client.signer_address();
     let amount = U256::from(ONE_USDC);
-    let collateral_before = client.account.principal_balance(token.to_string()).await?;
+    let collateral_before = client
+        .account
+        .principal_balance(Asset::Erc20(token))
+        .await?;
     let gas_before = eth_balance(config, payer).await?;
 
-    let receipt = client
-        .deposit
-        .send_via(path, Asset::Erc20(token), amount)
-        .await?;
+    let deposit = client.deposit.of(Asset::Erc20(token), amount);
+    let receipt = match route {
+        TokenRoute::Eip3009 => deposit.eip3009().send().await?,
+        TokenRoute::Permit2 => deposit.permit2().send().await?,
+        TokenRoute::SponsoredPermit2 => deposit.permit2().sponsor_approval().send().await?,
+        TokenRoute::SelfFunded => deposit.self_funded().send().await?,
+    };
 
     assert_eq!(
-        receipt.path, path,
+        receipt.route, route,
         "{label}: the receipt must report the route that ran"
     );
     assert_eq!(
-        receipt.from, payer,
+        receipt.account, payer,
         "{label}: the facilitator must credit the signer, not itself"
     );
     assert_eq!(
@@ -65,7 +71,11 @@ async fn assert_gasless(
         "{label}: the payer sent a transaction — this was not gasless"
     );
     assert_eq!(
-        client.account.principal_balance(token.to_string()).await? - collateral_before,
+        client
+            .account
+            .principal_balance(Asset::Erc20(token))
+            .await?
+            - collateral_before,
         amount,
         "{label}: expected 1 USDC of collateral to land on the payer"
     );
@@ -83,7 +93,7 @@ async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<(
         return Ok(());
     }
 
-    let config = ConfigBuilder::default()
+    let config = ClientBuilder::default()
         .signer(PAYER_KEY.parse::<PrivateKeySigner>()?)
         .rpc_url(CORE_URL.to_string())
         .facilitator_url(FACILITATOR_URL.to_string())
@@ -91,13 +101,13 @@ async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<(
     if skip_on_chain_clock_drift(&config).await? {
         return Ok(());
     }
-    let client = Client::new(config.clone()).await?;
+    let client = Client::connect(config.clone()).await?;
 
     assert_gasless(
         &client,
         &config,
         EIP3009_TOKEN.parse()?,
-        DepositPath::Eip3009,
+        TokenRoute::Eip3009,
     )
     .await?;
 
@@ -107,7 +117,7 @@ async fn deposits_one_usdc_without_spending_the_payers_gas() -> anyhow::Result<(
         &client,
         &config,
         PERMIT2_TOKEN.parse()?,
-        DepositPath::SponsoredPermit2,
+        TokenRoute::SponsoredPermit2,
     )
     .await
 }

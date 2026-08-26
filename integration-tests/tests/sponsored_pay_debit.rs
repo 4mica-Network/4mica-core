@@ -1,5 +1,5 @@
 use alloy::providers::ProviderBuilder;
-use sdk_4mica::client::model::{ClaimPath, PayPath};
+use sdk_4mica::client::model::Route;
 use sdk_4mica::{Address, U256};
 
 mod common;
@@ -84,10 +84,12 @@ async fn test_sponsored_pay_debit_via_facilitator() -> anyhow::Result<()> {
     let eth_before = eth_balance(&rpc_url, debtor_address).await?;
     let receipt = debtor
         .settlement
-        .pay_net_debit_gasless(cycle_id.clone())
+        .pay(cycle_id.clone())
+        .gasless()
+        .send()
         .await?;
-    assert_eq!(receipt.path, PayPath::Sponsored);
-    assert_eq!(receipt.debtor, debtor_address);
+    assert!(receipt.route.is_gasless());
+    assert_eq!(receipt.account, debtor_address);
 
     // The debtor sent no transaction and granted no allowance: exactly the net
     // debit leaves in tokens, and not a wei of gas.
@@ -106,8 +108,8 @@ async fn test_sponsored_pay_debit_via_facilitator() -> anyhow::Result<()> {
     // The sponsored payment funded the cycle: the creditor's claim (self-funded —
     // no facilitator configured on that client) pays out in full.
     let creditor_tokens_before = erc20_balance(&rpc_url, token, creditor_address).await?;
-    let claim = creditor.settlement.claim_net_credit(cycle_id).await?;
-    assert_eq!(claim.path, ClaimPath::SelfFunded);
+    let claim = creditor.settlement.claim(cycle_id).send().await?;
+    assert_eq!(claim.route, Route::SelfFunded);
     let creditor_tokens_after = erc20_balance(&rpc_url, token, creditor_address).await?;
     assert_eq!(
         creditor_tokens_after - creditor_tokens_before,

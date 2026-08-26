@@ -23,19 +23,17 @@ pub use rpc::{
     PaymentGuaranteeClaims, PaymentGuaranteeRequestClaims, SigningScheme, ValidationRequirement,
 };
 
-pub use crate::error::RecipientQueryError;
 pub use auth::{AuthClient, AuthSession, AuthTokens};
-pub use client::Client;
 pub use client::model::{
-    Asset, AssetBalanceInfo, DepositPath, DepositReceipt, RecipientPaymentInfo, StablecoinPosition,
-    UserInfo, WithdrawPath, WithdrawReceipt,
+    Asset, AssetBalanceInfo, AssetPosition, ClaimReceipt, DepositReceipt, PayReceipt,
+    RecipientPaymentInfo, Route, StablecoinPosition, TokenRoute, WithdrawReceipt,
 };
+pub use client::route;
 pub use client::{
-    account::AccountClient, deposit::DepositClient, payment::PaymentClient,
-    settlement::SettlementClient, withdraw::WithdrawClient,
+    Client, account::AccountClient, deposit::DepositClient, payment::PaymentClient,
+    settlement::SettlementClient, tokens::TokensClient, withdraw::WithdrawClient,
 };
-pub use config::AuthConfig;
-pub use config::{Config, ConfigBuilder};
+pub use config::{AuthConfig, ClientBuilder, Config, Credentials, CredentialsConfig, Network};
 // The gasless authorizations cross a process boundary: a client signs one here, a submitter
 // redeems it elsewhere. Surfaced at the crate root since both sides need the type.
 pub use contract::Core4Mica::{
@@ -43,8 +41,14 @@ pub use contract::Core4Mica::{
     WithdrawalRequestAuthorization,
 };
 pub use crypto::bls::BLSCert;
+pub use error::Error;
 pub use sig::PaymentSignature;
-pub use x402::X402Flow;
-/// Alternative name for [`X402Flow`].
-pub use x402::X402Flow as FacilitatorFlow;
-pub use x402::{FlowSigner, X402SettledPayment, X402SignedPayment};
+pub use x402::{FlowSigner, X402Flow, X402SettledPayment, X402SignedPayment};
+
+/// The names most integrations need, importable in one line.
+pub mod prelude {
+    pub use crate::{
+        Address, Asset, ClaimReceipt, Client, ClientBuilder, Credentials, DepositReceipt, Error,
+        Network, PayReceipt, Route, TokenRoute, U256, WithdrawReceipt,
+    };
+}

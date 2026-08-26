@@ -8,7 +8,7 @@ use rpc::{
 };
 use std::str::FromStr;
 
-use crate::error::SignPaymentError;
+use crate::error::PaymentError;
 use crate::sig::PaymentSigner;
 
 fn create_test_params() -> CorePublicParameters {
@@ -322,7 +322,7 @@ async fn test_sign_request_fails_with_address_mismatch() {
 
     let err = result.unwrap_err();
     match err {
-        SignPaymentError::AddressMismatch { signer, claims } => {
+        PaymentError::AddressMismatch { signer, claims } => {
             assert_eq!(signer, wallet.address());
             assert_eq!(claims, different_addr);
         }
