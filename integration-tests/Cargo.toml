@@ -12,8 +12,6 @@ description = "End-to-end tests driving sdk-4mica against a running core-service
 path = "src/lib.rs"
 
 [dev-dependencies]
-# Tracks the SDK's dev branch head; Cargo.lock pins the exact commit — advance
-# it with `cargo update -p sdk-4mica`.
 sdk-4mica = { git = "https://github.com/4mica-Network/4mica", branch = "dev" }
 core-service = { path = "../core" }
 entities = { workspace = true }
@@ -29,7 +27,13 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 axum = { workspace = true, features = ["macros", "json"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+rand = { workspace = true }
 test-log = { workspace = true }
 serial_test = { workspace = true }
 dotenv = { workspace = true }
