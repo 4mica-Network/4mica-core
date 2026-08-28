@@ -270,10 +270,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         ISignatureTransfer(PERMIT2)
             .permitTransferFrom(
                 ISignatureTransfer.PermitTransferFrom({
-                permitted: ISignatureTransfer.TokenPermissions({token: cycle.asset, amount: netDebit}),
-                nonce: p.nonce,
-                deadline: p.deadline
-            }),
+                    permitted: ISignatureTransfer.TokenPermissions({token: cycle.asset, amount: netDebit}),
+                    nonce: p.nonce,
+                    deadline: p.deadline
+                }),
                 ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: netDebit}),
                 p.from,
                 p.signature
