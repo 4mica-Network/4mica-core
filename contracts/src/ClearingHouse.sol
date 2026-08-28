@@ -378,8 +378,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     /// Operator batch: seize collateral for unpaid debtors after finality.
     function settleDefaultsFromCollateralBatch(bytes32 cycleId, DebtorEntry[] calldata entries)
         external
-        restricted
         nonReentrant
+        restricted
     {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
@@ -427,8 +427,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     /// Requires the cycle to be fully funded.
     function fundCreditorsFromPoolBatch(bytes32 cycleId, CreditorEntry[] calldata entries)
         external
-        restricted
         nonReentrant
+        restricted
     {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);

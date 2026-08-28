@@ -132,6 +132,9 @@ struct WithdrawalCancelAuthorization {
 
 /// @title Core4Mica
 /// @notice Manages user collateral, delayed withdrawals, and make-whole payouts.
+/// ClearingHouse defines its own minimal `ICore4MicaSettlement` view of this contract;
+/// inheriting it here would couple the two files.
+// forge-lint: disable-next-line(missing-inheritance)
 contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     using SafeERC20 for IERC20;
 
@@ -167,7 +170,6 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     error AaveNotConfigured();
     error FeeTooHigh();
     error TreasuryClaimExceedsAvailable();
-    error UnsupportedTreasuryAsset(address asset);
     error StablecoinWithdrawShortfall(address asset, uint256 requested, uint256 actual);
     error AaveProviderReconfigurationBlocked();
     error UserScaledBalanceUnderflow(address asset, address user, uint256 deduction, uint256 balance);
@@ -456,7 +458,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
         }
 
         aaveAddressesProvider = provider;
-        for (uint256 i = 0; i < stablecoinAssetList.length; i++) {
+        uint256 assetCount = stablecoinAssetList.length;
+        for (uint256 i = 0; i < assetCount; i++) {
             address asset = stablecoinAssetList[i];
             address aToken = aTokens[i];
             _validateAToken(dataProvider, asset, aToken);
@@ -493,8 +496,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
 
     function claimProtocolYield(address asset, address to, uint256 amount)
         external
-        restricted
         nonReentrant
+        restricted
         validRecipient(to)
         stablecoin(asset)
     {
@@ -512,6 +515,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
 
         address aToken = _requireAToken(asset);
         uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         uint256 actualWithdrawn = _aavePool().withdraw(asset, amountToClaim, to);
         if (actualWithdrawn < amountToClaim) {
             revert StablecoinWithdrawShortfall(asset, amountToClaim, actualWithdrawn);
@@ -526,8 +530,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
 
     function claimSurplusATokens(address asset, address to, uint256 scaledAmount)
         external
-        restricted
         nonReentrant
+        restricted
         validRecipient(to)
         stablecoin(asset)
         nonZero(scaledAmount)
@@ -832,8 +836,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     /// Returns the underlying-equivalent seized.
     function seizeCollateral(address debtor, address asset, uint256 amount)
         external
-        restricted
         nonReentrant
+        restricted
         whenNotPaused
         supportedAsset(asset)
         nonZero(amount)
@@ -864,8 +868,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     /// Restricted to the ClearingHouse.
     function seizeUpTo(address debtor, address asset, uint256 amount)
         external
-        restricted
         nonReentrant
+        restricted
         whenNotPaused
         supportedAsset(asset)
         returns (uint256 seized)
@@ -900,8 +904,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     function creditCollateral(address creditor, address asset, uint256 amount)
         external
         payable
-        restricted
         nonReentrant
+        restricted
         whenNotPaused
         supportedAsset(asset)
         validRecipient(creditor)
@@ -922,8 +926,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     /// round trip. Restricted to the ClearingHouse.
     function creditFromEscrowScaled(address creditor, address asset, uint256 amount)
         external
-        restricted
         nonReentrant
+        restricted
         whenNotPaused
         stablecoin(asset)
         validRecipient(creditor)
@@ -957,8 +961,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     /// ClearingHouse.
     function withdrawFromEscrow(address asset, uint256 amount, address recipient)
         external
-        restricted
         nonReentrant
+        restricted
         whenNotPaused
         stablecoin(asset)
         validRecipient(recipient)
@@ -986,8 +990,8 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     /// scaled value. Restricted to the ClearingHouse.
     function depositToEscrow(address asset, uint256 amount)
         external
-        restricted
         nonReentrant
+        restricted
         whenNotPaused
         stablecoin(asset)
         nonZero(amount)
@@ -1228,6 +1232,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
         address underlyingAsset = IAToken(aToken).UNDERLYING_ASSET_ADDRESS();
         if (underlyingAsset != asset) revert InvalidAToken(asset, aToken);
 
+        // forge-lint: disable-next-line(unused-return)
         (address configuredAToken,,) = IAaveProtocolDataProvider(dataProvider).getReserveTokensAddresses(asset);
         if (configuredAToken != aToken) revert InvalidAToken(asset, aToken);
     }
@@ -1516,6 +1521,7 @@ contract Core4Mica is AccessManaged, ReentrancyGuard, Pausable, EIP712 {
     {
         address aToken = _requireAToken(asset);
         uint256 scaledBefore = IAToken(aToken).scaledBalanceOf(address(this));
+        // forge-lint: disable-next-line(reentrancy-no-eth)
         actualWithdrawn = _aavePool().withdraw(asset, amount, recipient);
         uint256 scaledAfter = IAToken(aToken).scaledBalanceOf(address(this));
         scaledBurn = scaledBefore - scaledAfter;
