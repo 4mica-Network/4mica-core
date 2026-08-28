@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://4mica.xyz/assets/logo_transparent.png" alt="4Mica Logo" width="200"/>
+  <img src="https://4mica.io/assets/logo_transparent.png" alt="4Mica Logo" width="200"/>
 </p>
 
 <h1 align="center">4Mica</h1>
@@ -11,8 +11,8 @@
   <a href="https://crates.io/crates/sdk-4mica">
     <img src="https://img.shields.io/crates/v/sdk-4mica.svg" alt="Rust SDK on crates.io"/>
   </a>
-  <a href="https://4mica.xyz/resources/technical-docs">
-    <img src="https://img.shields.io/badge/docs-4mica.xyz-0A84FF.svg" alt="Docs"/>
+  <a href="https://docs.4mica.io">
+    <img src="https://img.shields.io/badge/docs-4mica.io-0A84FF.svg" alt="Docs"/>
   </a>
 <a href="https://creativecommons.org/licenses/by-nc/4.0/">
     <img src="https://img.shields.io/badge/License-CC_BY--NC_4.0-lightgrey.svg" alt="License: CC BY-NC 4.0"/>
@@ -23,13 +23,13 @@
 
 ## 🌐 Website
 
-Visit the official website: [https://4mica.xyz](https://4mica.xyz)
+Visit the official website: [https://4mica.io](https://4mica.io)
 
 ---
 
 ## 📚 Documentation
 
-- Developer docs: [https://4mica.xyz/resources/technical-docs](https://4mica.xyz/resources/technical-docs)
+- Developer docs: [https://docs.4mica.io](https://docs.4mica.io)
 - Rust SDK API: [crates.io/sdk-4mica](https://crates.io/crates/sdk-4mica) · [docs.rs](https://docs.rs/sdk-4mica)
 - Contract deployment: [contracts/README.md](contracts/README.md)
 
@@ -37,7 +37,7 @@ Visit the official website: [https://4mica.xyz](https://4mica.xyz)
 
 ## 📦 Rust SDK
 
-The official Rust client for interacting with the 4Mica payment network lives in the [4mica](https://github.com/4mica-Network/4mica) monorepo under `apps/sdk/`. It provides:
+The official Rust client for interacting with the 4Mica payment network lives in the [4mica](https://github.com/4mica-Network/4mica) monorepo under `packages/sdk-rust/`. It provides:
 
 - User flows: deposit collateral, sign payments, manage withdrawals (ETH or ERC20)
 - Recipient flows: create tabs, verify guarantees, and claim collateral
@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-See the [SDK README](https://github.com/4mica-Network/4mica/tree/main/apps/sdk) for full examples, configuration options, and X402 flows.
+See the [SDK README](https://github.com/4mica-Network/4mica/tree/main/packages/sdk-rust) for full examples, configuration options, and X402 flows.
 
 ## Validated guarantees
 
