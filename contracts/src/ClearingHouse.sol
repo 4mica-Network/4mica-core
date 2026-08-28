@@ -270,10 +270,10 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
         ISignatureTransfer(PERMIT2)
             .permitTransferFrom(
                 ISignatureTransfer.PermitTransferFrom({
-                permitted: ISignatureTransfer.TokenPermissions({token: cycle.asset, amount: netDebit}),
-                nonce: p.nonce,
-                deadline: p.deadline
-            }),
+                    permitted: ISignatureTransfer.TokenPermissions({token: cycle.asset, amount: netDebit}),
+                    nonce: p.nonce,
+                    deadline: p.deadline
+                }),
                 ISignatureTransfer.SignatureTransferDetails({to: address(this), requestedAmount: netDebit}),
                 p.from,
                 p.signature
@@ -378,8 +378,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     /// Operator batch: seize collateral for unpaid debtors after finality.
     function settleDefaultsFromCollateralBatch(bytes32 cycleId, DebtorEntry[] calldata entries)
         external
-        restricted
         nonReentrant
+        restricted
     {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         if (cycle.status != CycleStatus.PaymentWindowOpen && cycle.status != CycleStatus.Defaulted) {
@@ -427,8 +427,8 @@ contract ClearingHouse is AccessManaged, ReentrancyGuard {
     /// Requires the cycle to be fully funded.
     function fundCreditorsFromPoolBatch(bytes32 cycleId, CreditorEntry[] calldata entries)
         external
-        restricted
         nonReentrant
+        restricted
     {
         OnchainCycle storage cycle = _requireCycle(cycleId);
         _requireClaimableStatus(cycleId, cycle);

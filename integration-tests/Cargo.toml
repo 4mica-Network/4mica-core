@@ -3,7 +3,7 @@ name = "integration-tests"
 version = "0.0.0"
 edition.workspace = true
 publish = false
-description = "End-to-end tests driving sdk-4mica against a running core-service + anvil stack. Kept in the monorepo (not in the SDK crate) so the SDK stays portable and free of core-service/entities dependencies."
+description = "End-to-end tests driving sdk-4mica against a running core-service + anvil stack. Kept here (not in the SDK repo) so the SDK stays portable and free of core-service/entities dependencies."
 
 # The crate carries no library code of its own; it exists only to host the
 # integration tests under `tests/`, which need core-service's DB internals and
@@ -12,7 +12,7 @@ description = "End-to-end tests driving sdk-4mica against a running core-service
 path = "src/lib.rs"
 
 [dev-dependencies]
-sdk-4mica = { path = "../sdk" }
+sdk-4mica = { git = "https://github.com/4mica-Network/4mica", branch = "dev" }
 core-service = { path = "../core" }
 entities = { workspace = true }
 rpc = { workspace = true }
@@ -27,7 +27,13 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 axum = { workspace = true, features = ["macros", "json"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+rand = { workspace = true }
 test-log = { workspace = true }
 serial_test = { workspace = true }
 dotenv = { workspace = true }
